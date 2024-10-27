@@ -1,0 +1,251 @@
+23 Oct:
+Test this file is visible in git
+OK, what's the simplest features I could support to complete the pipeline?
+Pipeline: String -> BNFC CST -> AST -> type inference -> IR -> bytecode
+
+Minimal types: int, a -> b
+E: x, 3, f(x)
+S: ref = e, return e
+ref: local
+Int still allows multi-word values... but start with just one-word?
+
+Functions are a subset of immutable exprs; f p = e can be desugared to f = \p:T -> e
+Scan from entrypoints for lambdas, place.
+Separate entrypoints from functions due to no return?
+Functions marked as exported ~entrypoints with a stack context including a return address.
+Any function can be goto'd from a block with identical stack effect...
+In the normal calling convention, the return address is a valid continuation... how to express
+that in a type system?
+scont, result
+ReturnAddress a --requires stack context a, allows return
+Note locals can be eliminated or reordered on the stack; establishContext (...) could force
+a particular context. This should be in the IR...
+Variables, including globals, are part of the storage context.
+"A copy of x is on the stack" /= "x is on the stack", because the latter determines x's value.
+Well... the (full) storage context is a bijection between the leaf ref-value mapping 
+(language-level environment) and actual storage.
+In case 1, modifying the value on stack to no longer be x would change the storage context.
+How to simplify AMAP? First expose only functions, don't use a tricky IR.
+No reasoning about memory, just perform the read/writes.
+
+Externally set immutable values aren't known at compile time.
+
+First: no opts at all, nothing fancy.
+Each local in a separate contiguous series of words; its position remains fixed.
+x => dups
+var = x => x; swap and pop
+a + b (words) => b;a;emit ADD
+f(e) --this is why I need tuples
+
+Padding per field: align to nearest word, byte or bit
+Code type: (ts) on stk => (ts') on stk, goto label (where label may be one of the ts)
+It could also be constant.
+If the cont is known you can eval it further... (ts) (Code ts ts' l) => (ts') l
+stop() could be detected and prevented at the type level.
+
+f(e); code becomes
+f(e) goto cont
+Given the label to cont is one of the arguments, you can fill it in automatically.
+ret :: Jumpdest code
+
+That's all FW, for now use a fixed calling convention.
+First, no stack shuffling: just use a trivial layout.
+ret,x,y => x,y,ret:
+swap1, swap2 --6
+Without changing the order in which you push return words, the swap cost is 3*|words|
+The layout at any time = [v:t], including both locals and arguments.
+
+structType#{field:val,...} is equivalent to (structType){field:val}
+someInstr(s) =
+ parse args off s
+ dispatch(s)
+ImplicitParams ?interpState : t would simplify... but first write an interpreter vanilla style.
+Pragma: autogen JT and instructions from an iset command with instruction specs.
+Ex instruction spec: function, argument spec (immediate, stack...), return spec
+Ex instruction type: add(memstk,imm): push to memstk
+Could it compile to vanilla EVM C?
+A 1-indirection JT:
+Context: s : S
+i1:
+return f1(s)
+...
+invalids...
+dispatch(s) =
+ goto(jt + *s.pc)
+--jt :: S -> ret?
+You should be able to goto/tailcall functions with the right return from a function with that
+return, adjusting the stack as necessary.
+Alt: return dispatch(s)
+inline dispatch
+dispatch(s) =
+ return dispatchJT(s,jt)
+inline dispatchJT
+The JT must be placed.
+x = parse(t,s) --Could be implemented with a hygienic macro rather than &ref arguments.
+parse(t,s):
+ {x = *(Ptr Memory t) s.pc; --locals in hygienic macros need to be renamed
+  s.pc += sizeof t;
+  return x --returns become local returns
+ }
+
+Singleton t = {wordpad __field1: t}
+Field syntax: [padding] [field:] e
+(a,b,c) is equivalent to {wordpad a, wordpad b,wordpad c}
+(a) isn't representable except as {wordpad a}
+Another useful struct sugar: bitfield{...}
+New locals don't need type signatures, just infer and coerce if necessary.
+xs = (list) {hd,tl} --should work... but don't coerce structs at first.
+Coercion scheme for (struct1) struct2: for each field in struct1, if a field with that name
+exists use that; otherwise use the same position. Recursively coerce.
+If neither exists, set the field to 0.
+
+With trivial layout:
+x => dups
+x = e => e, swap and pop
+a,b...e1,e2 => 2 swaps, no problem
+primfun call => custom
+f(e) => ret, e, f, jump
+That's simple enough!
+For now, only support tuples and single vars in lhses.
+if(e)
+ ...
+end 
+ ... =>
+jumpi !truthy(e) end
+...
+end: 
+
+In the IR, ifte could have two SLS dests
+
+Argh, I seem to have lost the code where I played around with Generic/Data
+
+Note for interview: EVM C and Asm have strengths and weaknesses compared to Ecomp.
+Ecomp is a shallow embedding which supports low-level control and the definition of codegen 
+combinators, but doesn't allow analysis (so making object files, using structs, type inference
+and optimizations etc aren't possible).
+
+FW: caching object files on-chain and combining them into smart contracts.
+For that you need on-chain linking, preferably in EVM C.
+Loading and linking could be optimized by storing nonzero regions, interleaving codecopy with
+placement of given label values.
+Write in reverse to a
+
+TODO support code blobs in the language, return and instantiation of them.
+Support placing a pointer at the end for instantiation? __END
+A named end per module?
+
+For naive compilation I don't need an IR, but I may in future.
+What's the most pressing need for it? I'll discover that when optimizing, but maybe custom CCs.
+******
+
+Goal: use parsec to make a C-like syntax for EVM C.
+Ideally it would be Haskell-like and general to the point where I can use it for other stuff, but
+practice is enough.
+
+e ::= num | var | (op) | \pats -> block | e e | e op e | pre e | e :: t
+--e.field subsumed by e op e?
+--:: subsumed?
+
+s ::= e | if e then block else block | while e block | lhs = e
+lhs = var | *e | lhs.field | e[e]
+
+decl ::= defun | type | data | global
+
+--------------------------------------------------------------------------------------------------
+EVM C objectives:
+A fast but convenient language for programming ETH smart contracts, in particular batchers and
+interpreters.
+Low-level enough for speed.
+
+Features:
+Structs, datatypes, static types (at first monomorphic using C rules)
+Pointers and function pointers, maps
+Globals
+Typing rules:
+Invariant: every leaf expression has a known type, so combinators can look at the type of their
+arguments.
+Integer literals have inferred type based on size
+Structs and tuples have inferred type based on fields (opt: eliminate coercion operator when
+you assign e.g. x :: {bar: Bool, foo: Bool} = {foo: true, bar: true}
+
+Interpreter support: JTs
+InstrPtr iset --as a type
+Autogen dispatch and parsing code from functions
+Param location pragmas: on interp stack, immediate...
+Generate user-level bytecode from code
+If you fuse or make variant instructions (actual iset auto-generated?), that compiler could opt.
+
+Potentially performant feature: local returns, gotoreturn(label,e)
+A normal goto is gotoreturn(label,())
+A normal label is ::nm:: ()
+When returning, pop vars which go out of scope; push 0 for vars which enter scope.
+break(e) is return to end of loop; continue should take no arg?
+Stmts should have a type?
+Reaching the end of a block ~ returning 0 to the top-level label.
+Issue: ::l:: = while (e) ... --where does the label go to? The end, otherwise it'd be
+::l::; while (e) ...
+Opt: if you goto(l,e), don't bother pushing e.
+Jumps to labels could be dynamic; then the stack context of the label must be recorded in its
+type.
+Could you implement Duff's device that way? OH: at least 1 JUMPDEST per label.
+You'd need in-code jump tables; if code can be spaced regularly, you can optimize them away.
+f(a) :: b ~ goto f(::ret:: :: JumpDest {} b, a); ::ret:: :: JumpDest ctx b
+In the callee, ret will have the context {}, expecting a b.
+The callee's type context at the start is ret and args. How to differentiate top-level blocks
+which shouldn't fall through?
+If f continues to ret, it may goto any code that also continues to ret.
+
+Instr functions take and return an iStt. They could also return a different type depending on the
+iset's purpose.
+a,(b,c) -> (a,b,c) is a zero-cost operation.
+
+From YUL:
+Objects
+Generate object types, maybe overload optr.immVar = e
+p = allocMyObjectType()
+Mutate it (including by adding dyn-sized data), RETURN it
+Linkable modules
+Object types with statically known imports?
+
+Desired opts (do later):
+The usual: DCE, constant expansion, loop unrolling...
+EVM-specific: lifting to stack, stack shuffling
+
+dispatch via tail calls could let you vary the interp scheme within an instruction.
+Recall: &v --on-stack references to a v which let you mutate a ref outside the function's scope.
+Implem: pass in each arg as a normal value, add them to the return if you mutate them.
+&a -> b --is a distinct type from a -> b, with a different calling convention; you must swap back
+the modified value after the call.
+Example: _a,b = f(a); a = _a
+That could be used for parseType(&st), for example.
+
+To use for:
+TCI with Merkles and VSCs
+
+***************
+
+Idea for a general syntax: a typeclass that determines which combinators common syntactic
+elements such as integer, op etc correspond to.
+To use OperatorTable need to create the table when parsing?
+Simplest sol: just don't use general infix ops.
+
+Supporting annotations in syntax: you should be able to annotate decls, stmts and exprs.
+To get fixity data for operators, I could do a first-pass parse where fixity is ignored and
+"infix* nm fixity" declarations are collected.
+
+*****
+Using BNFC to quickly generate a CST... perhaps that forces me to use curlies instead of
+alignment. However, Beata's MSc thesis is about supporting that in BNFC.
+Ah, but the intro shows that can be done in a limited way (limited how?)
+
+How to support arb-named operators in BNFC? Record the list [term-op], term, resolve later based
+on fixity info.
+
+BNFC syntax extension: patterns instead of vars.
+LHS: tuple, struct, *e, e[e], var, Con arg.
+I need to use GH again... but I'll skip it for now.
+I don't get why (e) fails... do I need to add a special rule for parens?
+Yes, of course... there are syntaxes where it doesn't make sense to add ()-rules to everything.
+
+Idea for a BNFC extension: just set precedence for rules so you don't have to mess about with
+appending N to every type and arg.

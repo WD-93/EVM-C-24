@@ -1,0 +1,119 @@
+module DTs where
+
+import Data.Map (Map(..))
+import qualified Data.Map as M
+import Control.Monad.Reader
+import Control.Monad.State
+--TODO split into DTs etc files
+--TODO add BNFC syntax to repo
+--Start: absolutely minimal complete pipeline
+
+--AST, converted from BNFC CST in desugaring stage
+type Name = String
+data E = EInteger Integer
+       | Var Name --includes overloaded ops
+       | E :$ E
+       | EStruct [(Padding,Name,E)] --tuples are sugar for structs
+       -- | Coerce T E
+  deriving (Eq,Ord,Read,Show)
+--Tuples are word-padded structs with default field names;
+--the default for structs is byte padding;
+--bitfields are bitpadded
+data Padding = BitPad | BytePad | WordPad
+  deriving (Eq,Ord,Read,Show)
+padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0) 
+tupleE :: [E] -> E
+tupleE = EStruct . tupleF
+tupleF :: [e] -> [(Padding,Name,e)]
+tupleF = map (\(nm,x) -> (WordPad,nm,x)) .
+  zip ["__field" ++ show n | n <- [1..]]
+data T = Int Bool Int --signedness, bitsize
+       | T :-> T
+       | Struct [(Padding,Name,T)]
+       -- | Ptr Region T
+  deriving (Eq,Ord,Read,Show)
+tupleT = Struct . tupleF
+data Region = Memory
+            | Calldata
+            | Returndata
+            | Storage
+            | Code
+  deriving (Eq,Ord,Read,Show)
+--TODO generic instance
+data S = Pat := E
+       | Return E
+       -- | Ifte E B B
+       -- | While E B
+  deriving (Eq,Ord,Read,Show)
+--Determines whether an expr is a valid LHS for assignment
+data Pat = PWild
+         | PVar Name
+         | PStruct [Either (Name,Pat) Pat]
+         | PPat [Pat] --rhs must have exactly that many fields and it
+         --must be a tuple (word-padded with default names)
+  deriving (Eq,Ord,Read,Show)
+data D = Defun Name T Pat Block
+  deriving (Eq,Ord,Read,Show)
+type Block = [S]
+type Program = [D]
+
+--Output after desugaring phase:
+data Module = Module {defuns :: Map Name D}
+  deriving (Eq,Ord,Read,Show)
+
+--Type checking
+--No datatypes for now, so no need for finiteness checks.
+data TypeError = InFun Name TypeError
+               | NonFunctionDefun Name T
+  deriving (Eq,Ord,Read,Show)
+tcModule :: Module -> Either TypeError ()
+tcModule m = do
+  let fundefs = M.toList $ defuns m
+      fts = M.fromList $ map (\(nm,Defun _ t _ _) -> (nm,t)) fundefs
+  mapM_ (tcFun fts) (defuns m)
+tcFun :: Map Name T -> D -> Either TypeError ()
+tcFun fts (Defun nm t args block) =
+  case t of
+    a :-> b -> do
+      --First, match args to a
+      undefined
+    _ -> Left (NonFunctionDefun nm t)
+type GlobalTypeInfo = GTI {funTypes :: Map Name T} --Just functions for now
+type LocalTypeInfo = Map Name T --Just locals
+type TCE = ReaderT GlobalTypeInfo (StateT LocalTypeInfo (Either TypeError))
+runTCE :: TCE a ->
+  GlobalTypeInfo ->
+  LocalTypeInfo ->
+  Either TypeError (a,LocalTypeInfo)
+runTCE tce gti lti = runStateT (runReaderT tce gti) lti
+
+puke :: TypeError -> TCE a
+puke = lift . lift . Left
+data NameInfo = IsUnbound
+              | IsLocal T
+              | IsFunction T
+--Ah... when compiling I need to know the type of every subexpr
+--I'll annotate the AST with types
+
+--Type consequences of pattern unification:
+--patterns should be ~polymorphic, ignoring padding
+--{foo: bar} = e --should match any struct where e.foo matches bar
+--{x,y} = e => x = e<1>, y = e<2>
+--Con x y z
+--Disallow shadowing or assigning to functions
+
+--New vars: any type matches
+--Existing vars: only its type matches
+
+--The type system is monomorphic, using the C trick to type literals;
+--no type inference stage is required.
+--However, separate type checking before compilation simplifies the
+--codegen stage.
+--Note adding type synonyms and (potentially recursive) data decls complicates
+--sizeof.
+--No need for newtype since the language is strict.
+--First, no parameterized types other than fun and ptr.
+--In TC, check datatypes are of finite size.
+--data Con = Con t | ...
+--Layout: if 1 constructor then layout of t; otherwise byte + byte padded
+--max size of contents.
