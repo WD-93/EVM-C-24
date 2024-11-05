@@ -1,5 +1,351 @@
+4 Nov:
+Reducing structured statements to single ops, problem: when you have e.g.
+block1;while(e)block;block2, the stack target of block1 is flexible.
+That's not a problem, the entire function body is part of the same SLC after all.
+The while is treated as a single op; block1 and block2 can be reordered around it.
+Recursively emit instrs for the loop; the target is whatever layout has been created so far by
+the previous instructions, modulo var version updates.
+Whether to share loop-constant exprs by computing them before entry is a nontrivial decision
+dependent on expected iteration count.
+
+What are the properties that "virtual" ops must satisfy? Ex qualifying: if, while, commutative
+and associative fold on words.
+For fold or, whenever any two last-use words are TOS you can emit an OR.
+
+Is treegraph really optimal? Whenever you have last-use vars on stack that correspond to a
+runnable op (that is guaranteed to be run), you should run it. That requires deleting the op from
+the treegraph. What if doing so requires a dup or swap? If it can be done at minimal cost
+(given you'd have to pay at least as large an overhead later) and it shrinks the stack, run it.
+
+How to deal with gas? Let the user fix its placement by passing an argument (that isn't DUP'd)
+and using its value: x = gas(e).
+
+3 Nov:
+OK, got it; implementing.
+
+Code placement: assuming aligned 32B chunks are warmed at a time, you want to pack code that will
+be executed given the current code is being executed within the same word.
+Prioritize by exec probability.
+
+Thought: GAS is mutated on each instruction. How to place it? Perhaps give it an artificial
+dependence on all previously assigned vars. No, that falsely makes those vars multiple use.
+Alts: just prevent CSE for gas and assume its result will be wonky; split SLCs at gas.
+
+2 Nov:
+While loops don't introduce a dependency between all of their input variables and all of the
+output ones... consider while(n--) x++. x depends on n, but not vice versa.
+Note the e in while is computed using a series of instructions.
+When you have an output var = a + b + c... and any two last-use summands on TOS, greedily add.
+Opt: when repeatedly adding and masking, lift the mask to be applied once.
+Greater than word-level precision (eg fields in a struct) could be useful for eliminating false
+dependencies.
+At the end of a while loop's block you must restore the stack layout to the entrypoint... meaning
+you need to swap back any modified vars.
+
+Trivial compilation: dup every var use. That risks placing vars out of range of DUP*.
+Alt: eagerly consume last uses.
+Say next op is op(x,y*,z*) where y,z are deep in the stack. Compute x, move z to pos 2, move y to
+pos 1 and dup x. Read that paper!
+
+Reading treegraph paper... a difference from the IR may be that function calls in the IR may
+generate multiple output values.
+Mem introduces dependencies which aren't on the stack.
+I see... they enumerate to find the best treegraph ordering.
+How to reduce the cost of enumeration at the expense of compiled performance? Optimize locally,
+limit number of alternatives explored.
+Something missing from the paper: a multi-word target state. Returns partway through a function,
+requiring popping of locals.
+Ops with >2 stack arguments, e.g. calls, MULMOD and CALL.
+
+Idea: for a shared dep, find the smallest subtree that contains all refs to it.
+Alt: find first use in DFS, place there and then dup. But if it's not the first arg in push order
+you'll need to swap it... unless you run the remaining code that uses it first.
+That the target is multi-word is a complication.
+On a definite last use of a var, you should be able to avoid a dup and pop.
+
+Subexprs with a single use should be placed at the use site... modulo dup range limit.
+Return has target retval,ret - not locals,retval,ret!
+Do DFS with consideration for shared vars from the bottom word of the target?
+Different schedulings of the same SLS may produce different stack orderings.
+Problem: invars, SSA ops, target. Ops must be placed in a topological order (modulo recomputation)
+and each has a precond on the top of the stack. It's weaker for commutative ops...
+Count #uses of vars. Each var corresponds to a tree of the initial vars, modulo memory writes
+which should not be repeated.
+
+Greedy generation: when you can pop, do. When you have last uses of an emittable op on the stack
+in the correct order, emit it. First, prune unused ops.
+
+swap x 2 costs as much as dup and pop but leaves less garbage on the stack (potentially avoiding
+dup out of range). However, it may mess up the stack, disrupting later ops.
+One input, e.g. iszero, mload: if not last use, dup; else if not TOS, swap.
+Two inputs: if all last use and in correct positions, exec. If swapped, swap back.
+(y,x) => swap.
+If neither, swap x 2 to put y at pos 2, then swap to put x at pos 1.
+
+Constant expansion isn't always the right choice given code size constraints. Looks like EIP-2926
+isn't in effect yet, so code load can be ignored in the short term.
+Cross-call constant lifting opt: replace k with param_k in function, add k argument to all calls;
+recursively add param_k to callers.
+Global/memory lifting opt: replace mem with word(s) which are passed and returned.
+Is it worth caching storage in TSTORE? No, hot storage read/write costs the same.
+EVM problem: given preheating, the 2300 gas stipend now lets you perform storage writes!
+It also lets you perform TSTORE writes regardless. Has it been removed?
+
+global memory allocPtr : {wordpad (Ptr Memory Byte)} 
+malloc : UInt 16 -> Ptr Memory Byte
+malloc (n) =
+ {p} = allocPtr
+ p' = (Word) p + (Word) n 
+ if p' & (1 << 17)
+  then revert()
+  else allocPtr = unsafeCoerce p'
+       return p
+The bounds check must be done on every malloc because if you overflow pointers you can modify
+allocPtr. That's if the attacker has control of allocation... otherwise you could do a check at
+the end.
+
+If you allow scratch writes off allocPtr, the value of newly malloc'd memory must be assumed to
+be arbitrary rather than zero.
+
+Local globals: for e.g. dispatch, you could declare globals within the scope of a function.
+Too complicated for now... need to generalize and automate with a good IR.
+
+1 Nov:
+The basic problem is this: I have a dependency tree of ops with potential sharing and a list of
+initial variables. How do I reach a target stack state most efficiently?
+Recall there's literature on that, what was the paper called?
+
+Problem: returns in an if or while. Those correspond to ifs/recursion in the let?
+return, call etc correspond to functions applied to the word list.
+
+31 Oct:
+Ah, in direct compilation I can't just have locals on the stack... I also need to track the stack
+offset. Can locals be interleaved with anonymous words? Yes, if you allow block exprs:
+(block {x = 4; localreturn 1}, 3) --3 will be on the stack, but it's not a local.
+Note anon words aren't garbage; distinguish between them.
+(x,_,y) = e --here the second word is garbage, but it can't simply be popped immediately.
+
+The complexity of managing garbage vs non-garbage words perhaps justifies an IR after all...
+preserve structure, greedily decide placement.
+Each call starts with the args in standard calling convention order.
+Which var use is the last depends on how you order...
+
+(x,y,z) = call(f,args) --without LSCs calls are IR ops. Maybe divide into SLCs at a lower level.
+Distinguish tail calls?
+End state: each live var in locals is a word on stack; garbage may still be on the stack.
+Using push instead of dup removes a dependency on a constant var; sometimes that may be the right
+choice. It's always the right choice for push0.
+Pass a mem slice into each memory-using op; should malloc create a new slice?
+Overwritten memory writes can be omitted, allowing you to eliminate function calls.
+mload,mstore(b,ptr) --only depends on/affects the lowest-order b bits
+
+struct eval could be done in field order, in fact that might be most efficient: shl and or.
+
+How are call and return distinct? call ignores locals, but return expects exactly none; it's like
+a structured (intra-function) jump with a constraint on the local set.
+
+30 Oct:
+Is there any use of jump except while backjump? Structured gotos when I add them... and if then
+else.
+mem's range should perhaps be part of its type, or a constraint...
+Mem * can always be constrained to Mem {field.*}. It must also be able to represent ptrs in args.
+Explicitly split pointers at the C level?
+For now, just always pass entire mem.
+Note mstores may write outside their given range as long as they save and restore the clobbered
+part; represent partial word writes in the IR?
+
+Do two different SLSes ever go to the same SLS via a structured jump? Yes, in if then else.
+If you assume functions will return, is there any point to not popping garbage from terminated
+blocks? Yes, they may contain a useful value.
+
+Do any ops return multiple values? mstore returns only mem, but call returns sto,mem and success.
+The IR contains no stack shuffling ops: dup, swap and pop.
+Good, because dup is overloaded.
+Declaring the return type in Ops is good because it's not trivial: *multiwordPtr becomes
+w1 = mload(multiwordPtr)
+w2 = shl *(multiwordPtr+k)
+Stack layout as a function of size: first grow to the left (downward), when the first word is full
+grow to the right.
+
+A dynamic call to an unknown function always takes mem and sto.
+
+29 Oct:
+
+OK, the IR also needs to track locals (which args are a part of) and treat calls specially:
+cont = RETURN (stop is just a synonym), revert, call args returnlabel, jump, jumpi
+call must end with locals on the stack and args above them; an ordering constraint
+Since args is part of the cont, locals = those expected by the return label
+tail calls ~ returns; locals preserved = {}
+Local info: [Name], LocalsID --for equality constraints
+Call args have the same. Why a list? To hint the default ordering.
+f() in a S is sugar for _ = f()
+Opt: If you inline, you can eliminate wasted pushes
+
+Constant sharing opt: if you know a let var is constant, use the var instead of a new push.
+
+Preserve structure (if and while) while converting to word and SSA form?
+CC: ret,args
+Word shuffling overhead to get to retv,retaddr from retaddr,retv: 3*|retv|
+For () -> a, for sufficiently large a it might be worth storing retaddr in a memory global.
+
+Ignore pointers and anti-aliasing rules for now.
+Future: mem has operations m1,m2 = split(regions,mem), m = merge(m1,m2)
+
+28 Oct:
+extern function ~ extern immutable
+A stack of IRs could make development easier rather than harder... the compilation work can be
+divided into multiple stages rather than combining the complexity of all stages into one.
+
+subroutine type : vs : t_is -> continues to expr --(args?)
+Calls can be implemented via unification with continues to and AHP; JumpDestOf lab has a single
+value.
+A subroutine could have multiple continuations expr(args), cf case.
+Separate case and casePtr?
+tagOf(dt) :: Tag dt --with variable sizeof
+case ptr of
+ ->Cons <-x <-xs -> ...?
+*x *xs wouldn't work, that should set what x and xs point to.
+What if you want to nest * access?
+case interpreted as generating new var->location bindings rather than assigning new variables
+could perhaps solve it...
+funArgs := ref --binds new vars in the ref
+caseBind *ptr of
+ Cons x xs -> ... --x and xs become locally scoped memory variables
+Simplest: just have normal case, set existing vars and alloc new ones.
+
+Each t_i is the i'th word of a t. Types: Ptr r a, subroutine...
+SLS instrs: k, x = op(xs)
+To address: memory ops! Explicitly pass around subsets of state to make independence explicit?
+If you know a memory slice is constant, you can replace it with constants and constant expand.
+An advantage of SSA: once assigned, it remains constant.
+Opt: 
+don't pass unused words
+don't dup args, instead passing more of the stack and leaving it to the callee to handle it.
+Partially inline a function, e.g.
+f(struct) =
+ x = struct.field
+ ...large body...
+If struct is large, it can be worth doing the indexing in the caller.
+
+SSA still lets you use the same value multiple times, e.g. the same mem. That lets you replace
+known read values with constants.
+Note if you pass mutable state then all the ops are pure.
+
+Pull-based instruction placement: start from final branch and tree-shake. Side effects can't be
+shaken away unless you symbolically reason about mems to recognize noops.
+Each var can be associated with an expr that you can symbolically reason about.
+Ex: x1 in scope; x2 = x1; x3 = x2 --eliminate intermediate assignment.
+Ex useful thing to infer: whether x is constant, which parts are constant.
+How to represent partial mems? Assume pointers are non-aliased? A set of refs; ptr[ix] is assumed
+to be a subset of ptr. Then each malloc becomes disjoint for free.
+Aliasing becomes undefined behavior.
+Would arrays with static size as fields be worth supporting? Not really practical on the stack
+except for bytes... for TCI data structures I need dyn-sized arrays.
+Structs are an acceptable substitute.
+
+Remember which labels are SLSes; any SLS referenced by a placed SLS must also be placed.
+If a label has only one caller, you can inherit static info about its call values.
+Both branches of an ifte must take the same stack context.
+If the cond is a constant, you can convert it to a straight jump.
+Symbolic reasoning about vars can be used to get a constant dest; that's a generalization of
+jump label.
+
+How to support lambdas? Just lift them, then they can be tree shaken away.
+dispatch is a big case; case *s.pc of Instr1 args -> ...; ... can be optimized to load tag and jump
+to it. The args are then at s.pc + k. If you already loaded a *s.pc word, you could maybe get the
+args off the stack more cheaply than repeated mloads.
+But that can only be done for a single case; hint which one? 
+Let the compiler spec tag size and values.
+Type synonyms can be eliminated in an isolated step: first unfold the set of synonyms to
+Map Name T --without any synonyms, then apply the mapping to all types in the module.
+
+Any function which modifies memory becomes res,mem = f(args,mem)
+Then SSA transform!
+
+A monad for choosing alternative compilations and enforcing constraints would be nice... []?
+
+jumpi l x --add another label and end the SLC so you can negate x
+mem' = mstore k v mem --mem is of type MemoryRegion
+Require updated regions are always returned.
+Simple start: just have one mem at a time, pass in by default.
+
+Maybe I should use a module system rather than rely on labels... I have all the data I need.
+Simpl: one instance of globals per module, no support for "new instance".
+
+Could you automatically convert allocating code in a HLL to code which takes arrays to alloc into?
+Ex: map (f :: a -> b) => map (f :: (Ptr a,Ptr b) -> ())
+
+27 Oct:
+
+What types of continuation do SLSes have? Static and dynamic.
+Consider if(e) block;rest --block has cont rest... unless it returns
+What about non-returning calls, such as STOP and RETURN?
+f(3) --when applying an f, do a special coercion for function application.
+Permit coercing ints to ints, but nothing else?
+Also struct coercion; ignore irrelevant fields.
+So map(f,{hd,tl})
+
+I'll need to extend the type system with datatypes...
+NewtypeCon x = nt --should be zero-overhead
+Specializing case for C: just case on the top-level con at first?
+Need local blocks and returns... is e --local return of e
+localContinue, localContinue n --depth
+A SLS you only fall through to doesn't need a jumpdest
+
+case *xs of
+ Nil -> block
+ Cons x xs' -> block
+--If the constructor argument is placed leftmost, knowing the tag of a datatype in memory gives
+you a pointer to its argument.
+sizedWrite(ptr,dt) --uses the minimum number of bytes to store
+Custom, variable-size tags would be nice for instructions...
+
+case *pc of
+ Instr1 args -> ... pc += dynSizeof(*pc) --constant
+--Aliasing is important to whether memory writes affect pc->tag.
+Compile data case from constant case?
+Tag_Datatype could be an enum.
+
+Inlining:
+f e becomes
+do pat_f = e
+   ...
+   localreturn x --convert return to local return
+Opt: if you pass (x,y,z), on the first use you can just dup it.
+Gen: x -> y; y -> z => x -> z, where -> is flip (=)
+
+Subroutine:
+expects pat : t on stack
+continues to: index of pat? --a ref
+Can mutate and return locals? Explicit return works.
+invoke sr (e) --automatically fill in relevant return address
+What if it was in memory, such as a branch register? Would that ever make sense as an opt?
+
+Ah, if you have a dynamic instance of a function and a more efficient head SLS with a jump to it,
+the dynamic SLS could just do some stack shuffling and then call the efficient version.
+The global calling convention for each function type could also be fiddled with...
+
+Why do I need an IR? Structured programming doesn't expose all the SLS labels.
+
+Don't place jumpdests by default at labels; only place if some SLS makes a non-fallthrough goto
+to it.
+
+Start by compiling naively directly from EVM C; no IRs. That way I can identify practical
+concerns for optimization, especially if I start writing opts at that level.
+Try doing type checking simultaneously with codegen.
+
+When deciding whether to inline, I could look at (discounted) exec count vs load and create cost.
+Hint branch probability via annotations.
+
+Q: should assembly really handle placing labels? That's conventional... but the codegen monad
+needs to handle global alloc.
+Global regions: memory, storage. Immutable is just a label. Calldata?
+Storage global behavior: pack like memory; storage pointers are byte-addressing.
+Then objects may overlap storage words... but avoiding that is the programmer's responsibility.
+Useful command: padding for globals.
+
 23 Oct:
-Test this file is visible in git
+
 OK, what's the simplest features I could support to complete the pipeline?
 Pipeline: String -> BNFC CST -> AST -> type inference -> IR -> bytecode
 

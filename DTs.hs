@@ -49,7 +49,7 @@ data S = Pat := E
 data Pat = PWild
          | PVar Name
          | PStruct [Either (Name,Pat) Pat]
-         | PPat [Pat] --rhs must have exactly that many fields and it
+         | PTup [Pat] --rhs must have exactly that many fields and it
          --must be a tuple (word-padded with default names)
   deriving (Eq,Ord,Read,Show)
 data D = Defun Name T Pat Block
@@ -61,6 +61,7 @@ type Program = [D]
 data Module = Module {defuns :: Map Name D}
   deriving (Eq,Ord,Read,Show)
 
+{-
 --Type checking
 --No datatypes for now, so no need for finiteness checks.
 data TypeError = InFun Name TypeError
@@ -94,6 +95,7 @@ data NameInfo = IsUnbound
               | IsFunction T
 --Ah... when compiling I need to know the type of every subexpr
 --I'll annotate the AST with types
+-}
 
 --Type consequences of pattern unification:
 --patterns should be ~polymorphic, ignoring padding

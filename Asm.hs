@@ -7,11 +7,14 @@ import Data.Generics.Schemes (everywhere)
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Data.Set (Set(..))
+import qualified Data.Set as S
 --import Data.ByteString (ByteString(..))
 --import qualified Data.ByteString as B
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.Trans.Except
+
+import Opcodes (mnemonics)
 
 --A datatype for generating asm for the codegen; todo a monad for codegen
 --Goal: keep the DT minimal while supporting linking
@@ -39,17 +42,27 @@ data Label = LNamed String | LAnon Int
 --Each base+k label value has byte size 2
 data LabelValue = Exactly Int [Int] | BasePlus Int
   deriving (Eq,Ord,Read,Show,Data)
+labelValueLen :: LabelValue -> Int
+labelValueLen = \case
+  Exactly len _ -> len
+  BasePlus _ -> 2
 --Getting rid of anon labels in the ObjectFile...
-data SymbolicValue 
+data TemplateValue = ExactlyBytes [Int]
+                   | CodeBasePlus Int
+                   | ReadLabel Label
+  deriving (Eq,Ord,Read,Show,Data)
+type Template = [TemplateValue]
 --Problem: this format doesn't allow including a slize of a label's value in
 --code, e.g. the bottom 2 bytes of a uint32. Does that matter in practice?
 data ObjectFile = OF {
   --Both defined and placed
   exportedLabels :: Map String LabelValue,
   --Anon labels start at 1; each anon label used must also be set.
-  anonLabels :: Map Int LabelValue,
+  --anonLabels :: Map Int LabelValue,
   --In case you allocate and then don't use an anon label
-  anonLabelCtr :: Int,
+  --anonLabelCtr :: Int,
+  --Removed because other modules don't need to care about local labels
+  
   --The Int is expected label size
   --Extern labels aren't explicitly declared; they and their expected size
   --are inferred during assembly.
@@ -61,7 +74,7 @@ data ObjectFile = OF {
   --concatenation.
   --Why use [Int] rather than ByteString? Simplicity, since performance isn't
   --really needed for 24kB smart contracts.
-  template :: [Either Label [Int]],
+  template :: Template,
   --The size of the code in bytes
   byteSize :: Int
   }
@@ -105,19 +118,20 @@ asmSize = \case
 --push, dup or swap out of range (1..16)
 data AsmError = DuplicateLabelDefs Label LabelValue LabelValue
               | ConflictingLabelUses Int Int
-              | LabelUseConflictsWithDef Int Int
+              | LabelUseConflictsWithDef Label Int Int
               | UndefinedAnonLabel Int
               | NonexistentOpcode String
               | InstructionOutOfRange String Int
+              | CodeSizeLimitExceeded Int
   deriving (Eq,Ord,Read,Show)
 --First pass: get defined and used labels, max anon label count, compute
 --template.
 data AS = AS {asExportedLabels :: Map String LabelValue,
               asAnonLabels :: Map Int LabelValue,
               asUsedLabels :: Map Label Int,
-              asOffset :: Int
+              asCodeOffset :: Int
              }
-type Template = [Either Label [Int]]
+
 type Assembler = ExceptT AsmError (WriterT Template (State AS))
 runAssembler :: Assembler a -> AS -> (Either AsmError a, Template, AS)
 runAssembler m as =
@@ -125,12 +139,12 @@ runAssembler m as =
   in (a,b,c)
 puke :: AsmError -> Assembler a
 puke = throwE
-emit :: Int -> (Either Label [Int]) -> Assembler ()
+emit :: Int -> TemplateValue -> Assembler ()
 emit n x = do
   tell [x]
   s <- get
-  put $ s{asOffset = asOffset s + n}
-emitBytes bs = emit (length bs) (Right bs)
+  put $ s{asCodeOffset = asCodeOffset s + n}
+emitBytes bs = emit (length bs) (ExactlyBytes bs)
 --Also reports the label was used
 emitLabel :: Int -> Label -> Assembler ()
 emitLabel len l = do
@@ -140,7 +154,7 @@ emitLabel len l = do
       | len' /= len -> puke $ ConflictingLabelUses len' len
       | let -> return ()
     Nothing -> put $ as{asUsedLabels = M.insert l len $ asUsedLabels as}
-  emit len (Left l)
+  emit len (ReadLabel l)
 --TODO use lenses...
 setLabel l lv =
   case l of
@@ -170,9 +184,12 @@ handleAsm = \case
     checkRange "dup" 1 16 n $ emitBytes [0x80 + n]
   Swap n ->
     checkRange "swap" 1 16 n $ emitBytes [0x90 + n]
-  Opcode str -> error "TODO port opcodes from MC4"
+  Opcode str ->
+    case M.lookup str mnemonics of
+      Just op -> emitBytes [op]
+      Nothing -> puke $ NonexistentOpcode str
   PlaceLabel l -> do
-    off <- asOffset <$> get
+    off <- asCodeOffset <$> get
     setLabel l (BasePlus off)
   DefLabel l lv -> setLabel l lv
   Bytes bs -> emitBytes bs
@@ -211,19 +228,52 @@ data Asm = Push Int Integer
          | UseLabel Int Label
 -}
 
---Add anonLabelCtr parameter; it's to be provided by the code generator monad.
---Other info such as stack offset doesn't need to be passed on.
 assemble :: [Asm] -> Either AsmError ObjectFile
 assemble asms =
-  case runAssembler asms $ AS M.empty M.empty M.empty 0 of
+  case runAssembler (mapM_ handleAsm asms) $ AS M.empty M.empty M.empty 0 of
     (Left err,_,_) -> Left err
-    (Right (),template,as) -> undefined
-    --Check all used anon labels are defined
-    --Check the offset < 24k
-    --Remove all defined labels from asUsedLabels; the rest are imports
-    --Substitute all label uses of exactly defined labels for bytes
-    --Remove the anon ones from anonLabels
-
+    (Right (),tem,as) -> do
+       --Check the offset <= 24k
+      let sz = asCodeOffset as
+      if sz > 24000
+        then Left $ CodeSizeLimitExceeded sz
+        else Right ()
+      --Check all used anon labels are defined
+      let usedAnon = M.toList (asUsedLabels as) >>=
+            (\case (LAnon n,len) -> [(n,len)]
+                   _ -> [])
+      mapM_ (\(n, len) ->
+               case M.lookup n (asAnonLabels as) of
+                 Just lv
+                   | labelValueLen lv /= len ->
+                     Left $ LabelUseConflictsWithDef (LAnon n) len
+                     (labelValueLen lv)
+                   | let -> Right ()
+                 Nothing -> Left $ UndefinedAnonLabel n) usedAnon
+      --Remove all defined labels from asUsedLabels; the rest are imports
+      let usedNamed = M.toList (asUsedLabels as) >>=
+            (\case (LNamed nm,len) -> [(nm,len)]
+                   _ -> [])
+      imps <- M.fromList <$> filterM (\(nm,len) ->
+                          case M.lookup nm $ asExportedLabels as of
+                            Just lv
+                              | labelValueLen lv /= len ->
+                                Left $ LabelUseConflictsWithDef (LNamed nm) len
+                                (labelValueLen lv)
+                              | let -> return False
+                            Nothing -> return True) usedNamed
+      --Substitute defined labels for either bytes or CodeBasePlus in
+      --template.
+      let exps = asExportedLabels as
+      let template' = setLabelsTemplate
+            (M.union (M.mapKeys LNamed exps)
+            (M.mapKeys LAnon $ asAnonLabels as)) tem
+      return $ OF {
+        exportedLabels = exps,
+        importedLabels = imps,
+        template = template',
+        byteSize = asCodeOffset as
+        }
 --Improvement: no reference to an anon label should remain in the object
 --file, only their count.
 
@@ -232,29 +282,99 @@ assemble asms =
 --This concatenates contiguous byte sections.
 --Note: it doesn't check the bytes you substitute labels for are of the
 --correct length; checks in assemble/merge should do that.
-setLabelsTemplate :: Map Label [Int] -> Template -> Template
-setLabelsTemplate l2bs = concatContiguousBytes .
-                         map (\case
-                                 Left l ->
-                                   case M.lookup l l2bs of
-                                     Just bs -> Right bs
-                                     Nothing -> Left l
-                                 Right bs -> Right bs)
-  where concatContiguousBytes = \case
-          [] -> []
-          eb : ebls ->
-            case eb of
-              Right bs -> ccbs [bs] ebls
-              Left l -> Left l : concatContiguousBytes ebls
-        ccbs bss = \case
-          [] -> concat $ reverse bss
-          Right bs : ebls -> 
+--If I passed a Map Label TemplateValue I could set a label to another label...
+setLabelsTemplate :: Map Label LabelValue -> Template -> Template
+setLabelsTemplate m = concatBytes .
+  map (\case ReadLabel l ->
+               case M.lookup l m of
+                 Just (Exactly _ bs) -> ExactlyBytes bs
+                 Just (BasePlus k) -> CodeBasePlus k
+                 Nothing -> ReadLabel l
+             tv -> tv)
+concatBytes :: Template -> Template
+concatBytes = let
+  cb bss = \case
+    ExactlyBytes bs:tvs -> cb (bs:bss) tvs
+    tvs -> ExactlyBytes (concat $ reverse bss) : concatBytes tvs
+  in \case
+  [] -> []
+  ExactlyBytes bs:tvs -> cb [bs] tvs
+  tv:tvs -> tv : concatBytes tvs
+
+--Used to fill in imports
+--If m[nm] conflicts with an export, error
+--If nm's length conflicts with the import, error
+--If nm is not imported, ignore it
+--Update the template
+--Question: should this throw an AsmError?
+--This should take a Map String LabelValue so you can merge objs!
+setLabels :: Map String [Int] -> ObjectFile -> Either String ObjectFile
+setLabels m obj = do
+  let coll = S.intersection (M.keysSet m) (M.keysSet $ exportedLabels obj)
+  if coll /= S.empty
+    then Left $ "Labels to set collide with exports in " ++ show coll
+    else return ()
+  mapM_ (\(nm,bs) ->
+          case M.lookup nm $ importedLabels obj of
+            Just len
+              | len /= length bs ->
+                Left $ "Bytestring for name doesn't match imported length: "
+                ++ show (nm,bs,len)
+            _ -> return ()
+       )
+    $ M.toList m
+  let imps' = M.withoutKeys (importedLabels obj) (M.keysSet m)
+      temp' = concatBytes $ map (\case
+                                    ReadLabel (LNamed nm)
+                                      | Just bs <- M.lookup nm m ->
+                                        ExactlyBytes bs
+                                    tv -> tv) $ template obj
+  return $ obj{importedLabels = imps',
+               template = temp'
+              }
 --Merging object files:
 --set base and anon offset for each object
 --concatenate templates, merge exports; eliminate imports defined by any
 --module.
+--Does not set the code base!
+--Note it just concatenates the code; templates with holes in them aren't
+--supported.
+--Do I need this? The C/IR level will have all the necessary info about
+--labels...
+mergeObjectFiles :: [ObjectFile] -> Either String ObjectFile
+mergeObjectFiles = error "TODO" --foldlM mergeOFs nullOF
+nullOF = OF M.empty M.empty [] 0
+--If there are clashing exports, error
+--If there's a length mismatch between export and import, error
+--Remove labels exported by either from imports
+mergeOFs :: ObjectFile -> ObjectFile -> Either String ObjectFile
+mergeOFs o1 o2 = undefined
 
 --Converting an object file to an executable:
 --set base to 0, converting BasePlus k to exactly k
 --convert label uses to bytes; warn of undefined labels but fill in zeroes by
 --default.
+toExe :: ObjectFile -> (Set String,[Int])
+toExe obj =
+  let defaults = M.map (flip replicate 0) $ importedLabels obj
+      Right obj' = setLabels defaults obj
+  in (M.keysSet $ importedLabels obj,
+      case template $ setCodeBase 0 obj' of
+        [ExactlyBytes bs] -> bs)
+setCodeBase :: Int -> ObjectFile -> ObjectFile
+setCodeBase off obj = obj{
+  exportedLabels = M.map (\case
+                             BasePlus k -> Exactly 2 $
+                                           integer2Bytes 2 $ fromIntegral $
+                                           off + k
+                             x -> x
+                         ) $
+                   exportedLabels obj,
+  template = concatBytes $ map (\case CodeBasePlus k ->
+                                        ExactlyBytes $
+                                        integer2Bytes 2 $
+                                        fromIntegral $ off+k
+                                      x -> x
+                               )
+             $ template obj
+  }
