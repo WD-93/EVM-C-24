@@ -221,3 +221,21 @@ State: trees already constructed
 Algo (op):
  
 -}
+--Whether to make target an op is a nontrivial decision...
+--For intermediate targets such as if/while recursive SLC generation, order
+--doesn't matter for correctness... but for return it does.
+--What happens if there are multiple returns in different parts of the
+--control flow?
+{-
+Ex:
+if(cond)
+ return 1
+...
+-}
+--It's related to local returns in blocks (a future feature)
+--The return value becomes if cond then ... else ...
+--OK, so I need conts again.
+--The target of a block is determined not only by its location, but its op
+--contents... explicitly add a backjump to while bodies?
+--In if (cond) return 1 else {...}; block, the then and the else branch will
+--have different targets.

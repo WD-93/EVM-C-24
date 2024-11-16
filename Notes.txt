@@ -1,3 +1,129 @@
+15 Nov:
+Computing struct from field words: associate each word with a shift value (which may be negative
+or 0).
+For each word of struct:
+take up to 256b of fields, shift and or them together.
+Each word of field has an unpadded bitsize <= 256; multi-word values can be divided into such
+words, with the first having a size < 256 if the field isn't n*word in size.
+Accumulate struct words, starting with the first field word;
+ track offset.
+
+14 Nov:
+Constructing CFG:
+call, return, ifte, while
+Each transition has a cont: call, return, jump, jumpi
+Doing SSA only within straight-line segments has a downside: an opt might involve using an old
+version of a var that stays live. But live vars are computed backwards (and can thus only refer
+to pre-SSA vars), whereas stack layout is computed forwards.
+However, constants that remain on the stack can be reused. Binding them to a var will keep them
+live...
+
+Call SLC boundaries can occur deep within exprs; first convert to word ops.
+f(a,b,c) => w1,w2... = f(a,b,c)
+
+*****
+
+Time to hack
+
+First compile to word-level with structure preserved. E,S => ops.
+Divide into CFG of SLCs, but don't specify targets.
+Solve equality constraints by arbitrarily using first stack order you encounter.
+Ex:
+s1 -> while e -> end
+When creating the loop label, use the end of s1. Record the expected layout of labels in a map.
+Problem: if you allow return (and later break, continue and goto) in a while or ifte, you
+can't rely on e.g. the first branch of the ifte giving you the initial layout of end.
+No matter: use the CFG. If there is no path to end, DCE it.
+If there is a path, use the layout you obtain from the first path you encounter.
+That is, the end of the first node explored (SLC) which goes to N determines N's start.
+The constraint on the first end is determined by the vars that need to be live; they're the union
+of the used vars of all reachable nodes.
+
+1: Convert to word ops, with structure preserved
+--problem: because I SSA after CFG I can't prune or reorder function calls here.
+Construct CFG; use greedy first-predecessor-becomes-start approach to avoid phi functions.
+SSA within SLCs (note they don't necessarily have ends yet), but after traversal they should.
+Generate bytecode for SLCs.
+
+Even with no moves across calls, constant sharing should work pretty well. I can also constant
+propagate in phase 1, or by preserving constant information across SLCs.
+I've overloaded the term SLC too much...
+
+Modified treegraph ("elastic tree edges"): if a const is used repeatedly, place it ALAP.
+Place ops backwards from root? First just DFS, or use my treegraph.
+
+******
+
+Maybe optimizing state accesses via UB is undesirable... it could trip up devs like silent
+underflow did in Solidity. No matter, it's not prio 1.
+
+Note: function calls can return multiple words, but ordinary ops don't!
+Call and return is a branch, so I only need to consider ops which return 0 or 1 words (mem
+isn't a word, it has no runtime representation).
+If calls break up SLCs that precludes reordering them to take advantage of dataflow, at least at
+that level. But if I have a pre-breakup step where the dataflow of calls is explicit...
+(mem,w1,w2...) = call f args.
+Note mem' : Mem r = mstore(mem : Mem r, ptr, v) --introduces the desired dependency of mem' on v!
+When I add more fine-grained mem tracking, functions should take minimal mem regions.
+
+If I also use a consumer graph, I can look at the consumer ops of the top var to see if I can
+greedily perform that op.
+
+Let's say every SLC ends with a final branch op. How to deal with the prelude to while?
+Constraint on ending: all subsequently used vars must be on the stack, but they can be in any
+order and garbage may be included. Constant sharing can be done across SLCs.
+Distinguish word-level IR with control flow from division into CFG of SLCs.
+If the last statement before a while is a call...
+If a C-level var is live, does that mean every word of it is? No, consider struct.field.
+ifte is the only example of two forward branches to the same dest; use the first branch to
+determine target stack layout?
+
+if e then b1 else b2
+--can be reduced to x = e, if x ...
+OTOH, while cannot, it's divided into
+loop:
+x = !e
+jumpi x end
+body
+jump loop
+end:
+The stack layout at the start of the while is constrained to be equal to that at jump loop,
+modulo var updates.
+Determine it greedily... do the same for end.
+Fix the e eval so it only pushes one word... note that any truthy word lets you opt away pure
+ops.
+
+DFS placement of trees in stack order would work well for t1 + t2, for example... or would it?
+Consider <a bunch of stuff>; return (x,1). Now if there are any mem ops, the return will be
+dependent on them... but DFS means you push 1 (which won't be used for a while and messes up
+subsequent <a bunch of stuff> evaluation).
+The maximum overhead of duping on last use is 6... modulo other ops having the wrong words TOS.
+How to limit cost of search...? Maybe first choice is most significant.
+Limit total, do BFS.
+
+5 Nov:
+Problem: the target and initial stack of internal SLCs can be freely reordered, but their value
+matters globally if you can select them to reduce code reuse.
+
+New approach: split into actual SLCs and impose constraints between their targets.
+ops
+call f args
+rest =>
+slc1 = ops, last = call f,args,ret
+ret -> slc2,
+slc2 = rest
+end of slc1 = f,args,ret,locs
+start of f is fixed... unless I introduce multiple variants to allow different solutions to
+constraints! That's for later, once I have a working algo to extend...
+start of ret = returned value, locs.
+Locs is flexible!
+
+Are tail calls always optimal if possible? Consider if the args are already above the stack but
+above a bunch of locals... that's fine, just swap back and pop.
+x,arg1,arg2...argN ---reordering would cost n. But ret would need to be on the stack as well.
+Using empty spaces you could fix dests to be at given constants, but that's quite esoteric...
+implement simple opts first.
+
 4 Nov:
 Reducing structured statements to single ops, problem: when you have e.g.
 block1;while(e)block;block2, the stack target of block1 is flexible.

@@ -1,0 +1,13 @@
+module Opcodes where
+
+import Data.Map(Map(..))
+import qualified Data.Map as M
+--TODO replace with opcodes module from MC4
+
+mnemonics :: Map String Int
+mnemonics = M.fromList $
+  instrs 0x00 "stop add mul sub div sdiv mod smod addmod mulmod exp signextend"
+  ++
+  
+instrs :: Int -> String -> [(Int,String)]
+instrs off ws = zip [off..] $ words ws

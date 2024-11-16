@@ -42,8 +42,8 @@ data Region = Memory
 --TODO generic instance
 data S = Pat := E
        | Return E
-       -- | Ifte E B B
-       -- | While E B
+       | Ifte E Block Block
+       | While E Block
   deriving (Eq,Ord,Read,Show)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
