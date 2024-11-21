@@ -1,3 +1,303 @@
+How to support compiler choices such as inline or not, unroll, constant sharing, constant
+computation, while (cond) body => if(cond) do body while(cond)...
+
+The compromise codegen for while (one branch per iter, no cond duplication but an extra
+jumpdest before cond) could be generated correctly by marking the jump from body to cond check
+as having a higher fallthrough priority. If the body ends with a call it doesn't matter if it
+falls through...
+
+How to represent inlining without local goto? Recursive tail calls can become while (if you don't
+specialize). return e becomes __retval = e followed by a goto to the end of the inlined body.
+
+For partial word write at >0, what is most efficient?
+store(p,x):
+save = mload(p+bytesize) << bitsize
+mstore(p,save | x)
+--or
+mstore(p,mload(p) & mask | x)
+--If p is a constant, the former has the same runtime cost but likely smaller code.
+Constant sharing makes repeated use of internal constants (bytesize, bitsize, mask...) have an
+unpredictable size effect.
+
+
+If you RETURN, cleaning up the stack doesn't matter...
+
+With support for control flow in exprs, x++ becomes ez:
+do tmp = x; x = tmp + 1; tmp
+
+When an IR var is a static constant, you have the choice of keeping it on the stack or duping it
+on next use.
+0 need never be kept on the stack, since PUSH0 is as cheap and small as a DUP
+Setting an IR var to 0 makes it garbage.
+
+Did POP always cost just 2 gas...?
+
+20 Nov:
+An overloaded returnPtr(p) that used sizeof(*ptr) would be nice, but requires separate type
+inference.
+returnPtr : Ptr Memory t -> ()
+returnPtr p = RETURN (p, sizeof *p)
+If I allocated user-defined overloaded functions on demand...
+That wouldn't get me alloc() : Ptr Memory t. But if I passed down info about expected type...
+That would preclude coercion when calling an overloaded function.
+It would also mess with soft coercion of structs: the overloaded field would be required to
+exactly match the expected type.
+When to unify for overloading? On assignment (struct.p = alloc(20)) and call.
+How to implement overloading? Functions with parameters in type signature and those same params
+in the body; for each distinct instantiation, generate a function with the params in the body
+filled in.
+Ex: 
+map : (a -> b, a*, b*, n)
+map(f,from,to,n) =
+ x = (typeof n) 0
+ while x++ < n:
+  *to++ = f(*from++)
+
+If exprs can branch and form their own subgraphs, that poses a problem...
+Idea: allocate many subgraphs rather than a single CFG. Each has inputs and outputs; the
+arguments of an operator are inputs. They'd be independent by default...
+The problem would be loops: the statements in a loop are a separate instantiation.
+A functional IR where while loops become
+loop_f args = if cond args then let args' = body in loop_f args else return cont <subset of args>
+might solve it... that unifies ops and control flow?
+"Graph doesn't reach end" would become "f doesn't call g"
+What would exprs with control flow become?
+The simplest thing to do for now is to assume exprs don't branch (even RETURN) and codegen
+accordingly.
+Otherwise: in the IR, translate branching exprs into control structures. If it never jumps to
+end, that's not a problem... in if cond th el I can still define the then and else continuations,
+they'll just be tree shaken away if cond is guaranteed to diverge.
+
+Exprs with control flow: return the modified words.
+
+m = mem() --generates an IR var of type mem!
+(m1, m2) = split()
+Explicit passing of mems, or withMem m {block}
+That could let you hint memory parallelism.
+A hidden variable __mem? C would have to be able represent it.
+
+cond ? th : el => do if cond then x = th else x = el; x
+
+Maybe I should use HasCallStack for precise error reporting (getting the hierarchy of callers).
+
+Terminology quibble: what I call call soft coerce (from Haskell's unsafeCoerce) is called
+conversion in C. Explicit coercion is called cast.
+
+Pointer addition: ptr + x => mask 16 (ptr + byteSize * x). Values are stored byte-padded in
+memory. Relevant opt: constant expansion, so ptr++ becomes ptr + k rather than k*1.
+Byte-address storage pointers? That could require 2 sloads if a value overlaps a word boundary.
+It would also require masking and shifting... but would abstract away the idiosyncracy of storage
+vs memory.
+returndata doesn't have a returndataload instruction, so *ptr would require scratch memory.
+*p1 = *p2 can be optimized to a copy instruction.
+mcopy would be a useful primfun to expose; distinguish primfuns with nice types from those that
+take words using lowercase vs uppercase?
+16b fits the address space of code, at least outside CREATE. But what about calldata?
+If you batch entire blocks, 65k might be too little... especially if you batch many contract
+creates. Using unsafeCoerce (that doesn't do any masking), you could use pointer operations
+on words unsafeCoerced to Ptr. Problem: say you're loading a multi-word value. The internal
+pointer additions should be masked? Or maybe they shouldn't be...
+If normal pointer addition could silently overflow the pointer (which then becomes a different
+ptr when stored), you could avoid masking. Make pointer overflow UB...
+
+Need an exhaustive list of UB in documentation... pointer overflow, unexpected aliasing,
+use of bad pointer or function values. Most of it seems to be about pointers...
+
+Masking opt: if you perform repeated additions, just mask once at the end.
+
+19 Nov:
+
+SSA algo: for every write to v, create a new unique v'. It doesn't matter in what order they're
+numbered. Every SLC consists of [out_i = op ins_i]; for each var use you must determine the last
+version written. For in_i with a single dominating write, use that version; otherwise add a phi
+function.
+Computing the deps of while with out_i = op_i ins_i: it's a transitive closure.
+For each x set and read in a while: put a xIn = phi(xLastPred,xOut)
+
+In the lit, out-branches seem to be part of basic blocks... should I copy that? I don't think it's
+necessary. 
+Viewing jumps as param'd by the set of live vars at the start of the dest is nice, it makes it
+like a tail call. The param can be implicit in my code, since each SLC is associated with a set of live
+vars.
+Do I do away with phi functions entirely this way?
+Allocate a new version for each label param.
+Collect goto params (var => version) for each dest and find constant vN = vn. Eliminate the
+param and replace vN with vn. vn isn't constant per se, just set somewhere else.
+Remember the full scope; the params are just what needs new version counters.
+Ex: x in pow(x,n) is constant within the multiplication loop.
+OK, use phi functions instead of label params... label jumps with the phi index.
+If a var wasn't modified in any branch of the ifte, I can just use the last version?
+Generalize that to "since the last dominator". Note all nodes in a function except start have a
+dominator.
+Algo(start):
+ frontier = preds(start)
+ explored = copy frontier
+ if #frontier = 0: error, we're at start
+ while true:
+  if #frontier = 1: return frontier[0]
+  for each node in frontier:
+   for each pred in preds(frontier):
+    if pred not explored:
+      add it to frontier' and explored
+No, consider a -> dom, a -> b -> dom... after 1 iter I keep following from dom... unless I explore
+in order of SCC depth. But the algo should work even within an SCC.
+Imagine you have a thread for each node in preds(start). Eventually all threads but the first to
+reach the idom are blocked.
+How to define the depth measure I want? Convert the CFG to a tree, mark each node with the minimum
+depth at which it was encountered. Nodes within a while loop will have a higher depth.
+ancestors(n) is the set of nodes ancestral to node at depth n; idom is the only element of the
+first generation encountered which has only one element.
+Algo(start):
+ if start.generation == 1: error, start has no idom
+ frontier = preds(start)
+ explored = copy frontier
+ g = lowest generation encountered in frontier
+ while #frontier > 1:
+  while max generation in frontier > g:
+   take node with highest generation
+   for p in preds node:
+    if p in explored skip; add p to explored
+    add p to frontier
+    g = min p.generation g
+  --Now all nodes in frontier have generation g
+ return unique elem of frontier
+
+Relevant functions: idom, potential predecessor nodes since idom
+potential_ancestors(node):
+ let d = idom(node)
+     expand n = preds n less d
+ transitive closure of expand on preds(node)
+transclos rel s =
+ ret = s
+ frontier = s
+ while frontier nonempty:
+  new = union map rel frontier less ret
+  ret += new
+  frontier = new
+Each SLC has starting live, modified vars, dependencies, live at each branch.
+Return is a branch. ret is consequently live in any CFG node which may return (some are
+guaranteed to diverge).
+Minor opt: if an argument word (including return) is guaranteed not to be used, you can just
+replace it with GAS in a call. Only if the argument doesn't modify state...
+
+Opt: if you repeat the cond code in while, it becomes
+if(cond):
+ dowhile {block} (cond),
+which requires only one branch per iteration. That saves 9 gas per iteration; the size of
+cond and iter count determines whether it's worthwhile.
+
+How to deal with temp vars? In an individual SLC, consider the live vars in the end branch to
+be a use. Then anon vars will have a last use within the SLC and can be popped then.
+Problem: let's say you have ifte cond l1(args1) l2(args2), where args1 and args2 are distinct and
+l1 has multiple jump targets, and the layout at the ifte is not args1. You must emit shuffling
+code, but you can't necessarily fall through to l1 - you may have to jump to it.
+
+Codegen for call: after the CFG phase, split SLCs at call sites and codegen. That could create
+opportunities for code sharing, in particular if the return cont is short.
+Comparing tree-shaped CFGs is trivial; comparing cyclical ones requires an isomorphism check, but
+since they need to have the same shape that's also easy: just map labels in t1 to t2.
+What if one tree is equivalent, but contains some redundancy?
+Ooh, that might let you un/roll loops. FW...
+
+Kinds of IR vars: word and virtual (mem, gas, storage etc).
+What does CALL touch? storage, mem, returndata, maybe gas. No reasoning about external contracts
+means no external_state gets touched.
+call(...,ptr,len) can really only modify ptr (writing off the edge should be UB).
+Hold on, can you use call(...,ptr,inf) to zero any number of words for just 100 or so gas?
+Or is there a penalty for words copied...? There should be.
+If you call origin (an EOA) with 0 eth you get a hot call for free. It's only worth it if you're
+zeroing ~30 words, however... is there a real use case for that?
+
+When a SLC ends, it continues to a SLC with a live set (vars without versions). The target either
+has a layout specified or does not; if it does, emit swaps to achieve the same layout. Otherwise,
+set the current layout as the target's (removing any old versions of vars if necessary).
+Would dups and pops help as well? It may not be possible to always consume on last use; if so pop.
+Dup would help if you had garbage in the target's layout.
+
+Goal: compile "x=1; return 2" correctly. Get SSA working ASAP so I can complete the pipeline for
+a minimal program, forget all non-minimal features until I have a pipeline to debug them with.
+
+17 Nov:
+Phi functions... can they be replaced with just vs = arbitrary at the start of each SLC, where vs
+are all the nondeterministically modified vars?
+You also want to track the dependencies... including on branch values.
+The start of a while may also require a phi, since it doesn't have a single parent SLC.
+Don't treat calls as branches for the purposes of CFG/SSA? That would let you reorder or
+eliminate them. In future I may want to remember that I can place the return continuation anywhere
+rather than immediately after the JUMP, but I don't need to for now. Actually I do need to, to
+exploit the free pseudo-inlining opt.
+Why pseudo? Because full inlining lets you specialize and opt the ops in the parent function.
+
+() is falsy - why? Because truthy v = or (words v)
+An ifte on a multi-word expression where each is expensive and could be computed separately
+could be optimized into multiple iftes, the first on a subset likely to be true.
+
+while {outs1 = ins1} var {outs2 = ins2}
+Note while becomes 2 SLCs; the cond is guaranteed to run.
+What are the affected vars and each of their dependencies? Compute it at the CFG level: all
+phi vars are all the live assignments made since the last dominator.
+The dependencies of each var are pre-loop vars, plus the cond var(s).
+if {as = bs} var {cs = ds} {es = fs}
+Affected: as, cs, es.
+Dependencies: ...?
+
+For now, take and return mem in every call. Later, identify those functions that don't use mem
+and remove mem effect from static calls to them.
+
+Making call an op doesn't change whether I need multi-var returns, but it does mean I need
+multi-word returns.
+Leaf branches: tailcall, return, branching primitive.
+while(1){} should compile to a noop since nothing can depend on it.
+CFG-level rule: replace a -> {} -> b with a -> b.
+
+Branch types: jumpi x l1 l2, jump l (count ret?), branching primitives.
+Return is a safe dynamic jump, so treat it specially.
+
+When placing bytecode SLCs, one can share identical sections. There's a conflict between code and
+load size and runtime efficiency: if you adjust slc1 and slc2 to unify them (for example by
+reordering vars, changing a dup to a push to not use a const which only appears in one of the
+two, or changing a pushed constant to a param), you can share the code/load in return for
+potentially increasing runtime cost.
+Opt: empty SLCs which just jump to cont can be replaced with cont. Note that doesn't apply if the
+end layout is different from the start.
+Branches with constant conds can be replaced with jump; do that and the jump following (and SLC
+merging) iteratively.
+Sometimes merging may be inefficient if you could otherwise share a suffix, but save that for
+later.
+Does it matter much which branch of an ifte is the one placed immediately after the JUMPI?
+Once code Merklization is rolled out, spare bytes could fit a small branch.
+
+Thought: does the stack layout (var -> index) need to be the same for the end of two SLCs
+jumping to the same destination? Well, garbage words should be considered identical.
+Constants and shared subexpressions should be converted to vars and always shared in the SSA
+form.
+Whether to move a var assignment into both branches of an ifte to improve stack layout is a
+nontrivial decision: it may improve layout, but it increases code size.
+
+For computing live vars, divide the CFG into SCCs, forming a DAG. Each SLC has a set of used SSA 
+vars; the live vars of a SCC is simply the union of the live vars of the nodes in the SCC and
+all lower SCCs.
+
+Note variable declarations where the value isn't used until the real assignment shouldn't have a
+runtime cost.
+
+16 Nov:
+OK, struct construction is implemented...
+What next? seqS, seqBlock, seqDefun.
+SSA; my generated code has lots of copies.
+
+What should the coercion scheme for assignment be?
+Maybe same as for function application.
+softCoerce: int -> int, struct -> struct only
+Use the same for application; add general struct coercion.
+
+Could I do without SSA? It makes write elimination and constant propagation really easy...
+First make CFG...
+A simple thing to do: for every var that might have been assigned, v#new <- arbitrary.
+Live var set at end of SLC (without versions) can be computed during CFG.
+Write elimination: every var becomes a tree; v1 = copy v2 => follow copies, replace with
+arg var or op.
+
 15 Nov:
 Computing struct from field words: associate each word with a shift value (which may be negative
 or 0).

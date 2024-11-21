@@ -22,6 +22,7 @@ data IRT = Mem --has no runtime repr
 data IR = [(Name,IRT)] := (Operator,[Name])
          | Ifte Name [IR] [IR]
          | While [IR] Name [IR]
+         | DoWhile [IR] [IR] Name --body, cond
          | Return [Name]
          | TailCall Name [Name]
   deriving (Eq,Ord,Read,Show)
@@ -68,6 +69,7 @@ data SeqError = UnboundVar Name
               | UnboundVarInOpRHS Name [(Name,IRT)] Operator [Name]
               | Couldn'tLookupVarTypeInEDSL Name
               | BadArgsInEDSL Operator [EVar]
+              | BadFirstRHSInAssign Name (Maybe IRT) [Name]
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -98,8 +100,29 @@ seqDefun = undefined
 --The scope is reset at the end
 seqBlock :: Block -> Seq ()
 seqBlock = undefined
+--For now, support only assignment to x. Later: tuple
+--For now, no tail call support
 seqS :: S -> Seq ()
-seqS = undefined
+seqS = \case
+  --TODO do name info lookup, give informative errors on assignment to
+  --functions and other immutables.
+  PVar x DTs.:= e -> do
+    mt <- gets cLocalTypes
+    case M.lookup x mt of
+      --The variable is already in scope
+      --Need to do variable coercion so x : Word = 3 works
+      Just t -> do
+        (t',ws) <- seqE e
+        cws <- softCoerce t t' ws
+        assign x cws
+      --The variable is free, so we'll accept any type and add the var to the
+      --C scope.
+      Nothing -> do
+        (t,ws) <- seqE e
+        assign x ws --TODO add to C scope
+  DTs.Return e -> undefined
+  DTs.Ifte e bthen belse -> undefined
+  DTs.While e block -> undefined
 --You need to know the *word* vars returned to use them;
 --if $mem is involved it remains the same.
 --Also returns the type (which only depends on global info, locals and
@@ -138,6 +161,93 @@ seqE = \case
   EStruct padnmes -> buildStruct padnmes
   _ -> error "TODO"
 
+--Given the IR vars to assign to a C local, emits the assignment.
+--We assume the vars have the correct type.
+--x = ws => x#1 : typeof w1 = copy w1 ..
+assign :: Name -> [Name] -> Seq ()
+assign x [] = return ()
+assign x ws = do
+  --If this pattern fails something's gone horribly wrong; the rhs doesn't
+  --exist or 
+  mt <- getIRVarType $ head ws
+  case mt of
+    Just (Word 1 t) -> 
+      sequence_ [emitOp [(x ++ "#" ++ show n, Word n t)] Copy [w]
+                | (n,w) <- zip [1..] ws]
+    _ -> throwE $ BadFirstRHSInAssign x mt ws
+
+--target type, source type, words of source value
+--Supported coercion: any int -> int, any struct -> struct
+{-Struct coercion scheme:
+for nth field = name, t in target:
+ if source has .name : t', result.name = source.name; break
+ if source has nth field = __fieldN : t', result.name = source.__fieldN; break
+ else result.name = all zeroes --constant sharing could be useful here
+
+Note result.field = source.field also involves soft coercion
+-}
+softCoerce :: T -> T -> [Name] -> Seq [Name]
+--When lengthening to a signed int, signextend
+--When shortening any int, mask
+--TODO: when it would shorten code sufficiently, replace mask with shl,shr
+softCoerce target source ws
+  | target == source = return ws
+  | Int s1 len1 <- target,
+    Int s2 len2 <- source,
+    [w] <- ws =
+      case () of
+        _ | len1 < len2 -> runEDSLWord $ len1 `lowestBits` (EVar w)
+          | len1 > len2, s1 ->
+            runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
+          | let -> runEDSLWord $ coerce (Word 1 target) (EVar w)
+  --For now, no general struct coercion, only tuple -> tuple
+  --Scheme: for each field in target, softCoerce source field and then coerce
+  --to tuple words.
+  --Is it essential to actually modify the IR type? It's just a safety feature
+  --to detect bugs in codegen... but it's worth it, I should be able to
+  --optimize the copies away.
+  | Just ts1 <- unTuple target, Just ts2 <- unTuple source =
+    softCoerceTuple ts1 ts2 ws
+
+unTuple :: T -> Maybe [T]
+unTuple = \case
+  Struct padnmts -> go 1 padnmts
+  _ -> Nothing
+  where go n ts =
+          case ts of
+            [] -> return []
+            (pad,fieldN,t):ts
+              | pad == WordPad, fieldN == "__field" ++ show n ->
+                (t:) <$> go (n+1) ts
+
+softCoerceTuple :: [T] -> [T] -> [Name] -> Seq [Name]
+softCoerceTuple ts1 ts2 ws =
+  case ts1 of
+    [] -> return [] --coercing to an empty tuple
+    t:ts1' ->
+      case ts2 of
+        --now the rest is all zeroes
+        [] -> undefined
+
+--The result of coercing 0 to any type t: all zeroes in the bitpattern.
+--May not be a valid value of that type; use of e.g. null ptr may be UB.
+--We do some free constant sharing here.
+nullValue :: T -> Seq [Name]
+nullValue t = do
+  n <- numWordsT t
+  map fst <$> runEDSL (do
+    z <- word 0
+    sequence [coerce (Word i t) (return z) | i <- [1..n]])
+          
+{-
+--TODO update pkgs...
+(!?) :: [a] -> Int -> Maybe a
+[] !?  _ = Nothing
+(x:xs) !? n
+  | n == 0 = Just x
+  | let = xs !? n
+-}
+                             
 --The type of the struct is given by the padding, names and types of elements.
 --Each word of the struct is the concatenation of slices of fields; the
 --cheapest case is when the word contains a single unsliced field.
@@ -237,17 +347,6 @@ takeBits' accum off = \case
     | o-off+l > 255 -> (reverse $ (o-off,w) : accum, (o,l,w) : olws)
     | o-off+l >= 0 -> takeBits' ((o-off,w):accum) off olws
   [] -> (reverse accum,[])
-  {-
-    | (o >= off && o < off + 256) ->
-        takeBits' ((o-off,w):accum) off olws
-    --The field word is in the current struct word, but extends beyond it
-    | (o+l-1 >= off && o+l-1 < off + 256) ->
-      (reverse $ (o-off,w):accum,(o,l,w):olws)
-    --A field word may be included in two struct words; drop those that are
-    --below off. At most one partially consumed word will be dropped per
-    --struct word.
-    | o+l-1 < off -> takeBits' accum off olws
--}
   olws -> (reverse accum,olws)
 
 --Since I'm now building complex exprs, a little DSL for that would be useful.
@@ -279,6 +378,10 @@ instance Monad EDSL where
   (>>=) = (:>>=)
 instance MonadFail EDSL where
   fail = error
+runEDSLWord :: Expr -> Seq [Name]
+runEDSLWord e = runEDSL $ do
+  (v,irt) <- e
+  return [v]
 runEDSL :: EDSL a -> Seq a
 runEDSL = \case
   EVar nm -> do
@@ -319,12 +422,24 @@ shl :: Expr -> Expr -> Expr
 shl = op2 "shl"
 shr = op2 "shr"
 (.|) = op2 "or"
+op1 :: String -> Expr -> Expr
+op1 opcode a = do
+  [v] <- App (Opcode opcode) (\case [Word{}] -> Just [tword]
+                                    _ -> Nothing) [a]
+  return v
 op2 :: String -> Expr -> Expr -> Expr
 op2 opcode a b = do
   [v] <- App (Opcode opcode) (\case
                                 [Word {}, Word {}] -> Just [tword]
                                 _ -> Nothing) [a,b]
   return v
+--What is the correct arg order...? TODO find out
+signextend :: Expr -> Expr -> Expr
+signextend = op2 "signextend"
+
+--Using mask rather than shl, shr
+lowestBits :: Int -> Expr -> Expr
+lowestBits len e = op2 "and" (word $ 2 ^ len - 1) e
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
 --Consider (x,f(),x); use fields of tuple.
