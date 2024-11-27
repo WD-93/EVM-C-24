@@ -48,15 +48,15 @@ data StaticValue = Const Integer
 --x = y becomes a renaming, but it's a pseudo-op.
 --Emit: IR1 ops
 type Seq = ExceptT SeqError
-  (ReaderT Module
+  (ReaderT SeqR
    (WriterT [IR]
     (State SeqS)))
-runSeq :: Seq a -> Module -> SeqS -> (Either SeqError a,
-                                      [IR],
-                                      SeqS)
-runSeq seq mod s = let
+runSeq :: Seq a -> SeqR -> SeqS -> (Either SeqError a,
+                                     [IR],
+                                     SeqS)
+runSeq seq seqr s = let
   x1 = runExceptT seq
-  x2 = runReaderT x1 mod
+  x2 = runReaderT x1 seqr
   x3 = runWriterT x2
   x4 = runState x3 s
   in case x4 of
@@ -67,9 +67,12 @@ data SeqError = UnboundVar Name
               | DuplicateVarsInLHS Name (Set Name)
               | Can'tCopyUnboundIRVar Name
               | UnboundVarInOpRHS Name [(Name,IRT)] Operator [Name]
+
               | Couldn'tLookupVarTypeInEDSL Name
               | BadArgsInEDSL Operator [EVar]
               | BadFirstRHSInAssign Name (Maybe IRT) [Name]
+              | BadFunctionType Name T
+              | Can'tAssignToFunction Name E
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -79,6 +82,21 @@ data SeqS = SS {
   anonVarCounter :: Int --makes $anonN
   }
   deriving (Eq,Ord,Read,Show)
+--So I can add info about the function being compiled, specifically the return
+--type but maybe more stuff in future (opt choices?).
+data SeqR = SR {
+  seqrModule :: Module,
+  seqrFunction :: D
+               }
+  deriving (Eq,Ord,Read,Show)
+askModule :: Seq Module
+askModule = seqrModule <$> ask
+askReturnType :: Seq T
+askReturnType = do
+  Defun nm t _lhs _body <- seqrFunction <$> ask
+  case t of
+    a :-> b -> return b
+    _ -> throwE $ BadFunctionType nm t
 {-
 Consider
 while(e)
@@ -98,6 +116,7 @@ seqDefun :: D -> Seq ()
 seqDefun = undefined
 
 --The scope is reset at the end
+--
 seqBlock :: Block -> Seq ()
 seqBlock = undefined
 --For now, support only assignment to x. Later: tuple
@@ -107,20 +126,32 @@ seqS = \case
   --TODO do name info lookup, give informative errors on assignment to
   --functions and other immutables.
   PVar x DTs.:= e -> do
-    mt <- gets cLocalTypes
-    case M.lookup x mt of
+    ni <- getCNameInfo x
+    case ni of
+      IsFunction _ -> throwE $ Can'tAssignToFunction x e
       --The variable is already in scope
       --Need to do variable coercion so x : Word = 3 works
-      Just t -> do
+      IsLocal t -> do
         (t',ws) <- seqE e
         cws <- softCoerce t t' ws
         assign x cws
       --The variable is free, so we'll accept any type and add the var to the
       --C scope.
-      Nothing -> do
+      IsUnbound -> do
         (t,ws) <- seqE e
         assign x ws --TODO add to C scope
-  DTs.Return e -> undefined
+  --The last argument of any function is $ret : tword
+  --The first value to return (and the first result of any call) is $mem
+  --The second is $ret!
+  --State variables in return should not affect the stack target.
+  --TODO add tail call support for return f(args), where f is not a primfun.
+  --Note: expressions may modify $mem, but seqE should never return it.
+  DTs.Return e -> do
+    t <- askReturnType
+    (t',ws) <- seqE e
+    cws <- softCoerce t t' ws
+    emit $ IR1.Return $ ["$mem","$ret"] ++ cws
+  --Applies truthy to e, returning one word
   DTs.Ifte e bthen belse -> undefined
   DTs.While e block -> undefined
 --You need to know the *word* vars returned to use them;
@@ -545,7 +576,7 @@ data NameInfo = IsFunction T
   deriving (Eq,Ord,Read,Show)
 getCNameInfo :: Name -> Seq NameInfo
 getCNameInfo nm = do
-  mod <- ask
+  mod <- askModule
   case M.lookup nm $ defuns mod of
     Just (Defun _ t _ _) -> return $ IsFunction t
     _ -> do

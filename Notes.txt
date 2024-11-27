@@ -1,5 +1,200 @@
+Is the pasm approach for constructing a CFG better than operating on the AST...?
+It's not necessarily the case that all function bodies end with a return (though I do add one
+atm): it could also end with if(cond)return () else return ().
+Convert each stmt to a SLC, prune later. Empty bodies become jumps.
+
+while(x) could have an empty pre.
+
+Maybe every Branch should also be associated with scope info... that would let you codegen SLCs
+in isolation.
+If I convert every IR to one or more pre-CFG instrs...
+Generating sequential code = ops | jump l | jumpi v l1 l2 | placeLabel l  --is trivial, esp when 
+you don't need to consider the stack. How hard would it be to construct a graph from that?
+declareLive is nice...
+Only when I immediately jump due to a {} is live non-obvious... iftes generate a declareLive.
+But when I jump I can follow to get live and eliminate the intermediate jump.
+
+Reconstructing the CFG: it's easiest if else branches also require a label.
+
+If I allocate a new label in every cfg... don't do complex jump elimination in cfg, do it later.
+Then I don't need to pass a branch in cfg: pre could jump to an SLC which just performs the ifte.
+Pass the start label to cfg.
+Jump elimination: how to deal with l: jump l? Check for equality.
+Note cycles in the CFG can cause disconnected subgraphs to have refcount > 0; it's reachability
+from 0 that matters.
+Build CFG from the back, return label and live?
+Base cases:
+return --top level should always end with it
+break, continue
+[] --only encountered at end of if's branches
+
+****
+
+Wait... all nodes in a SCC do *not* have the same set of live vars, consider
+while (a)
+ --x is not live here
+ x = 0
+ while(b)
+  x = f(x) --x is live here
+
+SSA: for each SLC, params at start become a definition and params in labels a use.
+Need to compute live to get params...
+Are only C vars live between SLCs? And $mem, $ret...
+The structured IR is most amenable to liveness analysis...
+Assignments within a while body on vars not in the parent scope will not be passed
+through at the end. declaration = assignment, but assignment in the following while
+body should make the var not live and thus ignored and pruned.
+Ex:
+x = 0 --garbage declaration
+while(cond)
+ x = f(y)
+During CFG construction, mark with live vars? That requires construction from the back.
+Leaf: Return vs => vs
+lhs = op args => delete lhs from used set, add args
+while(cond)
+ body
+if v
+   th
+   el
+=> used: union v, used th, el
+defined: intersection defined th, el
+Does defined matter? Note in
+--x not in scope
+while(cond)
+ x = 1 ...
+--in later code, x will either not be used, or be in scope because it's defined without reference 
+to x; in either case it won't be in used.
+Break, return and continue may mean I need to do liveness analysis at the CFG level.
+If I made a spanning tree of nodes...
+Getting an initial live var set from the tree would be simple... it's the
+back-edges that are tricky.
+In a CFG generated from C, cycles can only be strictly nested, corresponding to
+nested whiles. There's a stack of possible backjump nodes... as well as forward ones.
+
+live s (ifte v th el) =
+ v, union (live s th) (live s el)
+--that has the behavior I want...
+live s (while pre v post)
+live s pre | live s (pre ++ post)?
+Why does that work? Because the trace of while is (pre,post)*pre and live is
+idempotent. Why? Because it's union with s . delete s.
+continue has the loop start's live...
+If you can break and continue, you need a stack of starts and ends. It's best to do this while
+constructing CFG because then you know the structure rather than having to solve the problem for
+arbitrary graphs.
+What if I used a fixpoint algo...? Start with continue = {}, get live, then pass that in until
+you reach a fixpoint?
+Collect ops into blocks earlier? While starts a new SLC, if ends the old one...
+I must get liveness from the back... I must do the same for the CFG then.
+At the end of a block declaring x, x will no longer be live but might be assigned again.
+But that's not a problem, the old x won't be passed on due to scope rules precluding any
+use.
+Recursively build each block given end label and its live set.
+If you encounter a return vs, discard old live and replace with vs.
+If an ifte jumps to blocks with two different live sets, it must pass the union of the
+two to both... but that's fine, each of them can do the stack adjustment themselves since they
+only have one parent.
+The backjump in while is tricker... if you want jumps to only include the live vars of the dest,
+you must insert an intermediate node with no ops. But that can be done at the stack-aware stage...
+Continue doesn't have that problem since it's a single jump.
+When doing the node generation for while with the fixpoint approach, you need to discard
+the old nodes.
+Multiple passes through the graph, marking each with maybe live set and repeating on a backjump
+encountered? Problem: all predecessors of a backjump must be marked as well.
+If a while takes multiple passes...
+
+The fact database approach: live(l) >= or == ls.
+Does while require only two passes?
+A symbolic approach: union ls1 ls2, delete ls ls2, live label, exactly ls
+liveWhile endLive: first try with loopLive = {}, then use resulting live set
+If I decorate the structured IR with live sets, where to put them?
+In front of every structured instruction... add an explicit Continue 0 to the end of loops?
+If I add a block construct to IR, maybe I don't need to use a list of IRs...
+
+Niggle:
+while(voidE)
+ body
+Here, truthy () => false, so it can be converted to just voidE
+Ifte voidE th el becomes
+voidE
+Block el --it can't simply be transformed to el because 
+Note while and if without any cond var isn't representable in the IR.
+
+--In the C, can vars set in cond be used in body? After opts which cache memory
+accesses, potentially. ex: while (*p) {f(*p)}. Not for now...
+Defined/in scope is an upper bound on live and can be computed in a forward pass.
+Tricky case:
+x = 0; while(cond){x = f(y); ...}; f(x)
+--x is not live in the loop body, but is after it. It should therefore be passed as
+a param when branching out.
+
+For now, no constant sharing between SLCs. FW: constant liveness could be tracked...
+Detect diff (code length to compute) between related constants such as mask N, mask n, ~mask.
+struct.field = ~struct.field => xor with a mask
+
+live (ops,branch):
+ defined = {}
+ used = {}
+ for ress = op args in ops:
+  for arg in args:
+   if arg not in defined:
+     used += arg
+  for res in ress:
+   defined += res
+ return (used,defined)
+ 
+Looking at usage would let you prune unused ops in straight-line code, but not in loops such as
+x = 0
+while(cond)
+ x = x + 1
+ ... --because the body branches to while, which uses x
+Maybe do a dataflow pass before SSA... but ignore that for now, just get to running code.
+Thought: if the loop cond isn't modified by the loop, it can be lifted out:
+while(e) => if(e) {while(true)} end
+
+A nice advantage of general combinators beyond reuse: you can split up the problem, abstracting
+away details so you only need to care about the shape of the problem you're currently solving
+(ex: mapping over a list, or folding over SCCs).
+
+Add default return in seqDefun - it should be the end. $mem, $ret should be in IR scope; args
+should be in C scope and arg#1..n in IR scope.
+
+Seq doesn't typecheck after a return, so I'll need a separate typecheck pass for that...
+
+What now? I need to close a minimal pipeline. Complete seq, continue processing CFG.
+text -parse CST -desugar AST -seq structured IR -cfg CFG
+CFG: treeshake, live, SSA
+Elim single jumps.
+Ifte jumps with stack processing first -> an additional SLC in a stack-aware lang < CFG
+SSA -> CFG in stack-aware lang
+Using a simple 50/50 model of branch probability and solving linear equations to get an
+equilibrium, I could fallthrough the most frequently executed SLC. Just fallthrough the first one
+encountered at first.
+Annotating ifs with probability and loops with execution count would require I pass those annots
+down. A location annot and an external map location -> info might be better.
+
+First goal: compile f () = return 1 --all the way
+Simpler:
+main :: () -> ()
+main () = return () --or just {}
+Should I add info about the function being compiled to the Reader input? That way I could have
+a return anywhere, including in an expr. Sounds good... it could make errors more informative as
+well.
+
+Graph simplification: jumpi v th th -> jump th
+a -> {} -> b => a -> b
+ops1 jumps to ops2, which has only one target => replace ops1 with ops1 ++ ops2, ops2's branch
+If a subgraph has no leaf branches, revert
+map label (parents,slc,children)
+
+Opt idea: consume fishing. Say you want the buried vars (x,y,z) TOS. You have some pushing ops
+which you'll have use of later. To get (x,y,z), first swap z to top, then push op1 and swap for y,
+then same for x. You might end up just delaying the problem...
+
 How to support compiler choices such as inline or not, unroll, constant sharing, constant
 computation, while (cond) body => if(cond) do body while(cond)...
+Also, is there a generic way to tag every node with a location and propagate it for error
+reporting?
 
 The compromise codegen for while (one branch per iter, no cond duplication but an extra
 jumpdest before cond) could be generated correctly by marking the jump from body to cond check
