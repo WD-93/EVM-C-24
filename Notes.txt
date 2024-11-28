@@ -1,3 +1,16 @@
+Woot, CFG implemented! Now what? Eliminate intermediate jumps.
+For now, I can scrap usage analysis and assume SLCs have no garbage words. Eliminate garbage at
+the start of the function call separately.
+Next steps: port CFG back to IR, SSA each SLC, convert copies to noops, generate instrs.
+Are the SLCs small enough I can do full search of all op orderings?
+Alt: treegraph approach again.
+If you have last-consume n vars from a runnable op TOS in an acceptable order, emit it and delete 
+it from the remaining op graph.
+Mem could be in a separate location.
+
+Recall: a jump into a dowhile adds 1 to the iter cost in return for one fewer branch. 
+If !cond, you can fall through to cont.
+
 Is the pasm approach for constructing a CFG better than operating on the AST...?
 It's not necessarily the case that all function bodies end with a return (though I do add one
 atm): it could also end with if(cond)return () else return ().

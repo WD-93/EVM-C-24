@@ -149,6 +149,113 @@ testNested =
     ret "w"
   ]
 
+data SLC v = SLC {slcOps :: [([v],[v])],
+                  slcBranch :: Branch v,
+                  slcLive :: Live
+                 }
+  deriving (Eq,Ord,Read,Show)
+data Branch v = Jump Label
+              | Jumpi v Label Label
+              | BReturn [v]
+  deriving (Eq,Ord,Read,Show)
+
+type CFGM = State CFGS
+data CFGS = CFGS {labelCtr :: Label,
+                  labelSLCMap :: Map Label (SLC Name)
+                 }
+  deriving (Eq,Ord,Read,Show)
+type LL = (Label,Live)
+runCFG :: CFGM a -> (a,CFGS)
+runCFG cfgm = runState cfgm $ CFGS 0 M.empty
+
+cfgFun :: [IR Live Name] -> CFGM (Maybe LL)
+cfgFun = cfg [] Nothing
+
+--The main, useful function
+ir2cfg :: [IR () Name] -> (Maybe LL, CFGS)
+ir2cfg = runCFG . cfgFun . fst . annFun
+--The end label of while loops is a Maybe LL because it's a continuation.
+--That solves the edge case where the while loop has no cont, but it's fine
+--because the loop cond always returns.
+--If either branch of an ifte returns a Nothing, generate no node and return
+--a Nothing. To be well-formed, the function must return a Just.
+cfg :: [(LL,Maybe LL)] -> Maybe LL -> [IR Live Name] -> CFGM (Maybe LL)
+cfg loopLs mll = \case
+  [] -> return mll
+  Return live vs : _ -> do
+    genSLC live [] (BReturn vs)
+  Break a n : _
+    | Just (start,end) <- loopLs !? n ->
+      return end
+  Continue a n : _
+    | Just (start,end) <- loopLs !? n ->
+      return (Just start)
+  Ops live ops : irs -> do
+    mll' <- cfg loopLs mll irs
+    case mll' of
+      Nothing -> return Nothing
+      Just (cont,_) -> do
+        genSLC live ops (Jump cont)
+  If live v th el : irs -> do
+    end <- cfg loopLs mll irs
+    mth <- cfg loopLs end th
+    mel <- cfg loopLs end el
+    genIfte live v mth mel
+  --loop: pre, jump condCheck
+  --condCheck: jumpi v loopBody end
+  --loopBody: post (continue is included)
+  --the body generation will always succeed, though it may point to a
+  --nonexistent loop. That's not a problem, since if loop doesn't exist then
+  --the body won't be reachable.
+  While liveLoop pre v post : irs -> do
+    end <- cfg loopLs mll irs
+    loop <- newLabel
+    let loopll = (loop,liveLoop)
+    mbody <- cfg ((loopll,end):loopLs) (Just loopll) post
+    case mbody of
+      Just (body,liveBody) -> do
+        let liveCheck = S.insert v $ S.union liveBody liveLoop
+        condCheck <- genIfte liveCheck v (Just (body,liveBody)) end
+        trueLoop <- cfg loopLs condCheck pre
+        case trueLoop of
+          Nothing -> return Nothing
+          Just (trueLoopLabel,_) -> do
+            --redirect loop to trueLoop
+            createSLC loop SLC{slcOps = [],
+                               slcBranch = Jump trueLoopLabel,
+                               slcLive = liveLoop
+                              }
+            return $ Just (loop,liveLoop)
+      Nothing -> error "This won't happen!"
+
+genIfte :: Live -> Name -> Maybe LL -> Maybe LL -> CFGM (Maybe LL)
+genIfte live v mth mel =
+  case (mth,mel) of
+    (Just (t,_), Just (e,_)) -> do
+      l <- newLabel
+      genSLC live [] (Jumpi v t e)
+    _ -> return Nothing
+genSLC live ops branch = do
+  l <- newLabel
+  createSLC l SLC{slcOps = ops,
+                  slcBranch = branch,
+                  slcLive = live
+                 }
+  return $ Just (l,live)
+
+newLabel :: CFGM Label
+newLabel = do
+  s <- get
+  let lab = labelCtr s
+  put s{labelCtr = lab + 1}
+  return lab
+createSLC :: Label -> SLC Name -> CFGM ()
+createSLC l slc = do
+  s <- get
+  case M.lookup l $ labelSLCMap s of
+    Nothing -> put s{labelSLCMap = M.insert l slc $ labelSLCMap s}
+    Just slc' -> error $ "Label collision: " ++ show (l,slc,slc')
+{-
 --Testing a simpler, multi-stage CFG construction method: compile to sequential
 --instructions a la Ecomp, then construct a CFG from that.
 --IR name: pseudoassembly
@@ -245,7 +352,7 @@ data SLC v = SLC {
   slcLive :: Set Name --This should in fact be name and not v
                }
   deriving (Eq,Ord,Read,Show)
-type CFG v = Map Label (SLC v)
+-}
 --Algo: declareLive and placeLabel may occur in either order
 --Conflicting declareLives without an intervening op is an error.
 --All SLCs must end with a branch; if we're in an SLC and encounter [], error.
@@ -266,8 +373,8 @@ live, return
 Empty blocks will contain only a jump and no live info.
 An op can precede a placeLabel; if so add a jump
 -}
-partitionPA :: [PA Name] -> [(Label,Live,[([Name],[Name])],Branch Name)]
-partitionPA = undefined
+--partitionPA :: [PA Name] -> [(Label,Live,[([Name],[Name])],Branch Name)]
+--partitionPA = undefined
 {-
 --Now to build a CFG...
 type CFGM = State CFGS
@@ -463,10 +570,5 @@ appendOps ops = do
     Just (lab,live,prefix) ->
       put s{currentSLC = Just (lab,live,prefix++ops)}
 -}
-newLabel :: CFGM Label
-newLabel = do
-  s <- get
-  let lab = labelCtr s
-  put s{labelCtr = lab + 1}
-  return lab
+
 -}
