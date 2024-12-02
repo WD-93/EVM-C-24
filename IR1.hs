@@ -19,17 +19,22 @@ data IRT = Mem --has no runtime repr
          | Word Int T --nth word of C-level t; 1-indexed
   deriving (Eq,Ord,Read,Show)
 --Name mangling: nth word of local x becomes x#n
-data IR = [(Name,IRT)] := (Operator,[Name])
-         | Ifte Name [IR] [IR]
-         | While [IR] Name [IR]
-         | DoWhile [IR] [IR] Name --body, cond
-         | Return [Name]
-         | TailCall Name [Name]
+--From ToyCFG: IR is tagged with () or Live annots.
+--It does not need a var type param because SSA is done on CFG's.
+data IRP a = Op a [(Name,IRT)] Operator [Name]
+               | Ifte a Name [IRP a] [IRP a]
+               | While a [IRP a] Name [IRP a]
+               | DoWhile a [IRP a] [IRP a] Name --body, cond
+               | Return a [Name]
+               | Break a Int
+               | Continue a Int
+               | TailCall a Name [Name]
   deriving (Eq,Ord,Read,Show)
+type IR = IRP ()
 data Operator = Push StaticValue
               | Opcode String
               | Call --args: f, args, ret
-              | Reduce Name --a commutative and associative opcode,
+              | Reduce Name --arg: a commutative and associative opcode,
                 --used for truthy
               | Copy --x = y => x = copy [y] 
   deriving (Eq,Ord,Read,Show)
@@ -72,7 +77,13 @@ data SeqError = UnboundVar Name
               | BadArgsInEDSL Operator [EVar]
               | BadFirstRHSInAssign Name (Maybe IRT) [Name]
               | BadFunctionType Name T
-              | Can'tAssignToFunction Name E
+              | Can'tAssignToFunction Name
+              | Can'tAssignToPrimFun Name --it's useful to distinguish
+              | ApplicationToNonFunction E T
+              | BadArgInTruthy [Name]
+              --Errors from pattern matching
+              | PTupNonTuple [Pat] T
+              | PTupLengthMismatch [Pat] [T]
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -112,34 +123,120 @@ Invariant: only one version of a C-level var word is live at a time; garbage
 words may be substituted for any other garbage. Avoid leaving any garbage at
 the end of a SLC?
 -}
+--Args: $mem : Mem, arg words, $ret : tword
+--Start with args in scope at the C and IR level
+--For now, support only x and (p1,p2,p3) patterns (PVar and PTup)
+--The argument words are initially anonymous; bind them to variables using the
+--same pattern-matching logic as assignment.
 seqDefun :: D -> Seq ()
-seqDefun = undefined
+seqDefun (Defun f ft pat body) =
+  case ft of
+    a :-> b -> do
+      --Match argument against lhs
+      args <- anonVarsT a
+      patternMatch pat a args
+      mapM_ seqS body
+      --The return address $ret is also in IR scope; it's a word
+      putIRVarType "$ret" tword
+      --The memory state variable $mem is necessary for tracking dependency
+      --on memory side effects.
+      putIRVarType "$mem" Mem
+    _ -> throwE $ BadFunctionType f ft
+
+--Args: Pattern, C type of rhs, words of rhs.
+--The same logic can be used for pattern-matching in function lhses as in
+--assignment.
+--Word assignment should copy; then seqE x can just return (t,[x#1..x#n])
+--if x : t.
+--Weird edge case: global names in a function lhs.
+patternMatch :: Pat -> T -> [Name] -> Seq ()
+patternMatch p t ws =
+  --TODO add globals, *e, p.field, e[e]
+  case p of
+    PWild -> return ()
+    PVar x -> do
+      ni <- getCNameInfo x
+      case ni of
+        IsFunction _ -> throwE $ Can'tAssignToFunction x
+        IsPrimFun -> throwE $ Can'tAssignToPrimFun x
+        --The variable is already in scope
+        --Need to do variable coercion so x : Word = 3 works
+        IsLocal t' -> do
+          cws <- softCoerce t' t ws
+          assign x cws
+        --The variable is free, so we'll accept any type and add the var to the
+        --C scope.
+        IsUnbound -> do
+          putCLocalVarType x t
+          assign x ws
+    --Like pstruct {x,y,z}, but requires t is a tuple
+    PTup ps ->
+      case unTuple t of
+        Nothing -> throwE $ PTupNonTuple ps t
+        Just ts
+          | length ps /= length ts -> throwE $ PTupLengthMismatch ps ts
+          | let -> do
+              wss <- splitTupleIntoFields ts ws
+              sequence_ [patternMatch p t ws
+                         | ((p,t),w) <- zip ps ts `zip` wss]
+splitTupleIntoFields ts ws =
+  case (ts,ws) of
+    ([],[]) -> return []
+    (t:ts,ws) -> do
+      n <- numWordsT t
+      let (fieldws,rest) = takeDrop n ws
+      --coerce each tuple word from fieldws to a new anon var : Word i t
+      field <- coerceT t fieldws
+      fields <- splitTupleIntoFields ts rest
+      return $ field:fields
+  where
+    --Which implementation is faster? Doesn't really matter.
+    --Maybe worker-wrapper will speed this up.
+    takeDrop 0 xs = ([],xs)
+    takeDrop n [] = error "Compiler error: too few ws in splitTupleIntoFields"
+    takeDrop n (x:xs) =
+      let (as,bs) = takeDrop (n-1) xs
+      in (x:as,bs)
+    {-
+    takeDrop n = takeDrop' n []
+    takeDrop' 0 xs ys = (reverse xs,ys)
+    takeDrop' n xs [] = error "Compiler error: too few ws in splitTuple..."
+    takeDrop' n xs (y:ys) = takeDrop' (n-1) (y:xs) ys
+-}
+
+--Given a number of words equal to t's word size, coerces them to t
+coerceT :: T -> [Name] -> Seq [Name]
+coerceT t ws = do
+  n <- numWordsT t
+  if n /= length ws
+    then error "Compiler error: word length mismatch in coerceT"
+    else sequence [coerceIRT (Word i t) w | (i,w) <- zip [1..] ws]
+--Coerces a single IR var to a new anon var
+coerceIRT :: IRT -> Name -> Seq Name
+coerceIRT t w = do
+  v <- newAnonVar
+  emitOp [(v,t)] Copy [w]
+  return v
+                                     
+--TODO refactor other instances of this pattern to anonVarsT
+anonVarsT :: T -> Seq [Name]
+anonVarsT t = do
+  n <- numWordsT t
+  mapM (\n -> do
+           v <- newAnonVar
+           putIRVarType v (Word n t)
+           return v) [1..n]
 
 --The scope is reset at the end
---
-seqBlock :: Block -> Seq ()
-seqBlock = undefined
+seqBlock :: Block -> Seq [IR]
+seqBlock irs = snd <$> isolate (mapM seqS irs)
 --For now, support only assignment to x. Later: tuple
 --For now, no tail call support
 seqS :: S -> Seq ()
 seqS = \case
-  --TODO do name info lookup, give informative errors on assignment to
-  --functions and other immutables.
-  PVar x DTs.:= e -> do
-    ni <- getCNameInfo x
-    case ni of
-      IsFunction _ -> throwE $ Can'tAssignToFunction x e
-      --The variable is already in scope
-      --Need to do variable coercion so x : Word = 3 works
-      IsLocal t -> do
-        (t',ws) <- seqE e
-        cws <- softCoerce t t' ws
-        assign x cws
-      --The variable is free, so we'll accept any type and add the var to the
-      --C scope.
-      IsUnbound -> do
-        (t,ws) <- seqE e
-        assign x ws --TODO add to C scope
+  p := e -> do
+    (t,ws) <- seqE e
+    patternMatch p t ws
   --The last argument of any function is $ret : tword
   --The first value to return (and the first result of any call) is $mem
   --The second is $ret!
@@ -150,15 +247,43 @@ seqS = \case
     t <- askReturnType
     (t',ws) <- seqE e
     cws <- softCoerce t t' ws
-    emit $ IR1.Return $ ["$mem","$ret"] ++ cws
+    emit $ IR1.Return () $ ["$mem","$ret"] ++ cws
   --Applies truthy to e, returning one word
-  DTs.Ifte e bthen belse -> undefined
-  DTs.While e block -> undefined
+  --Complication: what are the scope rules for the e in ifte? The same as
+  --the block it's contained in... meaning an assignment in e will carry over
+  --to cont.
+  DTs.Ifte e bthen belse -> do
+    v <- truthyE e
+    t <- seqBlock bthen
+    e <- seqBlock belse
+    emit $ IR1.Ifte () v t e
+  --This one's tricky... the e is within the parent scope, but like seqBlock
+  --you don't want to emit it directly.
+  --Simple rule: new assignments in e will not be visible in the body or the
+  --end of the while. Declarations in exprs are ugly anyway, don't support
+  --them... they interact poorly with && and _?_:_
+  DTs.While e body -> do
+    (v,pre) <- isolate $ truthyE e
+    post <- seqBlock body
+    emit $ IR1.While () pre v post
 --You need to know the *word* vars returned to use them;
 --if $mem is involved it remains the same.
 --Also returns the type (which only depends on global info, locals and
 --subexprs); type checking is fused into IR codegen to avoid recomputing it
 --wherever it's relevant in codegen.
+
+--Isolate the effect of running a Seq in order to insert it into a control
+--structure like Ifte or While.
+--anonVarCounter is passed on, but the other state is not. Writer output is
+--suppressed and instead returned. Exceptions are propagated.
+isolate :: Seq a -> Seq (a,[IR])
+isolate m = do
+  s <- get
+  (a,irs) <- censor (const []) $ listen m
+  s' <- get
+  put s{anonVarCounter = anonVarCounter s'}
+  return (a,irs)
+
 seqE :: E -> Seq (T,[Name])
 seqE = \case
   --integer literals may be at most one word
@@ -166,7 +291,7 @@ seqE = \case
     let t = typeOfInteger n
     v <- pushK t (Const n)
     return (t,[v])
-  --For now, it's either a function, local or undefined
+  --For now, it's either a user function, local or undefined
   --locals can't shadow functions
   Var nm -> do
     ni <- getCNameInfo nm
@@ -187,11 +312,51 @@ seqE = \case
                        | i <- [1..n]]
         return (t,ws)
       IsUnbound -> throwE $ UnboundVar nm
+  --Two cases: f is a primfun or an ordinary expr. For now, just support
+  --ordinary application.
+  --Args: $mem,f,argws
+  --Potential future feature: support for a closure type.
+  f :$ x -> do
+    (tf,wsf) <- seqE f
+    case tf of
+      a :-> b -> do
+        let [wf] = wsf
+        (tx,wsx) <- seqE x
+        args <- softCoerce a tx wsx
+        --alloc n anon vars, where n is b's word size
+        --emit vars = call [$mem,f,args]
+        --return type: b
+        n <- numWordsT b
+        retws <- replicateM n newAnonVar
+        let retts = [Word m b | m <- [1..n]]
+        --We thread $mem through calls, but it's not part of the expr's
+        --word output.
+        --Stack layout before jump: wf,args,ret.
+        --Note: the IR does not include the ret argument!
+        emitOp (("$mem",Mem):zip retws retts) Call ("$mem":wf:args)
+        return (b,retws)
+      _ -> throwE $ ApplicationToNonFunction f tf
   --The fields are concatenated, with the field values emitted in reverse
   --order.
   EStruct padnmes -> buildStruct padnmes
   _ -> error "TODO"
 
+truthyE :: E -> Seq Name
+truthyE e = do
+  (_,ws) <- seqE e
+  truthy ws
+
+truthy :: [Name] -> Seq Name
+truthy ws = do
+  irts <- mapM getIRVarType ws
+  --Truthy only works on concrete values
+  if all (\case Just (Word {}) -> True
+                _ -> False) irts
+    then do
+    v <- newAnonVar
+    emitOp [(v,tword)] (Reduce "or") ws
+    return v
+    else throwE $ BadArgInTruthy ws
 --Given the IR vars to assign to a C local, emits the assignment.
 --We assume the vars have the correct type.
 --x = ws => x#1 : typeof w1 = copy w1 ..
@@ -527,7 +692,7 @@ emitOp nmts op args = do
                   Nothing -> throwE $ UnboundVarInOpRHS arg nmts op args
                   Just _ -> return ()
             | arg <- args]
-  emit $ nmts IR1.:= (op,args)
+  emit $ Op () nmts op args
   return $ map fst nmts
 typeCheckLHS :: [(Name,IRT)] -> Seq ()
 typeCheckLHS = typeCheckLHS' S.empty
@@ -553,6 +718,15 @@ putIRVarType nm t = do
   s <- get
   put s{irLocalTypes = M.insert nm t $ irLocalTypes s}
 
+putCLocalVarType :: Name -> T -> Seq ()
+putCLocalVarType x t = do
+  s <- get
+  let m = cLocalTypes s
+  case M.lookup x m of
+    Just t' -> error $ "Compiler bug: duplicate putCLocalVarType " ++
+      show(x,t,t')
+    Nothing -> put s{cLocalTypes = M.insert x t m}
+
 newAnonVar :: Seq Name
 newAnonVar = do
   s <- get
@@ -571,19 +745,35 @@ typeOfInteger n =
         byteLen n = 1 + byteLen (n `div` 256)
 
 data NameInfo = IsFunction T
+              | IsPrimFun --no type specified because they're overloaded
               | IsLocal T
               | IsUnbound
   deriving (Eq,Ord,Read,Show)
+primFunSet :: Set Name
+primFunSet = S.fromList $ concat $ map words [
+  --Ptr primops
+  "deref",
+  --Mathops
+  "+ * - / negate %",
+  --Logops (with short-circuiting)
+  "&& || !",
+  --Bitops
+  "& | ~ ^"
+  --TODO: EVM ops
+  ]
+
 getCNameInfo :: Name -> Seq NameInfo
-getCNameInfo nm = do
-  mod <- askModule
-  case M.lookup nm $ defuns mod of
-    Just (Defun _ t _ _) -> return $ IsFunction t
-    _ -> do
-      lts <- gets cLocalTypes
-      case M.lookup nm lts of
-        Just t -> return $ IsLocal t
-        _ -> return IsUnbound
+getCNameInfo nm
+  | S.member nm primFunSet = return IsPrimFun
+  | let = do
+          mod <- askModule
+          case M.lookup nm $ defuns mod of
+            Just (Defun _ t _ _) -> return $ IsFunction t
+            _ -> do
+              lts <- gets cLocalTypes
+              case M.lookup nm lts of
+                Just t -> return $ IsLocal t
+                _ -> return IsUnbound
 
 --TODO deduplicate
 --This'll become dependent on mod once user-defined types are introduced

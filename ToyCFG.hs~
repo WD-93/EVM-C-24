@@ -1,0 +1,24 @@
+module ToyCFG where
+
+import Data.Set (Set(..))
+import qualified Data.Set as S
+import Data.Map (Map(..))
+import qualified Data.Map as M
+
+--For experimenting with how to simultaneously generate CFG and tag each SLC
+--with live vars.
+type Name = String
+data IR = [Name] := [Name] --an op with everything but dataflow removed
+        | If Name [IR] [IR]
+        | While [IR] Name [IR]
+        | Return [Name]
+  deriving (Eq,Ord,Read,Show)
+data SLC = SLC {ops :: [([Name],[Name])],
+                branch :: Branch,
+                live :: Set Name
+               }
+  deriving (Eq,Ord,Read,Show)
+data Branch = BReturn [Name]
+            | Jump Int
+            | Jumpi Name Int Int
+type CFG = Map Int SLC

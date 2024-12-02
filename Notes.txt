@@ -1,3 +1,89 @@
+Remember the target: compile
+main : () -> ()
+main () = return ()
+all the way from source. Do the absolute minimum for that.
+
+For now, just place call continuations in the same SLC? Do all ops before cont split anyway.
+AST -> IR -> CFG
+CFG: SSA, dataflow pruning, constant expansion, copy elimination.
+Pull only used vars. Then SLC codegen, merge into a set to share duplicates?
+Isomorphism could let you share multi-SLC subgraphs. But for now do minimal opts; at least per-SLC
+pruning is essential.
+Note the entry node has a fixed argument ordering.
+
+Important TODO: specify package versions used for reproducibility. Or just use Cabal with specific
+versions...
+Truffle's been deprecated... test simple EVM C programs in hardhat instead.
+
+Handling primfuns: which do I need?
+*_, mathops, logops, bitops
+EVM instrs: uppercase (word arguments) and lowercase (nice types, in particular Ptrs)
+Forget overloading based on return type for now.
+
+--Use a view pattern for Tuple?
+match (p1,p2...) (Tuple ts) ws:
+ for t_i in ts: 
+  ws_i = split wordsize(t) words of ws, coerce them to t_i
+  match p_i t_i ws_i
+match Wildcard _ ws = return ()
+match (PVar nm) t ws:
+ --check nm matches t if it's in scope
+ for w_i in ws:
+  nm#i = w_i 
+Oh, a problem: my Copy op is used for coercion. If I convert uses of x copied from y to y after
+SSA, I'll create an ill-typed SLC. No problem, the IR types don't matter at that stage - they're
+just for error detection during IR gen. Modulo kinds... words are stored on the stack, Mem and
+other abstract types nowhere.
+Note pattern-matching of tuples has no runtime overhead.
+
+Struct pattern matching:
+{p1,field: p2} = e =>
+p1 = e.__field1 or select e 1
+p2 = e.field
+A separate select operator would be useful, since it's independent of name. Then I can get rid of
+the __fieldN hack and have fields really be a Maybe Name.
+The type of e is given... but it need not match the type of pattern vars in scope.
+Ex: (x,x.field) = (a,b)
+writePtr(p,*p) = return ()
+writeGlobalField(glob.foo.bar.baz) = return ()
+Con p = e --strictly enforce type; constructors are monomorphic.
+Check e's tag is the expected value; revert otherwise.
+The size of a datatype is the tag size + max size of any element; to keep it compact while keeping
+the tag at a fixed location, put the tag in the LSBs?
+To add efficient switch/case, I need to extend the IR. I'll at most add newtypes for now?
+How to fit case into CFG? switch w [conts] --is a branch
+
+Optimization: if my first C->IR pass produced an IR with higher-level constructs such as
+SoftCoerce, I could symbolically reason about it. Ex: softCoerce (struct type 1) {f1=e1,e2...}
+=> a modified struct constructor.
+A HLIR above IR which has a concept of multi-word exprs? FW...
+Sub-word reasoning about fields and mstore/mload could also be useful.
+A concept of variable-size values such as array slices...
+
+Pats:
+x
+(ps)
+{fields}
+p.field
+*e
+e1[e2] => *(e1 + e2)
+--(ps) and {fields} = e decomposes to (x | *e).field* = e
+The region is determined by x or ptr type.
+stackVar.field* => sliceStack(stackWords,off,len). Note stack isn't sequential, unlike other
+namspaces... though mem could also be split up later.
+sliceMem(p,off,len) = e --read, stack slice write, write back
+Opt: when a var is set in a dominating node, you know its expr (which may be phi);
+x = *p
+if(cond)
+ p->field = 1
+else
+ p->field = 2
+--could be optimized to reuse the *p on stack
+Future opt: delay the writeback AMAP, including across SLCs.
+Using IRTs I could figure out the padding per word, optimizing stack slice writes.
+
+******
+
 Woot, CFG implemented! Now what? Eliminate intermediate jumps.
 For now, I can scrap usage analysis and assume SLCs have no garbage words. Eliminate garbage at
 the start of the function call separately.

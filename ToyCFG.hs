@@ -7,27 +7,24 @@ import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.State
 
+import DTs (Name(..))
+import IR1
+
 --For experimenting with how to simultaneously generate CFG and tag each SLC
 --with live vars.
-type Name = String
---Params: annotation (() or Set v), var
-data IR a v = Ops a [([v],[v])]  --ops with everything but dataflow removed
-        | If a v [IR a v] [IR a v]
-        | While a [IR a v] v [IR a v]
-        | Return a [v] --live set implicit, but no point repeating comput'n
-        | Break a Int --break to i'th loop end
-        | Continue a Int --continue to i'th loop end
-  deriving (Eq,Ord,Read,Show)
-annotIR :: IR a v -> a
+--type Name = String
+annotIR :: IRP a -> a
 annotIR = \case
-  Ops a _ -> a
-  If a _ _ _ -> a
+  Op a _ _ _ -> a
+  Ifte a _ _ _ -> a
   While a _ _ _ -> a
+  DoWhile a _ _ _ -> a
   Return a _ -> a
   Break a _ -> a
   Continue a _ -> a
+  TailCall a _ _ -> a
 --The live of a given block
-annotBlock :: [IR a v] -> Maybe a
+annotBlock :: [IRP a] -> Maybe a
 annotBlock = \case
   [] -> Nothing
   ir:_ -> Just $ annotIR ir
@@ -44,19 +41,19 @@ data Branch v = BReturn [v]
 type Live = Set Name
 annIRWithLive :: [(Live,Live)] -> --the stack of while start and end lives
                  Live -> --the scope to fall through to if not a branch
-                 IR () Name ->
-                 (IR Live Name, Live)
+                 IR ->
+                 (IRP Live, Live)
 annIRWithLive loopLs end =
   let rs = annIRsWithLive loopLs end in
     \case
-      Ops () ops ->
-        let end' = applyOps end ops
-        in (Ops end' ops, end')
-      If () v th el ->
+      Op () lhs op rhs ->
+        let end' = applyOp end lhs rhs
+        in (Op end' lhs op rhs, end')
+      Ifte () v th el ->
         let (th',end1) = rs th
             (el',end2) = rs el
             s = S.insert v $ end1 `S.union` end2
-        in (If s v th' el',s)
+        in (Ifte s v th' el',s)
       --This is the tricky one: we update loopLs, do one pass with the
       --assumption continue has live {}, then fill in with the proper value.
       --We assume only two passes are needed.
@@ -70,12 +67,12 @@ annIRWithLive loopLs end =
         let initialLoop = S.empty
             post' = post ++ [Continue () 0]
             (_,end') = annIRWithLive ((initialLoop,end):loopLs) end
-              (If () v post' [])
+              (Ifte () v post' [])
             --This is the final loop label
             (_,loop) = annIRsWithLive loopLs end' pre
             --While body:
-            (If loopCont _ loopBody [], _) =
-              annIRWithLive ((loop,end):loopLs) end (If () v post' [])
+            (Ifte loopCont _ loopBody [], _) =
+              annIRWithLive ((loop,end):loopLs) end (Ifte () v post' [])
             (pre',loop') = annIRsWithLive loopLs loopCont pre
             --Defensive programming... if this blows up I was wrong and need
             --to iterate to fixpoint.
@@ -108,10 +105,13 @@ annIRsWithLive loopLs end irs =
         let (irs',end') = go end irs
             (ir',end'') = annIRWithLive loopLs end' ir
         in (ir':irs',end'')
-applyOps end = \case
+applyOp end lhs rhs = S.union (S.fromList rhs) $
+  end S.\\ S.fromList (map fst lhs)
+  {-\case
   [] -> end
   (lhs,rhs):ops ->
     S.union (S.fromList rhs) $ applyOps end ops  S.\\ S.fromList lhs
+-}
 
 annFun = annIRsWithLive [] S.empty
 --Each block generates a new graph, potentially connected to the old.
@@ -120,10 +120,10 @@ annFun = annIRsWithLive [] S.empty
 --above it.
 
 --Some test AST combinators
-x =: ws = Ops () [([x],words ws)]
+x =: ws = Op () [(x,tword)] (Opcode "meh") $ words ws
 ret ws = Return () $ words ws
 while x = While () x
-ifte x = If () x
+ifte x = Ifte () x
 cont = Continue ()
 brk = Break ()
 
@@ -149,7 +149,7 @@ testNested =
     ret "w"
   ]
 
-data SLC v = SLC {slcOps :: [([v],[v])],
+data SLC v = SLC {slcOps :: [([(v,IRT)],Operator,[v])],
                   slcBranch :: Branch v,
                   slcLive :: Live
                  }
@@ -168,18 +168,18 @@ type LL = (Label,Live)
 runCFG :: CFGM a -> (a,CFGS)
 runCFG cfgm = runState cfgm $ CFGS 0 M.empty
 
-cfgFun :: [IR Live Name] -> CFGM (Maybe LL)
+cfgFun :: [IRP Live] -> CFGM (Maybe LL)
 cfgFun = cfg [] Nothing
 
 --The main, useful function
-ir2cfg :: [IR () Name] -> (Maybe LL, CFGS)
+ir2cfg :: [IR] -> (Maybe LL, CFGS)
 ir2cfg = runCFG . cfgFun . fst . annFun
 --The end label of while loops is a Maybe LL because it's a continuation.
 --That solves the edge case where the while loop has no cont, but it's fine
 --because the loop cond always returns.
 --If either branch of an ifte returns a Nothing, generate no node and return
 --a Nothing. To be well-formed, the function must return a Just.
-cfg :: [(LL,Maybe LL)] -> Maybe LL -> [IR Live Name] -> CFGM (Maybe LL)
+cfg :: [(LL,Maybe LL)] -> Maybe LL -> [IRP Live] -> CFGM (Maybe LL)
 cfg loopLs mll = \case
   [] -> return mll
   Return live vs : _ -> do
@@ -190,13 +190,13 @@ cfg loopLs mll = \case
   Continue a n : _
     | Just (start,end) <- loopLs !? n ->
       return (Just start)
-  Ops live ops : irs -> do
+  Op live lhs op rhs : irs -> do
     mll' <- cfg loopLs mll irs
     case mll' of
       Nothing -> return Nothing
       Just (cont,_) -> do
-        genSLC live ops (Jump cont)
-  If live v th el : irs -> do
+        genSLC live [(lhs,op,rhs)] (Jump cont)
+  Ifte live v th el : irs -> do
     end <- cfg loopLs mll irs
     mth <- cfg loopLs end th
     mel <- cfg loopLs end el
@@ -235,6 +235,8 @@ genIfte live v mth mel =
       l <- newLabel
       genSLC live [] (Jumpi v t e)
     _ -> return Nothing
+genSLC :: Live -> [([(Name,IRT)],Operator,[Name])] -> Branch Name ->
+  CFGM (Maybe LL)
 genSLC live ops branch = do
   l <- newLabel
   createSLC l SLC{slcOps = ops,
