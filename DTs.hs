@@ -13,7 +13,7 @@ type Name = String
 data E = EInteger Integer
        | Var Name --includes overloaded ops
        | E :$ E
-       | EStruct [(Padding,Name,E)] --tuples are sugar for structs
+       | EStruct [(Padding, Maybe Name,E)] --tuples are sugar for structs
        -- | Coerce T E
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
@@ -24,12 +24,11 @@ data Padding = BitPad | BytePad | WordPad
 padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0) 
 tupleE :: [E] -> E
 tupleE = EStruct . tupleF
-tupleF :: [e] -> [(Padding,Name,e)]
-tupleF = map (\(nm,x) -> (WordPad,nm,x)) .
-  zip ["__field" ++ show n | n <- [1..]]
+tupleF :: [e] -> [(Padding,Maybe Name,e)]
+tupleF = map (\x -> (WordPad,Nothing,x))
 data T = Int Bool Int --signedness, bitsize
        | T :-> T
-       | Struct [(Padding,Name,T)]
+       | Struct [(Padding, Maybe Name, T)]
        -- | Ptr Region T
   deriving (Eq,Ord,Read,Show)
 tupleT = Struct . tupleF

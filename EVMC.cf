@@ -1,0 +1,81 @@
+--constructor names
+token UIdent (upper (letter | digit | '_')*) ;
+
+--Declarations:
+--f :: t
+--f p = block
+--type Con args = t
+--data Con args = Con ts | ...
+--region nm :: t?
+TySig. D ::= Ident ":" T;
+layout "=";
+Defun. D ::= Ident Pat1 "=" "{" [S] "}";
+separator S ";";
+TestExpr. D ::= "testE" E;
+
+--PAT. Pat ::= "PAT";
+PVar. Pat1 ::= Ident;
+PCon. Pat1 ::= UIdent;
+PEmptyTup. Pat1 ::= "(" ")";
+PTup. Pat1 ::= "(" Pat "," [Pat] ")";
+separator nonempty Pat ",";
+PStruct. Pat1 ::= "{" [PField] "}";
+PApp. Pat ::= Pat Pat1;
+separator PField ",";
+coercions Pat 2;
+
+PFieldAnon. PField ::= Pat;
+PFieldNamed. PField ::= Ident "=" Pat;
+
+--By avoiding apostrophes in my comments I ensure Emacs coloring for cf works...
+--I can use luas syntax trick to avoid shift/reduce-reduce conflicts:
+--theres no point in having non-side effecting expression statements.
+Assign. S ::= Pat "=" E;
+Pass. S ::= "pass";
+
+--Generalizing types...
+--Goal: subsume regions, allow f x y
+--Shift-reduce conflict: a -> b c? Or a b -> c d
+TInt. T2 ::= Integer;
+TVar. T2 ::= Ident;
+TCon. T2 ::= UIdent;
+TEmptyTup. T2 ::= "(" ")";
+--TParen. T2 ::= "(" T ")";
+TTup. T2 ::= "(" T "," [T] ")";
+separator nonempty T ",";
+TApp. T1 ::= T1 T2;
+TFun. T ::= T1 "->" T;
+coercions T 2;
+
+Memory. Region ::= "Memory";
+
+--First, a tiny subset of exprs
+--Whats the hierarchy of syntax elems?
+
+--ETest. E ::= "1";
+
+--leaf terms. TODO look at EVM C file!
+EInt. E2 ::= Integer;
+{-
+EVar. E2 ::= Ident;
+EEmptyTup. E2 ::= "(" ")";
+ETup. E2 ::= "(" E "," [E] ")";
+separator nonempty E ",";
+EStruct. E2 ::= "{" [EField] "}";
+separator EField ",";
+--field access
+EFieldAccess. E2 ::= E2 "." Ident;
+--Prefix application
+--EApp. E1 ::= "app" E2 "<" [E] ">";separator E "?";
+EApp1. E1 ::= E1 ArgList;
+EPlus. E ::= E "+" E1;
+-}
+coercions E 2;
+
+ArgList. ArgList ::= "(" E "," [E] ")";
+separator nonempty E ",";
+
+FieldAnon. EField ::= E;
+FieldNamed. EField ::= Ident ":" E;
+
+

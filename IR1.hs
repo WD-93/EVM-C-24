@@ -171,7 +171,7 @@ patternMatch p t ws =
           assign x ws
     --Like pstruct {x,y,z}, but requires t is a tuple
     PTup ps ->
-      case unTuple t of
+      case unTupleT t of
         Nothing -> throwE $ PTupNonTuple ps t
         Just ts
           | length ps /= length ts -> throwE $ PTupLengthMismatch ps ts
@@ -402,19 +402,18 @@ softCoerce target source ws
   --Is it essential to actually modify the IR type? It's just a safety feature
   --to detect bugs in codegen... but it's worth it, I should be able to
   --optimize the copies away.
-  | Just ts1 <- unTuple target, Just ts2 <- unTuple source =
+  | Just ts1 <- unTupleT target, Just ts2 <- unTupleT source =
     softCoerceTuple ts1 ts2 ws
 
-unTuple :: T -> Maybe [T]
-unTuple = \case
-  Struct padnmts -> go 1 padnmts
+unTupleT :: T -> Maybe [T]
+unTupleT = \case
+  Struct padmnmts -> go padmnmts
   _ -> Nothing
-  where go n ts =
-          case ts of
-            [] -> return []
-            (pad,fieldN,t):ts
-              | pad == WordPad, fieldN == "__field" ++ show n ->
-                (t:) <$> go (n+1) ts
+  where go = \case
+          [] -> Just []
+          (WordPad,Nothing,t):padmnmts ->
+            (t:) <$> go padmnmts
+          _ -> Nothing
 
 softCoerceTuple :: [T] -> [T] -> [Name] -> Seq [Name]
 softCoerceTuple ts1 ts2 ws =
@@ -449,20 +448,20 @@ nullValue t = do
 --cheapest case is when the word contains a single unsliced field.
 --Layout: the padded fields are placed rightmost in the struct, with the struct
 --itself word-padded.
-buildStruct :: [(Padding,Name,E)] -> Seq (T,[Name])
-buildStruct padnmes = do
-  padnmtws <- mapM (\(pad,nm,e) -> do
+buildStruct :: [(Padding,Maybe Name,E)] -> Seq (T,[Name])
+buildStruct padmnmes = do
+  padmnmtws <- mapM (\(pad,mnm,e) -> do
                        (t,ws) <- seqE e
-                       return (pad,nm,t,ws)) padnmes
-  let padnmts = map (\(pad,nm,t,_) -> (pad,nm,t)) padnmtws
-      structType = Struct padnmts
+                       return (pad,mnm,t,ws)) padmnmes
+  let padmnmts = map (\(pad,mnm,t,_) -> (pad,mnm,t)) padmnmtws
+      structType = Struct padmnmts
   --For each field value, the words it consists of and the bitsize of the
   --padded field; that's all the information needed to determine the scheme
   --for computing the struct.
   --Note we reverse the words because we assemble the struct from the back!
   bszws <- mapM (\(pad,_,t,ws) -> do
                   bsz <- padWith pad <$> numBitsT t
-                  return (bsz,reverse ws)) padnmtws
+                  return (bsz,reverse ws)) padmnmtws
   wc <- numWordsT structType
   sws <- buildStructOps structType wc bszws
   return (structType,sws)

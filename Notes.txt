@@ -2,6 +2,7 @@ Remember the target: compile
 main : () -> ()
 main () = return ()
 all the way from source. Do the absolute minimum for that.
+First step: CST -> AST.
 
 For now, just place call continuations in the same SLC? Do all ops before cont split anyway.
 AST -> IR -> CFG
