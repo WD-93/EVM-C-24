@@ -89,16 +89,20 @@ instance Print UIdent where
 
 instance Print D where
   prt i e = case e of
-    TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString "::"), prt 0 t])
-    Defun id pat ss -> prPrec i 0 (concatD [prt 0 id, prt 1 pat, doc (showString "="), doc (showString "{"), prt 0 ss, doc (showString "}")])
+    TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
+    Defun id pat ss -> prPrec i 0 (concatD [prt 0 id, prt 1 pat, doc (showString ":="), doc (showString "{"), prt 0 ss, doc (showString "}")])
     TestExpr e_ -> prPrec i 0 (concatD [doc (showString "testE"), prt 0 e_])
+    TestS s -> prPrec i 0 (concatD [doc (showString "testS"), prt 0 s])
+    TestPat pat -> prPrec i 0 (concatD [doc (showString "testP"), prt 0 pat])
 
 instance Print Pat where
   prt i e = case e of
+    PWild -> prPrec i 1 (concatD [doc (showString "_")])
     PVar id -> prPrec i 1 (concatD [prt 0 id])
     PCon uident -> prPrec i 1 (concatD [prt 0 uident])
     PEmptyTup -> prPrec i 1 (concatD [doc (showString "("), doc (showString ")")])
     PTup pat pats -> prPrec i 1 (concatD [doc (showString "("), prt 0 pat, doc (showString ","), prt 0 pats, doc (showString ")")])
+    PEmptyStruct -> prPrec i 1 (concatD [doc (showString "{"), doc (showString "}")])
     PStruct pfields -> prPrec i 1 (concatD [doc (showString "{"), prt 0 pfields, doc (showString "}")])
     PApp pat1 pat2 -> prPrec i 0 (concatD [prt 0 pat1, prt 1 pat2])
   prtList _ [x] = (concatD [prt 0 x])
@@ -106,8 +110,7 @@ instance Print Pat where
 instance Print PField where
   prt i e = case e of
     PFieldAnon pat -> prPrec i 0 (concatD [prt 0 pat])
-    PFieldNamed id pat -> prPrec i 0 (concatD [prt 0 id, doc (showString "="), prt 0 pat])
-  prtList _ [] = (concatD [])
+    PFieldNamed id pat -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 pat])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print S where
@@ -124,8 +127,16 @@ instance Print T where
     TCon uident -> prPrec i 2 (concatD [prt 0 uident])
     TEmptyTup -> prPrec i 2 (concatD [doc (showString "("), doc (showString ")")])
     TTup t ts -> prPrec i 2 (concatD [doc (showString "("), prt 0 t, doc (showString ","), prt 0 ts, doc (showString ")")])
+    TEmptyStruct -> prPrec i 2 (concatD [doc (showString "{"), doc (showString "}")])
+    TStruct tfields -> prPrec i 2 (concatD [doc (showString "{"), prt 0 tfields, doc (showString "}")])
     TApp t1 t2 -> prPrec i 1 (concatD [prt 1 t1, prt 2 t2])
     TFun t1 t2 -> prPrec i 0 (concatD [prt 1 t1, doc (showString "->"), prt 0 t2])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
+instance Print TField where
+  prt i e = case e of
+    TFieldAnon t -> prPrec i 0 (concatD [prt 0 t])
+    TFieldNamed id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print Region where
@@ -135,7 +146,12 @@ instance Print Region where
 instance Print E where
   prt i e = case e of
     EInt n -> prPrec i 2 (concatD [prt 0 n])
+    EVar id -> prPrec i 2 (concatD [prt 0 id])
+    EEmptyTup -> prPrec i 2 (concatD [doc (showString "("), doc (showString ")")])
+    ETup e_ es -> prPrec i 2 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
   prtList _ [x] = (concatD [prt 0 x])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print ArgList where
   prt i e = case e of

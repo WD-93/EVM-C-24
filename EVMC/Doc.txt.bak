@@ -31,12 +31,13 @@ UIdent literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in EVMC are the following:
-  | ``Memory`` | ``pass`` | ``testE`` | 
+  | ``Memory`` | ``pass`` | ``testE`` | ``testP``
+  | ``testS`` |  |  | 
 
 The symbols used in EVMC are the following:
-  | :: | = | { | }
-  | ; | ( | ) | ,
-  | -> | : |  | 
+  | : | := | { | }
+  | ; | _ | ( | )
+  | , | = | -> | 
 
 ===Comments===
 There are no single-line comments in the grammar.There are no multiple-line comments in the grammar.
@@ -47,43 +48,55 @@ The symbols -> (production),  **|**  (union)
 and **eps** (empty rule) belong to the BNF notation. 
 All other symbols are terminals.
 
-  | //D// | -> | //Ident// ``::`` //T// 
-  |  |  **|**  | //Ident// //Pat1// ``=`` ``{`` //[S]// ``}`` 
+  | //D// | -> | //Ident// ``:`` //T// 
+  |  |  **|**  | //Ident// //Pat1// ``:=`` ``{`` //[S]// ``}`` 
   |  |  **|**  | ``testE`` //E// 
+  |  |  **|**  | ``testS`` //S// 
+  |  |  **|**  | ``testP`` //Pat// 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
-  | //Pat1// | -> | //Ident// 
+  | //Pat1// | -> | ``_`` 
+  |  |  **|**  | //Ident// 
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //Pat// ``,`` //[Pat]// ``)`` 
+  |  |  **|**  | ``{`` ``}`` 
   |  |  **|**  | ``{`` //[PField]// ``}`` 
   |  |  **|**  | //Pat2// 
   | //[Pat]// | -> | //Pat// 
   |  |  **|**  | //Pat// ``,`` //[Pat]// 
+  | //[PField]// | -> | //PField// 
+  |  |  **|**  | //PField// ``,`` //[PField]// 
   | //Pat// | -> | //Pat// //Pat1// 
   |  |  **|**  | //Pat1// 
-  | //[PField]// | -> | **eps**
-  |  |  **|**  | //PField// 
-  |  |  **|**  | //PField// ``,`` //[PField]// 
   | //Pat2// | -> | ``(`` //Pat// ``)`` 
   | //PField// | -> | //Pat// 
-  |  |  **|**  | //Ident// ``=`` //Pat// 
+  |  |  **|**  | //Ident// ``:`` //Pat// 
   | //S// | -> | //Pat// ``=`` //E// 
   |  |  **|**  | ``pass`` 
   | //T2// | -> | //Integer// 
   |  |  **|**  | //Ident// 
+  |  |  **|**  | //UIdent// 
   |  |  **|**  | ``(`` ``)`` 
+  |  |  **|**  | ``(`` //T// ``,`` //[T]// ``)`` 
+  |  |  **|**  | ``{`` ``}`` 
+  |  |  **|**  | ``{`` //[TField]// ``}`` 
   |  |  **|**  | ``(`` //T// ``)`` 
-  | //[T]// | -> | **eps**
-  |  |  **|**  | //T// 
+  | //[T]// | -> | //T// 
   |  |  **|**  | //T// ``,`` //[T]// 
+  | //[TField]// | -> | //TField// 
+  |  |  **|**  | //TField// ``,`` //[TField]// 
   | //T1// | -> | //T1// //T2// 
   |  |  **|**  | //T2// 
   | //T// | -> | //T1// ``->`` //T// 
   |  |  **|**  | //T1// 
+  | //TField// | -> | //T// 
+  |  |  **|**  | //Ident// ``:`` //T// 
   | //Region// | -> | ``Memory`` 
   | //E2// | -> | //Integer// 
+  |  |  **|**  | //Ident// 
+  |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``)`` 
   | //E// | -> | //E1// 
   | //E1// | -> | //E2// 

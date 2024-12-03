@@ -9,14 +9,21 @@ module EVMC.Abs where
 
 newtype Ident = Ident String deriving (Eq, Ord, Show, Read)
 newtype UIdent = UIdent String deriving (Eq, Ord, Show, Read)
-data D = TySig Ident T | Defun Ident Pat [S] | TestExpr E
+data D
+    = TySig Ident T
+    | Defun Ident Pat [S]
+    | TestExpr E
+    | TestS S
+    | TestPat Pat
   deriving (Eq, Ord, Show, Read)
 
 data Pat
-    = PVar Ident
+    = PWild
+    | PVar Ident
     | PCon UIdent
     | PEmptyTup
     | PTup Pat [Pat]
+    | PEmptyStruct
     | PStruct [PField]
     | PApp Pat Pat
   deriving (Eq, Ord, Show, Read)
@@ -33,14 +40,19 @@ data T
     | TCon UIdent
     | TEmptyTup
     | TTup T [T]
+    | TEmptyStruct
+    | TStruct [TField]
     | TApp T T
     | TFun T T
+  deriving (Eq, Ord, Show, Read)
+
+data TField = TFieldAnon T | TFieldNamed Ident T
   deriving (Eq, Ord, Show, Read)
 
 data Region = Memory
   deriving (Eq, Ord, Show, Read)
 
-data E = EInt Integer
+data E = EInt Integer | EVar Ident | EEmptyTup | ETup E [E]
   deriving (Eq, Ord, Show, Read)
 
 data ArgList = ArgList E [E]

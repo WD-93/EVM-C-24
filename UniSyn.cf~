@@ -1,0 +1,6 @@
+--I'll see if merging Pat, T and E parsing solves reduce-reduce conflicts
+token UIdent (upper (letter | digit | '_')*) ;
+
+TySig. D ::= Ident ":" E;
+Defun. D ::= Ident E1 "=" "{" [S] "}";
+separator S ";"

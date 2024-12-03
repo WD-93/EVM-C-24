@@ -1,0 +1,27 @@
+--I'll see if merging Pat, T and E parsing solves reduce-reduce conflicts
+token UIdent (upper (letter | digit | '_')*) ;
+
+TySig. D ::= Ident ":" E;
+layout ":=";
+Defun. D ::= Ident E1 ":=" "{" [S] "}";
+separator S ";";
+
+PlaceholderS. S ::= "S";
+Assign. S ::= E1 "=" E;
+Return. S ::= "return" E;
+If. S ::= "if" "(" E ")" S;
+--The problem of deciding which if an else belongs to is delegated to the
+--CST -> AST step.
+Else. S ::= "else" S;
+While. S ::= "while" "(" E ")" S;
+--layout "{";
+Do. S ::= "{" [S] "}";
+separator S ";";
+
+EInt. E1 ::= Integer;
+EVar. E1 ::= Ident;
+ECon. E1 ::= UIdent;
+EEmptyTup. E1 ::= "(" ")";
+ETup. E1 ::= "(" E "," [E] ")";
+separator nonempty E ",";
+coercions E 2;

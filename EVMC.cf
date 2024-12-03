@@ -8,24 +8,29 @@ token UIdent (upper (letter | digit | '_')*) ;
 --data Con args = Con ts | ...
 --region nm :: t?
 TySig. D ::= Ident ":" T;
-layout "=";
-Defun. D ::= Ident Pat1 "=" "{" [S] "}";
+layout ":=";
+--what happens if I remove the =?
+Defun. D ::= Ident Pat1 ":=" "{" [S] "}";
 separator S ";";
 TestExpr. D ::= "testE" E;
+TestS. D ::= "testS" S;
+TestPat. D ::= "testP" Pat;
 
---PAT. Pat ::= "PAT";
+PWild. Pat1 ::= "_";
 PVar. Pat1 ::= Ident;
 PCon. Pat1 ::= UIdent;
 PEmptyTup. Pat1 ::= "(" ")";
 PTup. Pat1 ::= "(" Pat "," [Pat] ")";
 separator nonempty Pat ",";
+PEmptyStruct. Pat1 ::= "{" "}";
 PStruct. Pat1 ::= "{" [PField] "}";
+separator nonempty PField ",";
 PApp. Pat ::= Pat Pat1;
-separator PField ",";
+
 coercions Pat 2;
 
 PFieldAnon. PField ::= Pat;
-PFieldNamed. PField ::= Ident "=" Pat;
+PFieldNamed. PField ::= Ident ":" Pat;
 
 --By avoiding apostrophes in my comments I ensure Emacs coloring for cf works...
 --I can use luas syntax trick to avoid shift/reduce-reduce conflicts:
@@ -43,24 +48,28 @@ TEmptyTup. T2 ::= "(" ")";
 --TParen. T2 ::= "(" T ")";
 TTup. T2 ::= "(" T "," [T] ")";
 separator nonempty T ",";
+TEmptyStruct. T2 ::= "{" "}";
+TStruct. T2 ::= "{" [TField] "}";
+separator nonempty TField ",";
 TApp. T1 ::= T1 T2;
 TFun. T ::= T1 "->" T;
 coercions T 2;
+
+TFieldAnon. TField ::= T;
+TFieldNamed. TField ::= Ident ":" T;
 
 Memory. Region ::= "Memory";
 
 --First, a tiny subset of exprs
 --Whats the hierarchy of syntax elems?
 
---ETest. E ::= "1";
-
 --leaf terms. TODO look at EVM C file!
 EInt. E2 ::= Integer;
-{-
 EVar. E2 ::= Ident;
 EEmptyTup. E2 ::= "(" ")";
 ETup. E2 ::= "(" E "," [E] ")";
 separator nonempty E ",";
+{-
 EStruct. E2 ::= "{" [EField] "}";
 separator EField ",";
 --field access

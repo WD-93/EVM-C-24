@@ -1,0 +1,12 @@
+all:
+	happy -gca EVMC/Par.y
+	alex -g EVMC/Lex.x
+	ghc --make EVMC/Test.hs -o EVMC/Test
+
+clean:
+	-rm -f EVMC/*.log EVMC/*.aux EVMC/*.hi EVMC/*.o EVMC/*.dvi
+
+distclean: clean
+	-rm -f EVMC/Doc.* EVMC/Lex.* EVMC/Par.* EVMC/Layout.* EVMC/Skel.* EVMC/Print.* EVMC/Test.* EVMC/Abs.* EVMC/Test EVMC/ErrM.* EVMC/SharedString.* EVMC/ComposOp.* EVMC/EVMC.dtd EVMC/XML.* Makefile*
+		-rmdir -p EVMC/
+

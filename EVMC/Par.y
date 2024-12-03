@@ -12,21 +12,23 @@ import EVMC.ErrM
 %name pListS ListS
 %name pPat1 Pat1
 %name pListPat ListPat
-%name pPat Pat
 %name pListPField ListPField
+%name pPat Pat
 %name pPat2 Pat2
 %name pPField PField
 %name pS S
 %name pT2 T2
 %name pListT ListT
+%name pListTField ListTField
 %name pT1 T1
 %name pT T
+%name pTField TField
 %name pRegion Region
 %name pE2 E2
+%name pListE ListE
 %name pE E
 %name pE1 E1
 %name pArgList ArgList
-%name pListE ListE
 %name pEField EField
 -- no lexer declaration
 %monad { Err } { thenM } { returnM }
@@ -37,14 +39,17 @@ import EVMC.ErrM
   ',' { PT _ (TS _ 3) }
   '->' { PT _ (TS _ 4) }
   ':' { PT _ (TS _ 5) }
-  '::' { PT _ (TS _ 6) }
+  ':=' { PT _ (TS _ 6) }
   ';' { PT _ (TS _ 7) }
   '=' { PT _ (TS _ 8) }
   'Memory' { PT _ (TS _ 9) }
-  'pass' { PT _ (TS _ 10) }
-  'testE' { PT _ (TS _ 11) }
-  '{' { PT _ (TS _ 12) }
-  '}' { PT _ (TS _ 13) }
+  '_' { PT _ (TS _ 10) }
+  'pass' { PT _ (TS _ 11) }
+  'testE' { PT _ (TS _ 12) }
+  'testP' { PT _ (TS _ 13) }
+  'testS' { PT _ (TS _ 14) }
+  '{' { PT _ (TS _ 15) }
+  '}' { PT _ (TS _ 16) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -58,33 +63,36 @@ Integer :: { Integer } : L_integ  { (read ( $1)) :: Integer }
 UIdent    :: { UIdent} : L_UIdent { UIdent ($1)}
 
 D :: { D }
-D : Ident '::' T { EVMC.Abs.TySig $1 $3 }
-  | Ident Pat1 '=' '{' ListS '}' { EVMC.Abs.Defun $1 $2 $5 }
+D : Ident ':' T { EVMC.Abs.TySig $1 $3 }
+  | Ident Pat1 ':=' '{' ListS '}' { EVMC.Abs.Defun $1 $2 $5 }
   | 'testE' E { EVMC.Abs.TestExpr $2 }
+  | 'testS' S { EVMC.Abs.TestS $2 }
+  | 'testP' Pat { EVMC.Abs.TestPat $2 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
       | S ';' ListS { (:) $1 $3 }
 Pat1 :: { Pat }
-Pat1 : Ident { EVMC.Abs.PVar $1 }
+Pat1 : '_' { EVMC.Abs.PWild }
+     | Ident { EVMC.Abs.PVar $1 }
      | UIdent { EVMC.Abs.PCon $1 }
      | '(' ')' { EVMC.Abs.PEmptyTup }
      | '(' Pat ',' ListPat ')' { EVMC.Abs.PTup $2 $4 }
+     | '{' '}' { EVMC.Abs.PEmptyStruct }
      | '{' ListPField '}' { EVMC.Abs.PStruct $2 }
      | Pat2 { $1 }
 ListPat :: { [Pat] }
 ListPat : Pat { (:[]) $1 } | Pat ',' ListPat { (:) $1 $3 }
+ListPField :: { [PField] }
+ListPField : PField { (:[]) $1 }
+           | PField ',' ListPField { (:) $1 $3 }
 Pat :: { Pat }
 Pat : Pat Pat1 { EVMC.Abs.PApp $1 $2 } | Pat1 { $1 }
-ListPField :: { [PField] }
-ListPField : {- empty -} { [] }
-           | PField { (:[]) $1 }
-           | PField ',' ListPField { (:) $1 $3 }
 Pat2 :: { Pat }
 Pat2 : '(' Pat ')' { $2 }
 PField :: { PField }
 PField : Pat { EVMC.Abs.PFieldAnon $1 }
-       | Ident '=' Pat { EVMC.Abs.PFieldNamed $1 $3 }
+       | Ident ':' Pat { EVMC.Abs.PFieldNamed $1 $3 }
 S :: { S }
 S : Pat '=' E { EVMC.Abs.Assign $1 $3 } | 'pass' { EVMC.Abs.Pass }
 T2 :: { T }
@@ -93,25 +101,40 @@ T2 : Integer { EVMC.Abs.TInt $1 }
    | UIdent { EVMC.Abs.TCon $1 }
    | '(' ')' { EVMC.Abs.TEmptyTup }
    | '(' T ',' ListT ')' { EVMC.Abs.TTup $2 $4 }
+   | '{' '}' { EVMC.Abs.TEmptyStruct }
+   | '{' ListTField '}' { EVMC.Abs.TStruct $2 }
    | '(' T ')' { $2 }
 ListT :: { [T] }
 ListT : T { (:[]) $1 } | T ',' ListT { (:) $1 $3 }
+ListTField :: { [TField] }
+ListTField : TField { (:[]) $1 }
+           | TField ',' ListTField { (:) $1 $3 }
 T1 :: { T }
 T1 : T1 T2 { EVMC.Abs.TApp $1 $2 } | T2 { $1 }
 T :: { T }
 T : T1 '->' T { EVMC.Abs.TFun $1 $3 } | T1 { $1 }
+TField :: { TField }
+TField : T { EVMC.Abs.TFieldAnon $1 }
+       | Ident ':' T { EVMC.Abs.TFieldNamed $1 $3 }
 Region :: { Region }
 Region : 'Memory' { EVMC.Abs.Memory }
 E2 :: { E }
-E2 : Integer { EVMC.Abs.EInt $1 } | '(' E ')' { $2 }
+E2 : Integer { EVMC.Abs.EInt $1 }
+   | Ident { EVMC.Abs.EVar $1 }
+   | '(' ')' { EVMC.Abs.EEmptyTup }
+   | '(' E ',' ListE ')' { EVMC.Abs.ETup $2 $4 }
+   | '(' E ')' { $2 }
+ListE :: { [E] }
+ListE : E { (:[]) $1 }
+      | E ',' ListE { (:) $1 $3 }
+      | E { (:[]) $1 }
+      | E ',' ListE { (:) $1 $3 }
 E :: { E }
 E : E1 { $1 }
 E1 :: { E }
 E1 : E2 { $1 }
 ArgList :: { ArgList }
 ArgList : '(' E ',' ListE ')' { EVMC.Abs.ArgList $2 $4 }
-ListE :: { [E] }
-ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
 EField :: { EField }
 EField : E { EVMC.Abs.FieldAnon $1 }
        | Ident ':' E { EVMC.Abs.FieldNamed $1 $3 }

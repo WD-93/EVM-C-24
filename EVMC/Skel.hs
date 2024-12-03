@@ -20,12 +20,16 @@ transD x = case x of
   TySig ident t -> failure x
   Defun ident pat ss -> failure x
   TestExpr e -> failure x
+  TestS s -> failure x
+  TestPat pat -> failure x
 transPat :: Pat -> Result
 transPat x = case x of
+  PWild -> failure x
   PVar ident -> failure x
   PCon uident -> failure x
   PEmptyTup -> failure x
   PTup pat pats -> failure x
+  PEmptyStruct -> failure x
   PStruct pfields -> failure x
   PApp pat1 pat2 -> failure x
 transPField :: PField -> Result
@@ -43,14 +47,23 @@ transT x = case x of
   TCon uident -> failure x
   TEmptyTup -> failure x
   TTup t ts -> failure x
+  TEmptyStruct -> failure x
+  TStruct tfields -> failure x
   TApp t1 t2 -> failure x
   TFun t1 t2 -> failure x
+transTField :: TField -> Result
+transTField x = case x of
+  TFieldAnon t -> failure x
+  TFieldNamed ident t -> failure x
 transRegion :: Region -> Result
 transRegion x = case x of
   Memory -> failure x
 transE :: E -> Result
 transE x = case x of
   EInt integer -> failure x
+  EVar ident -> failure x
+  EEmptyTup -> failure x
+  ETup e es -> failure x
 transArgList :: ArgList -> Result
 transArgList x = case x of
   ArgList e es -> failure x
