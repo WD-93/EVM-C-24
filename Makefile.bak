@@ -1,12 +1,12 @@
 all:
-	happy -gca EVMC/Par.y
-	alex -g EVMC/Lex.x
-	ghc --make EVMC/Test.hs -o EVMC/Test
+	happy -gca UniSyn/Par.y
+	alex -g UniSyn/Lex.x
+	ghc --make UniSyn/Test.hs -o UniSyn/Test
 
 clean:
-	-rm -f EVMC/*.log EVMC/*.aux EVMC/*.hi EVMC/*.o EVMC/*.dvi
+	-rm -f UniSyn/*.log UniSyn/*.aux UniSyn/*.hi UniSyn/*.o UniSyn/*.dvi
 
 distclean: clean
-	-rm -f EVMC/Doc.* EVMC/Lex.* EVMC/Par.* EVMC/Layout.* EVMC/Skel.* EVMC/Print.* EVMC/Test.* EVMC/Abs.* EVMC/Test EVMC/ErrM.* EVMC/SharedString.* EVMC/ComposOp.* EVMC/EVMC.dtd EVMC/XML.* Makefile*
-		-rmdir -p EVMC/
+	-rm -f UniSyn/Doc.* UniSyn/Lex.* UniSyn/Par.* UniSyn/Layout.* UniSyn/Skel.* UniSyn/Print.* UniSyn/Test.* UniSyn/Abs.* UniSyn/Test UniSyn/ErrM.* UniSyn/SharedString.* UniSyn/ComposOp.* UniSyn/UniSyn.dtd UniSyn/XML.* Makefile*
+		-rmdir -p UniSyn/
 

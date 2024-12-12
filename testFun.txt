@@ -1,3 +1,5 @@
-main x :=
- if(x) x = 3
- else x = 4
+module F where
+ f x := do
+  x
+  y
+  return z

@@ -1,0 +1,53 @@
+--Haskell-style comments
+comment "--";
+comment "{-" "-}";
+
+--Ill see if merging Pat, T and E parsing solves reduce-reduce conflicts
+token UIdent (upper (letter | digit | '_')*);
+--No need to delete = or ., reserved words will handle :=, = and .field.
+token Infix ((["!#@$%&/?+*-^|:=.><"])+);
+
+layout "module";
+Module. M ::= "module" "{" [D] "}";
+separator D ";";
+--MCons. M ::= D M;
+--MNil. M ::= D;
+
+--layout ":=";
+Defun. D ::= Ident E3 ":=" S; --"{" [S] "}";
+--separator S ";";
+TySig. D ::= Ident ":" E;
+
+SE. S ::= E;
+If. S ::= "if" E "then" S "else" S "end";
+While. S ::= "while" "(" E ")" S;
+Return. S ::= "return" E;
+layout "do";
+Do. S ::= "do" "{" [S] "}";
+separator S ";";
+
+Assign. E ::= E3 "=" E1;
+Ops. E1 ::= E2 Infix OS;
+PrefixOp. E1 ::= Infix E1;
+--Ops. E1 ::= E1 Infix E2;
+App. E2 ::= E2 E3;
+Var. E3 ::= Ident;
+Con. E3 ::= UIdent;
+Dot. E3 ::= E3 "." Ident;
+Int. E3 ::= Integer;
+EmptyTup. E3 ::= "(" ")";
+Tup. E3 ::= "(" E "," [E] ")";
+separator E ",";
+EmptyStruct. E3 ::= "{" "}";
+EStruct. E3 ::= "{" [Field] "}";
+separator nonempty Field ",";
+Wild. E3 ::= "_";
+coercions E 3;
+
+--Op sequence
+OSNil. OS ::= E2;
+OSCons. OS ::= E2 Infix OS;
+
+--Struct fields
+Named. Field ::= Ident ":" E;
+Anon. Field ::= E;

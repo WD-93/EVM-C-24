@@ -1,12 +1,12 @@
 all:
-	happy -gca UniSyn/Par.y
-	alex -g UniSyn/Lex.x
-	ghc --make UniSyn/Test.hs -o UniSyn/Test
+	happy -gca E/Par.y
+	alex -g E/Lex.x
+	ghc --make E/Test.hs -o E/Test
 
 clean:
-	-rm -f UniSyn/*.log UniSyn/*.aux UniSyn/*.hi UniSyn/*.o UniSyn/*.dvi
+	-rm -f E/*.log E/*.aux E/*.hi E/*.o E/*.dvi
 
 distclean: clean
-	-rm -f UniSyn/Doc.* UniSyn/Lex.* UniSyn/Par.* UniSyn/Layout.* UniSyn/Skel.* UniSyn/Print.* UniSyn/Test.* UniSyn/Abs.* UniSyn/Test UniSyn/ErrM.* UniSyn/SharedString.* UniSyn/ComposOp.* UniSyn/UniSyn.dtd UniSyn/XML.* Makefile*
-		-rmdir -p UniSyn/
+	-rm -f E/Doc.* E/Lex.* E/Par.* E/Layout.* E/Skel.* E/Print.* E/Test.* E/Abs.* E/Test E/ErrM.* E/SharedString.* E/ComposOp.* E/E.dtd E/XML.* Makefile*
+		-rmdir -p E/
 

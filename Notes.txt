@@ -1,8 +1,28 @@
+If the bool and n params of T.Int were :: T, you could have template polymorphism.
+That would also let me fit Int, Ptr, Map and user types in a single framework...
+(->) :: * -> * -> * isn't an odd one out if it's not reused for kinds.
+T = Con | t $ t | Int | struct --True, False, regions are cons
+Where should repeated struct names be caught as an error, if at all? 
+
+Op ordering is preserved in parsed text... for now have default fixity mapping.
+
+Move := to E maybe... but none of the memory regions support x = v well; only stack lets you get the old word
+for free. For now, just error if it's in an E.
+
 Remember the target: compile
 main : () -> ()
 main () = return ()
 all the way from source. Do the absolute minimum for that.
 First step: CST -> AST.
+
+OK, now I've got a basic grammar. Next: import it.
+:show paths
+:set -iC:\<path to repo>\UniSyn
+
+Is *ptr + 5 => * (ptr + 5) the behavior I desire? Yes, it's hard to see how to avoid it while
+having both Haskell application and infix operators; consider f * ptr.
+
+****
 
 For now, just place call continuations in the same SLC? Do all ops before cont split anyway.
 AST -> IR -> CFG
