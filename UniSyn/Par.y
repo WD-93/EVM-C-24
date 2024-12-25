@@ -8,35 +8,38 @@ import UniSyn.ErrM
 
 }
 
+%name pModule Module
 %name pD D
-%name pListS ListS
 %name pS S
-%name pE1 E1
-%name pListE ListE
-%name pE E
+%name pListS ListS
+%name pE3 E3
 %name pE2 E2
+%name pE E
+%name pE1 E1
 -- no lexer declaration
 %monad { Err } { thenM } { returnM }
 %tokentype {Token}
 %token
   '(' { PT _ (TS _ 1) }
   ')' { PT _ (TS _ 2) }
-  ',' { PT _ (TS _ 3) }
-  ':' { PT _ (TS _ 4) }
-  ':=' { PT _ (TS _ 5) }
-  ';' { PT _ (TS _ 6) }
-  '=' { PT _ (TS _ 7) }
-  'S' { PT _ (TS _ 8) }
-  'else' { PT _ (TS _ 9) }
-  'if' { PT _ (TS _ 10) }
-  'return' { PT _ (TS _ 11) }
-  'while' { PT _ (TS _ 12) }
-  '{' { PT _ (TS _ 13) }
-  '}' { PT _ (TS _ 14) }
+  ':' { PT _ (TS _ 3) }
+  ':=' { PT _ (TS _ 4) }
+  ';' { PT _ (TS _ 5) }
+  'do' { PT _ (TS _ 6) }
+  'else' { PT _ (TS _ 7) }
+  'end' { PT _ (TS _ 8) }
+  'if' { PT _ (TS _ 9) }
+  'return' { PT _ (TS _ 10) }
+  'testE' { PT _ (TS _ 11) }
+  'then' { PT _ (TS _ 12) }
+  'while' { PT _ (TS _ 13) }
+  '{' { PT _ (TS _ 14) }
+  '}' { PT _ (TS _ 15) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
 L_UIdent { PT _ (T_UIdent $$) }
+L_Infix { PT _ (T_Infix $$) }
 
 
 %%
@@ -44,38 +47,35 @@ L_UIdent { PT _ (T_UIdent $$) }
 Ident   :: { Ident }   : L_ident  { Ident $1 }
 Integer :: { Integer } : L_integ  { (read ( $1)) :: Integer }
 UIdent    :: { UIdent} : L_UIdent { UIdent ($1)}
+Infix    :: { Infix} : L_Infix { Infix ($1)}
 
+Module :: { Module }
+Module : 'testE' E { UniSyn.Abs.TestE $2 }
 D :: { D }
-D : Ident ':' E { UniSyn.Abs.TySig $1 $3 }
-  | Ident E1 ':=' '{' ListS '}' { UniSyn.Abs.Defun $1 $2 $5 }
+D : E2 ':' E { UniSyn.Abs.TySig $1 $3 }
+  | Ident E2 ':=' S { UniSyn.Abs.Defun $1 $2 $4 }
+S :: { S }
+S : E { UniSyn.Abs.SE $1 }
+  | 'return' E { UniSyn.Abs.Return $2 }
+  | 'if' E 'then' S 'else' S 'end' { UniSyn.Abs.Ifte $2 $4 $6 }
+  | 'while' '(' E ')' S { UniSyn.Abs.While $3 $5 }
+  | 'do' '{' ListS '}' { UniSyn.Abs.Do $3 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
       | S ';' ListS { (:) $1 $3 }
-      | {- empty -} { [] }
-      | S { (:[]) $1 }
-      | S ';' ListS { (:) $1 $3 }
-S :: { S }
-S : 'S' { UniSyn.Abs.PlaceholderS }
-  | E1 '=' E { UniSyn.Abs.Assign $1 $3 }
-  | 'return' E { UniSyn.Abs.Return $2 }
-  | 'if' '(' E ')' S { UniSyn.Abs.If $3 $5 }
-  | 'else' S { UniSyn.Abs.Else $2 }
-  | 'while' '(' E ')' S { UniSyn.Abs.While $3 $5 }
-  | '{' ListS '}' { UniSyn.Abs.Do $2 }
-E1 :: { E }
-E1 : Integer { UniSyn.Abs.EInt $1 }
+E3 :: { E }
+E3 : Integer { UniSyn.Abs.EInt $1 }
    | Ident { UniSyn.Abs.EVar $1 }
    | UIdent { UniSyn.Abs.ECon $1 }
    | '(' ')' { UniSyn.Abs.EEmptyTup }
-   | '(' E ',' ListE ')' { UniSyn.Abs.ETup $2 $4 }
-   | E2 { $1 }
-ListE :: { [E] }
-ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
+   | '(' E ')' { $2 }
+E2 :: { E }
+E2 : E2 E3 { UniSyn.Abs.EApp $1 $2 } | E3 { $1 }
 E :: { E }
 E : E1 { $1 }
-E2 :: { E }
-E2 : '(' E ')' { $2 }
+E1 :: { E }
+E1 : E2 { $1 }
 {
 
 returnM :: a -> Err a

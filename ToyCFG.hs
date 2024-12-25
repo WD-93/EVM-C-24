@@ -10,6 +10,44 @@ import Control.Monad.State
 import DTs (Name(..))
 import IR1
 
+--To pretty-print CFGs in Pretty.hs I need to present them in a logical order;
+--I choose DFS from the function entry point. It makes sense to put the code
+--to DFS the graph here.
+--Errors if there is an edge to a nonexistent node; shows only the nodes
+--reachable from the entry point.
+dfsGraph :: (Show k, Show v, Ord k, Ord v) =>
+ (v -> [k]) -> --how to interpret nodes to get their out-edges
+  k -> --the key to start from
+  Map k v -> --the graph
+  [(k,v)] --the reachable mappings in DFS order
+dfsGraph edg k m =
+  case runState (dfsGraphM edg m k) ([],S.empty) of
+    (_,(vs,_set)) -> reverse vs --a poor man's writer monad
+dfsGraphM :: (Show k, Show v, Ord k, Ord v) => (v -> [k]) -> Map k v -> k ->
+  State ([(k,v)],Set k) ()
+dfsGraphM edg m k = do
+  (kvs,visited) <- get
+  if S.member k visited
+    then return ()
+    else case M.lookup k m of
+    Nothing -> error $ "Eh!? Edge to nowhere in dfsGraph: " ++
+               show (k,m)
+    Just v -> do
+      --emit v and mark as visited
+      put ((k,v):kvs,S.insert k visited)
+      mapM_ (dfsGraphM edg m) (edg v)
+--TODO ensure this isn't duplicated
+slcChildren :: SLC nm -> [Label]
+slcChildren slc = branchChildren $ slcBranch slc
+branchChildren = \case
+  Jump l -> [l]
+  Jumpi _ th el -> [th,el]
+  BReturn _ -> []
+--dfsGraph specialized to CFGS
+dfsCFG :: (LL,CFGS) -> [(Label,SLC Name)]
+dfsCFG ((lab,_),cfgs) | lab2slc <- labelSLCMap cfgs =
+                dfsGraph slcChildren lab lab2slc 
+
 --For experimenting with how to simultaneously generate CFG and tag each SLC
 --with live vars.
 --type Name = String
@@ -257,6 +295,24 @@ createSLC l slc = do
   case M.lookup l $ labelSLCMap s of
     Nothing -> put s{labelSLCMap = M.insert l slc $ labelSLCMap s}
     Just slc' -> error $ "Label collision: " ++ show (l,slc,slc')
+
+--Now what?
+--1) Elim unreachable nodes
+--2) Elim empty intermediate nodes
+--3) Fuse SLCs which jump
+--SSA, add version count to name.
+--Elim copies
+--Any var not set in a loop has a finite-size description? If you allow
+--ifte...
+--When two vars have the same description, they can be merged (though in the
+--case of small constants that need not be efficient).
+
+--Stack-aware stage:
+--Select word order; that requires emitting ops
+--Always consume on last use
+--Insert intermediate nodes for stack shuffling
+--Convert best jumpi else or jump to a fallthrough per SLC.
+    
 {-
 --Testing a simpler, multi-stage CFG construction method: compile to sequential
 --instructions a la Ecomp, then construct a CFG from that.

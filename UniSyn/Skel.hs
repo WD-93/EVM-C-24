@@ -15,17 +15,21 @@ transIdent x = case x of
 transUIdent :: UIdent -> Result
 transUIdent x = case x of
   UIdent string -> failure x
+transInfix :: Infix -> Result
+transInfix x = case x of
+  Infix string -> failure x
+transModule :: Module -> Result
+transModule x = case x of
+  TestE e -> failure x
 transD :: D -> Result
 transD x = case x of
-  TySig ident e -> failure x
-  Defun ident e ss -> failure x
+  TySig e1 e2 -> failure x
+  Defun ident e s -> failure x
 transS :: S -> Result
 transS x = case x of
-  PlaceholderS -> failure x
-  Assign e1 e2 -> failure x
+  SE e -> failure x
   Return e -> failure x
-  If e s -> failure x
-  Else s -> failure x
+  Ifte e s1 s2 -> failure x
   While e s -> failure x
   Do ss -> failure x
 transE :: E -> Result
@@ -34,5 +38,5 @@ transE x = case x of
   EVar ident -> failure x
   ECon uident -> failure x
   EEmptyTup -> failure x
-  ETup e es -> failure x
+  EApp e1 e2 -> failure x
 

@@ -9,20 +9,17 @@ module UniSyn.Abs where
 
 newtype Ident = Ident String deriving (Eq, Ord, Show, Read)
 newtype UIdent = UIdent String deriving (Eq, Ord, Show, Read)
-data D = TySig Ident E | Defun Ident E [S]
+newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
+data Module = TestE E
   deriving (Eq, Ord, Show, Read)
 
-data S
-    = PlaceholderS
-    | Assign E E
-    | Return E
-    | If E S
-    | Else S
-    | While E S
-    | Do [S]
+data D = TySig E E | Defun Ident E S
+  deriving (Eq, Ord, Show, Read)
+
+data S = SE E | Return E | Ifte E S S | While E S | Do [S]
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = EInt Integer | EVar Ident | ECon UIdent | EEmptyTup | ETup E [E]
+    = EInt Integer | EVar Ident | ECon UIdent | EEmptyTup | EApp E E
   deriving (Eq, Ord, Show, Read)
 

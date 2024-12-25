@@ -64,9 +64,9 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    [] -> hGetContents stdin >>= run 2 pD
-    "-s":fs -> mapM_ (runFile 0 pD) fs
-    fs -> mapM_ (runFile 2 pD) fs
+    [] -> hGetContents stdin >>= run 2 pModule
+    "-s":fs -> mapM_ (runFile 0 pModule) fs
+    fs -> mapM_ (runFile 2 pModule) fs
 
 
 

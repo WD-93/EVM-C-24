@@ -1,9 +1,11 @@
+{-# LANGUAGE PatternSynonyms, OverloadedStrings #-}
 module DTs where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.Reader
 import Control.Monad.State
+import Data.String (IsString(..))
 --TODO split into DTs etc files
 --TODO add BNFC syntax to repo
 --Start: absolutely minimal complete pipeline
@@ -26,18 +28,37 @@ tupleE :: [E] -> E
 tupleE = EStruct . tupleF
 tupleF :: [e] -> [(Padding,Maybe Name,e)]
 tupleF = map (\x -> (WordPad,Nothing,x))
-data T = Int Bool Int --signedness, bitsize
-       | T :-> T
+--Design change: generic structure rather than one constructor per type
+instance IsString T where
+  fromString = TyCon
+instance Num T where
+  fromInteger = TyNat
+  (+) = undefined
+  (-) = undefined
+  (*) = undefined
+  abs = undefined
+  signum = undefined
+pattern SInt n = Int "Signed" n
+pattern UInt n = Int "Unsigned" n
+pattern Int s n = "Int" :$$ s :$$ TyNat n
+pattern a :-> b = "->" :$$ a :$$ b
+--I should perhaps have separated structs and tuples after all...
+pattern Pair a b = Struct [(WordPad,Nothing,a),(WordPad,Nothing,b)]
+data T = TyCon Name
+       | T :$$ T
+       | TyNat Integer --for bitlens, array lens etc
        | Struct [(Padding, Maybe Name, T)]
        -- | Ptr Region T
   deriving (Eq,Ord,Read,Show)
 tupleT = Struct . tupleF
+{-
 data Region = Memory
             | Calldata
             | Returndata
             | Storage
             | Code
   deriving (Eq,Ord,Read,Show)
+-}
 --TODO generic instance
 data S = Pat := E
        | Return E
@@ -47,7 +68,7 @@ data S = Pat := E
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
          | PVar Name
-         | PStruct [Either (Name,Pat) Pat]
+         | PStruct [(Maybe Name, Pat)]
          | PTup [Pat] --rhs must have exactly that many fields and it
          --must be a tuple (word-padded with default names)
   deriving (Eq,Ord,Read,Show)

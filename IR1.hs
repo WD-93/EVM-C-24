@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, GADTs #-}
+{-# LANGUAGE LambdaCase, GADTs, OverloadedStrings #-}
 module IR1 where
 
 import Data.Map (Map(..))
@@ -100,6 +100,32 @@ data SeqR = SR {
   seqrFunction :: D
                }
   deriving (Eq,Ord,Read,Show)
+--Top-level function: given a module, generates the IR for each function.
+--Pruning based on actual calls made from main can be done later.
+--FW problem: the IR output may need additional info for placement, such as
+--whether the code is a library, exported functions and JTs
+data IRModule = IRM {
+  irDefuns :: Map Name [IR]
+  }
+  deriving (Eq,Ord,Read,Show)
+seqModule :: Module -> Either SeqError IRModule
+seqModule mod = do
+  let fdefs = M.toList $ defuns mod
+  irdefs <- mapM (\(fnm,defun) ->
+                    let seqr = SR {seqrModule = mod,
+                                   seqrFunction = defun
+                                  }
+                        seqs = SS {irLocalTypes = M.empty,
+                                   cLocalTypes = M.empty,
+                                   anonVarCounter = 0
+                                  }
+                    in case runSeq (seqDefun defun) seqr seqs of
+                         (Left serr, _, _) -> Left serr
+                         (Right (), irs, _seqs) -> return (fnm,irs)
+                 )
+            fdefs
+  return $ IRM {irDefuns = M.fromList irdefs}
+
 askModule :: Seq Module
 askModule = seqrModule <$> ask
 askReturnType :: Seq T
@@ -135,12 +161,18 @@ seqDefun (Defun f ft pat body) =
       --Match argument against lhs
       args <- anonVarsT a
       patternMatch pat a args
-      mapM_ seqS body
       --The return address $ret is also in IR scope; it's a word
       putIRVarType "$ret" tword
       --The memory state variable $mem is necessary for tracking dependency
       --on memory side effects.
       putIRVarType "$mem" Mem
+      mapM_ seqS body
+      --There's always an implicit return at the end of a function body,
+      --returning a null value.
+      --Todo deduplicate so I don't accidentally miss adding new virtual state
+      --params (storage etc) when I modify return in seqS.
+      zws <- askReturnType >>= nullValue
+      emit $ IR1.Return () $ ["$mem","$ret"] ++ zws
     _ -> throwE $ BadFunctionType f ft
 
 --Args: Pattern, C type of rhs, words of rhs.
@@ -169,6 +201,10 @@ patternMatch p t ws =
         IsUnbound -> do
           putCLocalVarType x t
           assign x ws
+    --{p1,p2} = s => p1 = select 1 s, p2 = select 2 s...
+    --{field: p} = s => p = s.field
+    PStruct fs ->
+      error "TODO"
     --Like pstruct {x,y,z}, but requires t is a tuple
     PTup ps ->
       case unTupleT t of
@@ -179,6 +215,9 @@ patternMatch p t ws =
               wss <- splitTupleIntoFields ts ws
               sequence_ [patternMatch p t ws
                          | ((p,t),w) <- zip ps ts `zip` wss]
+--Tuples are a special case of structs  where each field is in a separate set
+--of stack words.
+splitTupleIntoFields :: [T] -> [Name] -> Seq [[Name]]
 splitTupleIntoFields ts ws =
   case (ts,ws) of
     ([],[]) -> return []
@@ -197,12 +236,12 @@ splitTupleIntoFields ts ws =
     takeDrop n (x:xs) =
       let (as,bs) = takeDrop (n-1) xs
       in (x:as,bs)
-    {-
-    takeDrop n = takeDrop' n []
-    takeDrop' 0 xs ys = (reverse xs,ys)
-    takeDrop' n xs [] = error "Compiler error: too few ws in splitTuple..."
-    takeDrop' n xs (y:ys) = takeDrop' (n-1) (y:xs) ys
--}
+--The word-level implementation of selecting the nth struct field of a struct
+--(represented as words on the stack).
+--T, [Name] is the struct type and its on-stack repr
+--If it's not a struct type, fail.
+structSelect :: Int -> T -> [Name] -> Seq (T,[Name])
+structSelect = undefined
 
 --Given a number of words equal to t's word size, coerces them to t
 coerceT :: T -> [Name] -> Seq [Name]
@@ -312,9 +351,24 @@ seqE = \case
                        | i <- [1..n]]
         return (t,ws)
       IsUnbound -> throwE $ UnboundVar nm
-  --Two cases: f is a primfun or an ordinary expr. For now, just support
-  --ordinary application.
-  --Args: $mem,f,argws
+      _ -> error $ "Compiler error: unexpected ni in seqE (Var) " ++ show(ni,nm)
+  --Two cases: f is a primfun or an ordinary expr.
+  --For now, primfuns can only be fully applied, making them akin to syntactic
+  --constructs. Since standalone primfuns would need to be monomorphized,
+  --perhaps make that permanent.
+  --Infix application a + b => +(a,b), i.e. + is applied to a single tuple.
+  --The same name in source may compile to different primfun names at this
+  --level; consider *_ (deref) and _*_ (multiplication).
+  --But for now I'll just look at the argument type and form to dispatch.
+  --Note you can't always eval the arg first; consider a && b.
+  --Primfun names may neither be assigned nor defined to, so I don't need to
+  --worry about shadowing.
+  --Simple primfuns, no short-circuiting:
+  Var pf :$ x
+    | Just scheme <- M.lookup pf simplePFs -> do
+        (tx,wsx) <- seqE x
+        scheme tx wsx
+  --Ordinary (proper) function application; Args: $mem,f,argws
   --Potential future feature: support for a closure type.
   f :$ x -> do
     (tf,wsf) <- seqE f
@@ -340,6 +394,41 @@ seqE = \case
   --order.
   EStruct padnmes -> buildStruct padnmes
   _ -> error "TODO"
+
+--The compilation schemes for simple primfuns (where their argument is evaluated
+--normally rather than short-circuited).
+--Badargs should lead to a Seq exception.
+simplePFs :: Map Name (T -> [Name] -> Seq (T,[Name]))
+simplePFs = M.fromList [
+  --C has unary +, but it's pretty vestigial... I'll just ignore it
+  ("+",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
+          pfMathOp "add" t1 t2 (w1,w2)
+        _ -> undefined)
+                       ]
+{-
+Mathop rules:
+If both are ints, result has max len of both and is signed if either arg is.
+Smaller ints must be soft-coerced to the longer type.
+If the len of the result is < 256, you must mask it.
+-}
+maxIntType :: T -> T -> T
+maxIntType (Int s1 l1) (Int s2 l2) = Int (if "Signed" `elem` [s1,s2]
+                                           then "Signed"
+                                           else "Unsigned") (max l1 l2)
+pfMathOp :: String -> T -> T -> (Name,Name) -> Seq (T,[Name])
+pfMathOp opcode int1@(Int{}) int2@(Int{}) (w1,w2) = do
+  let tres = maxIntType int1 int2
+  ws1 <- softCoerce tres int1 [w1]
+  ws2 <- softCoerce tres int2 [w2]
+  (v,_) <- runEDSL $ op2 opcode (EVar $ ws1 !! 0) (EVar $ ws2 !! 0)
+  --Mask if len < 256b
+  let Int _ len = tres
+  w <- if len < 256
+       then fst <$> (runEDSL $ mask (fromInteger len) $ EVar v)
+       else return v
+  return (tres,[v])
 
 truthyE :: E -> Seq Name
 truthyE e = do
@@ -392,8 +481,8 @@ softCoerce target source ws
     Int s2 len2 <- source,
     [w] <- ws =
       case () of
-        _ | len1 < len2 -> runEDSLWord $ len1 `lowestBits` (EVar w)
-          | len1 > len2, s1 ->
+        _ | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
+          | len1 > len2, s1 == "Signed" ->
             runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
           | let -> runEDSLWord $ coerce (Word 1 target) (EVar w)
   --For now, no general struct coercion, only tuple -> tuple
@@ -500,9 +589,14 @@ buildStructWord st (n,shiftws) = do
 --field values (bitlen, words) -> [struct word recipe]
 structLayout :: [(Int,[Name])] -> [[(Int,Name)]]
 structLayout bszwss =
-  let pwords = splitFields $ reverse $ map (\(bsz,ws) -> (bsz,reverse ws))bszwss
+  let pwords = prepareBSZWSS bszwss
       pwordoffs = computeOffsets pwords
   in reverse $ map reverse $ divideIntoWords pwordoffs
+--I forget what this does but I'm factoring it out of structLayout so I can
+--understand the bug I'm hunting
+--Reverses the fields and their composite words for computeOffsets.
+prepareBSZWSS bszwss =
+  splitFields $ reverse $ map (\(bsz,ws) -> (bsz,reverse ws))bszwss
 --Given a bitsize and the reversed list of vars of a value, give each a
 --bitlen (all but the last is 256).
 splitIntoPartialWords :: (Int,[Name]) -> [(Int,Name)]
@@ -538,8 +632,11 @@ takeBits' accum off = \case
   --If the word overlaps with the range off..off+255, include it in accum
   --If it extends beyond, don't consume it and stop collecting words
   (o,l,w) : olws
+    --The word starts outside the 256b range we're taking
     | o-off > 255 -> (reverse accum,(o,l,w):olws)
-    | o-off+l > 255 -> (reverse $ (o-off,w) : accum, (o,l,w) : olws)
+    --The word starts inside, but ends outside
+    | o-off+l > 256 -> (reverse $ (o-off,w) : accum, (o,l,w) : olws)
+    --It starts and ends inside
     | o-off+l >= 0 -> takeBits' ((o-off,w):accum) off olws
   [] -> (reverse accum,[])
   olws -> (reverse accum,olws)
@@ -604,7 +701,7 @@ typedAnonVar irt = do
 type Expr = EDSL EVar
 word :: Integer -> Expr
 word k = head <$> App (Push $ Const k) (\_ -> Just [tword]) []
-tword = Word 1 (Int False 256)
+tword = Word 1 (UInt 256)
 --Coerces an arbitrary var to a var of another type; ignores kind so mem
 --can be coerced to word and vice versa!
 coerce :: IRT -> Expr -> Expr
@@ -616,6 +713,7 @@ coerce irt e = do
 shl :: Expr -> Expr -> Expr
 shl = op2 "shl"
 shr = op2 "shr"
+(&) = op2 "and"
 (.|) = op2 "or"
 op1 :: String -> Expr -> Expr
 op1 opcode a = do
@@ -633,8 +731,13 @@ signextend :: Expr -> Expr -> Expr
 signextend = op2 "signextend"
 
 --Using mask rather than shl, shr
+--For large fields this will generate a large amount of code; FW: opt for
+--program size
+--Synonym:
+mask :: Int -> Expr -> Expr
+mask = lowestBits
 lowestBits :: Int -> Expr -> Expr
-lowestBits len e = op2 "and" (word $ 2 ^ len - 1) e
+lowestBits len e = (word $ 2 ^ len - 1) & e
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
 --Consider (x,f(),x); use fields of tuple.
@@ -738,10 +841,11 @@ newAnonVar = do
 --expand it or replace with 0 - 1.
 typeOfInteger :: Integer -> T
 typeOfInteger n =
-  Int (n < 0) --it's signed iff it's negative
+  Int (n <? 0) --it's signed iff it's negative
   (min 256 $ 8 * (byteLen $ abs n))
   where byteLen 0 = 0
         byteLen n = 1 + byteLen (n `div` 256)
+        a <? b = if a < b then "Signed" else "Unsigned"
 
 data NameInfo = IsFunction T
               | IsPrimFun --no type specified because they're overloaded
@@ -749,7 +853,7 @@ data NameInfo = IsFunction T
               | IsUnbound
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
-primFunSet = S.fromList $ concat $ map words [
+primFunSet = M.keysSet simplePFs {-S.fromList $ concat $ map words [
   --Ptr primops
   "deref",
   --Mathops
@@ -759,7 +863,7 @@ primFunSet = S.fromList $ concat $ map words [
   --Bitops
   "& | ~ ^"
   --TODO: EVM ops
-  ]
+  ]-}
 
 getCNameInfo :: Name -> Seq NameInfo
 getCNameInfo nm
@@ -782,10 +886,11 @@ numWordsT t = do
   return $ (padTo 256 n) `div` 256
 numBitsT :: T -> Seq Int
 numBitsT = \case
-  Int _ n -> return n
+  Int _ n -> return $ fromInteger n
   a :-> b -> return 16
   Struct padnmts ->
      sum <$> mapM (\(pad,_,t) -> padWith pad <$> numBitsT t) padnmts
+  t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 padWith pad = padTo (case pad of
                        BitPad -> 1

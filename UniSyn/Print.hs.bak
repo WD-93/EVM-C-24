@@ -86,30 +86,40 @@ instance Print UIdent where
   prt _ (UIdent i) = doc (showString ( i))
 
 
+instance Print Infix where
+  prt _ (Infix i) = doc (showString ( i))
+
+
+
+instance Print Module where
+  prt i e = case e of
+    Mod uident ds -> prPrec i 0 (concatD [doc (showString "module"), prt 0 uident, doc (showString "where"), doc (showString "{"), prt 0 ds, doc (showString "}")])
+    TestE e_ -> prPrec i 0 (concatD [doc (showString "testE"), prt 0 e_])
+    TestS s -> prPrec i 0 (concatD [doc (showString "testS"), prt 0 s])
 
 instance Print D where
   prt i e = case e of
-    TySig id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
-    Defun id e_ ss -> prPrec i 0 (concatD [prt 0 id, prt 1 e_, doc (showString ":="), doc (showString "{"), prt 0 ss, doc (showString "}")])
-
+    TySig e_1 e_2 -> prPrec i 0 (concatD [prt 2 e_1, doc (showString ":"), prt 0 e_2])
+    Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 2 e_, doc (showString ":="), prt 0 s])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print S where
   prt i e = case e of
-    PlaceholderS -> prPrec i 0 (concatD [doc (showString "S")])
-    Assign e_1 e_2 -> prPrec i 0 (concatD [prt 1 e_1, doc (showString "="), prt 0 e_2])
+    SE e_ -> prPrec i 0 (concatD [prt 0 e_])
     Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
-    If e_ s -> prPrec i 0 (concatD [doc (showString "if"), doc (showString "("), prt 0 e_, doc (showString ")"), prt 0 s])
-    Else s -> prPrec i 0 (concatD [doc (showString "else"), prt 0 s])
+    Ifte e_ s1 s2 -> prPrec i 0 (concatD [doc (showString "if"), prt 0 e_, doc (showString "then"), prt 0 s1, doc (showString "else"), prt 0 s2, doc (showString "end")])
     While e_ s -> prPrec i 0 (concatD [doc (showString "while"), doc (showString "("), prt 0 e_, doc (showString ")"), prt 0 s])
+    Do ss -> prPrec i 0 (concatD [doc (showString "do"), doc (showString "{"), prt 0 ss, doc (showString "}")])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print E where
   prt i e = case e of
-    EInt n -> prPrec i 1 (concatD [prt 0 n])
-    EVar id -> prPrec i 1 (concatD [prt 0 id])
-    ECon uident -> prPrec i 1 (concatD [prt 0 uident])
-    EEmptyTup -> prPrec i 1 (concatD [doc (showString "("), doc (showString ")")])
-    ETup e_ es -> prPrec i 1 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
+    EInt n -> prPrec i 3 (concatD [prt 0 n])
+    EVar id -> prPrec i 3 (concatD [prt 0 id])
+    ECon uident -> prPrec i 3 (concatD [prt 0 uident])
+    EEmptyTup -> prPrec i 3 (concatD [doc (showString "("), doc (showString ")")])
+    EApp e_1 e_2 -> prPrec i 2 (concatD [prt 2 e_1, prt 3 e_2])
+
 

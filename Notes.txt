@@ -1,3 +1,108 @@
+SLC: Need to add strict ordering of writes *and reads* as a simpler version of each new write happening after
+previous reads. That would let writes take a fixed number of arguments... but so would each read after a
+particular write taking a mem and producing a read proof pN, st all read proofs must be merged into one.
+For now, just use strict ordering.
+
+An empty intermediate SLC can't be eliminated if it jumps to itself... but in that case it can be replaced
+with a revert(0,0).
+
+Single-SLC SSA: count uses and increment versions at the same time.
+x = copy y; rest --does not become a use; instead substitute x for y_n until next assignment to x.
+That requires keeping a subst map, since rest is not in SSA form.
+
+CFG ops: delete, insert, modify (implemented via delete and insert).
+Track in and out-edges.
+Jump->other with in-edges=1 => merge.
+For now just naively jump at the end of each SLC; do no CFG optimizations.
+
+If true block becomes block... but I don't need block statements just yet.
+When returning nullValue : (), push 0 is still emitted... but that's fine, it'll be optimized away.
+
+Most vital for now: SSA, treegraph, ops => stack scheduling with last-use pop, stack-aware CFG => asm, asm =>
+bytecode, JS util funs for deploying modules.
+For now I only use SSA for copy elim.
+---
+
+Bugs:
+Incorrect tuple generation, (w1,w2) becomes w1 >> 256, w2 >> 256 | w1!? It's correct for {1,2}, but
+incorrect for {1,w}. The problem is in structLayout: [(256,"x")] becomes a 2-word struct.
+divideIntoWords [(0,256,"x")] generates two words - IC see the off-by-one error, the last bit of x is 255.
+(fixed)
+No implicit returns (fixed)
+Note: truthy on one word should just be a copy. Truthy on none should be 0.
+Idea for simple ppr: just convert back to CST
+Need to add coerce
+
+Elim dup on last use is the single most critical opt I need - otherwise the stack explodes as I keep
+allocating new anon vars.
+Once I've SSA'd (separately for each SLC), each var is associated with a producing op and multiple
+consumers.
+$mem doesn't get consumed by mload... but it does get replaced by mstore. All loads which depend on $memN
+must be done before $mem(N+1) is produced.
+Use naive treegraph approach, don't try to run free ops or partially execute reduces.
+For the start layout per node, init for entrypoint and set other starts arbitrarily to the end layout of the
+first jump/i to it. That may lead to situations where the first jump could have just done its idiosyncratic
+shuffling... FW: given exec frequencies, reconcile stack shuffles of all jump origins.
+Layout is tied to op exec order... it's all connected, so need generic opt algo.
+
+Desired compiler-building framework features:
+Add stack of context to monad for better error reporting. Anonymous "constructors" for error messages?
+Con :: Typeable data => String -> data -> Err
+A generic iterated opt-application algo. Local opt guided by heuristics, compared against global consequences.
+
+Dataflow at the IR level: op, while, ifte, break, continue, return.
+A write to a var that's not live can be ignored... furthermore, if the var is not relevant to any of the
+output vars of the loop it can also be ignored.
+Split ops into v = op[n]? Either SSA or assigning a UID per op is then required.
+read and written per block are easy to get... dataflow is written => its read.
+DF is not a property of code (which may have multiple returns) but a path in that code.
+Each leaf will have its own DF.
+
+Prune loops which have no leaves? Problem: functions may stop. Don't prune for now...
+Potential effects: mem writes, persistent writes, RETURN.
+Revert and invalid are externally observable, so they also count...
+You could have a subtyping system to track effects... f1 or f2 : union t(f1) t(f2). FW...
+
+C seems more relaxed about eval order than I thought... maybe I should be as well in future.
+
+How to search for efficient schedulings and opts? Perhaps at random... I only need to pop last-uses within a
+SLC for now; use any topological sort of instrs.
+Functions can be converted to IR, CFG and then asm individually.
+What features does a standalone module need? Exports: main at zero, exported funs, JTs, code arrays, globals.
+
+What's the tricky remaining part? Live is done, SSA is trivial. Live implies >= 1 use, so last-use opt can be
+done on a per-SLC basis.
+With naive op scheduling, start layout of dest = current layout if one hasn't been set already.
+The function entrypoint has a fixed layout.
+If the layouts of two ifte dests conflict, introduce an intermediate SLC in the stack-aware CFG.
+Opts: eliminate intermediate empty SLCs.
+
+Static pointers instead of mem, storage globals could simplify var compilation - they'd only be locals or
+static constants. It would also make costly accesses to them explicit, and make single-value globals consistent
+with arrays.
+
+Immediate plan: revamp T, complete CST->AST
+FW: introduce UInt, SInt type synonyms.
+Implement minimal primfuns. Continue pipeline to CFG.
+Vital opt: last-use pop. Drop constant sharing and expansion, dataflow pruning.
+
+Kinds: Nat, Region (used by Ptr), Signedness (used by Int), Universe n / Type, k -> k
+But no need for a kind check for now; I just need to check types are *.
+Without params, user-defined types are just *, as are all types in function bodies.
+Future use of param: objects containing multiple ptrs with a shared region r.
+Type synonyms can be expanded without doing a kind check, though do check for cycles.
+Require tysyns are fully applied, preventing Y combinator attack; they're macros, not true type constructors.
+
+Perhaps = could be subsumed by ordinary operators... a.b.c += f x --parses as intended
+arr !! ix = v --(arr !! ix) = v
+
+Ah: eval ordering matters due to memory side effects. The emitted IR modifies $mem, so it must be emitted in
+the correct order. The natural order for the EVM is right-to-left. I'll just use the implicit order for now.
+
+Should struct patterns be able to specify padding?
+Oh no: padding size should perhaps depend on all subsequent fields, so bitfield {a,b,c} becomes
+bytepad a, bitpad b, bitpad c. Otherwise a bitpadded bit would misalign all subsequent fields...
+
 If the bool and n params of T.Int were :: T, you could have template polymorphism.
 That would also let me fit Int, Ptr, Map and user types in a single framework...
 (->) :: * -> * -> * isn't an odd one out if it's not reused for kinds.

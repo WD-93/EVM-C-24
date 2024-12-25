@@ -1,11 +1,89 @@
---I'll see if merging Pat, T and E parsing solves reduce-reduce conflicts
+--Ill see if merging Pat, T and E parsing solves reduce-reduce conflicts
 token UIdent (upper (letter | digit | '_')*) ;
+--No need to delete = or ., reserved words will handle :=, = and .field.
+token Infix ((["!#@$%&/?+*-^|:=."])+);
 
-TySig. D ::= Ident ":" E;
-layout ":=";
-Defun. D ::= Ident E1 ":=" "{" [S] "}";
+--What should the top-level syntax for modules be? Ideally an aligned list of
+--decls, but that may not be viable...
+--TODO add proper module system: imports, exports...
+
+--layout "where";
+--Mod. Module ::= "module" UIdent "where" "{" [D] "}";
+--separator D ";";
+TestE. Module ::= "testE" E;
+--TestS. Module ::= "testS" S;
+
+TySig. D ::= E2 ":" E;
+--Ill try merging statements and blocks thereof into E
+Defun. D ::= Ident E2 ":=" S; --E;
+
+SE. S ::= E;
+Return. S ::= "return" E;
+Ifte. S ::= "if" E "then" S "else" S "end";
+While. S ::= "while" "(" E ")" S;
+layout "do";
+Do. S ::= "do" "{" [S] "}";
 separator S ";";
 
+--Exprs:
+--Precedence: operators, prefix application, leaves
+--struct.f x => (struct.f) (x)
+--f x.field => f (x.field)
+--a * b => mul a b, not a (*b). *b must be an E0.
+--Have an open set of prefix ops?
+--Rather than set operator precedence in BNFC, make an operations rule.
+--Also, a repeated application rule?
+
+--Leaves
+EInt. E3 ::= Integer;
+EVar. E3 ::= Ident;
+ECon. E3 ::= UIdent;
+EEmptyTup. E3 ::= "(" ")";
+EApp. E2 ::= E2 E3;
+coercions E 3;
+{-
+--Testing operators, Haskell-style application
+EVar. E4 ::= Ident;
+EDot. E4 ::= E4 "." Ident;
+EApp. E1 ::= E1 E2;
+--e op e... op e
+EOps. E ::= E1 Infix OpSequence;
+coercions E 4;
+
+OSNil. OpSequence ::= E1;
+OSCons. OpSequence ::= E1 Infix OpSequence;
+-}
+{-
+EEmptyStruct. E2 ::= "{" "}";
+--Tuples with >= 2 elements (no syntactic support for Singleton a)
+ETup. E2 ::= "(" E "," [E] ")";
+separator nonempty E ",";
+--Nonempty structs
+EStruct. E2 ::= "{" [Field] "}";
+separator nonempty Field ",";
+--Do notation, used for blocks
+layout "do";
+Do. E2 ::= "do" "{" [ESynA] "}";
+separator ESynA ";";
+--Ifte, used for if-else and ternary exprs (TODO)
+Ifte. E2 ::= "if" E "then" E "else" E "end";
+While. E2 ::= "while" "(" E ")" E1;
+Return. E2 ::= "return" E;
+Assign. E1 ::= E2 "=" E1;
+TestOp. E2 ::= Infix;
+--Apply. E2 ::= E2 [E2];
+--separator nonempty E2 " ";
+coercions E 2;
+
+FieldNamed. Field ::= Ident ":" E;
+FieldAnon. Field ::= E;
+
+ESynA. ESynA ::= E;
+-}
+
+
+
+{-
 PlaceholderS. S ::= "S";
 Assign. S ::= E1 "=" E;
 Return. S ::= "return" E;
@@ -18,10 +96,5 @@ While. S ::= "while" "(" E ")" S;
 Do. S ::= "{" [S] "}";
 separator S ";";
 
-EInt. E1 ::= Integer;
-EVar. E1 ::= Ident;
-ECon. E1 ::= UIdent;
-EEmptyTup. E1 ::= "(" ")";
-ETup. E1 ::= "(" E "," [E] ")";
-separator nonempty E ",";
-coercions E 2;
+
+-}

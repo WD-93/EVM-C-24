@@ -21,13 +21,14 @@ $i = [$l $d _ ']          -- identifier character
 $u = [\0-\255]          -- universal: any character
 
 @rsyms =    -- symbols and non-identifier-like reserved words
-   \: | \: \= | \{ | \} | \; | \= | \( | \) | \,
+   \: | \: \= | \( | \) | \{ | \} | \;
 
 :-
 
 $white+ ;
 @rsyms { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 $c ($l | $d | \_)* { tok (\p s -> PT p (eitherResIdent (T_UIdent . share) s)) }
+[\! \# \@ \$ \% \& \/ \? \+ \* \- \^ \| \: \= \.]+ { tok (\p s -> PT p (eitherResIdent (T_Infix . share) s)) }
 
 $l $i*   { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 
@@ -51,6 +52,7 @@ data Tok =
  | TD !String         -- double precision float literals
  | TC !String         -- character literals
  | T_UIdent !String
+ | T_Infix !String
 
  deriving (Eq,Show,Ord)
 
@@ -86,6 +88,7 @@ prToken t = case t of
   PT _ (TD s)   -> s
   PT _ (TC s)   -> s
   PT _ (T_UIdent s) -> s
+  PT _ (T_Infix s) -> s
 
 
 data BTree = N | B String Tok BTree BTree deriving (Show)
@@ -99,7 +102,7 @@ eitherResIdent tv s = treeFind resWords
                               | s == a = t
 
 resWords :: BTree
-resWords = b "S" 8 (b ":" 4 (b ")" 2 (b "(" 1 N N) (b "," 3 N N)) (b ";" 6 (b ":=" 5 N N) (b "=" 7 N N))) (b "while" 12 (b "if" 10 (b "else" 9 N N) (b "return" 11 N N)) (b "}" 14 (b "{" 13 N N) N))
+resWords = b "end" 8 (b ":=" 4 (b ")" 2 (b "(" 1 N N) (b ":" 3 N N)) (b "do" 6 (b ";" 5 N N) (b "else" 7 N N))) (b "then" 12 (b "return" 10 (b "if" 9 N N) (b "testE" 11 N N)) (b "{" 14 (b "while" 13 N N) (b "}" 15 N N)))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 

@@ -23,21 +23,24 @@ Integer literals //Integer// are nonempty sequences of digits.
 
 
 
+
 UIdent literals are recognized by the regular expression
 `````upper (letter | digit | '_')*`````
+
+Infix literals are recognized by the regular expression
+`````["!#@$%&/?+*-^|:=."]+`````
 
 
 ===Reserved words and symbols===
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in UniSyn are the following:
-  | ``S`` | ``else`` | ``if`` | ``return``
-  | ``while`` |  |  | 
+  | ``do`` | ``else`` | ``end`` | ``if``
+  | ``return`` | ``testE`` | ``then`` | ``while``
 
 The symbols used in UniSyn are the following:
-  | : | := | { | }
-  | ; | = | ( | )
-  | , |  |  | 
+  | : | := | ( | )
+  | { | } | ; | 
 
 ===Comments===
 There are no single-line comments in the grammar.There are no multiple-line comments in the grammar.
@@ -48,30 +51,25 @@ The symbols -> (production),  **|**  (union)
 and **eps** (empty rule) belong to the BNF notation. 
 All other symbols are terminals.
 
-  | //D// | -> | //Ident// ``:`` //E// 
-  |  |  **|**  | //Ident// //E1// ``:=`` ``{`` //[S]// ``}`` 
+  | //Module// | -> | ``testE`` //E// 
+  | //D// | -> | //E2// ``:`` //E// 
+  |  |  **|**  | //Ident// //E2// ``:=`` //S// 
+  | //S// | -> | //E// 
+  |  |  **|**  | ``return`` //E// 
+  |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
+  |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
+  |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
-  |  |  **|**  | **eps**
-  |  |  **|**  | //S// 
-  |  |  **|**  | //S// ``;`` //[S]// 
-  | //S// | -> | ``S`` 
-  |  |  **|**  | //E1// ``=`` //E// 
-  |  |  **|**  | ``return`` //E// 
-  |  |  **|**  | ``if`` ``(`` //E// ``)`` //S// 
-  |  |  **|**  | ``else`` //S// 
-  |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
-  |  |  **|**  | ``{`` //[S]// ``}`` 
-  | //E1// | -> | //Integer// 
+  | //E3// | -> | //Integer// 
   |  |  **|**  | //Ident// 
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``(`` ``)`` 
-  |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
-  |  |  **|**  | //E2// 
-  | //[E]// | -> | //E// 
-  |  |  **|**  | //E// ``,`` //[E]// 
+  |  |  **|**  | ``(`` //E// ``)`` 
+  | //E2// | -> | //E2// //E3// 
+  |  |  **|**  | //E3// 
   | //E// | -> | //E1// 
-  | //E2// | -> | ``(`` //E// ``)`` 
+  | //E1// | -> | //E2// 
 
 
