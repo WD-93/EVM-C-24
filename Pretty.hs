@@ -112,3 +112,9 @@ showSLC (l,slc) =
       Jumpi v th el -> ["jumpi",v,show th,show el]
       BReturn vs -> ["return","(" ++ showRHS vs ++ ")"]
   ]
+
+--After SSA and copy elim
+--Nodes are generated in DFS order from start and then pruned for reachability,
+--so showing SLCs in reverse order should 
+showCFG2 :: Map Name (Label,Map Label SLC2) -> [String]
+showCFG2 = undefined

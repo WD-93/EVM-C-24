@@ -21,6 +21,26 @@ When returning nullValue : (), push 0 is still emitted... but that's fine, it'll
 Most vital for now: SSA, treegraph, ops => stack scheduling with last-use pop, stack-aware CFG => asm, asm =>
 bytecode, JS util funs for deploying modules.
 For now I only use SSA for copy elim.
+
+Where to detect and error on repeated uses of the same var in an op LHS? In IR.
+
+After tree shaking of ops in SLCs, the live set may be shrunk... consider an x = y op where x or y aren't used
+in the branch.
+Algo: for each SLC, tree shake. If the live set of any shrinks, repeat.
+That will not eliminate irrelevant vars which are used and modified in a loop.
+
+Currently the ppr only prints reachable SLCs, but in the SSA + copy elim phase I can include only those in
+the returned CFG. Contents: (SLC SSAName, versionMap, copySubstMap). In and out-edges?
+The CFG being accumulated also marks the SLCs you've already traversed.
+SLC merging algo: keep a stack of labels on the current DFS path? No need, in-edges=1 prevents loops.
+slc jump-> slc' with in-edges = 1 => merge slc slc' and their maps
+SLC bypass: 
+ if jump to slc with ops = [] and branch = jumpi, replace jump with jumpi
+ if jumpi to slc with ops = [] and branch = jump l in either then or else branch, replace that jumpi branch
+  with l
+Problem: in-edges may change due to the intermediate node being replaced by multiple nodes that jump to it.
+
+Next: for the name->pre-SSA CFG map, apply processCFG to each SLC in Compiler.
 ---
 
 Bugs:

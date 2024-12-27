@@ -6,6 +6,8 @@ import qualified Data.Set as S
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.State
+import Data.Maybe (fromMaybe)
+import Control.Monad.Reader
 
 import DTs (Name(..))
 import IR1
@@ -296,6 +298,160 @@ createSLC l slc = do
     Nothing -> put s{labelSLCMap = M.insert l slc $ labelSLCMap s}
     Just slc' -> error $ "Label collision: " ++ show (l,slc,slc')
 
+--First valid version: 1; 0 indicates not in scope
+type SSAName = (Int,Name)
+--For var in live, inc version from 0
+--For vars = op args in ops,
+-- replace each arg with ssaNm[arg]
+-- increment version of each var and then replace
+--For each var in branch, replace it with ssaNm[var]
+--Elim copies separately
+--The resulting SLC will have the meaning of its ops be order-independent,
+--but they'll be ordered st any (ver,x) in LHS precludes future use of
+--(ver-1,x)... until I elim copies. Future opts will need to take that into
+--account.
+--Why also save the version counter map? Because if you jump to an empty SLC
+--with branch jumpi v _ _ or return (v:_), you need to substitute those vs
+--correctly to merge them. That entails incrementing their versions and summing
+--the version count maps.
+ssaSLC :: SLC Name -> (SLC SSAName, Map Name Int)
+ssaSLC slc = runState
+  (do let ops = slcOps slc
+          b = slcBranch slc
+          live = slcLive slc
+      ops' <- mapM ssaOp ops
+      b' <- ssaBranch b
+      return $ SLC {slcOps = ops',
+                    slcBranch = b',
+                    slcLive = live
+                   })
+  --We set the version of all live vars to 1 here
+  (M.fromSet (const 1) (slcLive slc))
+type SSA = State (Map Name Int)
+type SSAOp = ([(SSAName,IRT)],Operator,[SSAName])
+--TODO opt: eliminate double seek in map per nm increment+lookup
+ssaOp :: ([(Name,IRT)],Operator,[Name]) ->
+         SSA SSAOp
+ssaOp (nmts,op,args) = do
+  ssargs <- mapM ssaNm args
+  ssanmts <- mapM (\(nm,t) -> do
+                      incVer nm
+                      ssanm <- ssaNm nm
+                      return (ssanm,t)
+                  ) nmts
+  return (ssanmts,op,ssargs)
+ssaBranch :: Branch Name -> SSA (Branch SSAName)
+ssaBranch = \case
+  Jumpi v th el -> Jumpi <$> ssaNm v <*> return th <*> return el
+  BReturn vs -> BReturn <$> mapM ssaNm vs
+  Jump l -> return $ Jump l
+ssaNm :: Name -> SSA SSAName
+ssaNm nm = do
+  v <- getVer nm
+  return (v,nm)
+getVer :: Name -> SSA Int
+getVer nm = do
+  mv <- M.lookup nm <$> get
+  return $ case mv of
+             Nothing -> 0
+             Just v -> v
+--Increment name version count; done on assignment
+incVer :: Name -> SSA ()
+incVer nm = do
+  v <- getVer nm
+  s <- get
+  put $ M.insert nm (v+1) s
+
+--Doesn't need to modify the version count map; the same map guarantees
+--uniqueness even if you elim vars.
+--For each xN = copy yM in ops, substitute subsequent xN's for yM and elim
+--the copy op.
+--When x(N+1) is encountered in a LHS, xN is out of scope and you can delete
+--it from the subst map... but you don't have to.
+--Finally, subst in the branch.
+--To merge SLCs, need to remember this subst map too.
+--First apply the SSA subst, then this one.
+elimCopiesSLC :: SLC SSAName -> (SLC SSAName,Map SSAName SSAName)
+elimCopiesSLC slc = runState
+  (do let ops = slcOps slc
+          b = slcBranch slc
+      ops' <- ecOps ops
+      b' <- ecB b
+      return $ slc{slcOps=ops',slcBranch=b'}
+  )
+  M.empty
+--Elim copy monad
+type ECp = State (Map SSAName SSAName)
+ecNm :: SSAName -> ECp SSAName
+ecNm nm = fromMaybe nm <$> M.lookup nm <$> get
+ecB :: Branch SSAName -> ECp (Branch SSAName)
+ecB = \case
+  Jumpi v th el -> Jumpi <$> ecNm v <*> return th <*> return el
+  BReturn vs -> BReturn <$> mapM ecNm vs
+  Jump l -> return $ Jump l
+ecOp :: SSAOp -> ECp [SSAOp]
+ecOp = \case
+  --The t need not be the same as y's t, but as long as I haven't made a
+  --kind error earlier forgetting _t shouldn't be a problem.
+  ([(x,_t)],Copy,[y]) -> do
+    y' <- ecNm y
+    ecAddSubst x y'
+    return [] --the op will be deleted
+  (lhs,op,rhs) -> do
+    rhs' <- mapM ecNm rhs
+    --We could prune the subst map here, but that's an O(n log m) operation
+    --to reduce the size of an O(log m) structure, so we don't do it.
+    return [(lhs,op,rhs')]
+ecOps :: [SSAOp] -> ECp [SSAOp]
+ecOps ops = concat <$> mapM ecOp ops
+ecAddSubst :: SSAName -> SSAName -> ECp ()
+ecAddSubst x y = modify (M.insert x y)
+
+--A function's pre-SSA CFG -> SSA, elim copies,
+--add version count and copy subst maps, add in-edges count
+type SLC2 = (SLC SSAName, --the SLC itself
+             Map Name Int, --version count map
+             Map SSAName SSAName, --copy subst map
+             Int --in-edges count
+            )
+--No need to look at the live set of the function entry point here
+--Starting from the entry point, SSA + copy-elim the pointed SLC
+--,recurse on the ones branched to and increment their in-edges.
+--Use the accumulated map to limit DFS traversal.
+--TODO find a better name than process.
+--On a branch to a nonexistent SLC, throw an exception; that shouldn't happen
+--here, so it's a compiler error.
+processCFG :: (Label,Map Label (SLC Name)) ->
+          (Label,Map Label SLC2)
+processCFG (start,l2slc) =
+  (start,execState (runReaderT (procLabel start) l2slc) M.empty)
+
+type Proc = ReaderT (Map Label (SLC Name)) (State (Map Label SLC2))
+procLabel :: Label -> Proc ()
+procLabel lab = do
+  b <- M.member lab <$> get
+  if b
+    then incInEdges lab
+    else do
+    mslc <- M.lookup lab <$> ask
+    case mslc of
+      Nothing ->
+        error $ "Compiler error: label to nowhere in procLabel: " ++ show lab
+      Just slc -> do
+        let (slc1,verMap) = ssaSLC slc
+            (slc2,substMap) = elimCopiesSLC slc1
+        modify (M.insert lab (slc2,verMap,substMap,1))
+        --Recurse on reached SLCs
+        mapM_ procLabel $ slcChildren slc
+incInEdges :: Label -> Proc ()
+incInEdges lab = do
+  s <- get
+  case M.lookup lab s of
+    --Would having a separate label -> in-edges map reduce pointless
+    --reallocation? Probably not... but no matter, it's a minor perf issue.
+    Just (slc,vm,sm,n) -> modify $ M.insert lab (slc,vm,sm,n+1)
+    Nothing -> error $ "Compiler error: incInEdges <label to nowhere>: " ++
+      show lab
 --Now what?
 --1) Elim unreachable nodes
 --2) Elim empty intermediate nodes
