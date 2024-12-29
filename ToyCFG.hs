@@ -436,10 +436,12 @@ type CFG2 = Map Label SLC2
 --TODO find a better name than process.
 --On a branch to a nonexistent SLC, throw an exception; that shouldn't happen
 --here, so it's a compiler error.
+--No need to incInEdges first, procLabel start will insert an SLC2 for start
+--with in-edges = 1
 processCFG :: (Label,Map Label (SLC Name)) ->
           (Label,CFG2)
 processCFG (start,l2slc) =
-  (start,execState (runReaderT (incInEdges start >> procLabel start) l2slc)
+  (start,execState (runReaderT (procLabel start) l2slc)
          M.empty)
 
 type Proc = ReaderT (Map Label (SLC Name)) (State CFG2)
@@ -514,8 +516,26 @@ opt2 lab cfg =
      then cfg
      else opt2 lab cfg'
 --Returns a graph containing only the nodes reachable from label
+--To adjust in-edges, it must also delete the garbage.
+--When iterating over the garbage labels, some may already have been deleted,
+--so you need to check that before running deleteSLC2 (which assumes
+--presence).
+--I could fuse the two passes into one if I incremented the refcounts from 1
+--again.
 dfsGC :: Label -> CFG2 -> CFG2
-dfsGC lab cfg2 = M.fromList $ dfsGraph slc2Children lab cfg2
+dfsGC lab cfg2 =
+  execState (do let reachableNodes =
+                      S.fromList $ map fst $ dfsGraph slc2Children lab cfg2
+                    garbageNodes =
+                      filter (not . flip S.member reachableNodes) $
+                      M.keys cfg2
+                mapM_ (\garbage -> do
+                          b <- gets (M.member garbage)
+                          if b
+                            then deleteSLC2 garbage
+                            else return ())
+                  garbageNodes)
+  cfg2
 opt2Pass :: Label -> CFG2 -> CFG2
 opt2Pass lab cfg = snd $ execState (opt2PassM lab) (S.empty,cfg)
 --The set of already visited nodes and the CFG being optimized

@@ -51,8 +51,10 @@ pipeline2CFG2 :: String ->
 pipeline2CFG2 str = do
   nm2llcfgs <- pipeline2CFG str
   let nm2lcfg2 = M.map (\((lab,_live),cfgs) ->
-                          let cfg = labelSLCMap cfgs in
-                            processCFG (lab,cfg)) nm2llcfgs
+                          let cfg = labelSLCMap cfgs
+                              (_,cfg') = processCFG (lab,cfg)
+                          in (lab, opt2 lab cfg'))
+                 nm2llcfgs
   return nm2lcfg2
 pipeline2CFG :: String -> Either CompilerError (Map Name (LL,CFGS))
 pipeline2CFG str = do
