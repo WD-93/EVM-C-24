@@ -577,18 +577,22 @@ opt2PassM lab = do
                                  Just v' -> v'
                                  Nothing -> v) .
                              (\nm -> (nameVer nm vmap, nm))) contLive
-        oldSLC2 = slc2
-    let slc2 = pruneDeadOpsSLC2 oldSLC2 contLiveVS
+    let pruned = pruneDeadOpsSLC2 slc2 contLiveVS
     --Debugging...
+    {-
     let isTargetOps [([((1,"$anon1"),_)],_,_),
                      ([((1,"$anon2"),_)],_,_)] = True
         isTargetOps _ = False
-    if isTargetOps $ slcOps $ slc2ToSLC oldSLC2
-      then error $ "Found it:" ++ show (oldSLC2,slc2,oldSLC2 == slc2)
+    if isTargetOps $ slcOps $ slc2ToSLC slc2
+      then error $ "Found it:" ++ show (slc2,pruned,slc2 == pruned)
       else return ()
+-}
     --If the current SLC is a deterministic jump...
     let (slc,v,s,rc) = slc2
     case slcBranch slc of
+      --Let's always only go through one case...
+      _ | slc2 /= pruned ->
+          opt2UpdateSLC lab slc2 pruned
       Jumpi _ th el
         | th == el ->
             opt2UpdateSLC lab slc2 (slc{slcBranch = Jump th},
