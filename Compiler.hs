@@ -21,6 +21,26 @@ import IR1 hiding (Ifte,While,Return)
 import ToyCFG
 --For debugging:
 import Pretty
+import qualified Data.Set as S
+
+--Testing to find weird bug - for function body do {y = 1; return 2}
+--the opt2 doesn't remove the garbage op.
+testPrune =
+  let Right cfg2m =
+        pipeline2CFG2 $
+        "module {f : Int Unsigned 256 -> Int Unsigned 256;" ++
+        " f x := do {y = 1;return 2}}"
+      Just (start,cfg2) = M.lookup "f" cfg2m
+      Just slc2 = M.lookup start cfg2
+      (slc,v,s,rc) = slc2
+      rets = S.fromList $ let BReturn rs = slcBranch slc in rs
+      ops' = pruneDeadOps (slcOps slc) rets
+      --pruneDeadOps can remove it! But opt2Pass doesn't...
+      cfg2' = opt2Pass start cfg2
+  in (start,cfg2) --(ops',slcOps slc,cfg2' == cfg2)
+--Bit of a hack to persist badly pruned module
+getBadPruning :: IO (Map Name (Label,CFG2))
+getBadPruning = read <$> readFile "badPruningCFG2M.txt"
 
 printIRM :: String -> IO ()
 printIRM str =

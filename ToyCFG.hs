@@ -355,7 +355,7 @@ ssaNm nm = do
   return (v,nm)
 getVer :: Name -> SSA Int
 getVer nm = nameVer nm <$> get 
---Also used in SLC merge
+--Also used in SLC merge, dead op pruning
 nameVer :: Name -> Map Name Int -> Int
 nameVer v = fromMaybe 0 . M.lookup v
 --Increment name version count; done on assignment
@@ -407,11 +407,23 @@ ecOp = \case
   --commassoc ops with an identity.
   --That copy should be eliminated here.
   (lhs,Reduce op,[x]) -> ecOp (lhs,Copy,[x])
+  --Might as well elim reduce op [] here
+  (lhs,Reduce op,[]) ->
+    return [(lhs,Push $ Const $ reduceOpIdentity op,[])]
   (lhs,op,rhs) -> do
     rhs' <- mapM ecNm rhs
     --We could prune the subst map here, but that's an O(n log m) operation
     --to reduce the size of an O(log m) structure, so we don't do it.
     return [(lhs,op,rhs')]
+--TODO move this somewhere sensible
+reduceOpIdentity :: Name -> Integer
+reduceOpIdentity = \case
+  "or" -> 0
+  "add" -> 0
+  "mul" -> 1
+  "smul" -> 1
+  op -> error $ "Compiler error: op with unknown identity: " ++ show op
+    
 ecOps :: [SSAOp] -> ECp [SSAOp]
 ecOps ops = concat <$> mapM ecOp ops
 --To avoid having to follow a chain of substitutions later, we need to
@@ -553,6 +565,27 @@ opt2PassM lab = do
     else do
     opt2MarkVisited lab
     slcs <- mapM opt2PassM $ slc2Children slc2
+    --Prune dead ops... this one's probably expensive, so I should figure out
+    --how to cache it.
+    let contLive = S.unions $ map (slcLive . slc2ToSLC) slcs
+        (_,vmap,smap,_) = slc2
+        --Version and substitute.
+        --Note the version count in the vmap is the index of the last var
+        --assigned, not of the next one to be assigned.
+        contLiveVS = S.map ((\v ->
+                               case M.lookup v smap of
+                                 Just v' -> v'
+                                 Nothing -> v) .
+                             (\nm -> (nameVer nm vmap, nm))) contLive
+        oldSLC2 = slc2
+    let slc2 = pruneDeadOpsSLC2 oldSLC2 contLiveVS
+    --Debugging...
+    let isTargetOps [([((1,"$anon1"),_)],_,_),
+                     ([((1,"$anon2"),_)],_,_)] = True
+        isTargetOps _ = False
+    if isTargetOps $ slcOps $ slc2ToSLC oldSLC2
+      then error $ "Found it:" ++ show (oldSLC2,slc2,oldSLC2 == slc2)
+      else return ()
     --If the current SLC is a deterministic jump...
     let (slc,v,s,rc) = slc2
     case slcBranch slc of
@@ -563,6 +596,14 @@ opt2PassM lab = do
       Jump cont
         | [slc2Cont] <- slcs,
           (_,_,_,1) <- slc2Cont ->
+          opt2UpdateSLC lab slc2 $ mergeSLCs slc2 slc2Cont
+      --Bypassing for jump to empty is ez
+      --Backjumps are fine?
+      --I don't see any difference in generated CFGs...
+      --Perhaps the LL passing in ir2cfg is already handling it.
+      --No matter, irrelevant op elimination and other opts will make use of it
+        | [slc2Cont] <- slcs,
+          [] <- slcOps $ slc2ToSLC slc2Cont ->
           opt2UpdateSLC lab slc2 $ mergeSLCs slc2 slc2Cont
       _ -> return slc2
 opt2UpdateSLC :: Label -> SLC2 -> SLC2 -> Opt2 SLC2
@@ -585,13 +626,45 @@ slc2ToSLC (slc,_,_,_) = slc
 slc2Children :: SLC2 -> [Label]
 slc2Children = slcChildren . slc2ToSLC
 
---Given an SLC and the live set of its branch, delete all ops which generate
+--Given an SLC and the live set of all branches, delete all ops which generate
 --no vars relevant to the branch. Note ops which return multiple vars may
---have a subset of them be relevant; then you're left with a dead var but the
+--have a subset of them be relevant; then you're left with dead vars but the
 --op is not pruned.
---It may also shrink live.
-pruneDeadOps :: SLC2 -> Live -> SLC2
-pruneDeadOps slc2 = error "TODO"
+--Note that the live set at the last op is not always the live set of the
+--potential dests, since jumpi may depend on a var. In future, other branches
+--may also do the same.
+--prune may also shrink live.
+--Algo: proceed from last op, with needed = live
+--For each op, if none of its lhs vars are used, delete it.
+--Otherwise, add its rhs vars to needed.
+--TODO make a helper that gets vars from branch.
+--That the version count map is polluted with dead vars is not a problem... but
+--what if a substituted var belongs to a dead op? We'll see... it's unlikely
+--to cause any bugs for now; just remember vars in the subst map need not
+--correspond to a live op.
+--Note that thanks to SSA there's no need to consider shadowing.
+pruneDeadOpsSLC2 :: SLC2 -> SSALive -> SLC2
+pruneDeadOpsSLC2 (slc,v,s,rc) live =
+  let branchLive =
+        case slcBranch slc of
+          Jumpi v _ _ -> S.singleton v
+          BReturn vs -> S.fromList vs
+          Jump _ -> S.empty
+      live' = live `S.union` branchLive
+  in (slc{slcOps = pruneDeadOps (slcOps slc) live'},v,s,rc)
+--TODO use elsewhere
+type SLCOp v = ([(v, IRT)], Operator, [v])
+type SSALive = Set SSAName
+--Returns a filtered op list
+pruneDeadOps :: [SSAOp] -> SSALive -> [SSAOp]
+pruneDeadOps ops live =
+  fst $ foldr handleOp ([],live) ops
+  where
+    handleOp (lhs,op,rhs) (ops,live) =
+      let results = map fst lhs in
+        if all (not . flip S.member live) results
+        then (ops,live)
+        else ((lhs,op,rhs):ops,live `S.union` S.fromList rhs)
 
 --Convert a deterministic jumpi to a jump. Nothing indicates no change.
 detJumpiToJump :: SLC2 -> Maybe SLC2
@@ -716,7 +789,7 @@ renameVar vA sA (n,v) = nameSubst (n + nameVer v vA, v) sA
 
 --SLC merge: subst maps map each x to its ultimate copy source. That
 --invariant needs to be maintained in the merged SLC.
-      
+                        
 --Now what?
 --1) Elim unreachable nodes
 --2) Elim empty intermediate nodes

@@ -94,6 +94,9 @@ used... you can detect that by looking at the use count of the result variable.
 emitOp (mem, x = mload y) where useCount x = 0 => noop.
 There's no need to track which mem is current, so don't.
 
+Note: when I have substs and can choose any stack layout and multiple aliases are live, I need only pass one
+word on the stack! Then layouts need to represent that... a list of names per stack slot?
+
 Consider start = x,g,g,y,z where target = x,y,z... you should be able to swap to g,g,x,y,z and pop the garbage.
 But I won't explore that for now.
 
@@ -116,6 +119,30 @@ If I already have rollback due to swap/dup out of range, I might as well have a 
 Generalization: an opt choice monad which queries a chooser to direct its control flow; that's much more
 compact.
 For now, just rollback on failure and use the first successful codegen.
+
+Weird, for
+printCFG2 "module {f : Int Unsigned 256 -> Int Unsigned 256; f x := do {x = 10; if (x) then x = (x + 1) else return 2 end}}"
+I don't seem to prune every dead op. The same happens for
+printCFG2 "module {f : Int Unsigned 256 -> Int Unsigned 256; f x := do {y = 1;return 2}}"
+Maybe I need to print the version count and subst maps as well...
+Chained copies at least seem to work.
+Extracting the cfg2, I find that pruneDeadOps removes y = 1, but opt2Pass 5 cfg2 doesn't.
+
+Oh snap - the live set for the badly pruned SLC does not include x, the function parameter!
+Instead x#1 is assigned to $anon0. But if the function body is a while you need to remember...? No, it seems
+that if the param is not (), you start with an empty SLC that jumps to the while.
+printCFG2 "module {f : () -> Int Unsigned 256; f () := while (()) do {1}}"
+throws an edge to nowhere in dfsGraph... but while (()) do {} does not
+printCFG2 "module {f : () -> Int Unsigned 256; f () := if 1 then 2 else 3 end}"
+also fails to prune the 2 and 3 (that it doesn't prune 1 is expected since it's branched on). But pruning is
+done for do {1;2;3}! What is going on?
+if 0 then do {1;2;3} else do {} end
+Prunes the ops in the then branch, but fails to recognize it's now empty and can be bypassed...
+The then branch becomes empty, but does not return directly... that's because I handle jumps to empty
+branches, but don't modify the label when it's empty. That's maybe logical, I might need to shuffle and don't
+want to duplicate large returns.
+
+How to add the C params to live for the entrypoint?
 
 ----
 
