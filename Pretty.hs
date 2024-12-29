@@ -89,19 +89,21 @@ showRHS = intercalate ", "
 
 
 showCFGM :: Map Name (LL,CFGS) -> [String]
-showCFGM = prettyBindings showCFG . M.toList
+showCFGM = prettyBindings (showCFG . (\(ll,cfgs) -> (fst ll,cfgs))) . M.toList
 --Show the CFG for a single function
 --The LL is the function entry point and its live vars
 --Show SLCs in DFS order from entry point
-showCFG :: (LL,CFGS) -> [String]
+showCFG :: (Label,CFGS) -> [String]
 showCFG llcfgs =
-  dfsCFG llcfgs >>= showSLC
+  dfsCFG llcfgs >>= showSLC id
   
 
-showSLC :: (Label, SLC Name) -> [String]
-showSLC (l,slc) =
+showSLC :: (v -> String) -> (Label, SLC v) -> [String]
+showSLC showV (l,slc) =
   let live = S.toList $ slcLive slc
-      ops = map (\(lhs,op,rhs) -> Op () lhs op rhs) $ slcOps slc
+      ops = map (\(lhs,op,rhs) ->
+                   Op () (map (\(v,t) -> (showV v, t)) lhs) op $ map showV rhs)
+                  $ slcOps slc
       branch = slcBranch slc
   in
   --labelID(x,y,z): where x,y,z are live
@@ -109,12 +111,19 @@ showSLC (l,slc) =
   map (' ':) (ops >>= prettyIR) ++
   [unwords $ case branch of
       Jump l -> ["jump",show l]
-      Jumpi v th el -> ["jumpi",v,show th,show el]
-      BReturn vs -> ["return","(" ++ showRHS vs ++ ")"]
+      Jumpi v th el -> ["jumpi",showV v,show th,show el]
+      BReturn vs -> ["return","(" ++ showRHS (map showV vs) ++ ")"]
   ]
 
 --After SSA and copy elim
 --Nodes are generated in DFS order from start and then pruned for reachability,
---so showing SLCs in reverse order should 
-showCFG2 :: Map Name (Label,Map Label SLC2) -> [String]
-showCFG2 = undefined
+--so showing SLCs in reverse order should ensure they're presented in jump
+--order?
+--No, for while (1) do {} it's not in jump order.
+showCFG2M :: (Map Name (Label, Map Label SLC2)) -> [String]
+showCFG2M = prettyBindings showCFG2 . M.toList
+showCFG2 :: (Label,Map Label SLC2) -> [String]
+showCFG2 (lab,cfg2) =
+  let m = M.map (\(slc,verMap,substMap,inEdgeCount) -> slc) cfg2 in
+  dfsGraph slcChildren lab m >>=
+  showSLC (\(ix,nm) -> nm ++ "[" ++ show ix ++ "]")

@@ -8,6 +8,7 @@ import qualified Data.Map as M
 import Control.Monad.State
 import Data.Maybe (fromMaybe)
 import Control.Monad.Reader
+import Control.Arrow ((***))
 
 import DTs (Name(..))
 import IR1
@@ -46,9 +47,9 @@ branchChildren = \case
   Jumpi _ th el -> [th,el]
   BReturn _ -> []
 --dfsGraph specialized to CFGS
-dfsCFG :: (LL,CFGS) -> [(Label,SLC Name)]
-dfsCFG ((lab,_),cfgs) | lab2slc <- labelSLCMap cfgs =
-                dfsGraph slcChildren lab lab2slc 
+dfsCFG :: (Label,CFGS) -> [(Label,SLC Name)]
+dfsCFG (lab,cfgs) | lab2slc <- labelSLCMap cfgs =
+                      dfsGraph slcChildren lab lab2slc 
 
 --For experimenting with how to simultaneously generate CFG and tag each SLC
 --with live vars.
@@ -298,9 +299,10 @@ createSLC l slc = do
     Nothing -> put s{labelSLCMap = M.insert l slc $ labelSLCMap s}
     Just slc' -> error $ "Label collision: " ++ show (l,slc,slc')
 
---First valid version: 1; 0 indicates not in scope
+--First valid version: 0. That means you can just add vcount maps together,
+--regardless of whether a var is live or not. If v0 is mentioned in a SLC,
+--v must be live.
 type SSAName = (Int,Name)
---For var in live, inc version from 0
 --For vars = op args in ops,
 -- replace each arg with ssaNm[arg]
 -- increment version of each var and then replace
@@ -325,8 +327,7 @@ ssaSLC slc = runState
                     slcBranch = b',
                     slcLive = live
                    })
-  --We set the version of all live vars to 1 here
-  (M.fromSet (const 1) (slcLive slc))
+  M.empty
 type SSA = State (Map Name Int)
 type SSAOp = ([(SSAName,IRT)],Operator,[SSAName])
 --TODO opt: eliminate double seek in map per nm increment+lookup
@@ -335,6 +336,9 @@ ssaOp :: ([(Name,IRT)],Operator,[Name]) ->
 ssaOp (nmts,op,args) = do
   ssargs <- mapM ssaNm args
   ssanmts <- mapM (\(nm,t) -> do
+                      --The ordering of incVer and ssaNm is vital here;
+                      --on first assignment to x (e.g. x = copy y), x's
+                      --version is 1. That prevents confusion in mergeSLCs.
                       incVer nm
                       ssanm <- ssaNm nm
                       return (ssanm,t)
@@ -350,11 +354,10 @@ ssaNm nm = do
   v <- getVer nm
   return (v,nm)
 getVer :: Name -> SSA Int
-getVer nm = do
-  mv <- M.lookup nm <$> get
-  return $ case mv of
-             Nothing -> 0
-             Just v -> v
+getVer nm = nameVer nm <$> get 
+--Also used in SLC merge
+nameVer :: Name -> Map Name Int -> Int
+nameVer v = fromMaybe 0 . M.lookup v
 --Increment name version count; done on assignment
 incVer :: Name -> SSA ()
 incVer nm = do
@@ -383,7 +386,10 @@ elimCopiesSLC slc = runState
 --Elim copy monad
 type ECp = State (Map SSAName SSAName)
 ecNm :: SSAName -> ECp SSAName
-ecNm nm = fromMaybe nm <$> M.lookup nm <$> get
+ecNm nm = nameSubst nm <$> get
+--Also used in SLC merge
+nameSubst :: SSAName -> Map SSAName SSAName -> SSAName
+nameSubst nm = fromMaybe nm . M.lookup nm
 ecB :: Branch SSAName -> ECp (Branch SSAName)
 ecB = \case
   Jumpi v th el -> Jumpi <$> ecNm v <*> return th <*> return el
@@ -397,6 +403,10 @@ ecOp = \case
     y' <- ecNm y
     ecAddSubst x y'
     return [] --the op will be deleted
+  --Single-argument reduce is just a copy, because reduce is only valid for
+  --commassoc ops with an identity.
+  --That copy should be eliminated here.
+  (lhs,Reduce op,[x]) -> ecOp (lhs,Copy,[x])
   (lhs,op,rhs) -> do
     rhs' <- mapM ecNm rhs
     --We could prune the subst map here, but that's an O(n log m) operation
@@ -404,6 +414,10 @@ ecOp = \case
     return [(lhs,op,rhs')]
 ecOps :: [SSAOp] -> ECp [SSAOp]
 ecOps ops = concat <$> mapM ecOp ops
+--To avoid having to follow a chain of substitutions later, we need to
+--maintain the invariant that each x maps to its ultimate copy source.
+--Thankfully, substituting the rhs in (lhs,op,rhs) in ecOp gives us that for
+--free.
 ecAddSubst :: SSAName -> SSAName -> ECp ()
 ecAddSubst x y = modify (M.insert x y)
 
@@ -414,6 +428,7 @@ type SLC2 = (SLC SSAName, --the SLC itself
              Map SSAName SSAName, --copy subst map
              Int --in-edges count
             )
+type CFG2 = Map Label SLC2
 --No need to look at the live set of the function entry point here
 --Starting from the entry point, SSA + copy-elim the pointed SLC
 --,recurse on the ones branched to and increment their in-edges.
@@ -422,11 +437,12 @@ type SLC2 = (SLC SSAName, --the SLC itself
 --On a branch to a nonexistent SLC, throw an exception; that shouldn't happen
 --here, so it's a compiler error.
 processCFG :: (Label,Map Label (SLC Name)) ->
-          (Label,Map Label SLC2)
+          (Label,CFG2)
 processCFG (start,l2slc) =
-  (start,execState (runReaderT (procLabel start) l2slc) M.empty)
+  (start,execState (runReaderT (incInEdges start >> procLabel start) l2slc)
+         M.empty)
 
-type Proc = ReaderT (Map Label (SLC Name)) (State (Map Label SLC2))
+type Proc = ReaderT (Map Label (SLC Name)) (State CFG2)
 procLabel :: Label -> Proc ()
 procLabel lab = do
   b <- M.member lab <$> get
@@ -452,6 +468,235 @@ incInEdges lab = do
     Just (slc,vm,sm,n) -> modify $ M.insert lab (slc,vm,sm,n+1)
     Nothing -> error $ "Compiler error: incInEdges <label to nowhere>: " ++
       show lab
+
+--Now:
+--Deterministic jumpi => jump (may shrink live, but we don't detect that now)
+--How to detect later? Live slc = v0s | (live children \ set in slc)
+--Note that doesn't prune vars live in cycles.
+
+--The algo for traversing the CFG2
+--When a ->1 b is found, merge them and delete b.
+--Detect jumpis to two equivalent SLCs and replace with a jump?
+--That could be generalized to subgraph isomorphism, but let's not for now.
+--Order of operations: merge first if possible (it's equivalent to bypass
+--when it applies), then maybe bypass children (potentially leaving a node
+--containing only substs). If the branch is a jumpi and both now point to the
+--same label, replace with a jump.
+--An empty SLC with no substs can always be eliminated.
+--Should the refcount of the start node be >= 1? Yes, consider if the
+--function body is simply a while; the continue should not be a unique edge.
+--Each opt updates the current SLC, potentially modifying the refcount of other
+--nodes.
+--If any update was done in a pass, do a DFS GC and continue.
+--That should future-proof against DCE.
+--An additional potential opt: deletion of irrelevant ops.
+--Ex: if(cond){x = 1} {x = 2}
+--If x is dead afterward, that becomes just cond.
+--Recursively modify, tracking the DFS path. A back-edge should not be
+--bypassed. No need to keep track of order; the continuation after the
+--recursive call will do that.
+--Type: Label -> m Label?
+--To bypass I need to merge because the empty SLC may contain substs...
+--It's cheaper to left-accumulate when merging, so perhaps find the chain of
+--one-edges before merging.
+
+--For now, I'll just do the 1-edge merge and jumpi=>jump, not bypass.
+--Monad for optimizing CFG2
+--Full GC and jumpi=>jump may enable new merges, so repeatedly do a DFS opt
+--pass and GC until you reach a fixpoint. Each iteration should simplify the
+--CFG, so it shouldn't loop forever.
+--In future, the entrypoint label may change due to the first node being
+--bypassable.
+opt2 :: Label -> CFG2 -> CFG2
+opt2 lab cfg =
+  let cfg' = dfsGC lab $ opt2Pass lab cfg
+  in if cfg == cfg'
+     then cfg
+     else opt2 lab cfg'
+--Returns a graph containing only the nodes reachable from label
+dfsGC :: Label -> CFG2 -> CFG2
+dfsGC lab cfg2 = M.fromList $ dfsGraph slc2Children lab cfg2
+opt2Pass :: Label -> CFG2 -> CFG2
+opt2Pass lab cfg = snd $ execState (opt2PassM lab) (S.empty,cfg)
+--The set of already visited nodes and the CFG being optimized
+type Opt2 = State (Set Label, CFG2)
+--If already visited, just return the current SLC2
+--Otherwise, recurse on the children.
+--If the current SLC is a deterministic jumpi, convert it to a jump.
+--If it just has a 1-edge to a single child, merge them.
+opt2PassM :: Label -> Opt2 SLC2
+opt2PassM lab = do
+  slc2 <- opt2GetSLC2 lab
+  b <- opt2Visited lab
+  if b
+    then return slc2
+    else do
+    opt2MarkVisited lab
+    slcs <- mapM opt2PassM $ slc2Children slc2
+    --If the current SLC is a deterministic jump...
+    let (slc,v,s,rc) = slc2
+    case slcBranch slc of
+      Jumpi _ th el
+        | th == el ->
+            opt2UpdateSLC lab slc2 (slc{slcBranch = Jump th},
+                                    v,s,rc)
+      Jump cont
+        | [slc2Cont] <- slcs,
+          (_,_,_,1) <- slc2Cont ->
+          opt2UpdateSLC lab slc2 $ mergeSLCs slc2 slc2Cont
+      _ -> return slc2
+opt2UpdateSLC :: Label -> SLC2 -> SLC2 -> Opt2 SLC2
+opt2UpdateSLC lab old new = do
+  modify (id *** updateSLC2 lab old new)
+  return new
+opt2GetSLC2 :: Label -> Opt2 SLC2
+opt2GetSLC2 lab = do
+  cfg <- gets snd
+  case M.lookup lab cfg of
+    Nothing -> error $ "Compiler error: LTN in getSLC2 " ++ show lab
+    Just slc2 -> return slc2
+opt2Visited :: Label -> Opt2 Bool
+opt2Visited lab = gets (S.member lab . fst)
+opt2MarkVisited :: Label -> Opt2 ()
+opt2MarkVisited lab = modify (S.insert lab *** id)
+
+slc2ToSLC :: SLC2 -> SLC SSAName
+slc2ToSLC (slc,_,_,_) = slc
+slc2Children :: SLC2 -> [Label]
+slc2Children = slcChildren . slc2ToSLC
+
+--Given an SLC and the live set of its branch, delete all ops which generate
+--no vars relevant to the branch. Note ops which return multiple vars may
+--have a subset of them be relevant; then you're left with a dead var but the
+--op is not pruned.
+--It may also shrink live.
+pruneDeadOps :: SLC2 -> Live -> SLC2
+pruneDeadOps slc2 = error "TODO"
+
+--Convert a deterministic jumpi to a jump. Nothing indicates no change.
+detJumpiToJump :: SLC2 -> Maybe SLC2
+detJumpiToJump (slc,v,s,r)
+  | Jumpi _ th el <- slcBranch slc,
+    th == el = Just (slc{slcBranch = Jump th},v,s,r)
+  | let = Nothing
+
+--The refcount map for the children of an SLC; written so I can add new
+--branch types later (such as case or dispatch) without modifying this.
+slc2ChildMap :: SLC2 -> Map Label Int
+slc2ChildMap (slc,_,_,_) = slcChildMap slc
+slcChildMap :: SLC v -> Map Label Int
+slcChildMap = M.fromListWith (+) . map (\k -> (k,1)) . slcChildren
+--Given two refcount maps, get the diff in refcount per child (due to updating
+--an SLC).
+childMapDiff :: Map Label Int -> Map Label Int -> Map Label Int
+childMapDiff m1 = M.unionWith (+) m1 . M.map negate
+--Update an SLC2 from the old to the new value
+--Precondition: the old value matches that found in the map.
+updateSLC2 :: Label -> SLC2 -> SLC2 -> Map Label SLC2 -> Map Label SLC2
+updateSLC2 lab old new m =
+  let cm1 = slc2ChildMap old
+      cm2 = slc2ChildMap new
+      --d[l] > 0 if new edges are added; < 0 if they're deleted on net
+      d = childMapDiff cm2 cm1
+  in applyChildMapDiff d $ M.insert lab new m
+  --Note the order: recursive edge decrements must be done to the new SLC, not
+  --the old one.
+
+--Note mappings may include 0
+--Apply the edge increments first, so recursive decrements due to deletions
+--don't wrongly delete a node.
+--Ex: A(1) -> B(1), A--, B++.
+applyChildMapDiff :: Map Label Int -> Map Label SLC2 -> Map Label SLC2
+applyChildMapDiff l2n m =
+  let incs = M.toList $ M.filter (>0) l2n
+      decs = M.toList $ M.filter (<0) l2n
+  in execState (mapM applyInc incs >> mapM applyDec decs) m
+--Introduced to chase a weird type error...
+--Fixed: turns out I was shadowing the (s)tate with the (s)ubst map
+getSLC2 :: String -> Label -> State (Map Label SLC2) SLC2
+getSLC2 loc l = do
+  mslc2 <- gets (M.lookup l)
+  case mslc2 of
+    Nothing -> error $ "Compiler error: label to nowhere in " ++ loc ++ " "
+               ++ show l
+    Just slc2 -> return slc2
+--Precondition: n > 0
+applyInc :: (Label,Int) -> State (Map Label SLC2) ()
+applyInc (l,n) = do
+  (slc,v,s,m) <- getSLC2 "applyInc" l
+  modify $ M.insert l (slc,v,s,m+n)
+--Precondition: n < 0
+--This may recursively delete nodes (but it doesn't catch every garbage node
+--due to cycles).
+applyDec :: (Label,Int) -> State (Map Label SLC2) ()
+applyDec (l,n) = do
+  (slc,v,s,m) <- getSLC2 "applyDec" l
+  case () of
+    _ | m + n < 0 -> error $ "Compiler error: negative refcount in applyDec!? "
+                     ++ show (l,n)
+      | m + n == 0 -> deleteSLC2 l
+      | let -> modify $ M.insert l (slc,v,s,m+n)
+--Note that none of the recursively deleted nodes will have a back-edge to the
+--current node, since then it wouldn't have had a refcount of 0.
+--That means we can safely delete it before recursing.
+deleteSLC2 :: Label -> State (Map Label SLC2) ()
+deleteSLC2 l = do
+  slc2 <- getSLC2 "deleteSLC2" l
+  modify (M.delete l)
+  let decs = M.toList $ childMapDiff M.empty $ slc2ChildMap slc2
+  mapM_ applyDec decs
+
+--SLC merge; a can be merged with b if a jumps to b and b has a refcount of 1.
+--The merged SLC has a's ops, followed by b's renamed ops and b's renamed
+--branch; it retains a's refcount.
+--Now that the first valid version is 0, v[n] in slcB => v[n+vA[v]]
+--Apply the SSA renaming, then the subst map (which can only apply to xn's).
+--The version count map is simply summed.
+--The subst map sB first has its keys and values renamed. If sB[x] = y, y may
+--in turn be substitued by sA; apply that subst to preserve the invariant that
+--you can find the ultimate copied var in 1 lookup. 
+mergeSLCs :: SLC2 -> SLC2 -> SLC2
+mergeSLCs (slcA,vA,sA,rcA) (slcB,vB,sB,_) =
+  let opsM = slcOps slcA ++ map (renameOp vA sA) (slcOps slcB)
+      f = renameVar vA sA
+      branchM =
+        case slcBranch slcB of
+          Jump l -> Jump l
+          Jumpi v th el -> Jumpi (f v) th el
+          BReturn vs -> BReturn $ map f vs
+      liveM = slcLive slcA
+      vM = M.unionWith (+) vA vB
+      --First rename both keys and values; note that while multiple x0, y0
+      --in slcB may be mapped to the same name from slcA, any key in sB will
+      --have version >= 1 and so f (renameVar) will be injective.
+      --Since f also applies sA, the ultimate copied var can still be found in
+      --1 lookup.
+      --Finally, combine with sA. Note the keys of sA and the renamed sB are
+      --disjoint.
+      sM = M.union sA $ M.map f (M.mapKeys f sB)
+  in (SLC{slcOps = opsM,
+          slcBranch = branchM,
+          slcLive = liveM
+         },
+       vM,sM,rcA)
+renameOp :: Map Name Int -> Map SSAName SSAName ->
+            ([(SSAName,IRT)],Operator,[SSAName]) ->
+            ([(SSAName,IRT)],Operator,[SSAName])
+renameOp vA sA (lhs,op,rhs) =
+  let f = renameVar vA sA in
+    (map (f *** id) lhs, op, map f rhs)
+--There's no need to look at sB, since sB's substs have already been applied
+--and any var is substituted by sB just has its version count bumped.
+renameVar :: Map Name Int -> Map SSAName SSAName -> SSAName -> SSAName
+renameVar vA sA (n,v) = nameSubst (n + nameVer v vA, v) sA
+--SLC bypass
+--Divergence detection? There is no detectable divergence, so no.
+--Each opt restricts the forms the other opts need to consider.
+--SLC merge: you're left with only jumpi, return, and jumps to shared nodes.
+
+--SLC merge: subst maps map each x to its ultimate copy source. That
+--invariant needs to be maintained in the merged SLC.
+      
 --Now what?
 --1) Elim unreachable nodes
 --2) Elim empty intermediate nodes

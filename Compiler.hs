@@ -30,8 +30,13 @@ printIRM str =
 --TODO dedup...
 printCFG :: String -> IO ()
 printCFG str =
-  case pipeline str of
+  case pipeline2CFG str of
     Right cfgm -> mapM_ putStrLn $ showCFGM cfgm
+    Left err -> putStrLn $ "Error: " ++ show err
+printCFG2 :: String -> IO ()
+printCFG2 str =
+  case pipeline2CFG2 str of
+    Right cfg2m -> mapM_ putStrLn $ showCFG2M cfg2m
     Left err -> putStrLn $ "Error: " ++ show err
 
 --Putting it all together (in progress):
@@ -40,8 +45,17 @@ data CompilerError = ParserError String
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
   deriving (Eq,Ord,Read,Show)
-pipeline :: String -> Either CompilerError (Map Name (LL,CFGS))
-pipeline str = do
+--Doesn't display the version count or substitution maps.
+pipeline2CFG2 :: String ->
+                 Either CompilerError (Map Name (Label, CFG2))
+pipeline2CFG2 str = do
+  nm2llcfgs <- pipeline2CFG str
+  let nm2lcfg2 = M.map (\((lab,_live),cfgs) ->
+                          let cfg = labelSLCMap cfgs in
+                            processCFG (lab,cfg)) nm2llcfgs
+  return nm2lcfg2
+pipeline2CFG :: String -> Either CompilerError (Map Name (LL,CFGS))
+pipeline2CFG str = do
   irm <- pipeline2IR str
   let ds = M.toList $ irDefuns irm
   fcfgs <- mapM (\(f,irs) ->

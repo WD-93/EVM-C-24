@@ -1,3 +1,124 @@
+Eliminating copies in CFG2 leads to coerce byte -> word creating empty SLCs; the copy information is only
+preserved in the subst map.
+Ex: return 3 in a function returning a word becomes
+1(mem,ret): 
+ anon0 : byte = 3
+jump 0
+0(mem,ret,anon1):
+return anon1
+When jumping from 1 to 0, you need to apply the substitution to the target stack layout (after applying the
+version map). What if you have a series of substs...? You need to follow them all until you get Nothing.
+When merging version maps, bumps due to a var being in scope and a var being assigned need to be treated
+differently... subtract 1 from the versions of all vars that were live in the second SLC's ops.
+
+CFG opts:
+Merge jump->1
+Bypass (a special case of merge, since copying an empty SLC is free; the property you need to preserve when
+modifying the CFG is op trace given arguments).
+Jumpi v x x => jump x
+
+The latter opt may shrink live, but if you have a loop where v is/was used you won't discover that.
+
+An empty SLC will eventually either jumpi, jump to a nonempty, return, or loop infinitely.
+A loop with a call in it is not necessarily a divergent loop, since the callee may exec a stopping primfun.
+However, any non-branching op before a divergence may be pruned.
+If a SLC jumpis and both paths diverge, it diverges. Divergence may be replaced with revert(0,0).
+jumpi(v,self,divergent) => also divergent
+A divergent loop is not ordinary intended behavior, so I don't need to generate efficient (reverting) code for
+it just yet.
+
+Oh: when decrementing the refcount of a SLC, I might leave a garbage cycle. That means I need to scan from 
+start to fully GC. However, when I decrement the refcount to zero I know I can delete the SLC immediately.
+When modifying a SLC (as in merge), I can't delete and then add, as that might recursively delete referents.
+Instead, I must atomically update the refcounts of referents.
+Refcount changes may cause SLC merge to apply (but never stop it from applying), so I perhaps do need to do
+a full scan whenever I decrement a count...
+When can that actually occur? If the SLC is bypassable, but then it doesn't matter...
+Otherwise, only if a jumpi becomes a jump. That can occur for if _ then do {} else do {} (or two breaks or
+continues).
+Ooh: what happens if you have two ifte branches to the same dest, containing conflicting copies?
+That cannot be reduced to a single jump; you must preserve the copy info somehow. Using an empty SLC or by
+annotating the branches of the ifte?
+
+I don't actually generate any detectably divergent loops yet, since I don't simplify while(true)...
+But surprise back-edges don't occur since refcount would then be > 1.
+
+Where do I put "v is constant" info for use in optimizing the CFG and stack op output? No matter, I won't do
+so now.
+
+Note: when I eliminate ->1 edges by merging, I also eliminate the need for fallthrough of jumps in codegen.
+However, jumpi else branch fallthrough is also desirable... place and fall through if it's not been placed
+yet. If the then branch has not been placed, add an iszero and swap the branches?
+The first jump to a dest with in>1 should also be a fallthrough.
+First function call fallthrough: you can scan ops to detect a call to a static label and place the function
+there instead. However, if the var is used repeatedly... you at least save a jump.
+Don't place functions inline to start with.
+
+I can start stack op generation concurrently with finishing the CFG2 opts since I know the type.
+In fact, I can skip CFG2 opts for now...
+As before: build op treegraph. I can even skip that and emit the ops in DFS order. That will correctly order
+the mem ops.
+The stack target depends on the op: for commutative ops I have more flexibility.
+For reduce I have even more.
+Special-case 1 and 2-argument ops, just consume the top word for the rest.
+Eagerly pop garbage (0 use-count vars) when swapping; if I get stuck because I must dup a word beyond depth
+17 to the top, GC all reachable garbage.
+Alt: GC garbage between *every* op to minimize risk of getting stuck. I could backtrack on each op emitted,
+GCing if the op fails...
+On branch, pop any garbage remaining. The target layout in case of a jump is the dest's live with the version
+and subst maps applied. If it's a jumpi and both layouts are equal, it's the same.
+If it's a jumpi and the dests are 1-edges, stack shuffling can be deferred. You still need the cond TOS
+though (target: cond:jump target).
+If the then branch is a 1-edge, defer. If not, jump to an inserted shuffling section which jumps to the then.
+If the else branch is not, you can insert the shuffling directly afterwards at no cost (but you may still
+have to jump).
+The starting layout of any SLC is its live (with version 0), with order determined earlier (either because
+it's the function entry point or by the first node that jumps to it).
+When you're the first to jump to a node, the target layout is more flexible: it should just be the live in
+any order. You still need to handle two different sets in an ifte though.
+Final stages: asm, bytecode, deployment.
+
+layoutOf :: Label -> m (Maybe [Name])
+emitOp, emitBranch
+swapLiveAnyOrder :: Live -> m () --sets layoutOf
+swapLiveTargetOrder :: [Name] -> m ()
+State: list-list of SLCs, current list. A jump-back into the current list does not generate a concat.
+The entry point must have a jumpdest, but you could still fall through to it (!).
+That could happen if the function body is a while and you continue in an ifte.
+Simple GC: if the top word is garbage, pop it; if not, swap it with the bottom reachable garbage word.
+Repeat until there's no garbage left.
+emitOp: take the longest suffix of last-use arguments and put them TOS; dup the rest.
+That lets you avoid the 1-arg and 2-arg special cases.
+Note mloads modifying $mem prevents them from being pruned normally... but if *only* the mem from an mload is
+used... you can detect that by looking at the use count of the result variable.
+emitOp (mem, x = mload y) where useCount x = 0 => noop.
+There's no need to track which mem is current, so don't.
+
+Consider start = x,g,g,y,z where target = x,y,z... you should be able to swap to g,g,x,y,z and pop the garbage.
+But I won't explore that for now.
+
+Hmm... if you have an ifte, the then case must jump. But if it has in-edges 2, its other source could fall
+through to it, so don't consume the fallthrough opportunity!
+State: a list of lists of SLCs (with a map SLC -> list list index). Those lists may be concatenated by a
+fallthrough on either side (i.e. either when building a list or when jumping to the head of another list).
+
+Forget only placing used functions, place them all. Use a prelude to use the ordinary calling convention for
+main.
+In the interest of time, I'll implement the absolute simplest codegen now.
+DFS order of ops from live is equivalent to pruning unused ones. Once I've fixed the op order, use count
+(#ops) is ez.
+Note each op may correspond to multiple vars, so if you have f(x,y,z) where each x,y,z is from a multi-word
+op...
+An op tree (and index) per var gives you the var's definition as a function of live vars.
+Simple potential opts: constant sharing, place first static call to an unplaced function. That reduces the
+use count of the label by 1!
+If I already have rollback due to swap/dup out of range, I might as well have a list monad for opt choices.
+Generalization: an opt choice monad which queries a chooser to direct its control flow; that's much more
+compact.
+For now, just rollback on failure and use the first successful codegen.
+
+----
+
 SLC: Need to add strict ordering of writes *and reads* as a simpler version of each new write happening after
 previous reads. That would let writes take a fixed number of arguments... but so would each read after a
 particular write taking a mem and producing a read proof pN, st all read proofs must be merged into one.
