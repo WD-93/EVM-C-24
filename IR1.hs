@@ -796,7 +796,13 @@ emitOp nmts op args = do
             | arg <- args]
   emit $ Op () nmts op args
   return $ map fst nmts
+--A fateful decision: no IR var type checking.
+--That's to fix x = x + 1 generating an error, because the IR var returned is
+--apparently always a tword. That should be fine...
+--Kind errors are always nonsensical, so I should maybe add a check for that.
 typeCheckLHS :: [(Name,IRT)] -> Seq ()
+typeCheckLHS nmts = mapM_ (\(nm,t) -> putIRVarType nm t) nmts
+{-
 typeCheckLHS = typeCheckLHS' S.empty
 typeCheckLHS' :: Set Name -> [(Name,IRT)] -> Seq ()
 typeCheckLHS' nms = \case
@@ -812,6 +818,7 @@ typeCheckLHS' nms = \case
           | let -> throwE $ IlltypedLHS nm t t'
         Nothing -> putIRVarType nm t
       typeCheckLHS' (S.insert nm nms) nmts
+-}
 --Nothing indicates unbound
 getIRVarType :: Name -> Seq (Maybe IRT)
 getIRVarType nm = M.lookup nm <$> gets irLocalTypes

@@ -535,7 +535,20 @@ opt2 lab cfg =
 --I could fuse the two passes into one if I incremented the refcounts from 1
 --again.
 dfsGC :: Label -> CFG2 -> CFG2
-dfsGC lab cfg2 =
+dfsGC lab cfg2 = do
+  --Get the list of keys
+  let reachableSLC2s = map snd $ dfsGraph slc2Children lab cfg2
+  --Get the list of all references
+      references = reachableSLC2s >>= slc2Children
+  --Tally them per label
+  --The entry point should have refcount >=1?
+      refcount = M.unionsWith (+) $
+        M.singleton lab 1 : map (flip M.singleton 1) references
+  M.mapWithKey (\k (slc,v,s,_) ->
+                  (slc,v,s,refcount M.! k)) $
+    M.restrictKeys cfg2 (M.keysSet refcount)
+      
+  {-
   execState (do let reachableNodes =
                       S.fromList $ map fst $ dfsGraph slc2Children lab cfg2
                     garbageNodes =
@@ -548,6 +561,7 @@ dfsGC lab cfg2 =
                             else return ())
                   garbageNodes)
   cfg2
+-}
 opt2Pass :: Label -> CFG2 -> CFG2
 opt2Pass lab cfg = snd $ execState (opt2PassM lab) (S.empty,cfg)
 --The set of already visited nodes and the CFG being optimized
@@ -689,13 +703,17 @@ childMapDiff :: Map Label Int -> Map Label Int -> Map Label Int
 childMapDiff m1 = M.unionWith (+) m1 . M.map negate
 --Update an SLC2 from the old to the new value
 --Precondition: the old value matches that found in the map.
+--Attempting to fix label to nowhere bug: I now no longer update the refcounts
+--and do deletions on every update, instead doing so in dfsGC.
+--The downside of that is merging n sequential SLCs takes n full passes...
+--TODO optimize while maintaining correctness
 updateSLC2 :: Label -> SLC2 -> SLC2 -> Map Label SLC2 -> Map Label SLC2
 updateSLC2 lab old new m =
   let cm1 = slc2ChildMap old
       cm2 = slc2ChildMap new
       --d[l] > 0 if new edges are added; < 0 if they're deleted on net
       d = childMapDiff cm2 cm1
-  in applyChildMapDiff d $ M.insert lab new m
+  in {-applyChildMapDiff d $-} M.insert lab new m
   --Note the order: recursive edge decrements must be done to the new SLC, not
   --the old one.
 

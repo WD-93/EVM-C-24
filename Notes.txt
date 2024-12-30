@@ -142,7 +142,59 @@ The then branch becomes empty, but does not return directly... that's because I 
 branches, but don't modify the label when it's empty. That's maybe logical, I might need to shuffle and don't
 want to duplicate large returns.
 
+Lesson learned from defeating the pruner demon - channel all updates through a single case at the end.
+FW: an algo which imposes discipline on when modifications are done...
+And now the edge to nowhere bug is gone too! That makes sense, since I was just returning a modified SLC
+without updating the CFG - creating an inconsistency that could trigger a bug in opt2PassM's cont after the
+recurse.
+
 How to add the C params to live for the entrypoint?
+Note the C vars don't necessarily corresponds to param words, they could be bound from struct fields.
+The param words are only used in the pattern-match IR code, so it's incorrect to jump to that SLC; if you
+jump to somewhere expecting the C params, you must be jumping later.
+Negative consequence: the first SLC after the pattern-matching will have a fallthrough from the entrypoint,
+preventing fallthrough from anywhere else.
+In CFG (before CFG2), whiles start with a node that jumps to the loop; that gets merged, but continue jumps
+directly to the loop itself, avoiding the problem.
+printCFG2 "module {f : Int Unsigned 8 -> Int Unsigned 8; f x := do {while (1) 1; return x}}"
+--correctly has x#1 in scope in the loop body (which becomes empty)
+printCFG2 "module {f : Int Unsigned 8 -> Int Unsigned 8; f x := do {while (1) (x=1); return x}}"
+--still triggers an edge to nowhere! I must find it tomorrow.
+f x := while (()) (x = 1) --seems to be the simplest code which triggers the error
+It's the entrypoint to the loop which gets lost... either the start or the reduce, it seems to vary.
+A problem with the refcounting?
+I need to update the refcounts to be able to correctly apply merge...
+printCFG2 "module {f : Int Unsigned 8 -> (); f x := while (()) (x=1)}"
+--The simplest code that triggers it
+Node 7 (the reduce) is wrongly deleted or looked up...
+2 (the loop entry point) jumps to 7, to which it has an exclusive edge... perhaps it has something to do
+with the recursion order or when I do the update.
+I get the SLC before I check whether it's been visited... so if I merge 2 with 7, deleting 7...
+The backjump to node 2 will return the unmerged node.
+What if I fetched the child SLCs and performed the self update before recursing on any new children?
+Could it be the bypass that's the issue - a bypass by the backjump? The update API shouldn't lose
+nodes anyway.
+It's in dfsGraph... so it must be in the GC?
+It's present in pipeline2CFG2, so it's not the print.
+I think it's in dfsGC... I'll add a dfsGraphE that returns an Either...
+What if I collected all the reachable nodes, then added back a refcount? I don't need to recursively
+delete when updating; if I perform an update the new refcount can be deferred to the GC.
+That should fix it; you can't wrongly delete a node if you don't delete any, and dfsGC is unlikely to
+be the culprit.
+If I GC before the first pass I can even neutralize bugs due to incorrect starting in-edges.
+
+OK, I adjusted the GC algo, removed deletions and added a refcount for the entrypoint and now at least
+printCFG2 "module {f : Int Unsigned 8 -> Int Unsigned 8; f x := do {while (1) (x=1);return x}}"
+isn't blowing up. I was surprised by the double =1s in label 4 but it's because the while cond is
+duplicated to avoid an additional jump per iteration, and I don't share constants.
+
+x=(x+1) leads to ill-typed LHS... wut?
+f x := do {while (1) (x+1);return x}
+doesn't merge when I expected it to.
+
+Full language stack:
+CST, AST, IR, CFG, CFG2, stack ops, asm -> bytecode
+To add: pointer (first mem) and struct support.
 
 ----
 

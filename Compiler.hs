@@ -23,6 +23,8 @@ import ToyCFG
 import Pretty
 import qualified Data.Set as S
 
+--Hopefully no longer relevant, but keeping just in case:
+{-
 --Testing to find weird bug - for function body do {y = 1; return 2}
 --the opt2 doesn't remove the garbage op.
 testPrune =
@@ -41,6 +43,7 @@ testPrune =
 --Bit of a hack to persist badly pruned module
 getBadPruning :: IO (Map Name (Label,CFG2))
 getBadPruning = read <$> readFile "badPruningCFG2M.txt"
+-}
 
 printIRM :: String -> IO ()
 printIRM str =
