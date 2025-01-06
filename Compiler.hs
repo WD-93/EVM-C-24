@@ -19,6 +19,9 @@ import IR1 hiding (Ifte,While,Return)
 --IR -> CFG (non-stack aware)
 --TODO rename...
 import ToyCFG
+--CFG2 -> Asm
+import Asm (Asm(..))
+import Stack
 --For debugging:
 import Pretty
 import qualified Data.Set as S
@@ -56,6 +59,7 @@ printCFG str =
   case pipeline2CFG str of
     Right cfgm -> mapM_ putStrLn $ showCFGM cfgm
     Left err -> putStrLn $ "Error: " ++ show err
+--Doesn't display the version count or substitution maps.
 printCFG2 :: String -> IO ()
 printCFG2 str =
   case pipeline2CFG2 str of
@@ -67,8 +71,12 @@ data CompilerError = ParserError String
                    | DesugarError DError
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
+                   | AsmError String
   deriving (Eq,Ord,Read,Show)
---Doesn't display the version count or substitution maps.
+pipeline2Asm :: String -> Either CompilerError [Asm]
+pipeline2Asm str = do
+  cfg2m <- pipeline2CFG2 str
+  compile2asm cfg2m ? AsmError
 pipeline2CFG2 :: String ->
                  Either CompilerError (Map Name (Label, CFG2))
 pipeline2CFG2 str = do
@@ -98,8 +106,10 @@ pipeline2IR str = do
   return irmod
   --I need to generate IR for each function called from main
   --Seq only handles a single function's IR codegen
-  where Right b ? _ = Right b
-        Left err ? errt = Left $ errt err
+
+(?) :: Either localErr a -> (localErr -> globalErr) -> Either globalErr a
+Right b ? _ = Right b
+Left err ? errt = Left $ errt err
 --Parse a module from string
 parseModule :: String -> Either String P.M
 parseModule str =

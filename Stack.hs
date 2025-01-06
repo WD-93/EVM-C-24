@@ -93,7 +93,7 @@ import Asm
 --For now, only modules with a main are accepted.
 --The other functions are all placed (no tree shaking here) in ascending of
 --name.
-compile2asm :: Map Name (ToyCFG.Label,CFG2) -> Either String [Asm]
+compile2asm :: Map Name (L,CFG2) -> Either String [Asm]
 compile2asm nm2def =
   case M.lookup "main" nm2def of
     Nothing -> Left "Missing main in compile2asm"
@@ -132,7 +132,21 @@ asmPrologue = [
 --For now, do not allocate additional SLCs for stack adjustment of the then
 --branch; instead include all generated asm in the branch asm.
 def2asm :: Name -> (ToyCFG.Label,CFG2) -> Either String [Asm]
-def2asm f (entrypoint,cfg) = error "TODO"
+def2asm f (entrypoint,cfg) =
+  case runStack (do --Layout: $anon0 .. $anonN
+                    --The entrypoint is an exception in that its arguments need
+                    --not be live.
+                    --Ah... live does not record the necessary arity info...
+                    --I need to pass it through the entire pipeline.
+                    stackSetLayout entrypoint (error "TODO")
+                    compileLabel entrypoint) (f,entrypoint,cfg) $
+       StackS {staxCompiledSLCs = M.empty,
+               staxLayouts = M.empty,
+               staxFallenThroughTo = S.empty
+              } of
+    (Left err, _) -> Left err
+    (Right (), stax) -> Right $ collectIntoAsm $ collectIntoLists $
+                        staxCompiledSLCs stax
 
 data StackS = StackS {
   --We assemble them into lists of SLCs that fall through to each other later.
@@ -146,8 +160,11 @@ data StackS = StackS {
   }
      deriving (Eq,Ord,Read,Show)
 type Stack = ExceptT String
-  (ReaderT (Name,ToyCFG.Label,CFG2) --fname, entrypoint, cfg
+  (ReaderT (Name,L,CFG2) --fname, entrypoint, cfg
   (State StackS))
+runStack :: Stack a -> (Name,L,CFG2) -> StackS -> (Either String a, StackS)
+runStack stk r s =
+  runState (runReaderT (runExceptT stk) r) s
 data CSLC = CSLC {
   cslcOps :: [Asm], --includes branch
   cslcFallthrough :: Maybe ToyCFG.Label
