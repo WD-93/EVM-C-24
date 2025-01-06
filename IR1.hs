@@ -105,9 +105,12 @@ data SeqR = SR {
 --FW problem: the IR output may need additional info for placement, such as
 --whether the code is a library, exported functions and JTs
 data IRModule = IRM {
-  irDefuns :: Map Name [IR]
+  irDefuns :: Map Name (Arity,[IR])
   }
   deriving (Eq,Ord,Read,Show)
+--The number of argument words a function takes beyond $ret; needed for asm
+--generation.
+type Arity = Int
 seqModule :: Module -> Either SeqError IRModule
 seqModule mod = do
   let fdefs = M.toList $ defuns mod
@@ -121,7 +124,7 @@ seqModule mod = do
                                   }
                     in case runSeq (seqDefun defun) seqr seqs of
                          (Left serr, _, _) -> Left serr
-                         (Right (), irs, _seqs) -> return (fnm,irs)
+                         (Right arity, irs, _seqs) -> return (fnm,(arity,irs))
                  )
             fdefs
   return $ IRM {irDefuns = M.fromList irdefs}
@@ -154,10 +157,12 @@ the end of a SLC?
 --For now, support only x and (p1,p2,p3) patterns (PVar and PTup)
 --The argument words are initially anonymous; bind them to variables using the
 --same pattern-matching logic as assignment.
-seqDefun :: D -> Seq ()
+seqDefun :: D -> Seq Arity
 seqDefun (Defun f ft pat body) =
   case ft of
     a :-> b -> do
+      --Get arity to return
+      arity <- numWordsT a
       --Match argument against lhs
       args <- anonVarsT a
       patternMatch pat a args
@@ -173,6 +178,8 @@ seqDefun (Defun f ft pat body) =
       --params (storage etc) when I modify return in seqS.
       zws <- askReturnType >>= nullValue
       emit $ IR1.Return () $ ["$mem","$ret"] ++ zws
+
+      return arity
     _ -> throwE $ BadFunctionType f ft
 
 --Args: Pattern, C type of rhs, words of rhs.

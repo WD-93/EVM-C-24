@@ -15,8 +15,8 @@ import ToyCFG
 prettyIRM :: IRModule -> [String]
 prettyIRM irm =
   let ds = M.toList $ irDefuns irm
-  in ds >>= (\(f,irs) ->
-               [f ++ ":"] ++
+  in ds >>= (\(f,(arity,irs)) ->
+               [f ++ "(arity " ++ show arity ++ ")"++ ":"] ++
                map (' ':) (irs >>= prettyIR))
 --Given a pretty for vs and a [(Name,v)], generates
 --k:
@@ -87,9 +87,10 @@ showOp = \case
   Copy -> "copy"
 showRHS = intercalate ", "
 
-
-showCFGM :: Map Name (LL,CFGS) -> [String]
-showCFGM = prettyBindings (showCFG . (\(ll,cfgs) -> (fst ll,cfgs))) . M.toList
+--Just ignores arity for now
+showCFGM :: Map Name (Arity,(LL,CFGS)) -> [String]
+showCFGM = prettyBindings (showCFG . (\(arity,(ll,cfgs)) ->
+                                        (fst ll,cfgs))) . M.toList
 --Show the CFG for a single function
 --The LL is the function entry point and its live vars
 --Show SLCs in DFS order from entry point
@@ -120,10 +121,11 @@ showSLC showV (l,slc) =
 --so showing SLCs in reverse order should ensure they're presented in jump
 --order?
 --No, for while (1) do {} it's not in jump order.
-showCFG2M :: (Map Name (Label, Map Label SLC2)) -> [String]
+showCFG2M :: (Map Name (Arity,(Label, Map Label SLC2))) -> [String]
 showCFG2M = prettyBindings showCFG2 . M.toList
-showCFG2 :: (Label,Map Label SLC2) -> [String]
-showCFG2 (lab,cfg2) =
+--Just ignores arity for now
+showCFG2 :: (Arity,(Label,Map Label SLC2)) -> [String]
+showCFG2 (arity,(lab,cfg2)) =
   let m = M.map (\(slc,verMap,substMap,inEdgeCount) -> slc) cfg2 in
   dfsGraph slcChildren lab m >>=
   showSLC (\(ix,nm) -> nm ++ "[" ++ show ix ++ "]")

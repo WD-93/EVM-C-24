@@ -78,22 +78,24 @@ pipeline2Asm str = do
   cfg2m <- pipeline2CFG2 str
   compile2asm cfg2m ? AsmError
 pipeline2CFG2 :: String ->
-                 Either CompilerError (Map Name (Label, CFG2))
+                 Either CompilerError (Map Name (Arity,(Label, CFG2)))
 pipeline2CFG2 str = do
-  nm2llcfgs <- pipeline2CFG str
-  let nm2lcfg2 = M.map (\((lab,_live),cfgs) ->
+  cfgm <- pipeline2CFG str
+  let cfg2m = M.map (\(arity,((lab,_live),cfgs)) ->
                           let cfg = labelSLCMap cfgs
                               (_,cfg') = processCFG (lab,cfg)
-                          in (lab, opt2 lab cfg'))
-                 nm2llcfgs
-  return nm2lcfg2
-pipeline2CFG :: String -> Either CompilerError (Map Name (LL,CFGS))
+                          in (arity,(lab, opt2 lab cfg')))
+                 cfgm
+  return cfg2m
+--The CFG logic doesn't care about arity, so it can be passed through the
+--CFG and CFG2 steps unchanged
+pipeline2CFG :: String -> Either CompilerError (Map Name (Arity,(LL,CFGS)))
 pipeline2CFG str = do
   irm <- pipeline2IR str
   let ds = M.toList $ irDefuns irm
-  fcfgs <- mapM (\(f,irs) ->
+  fcfgs <- mapM (\(f,(arity,irs)) ->
                    case ir2cfg irs of
-                     (Just ll, cfgs) -> return (f,(ll,cfgs))
+                     (Just ll, cfgs) -> return (f,(arity,(ll,cfgs)))
                      _ -> Left $ IllFormedCFG f irs) ds
   return $ M.fromList fcfgs
   
