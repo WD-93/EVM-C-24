@@ -1,3 +1,104 @@
+Cleanup:
+Create a consistent naming scheme for boilerplate getters and setters, such as
+monadTypeGetFieldName. getLive => stackSomething
+StackOps and SelectOps are related... maybe make them datatypes, then derive their transformer instances
+and put their shared functions in a typeclass.
+
+I generate code for arguments in left-to-right order, rather than right-to-left... so with my naive
+instruction ordering, x + 1 will require a swap.
+Fixes: treegraph ordering with right-to-left the default for trees.
+Pick cheapest (shortest) dup/swap sequence for commutative ops. Do that in the treegraph op ordering algo?
+That's exp-time...
+
+What do I need to do to pass multiple synonymous vars between SLCs in a single stack word?
+Better CFG analysis... recompute live from a CFG, identify synonymous vars.
+Even better than 1 stack word: identify constants, pass in 0 words.
+
+You save 11 gas falling through in an else branch... assuming 50/50 branch probability it's well worth
+spending 3 negating the cond. However, that's only if there's stack adjustment to do.
+Before the jumpi, adjust to delete any garbage. Target: the union of the two maybe-layouts.
+If the two live sets are equal and the layouts can be unified (either because they're both equal or one is
+free), then adjust to that and branch. Goal: cond:layout.
+FW: branch probability annotations.
+
+selectOps takes ops and a live set and returns a list of stack ops, resulting in a layout. It may include
+garbage, since at least the last op may leave some. If you dup in earlier ops without GC you can have even
+more...
+selectOps must also be given an initial layout.
+Divide by branch:
+jump l: 
+There are three cases: 
+ 1) l is unplaced, so fall through and use 1) the current layout if 1-edge, 2) filter so only live vars are
+ included, then set the layout to the current.
+ Note CFG opt *should* have removed every 1-edge jump.
+ 2) l is placed and has been fallen through to; adjust to its layout and jump.
+ 3) l is placed and has not been fallen through to; adjust to its layout and fall through.
+I don't need to build lists of SLCs, just record which SLC they fall through to if any.
+Ignore truly empty SLCs for now.
+return vs:
+ ez, adjust to vs
+jumpi v th el:
+ There's a tradeoff... if th < el but el is fallthroughable...
+ Cost of iszero: 3
+ Cost of additional jump: 12 (push, jump, jumpdest)
+A jumpi then branch with edge 1 should have a jumpdest, but a fallthrough else branch should not.
+
+Selecting ops for a series of ops is just a mapM after you decide the ordering.
+The simplest ordering would be id...
+selectOp type: Writer [Asm], State (Map SSAName Int, [Name]) --uses and layout
+Effect: find longest prefix of last-use vars, swap them to the top, dup the rest, emit payload op.
+Popping all garbage TOS can be done both before and after.
+Note eager popping is inefficient if you're going to STOP and discard the stack anyway, but it's a decent
+first approximation of what to do.
+
+Oh no - I must propagate Name -> IRT info to know whether a var should be on the stack!
+For now I'll just uses a hack: the only non-word var I have is $mem, so I'll give $mem[0] that type if it's
+live; the rest will be given the type tword. The type signatures on op will do the rest.
+
+TODO now: place return address TOS on call so it doesn't mess up last-use consumption.
+Handling call -> asm: I need to add location (function,SLC index,call count) to SelectOps state.
+It'd be cleaner to add function and index to Reader since they don't change, but that would require changing
+the monad type.
+How to eliminate the unnecessary swap of ret with f in calls? Allocate the return address when generating the
+IR, then place it after the call op.
+FW: attempted dups or swaps beyond bounds should perhaps trigger a failure that can be handled, for example by
+backtracking and attempting to GC or even stash stack variables in memory.
+
+assembleLists:
+ lists = {} --a map head label => list, containing a list which doesn't fall through at the end
+ slcs --a map label -> slc, where each has a .fallthrough :: Maybe Label
+ buildList = buildList' []
+ buildList xs l =
+  case lists[l] of
+   --If a list starting with the next label exists, concatenate them; you're done
+   Just ys -> do
+     lists[l] = Nothing
+     zs = reverse xs ++ ys, start = first label of zs
+     lists[start] = Just zs
+   _ -> case slcs[l] of
+           Nothing -> something went wrong: LTN
+           Just slc -> add slc to xs, recurse with slc.fallthrough
+                       if it's nothing you're done
+
+Is overapproximation of live set a problem? Pruning is done at SLC level, so only if a live but unused var
+crosses a control flow boundary. Since function calls don't count, it shouldn't be a big problem.
+
+Differentiating features of EVM C vs Ecomp, aka why develop EVM C?
+Proper exprs and a type system, structs, tuples, ptrs, sized and signed/unsigned integers
+Difference from Sol: structs are on the stack rather than allocated in memory; ptrs allow low-level memory
+access.
+Proper functions
+Compiler-controlled rather than manually chosen stack layout; that allows opts such as varying the stack
+layout, e.g. swapping x to the TOS when you increment it.
+The basic structure is there, but it still needs 1) full set of primops, 2) full support for structs and
+pointers, 3) coercion 4) lots of testing and debugging.
+Also other static data.
+
+(&), (|), (^) :: a -> b -> a
+If sizeof b > sizeof a and the top word of a is < 256b, you need to mask the top word for | and ^.
+
+---
+
 Eliminating copies in CFG2 leads to coerce byte -> word creating empty SLCs; the copy information is only
 preserved in the subst map.
 Ex: return 3 in a function returning a word becomes
@@ -195,6 +296,14 @@ doesn't merge when I expected it to.
 Full language stack:
 CST, AST, IR, CFG, CFG2, stack ops, asm -> bytecode
 To add: pointer (first mem) and struct support.
+
+Next step: stack scheduling with DFS op emission.
+It strikes me that empty SLCs, if they do not generate any stack ops, can be prepended to a list of SLCs at
+no cost - any number can fall through.
+On jumpdests: the entrypoint always has a jumpdest, as do jumpi then branches and SLCs with refcount > 1.
+
+If $ret is BOS, calls are problematic from a stack scheduling perspective: every argument word must be
+dup'd. I'll switch to TOS.
 
 ----
 
