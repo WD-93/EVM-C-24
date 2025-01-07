@@ -12,6 +12,7 @@ import Data.List (elemIndex)
 import Control.Monad.Reader
 import Control.Monad.Trans.Except --for Stack
 import Data.Maybe (fromMaybe)
+import System.IO.Unsafe (unsafePerformIO) --just for debugging
 
 import DTs
 import qualified IR1 (Operator(Opcode)) --Opcode conflicts with Asm
@@ -19,6 +20,14 @@ import IR1 hiding (Operator(Opcode))
 import ToyCFG
 import Asm
 
+--Putting this in a monad should make it easier to predict when it will print
+--despite laziness.
+debugFlag = False
+debugPrint :: Monad m => String -> m ()
+debugPrint str =
+  if debugFlag
+  then unsafePerformIO $ putStrLn str >> return (return ())
+  else return ()
 --Now that we have a simplified CFG, it's time to implement stack scheduling
 --for the SLCs and branch between them efficiently.
 --Codegen state: [SSAName], use counts per var.
@@ -109,12 +118,14 @@ compile2asm nm2def =
 --that. The prologue assumes main takes () as an argument.
 asmPrologue :: [Asm]
 asmPrologue = [
+  Comment "Begin prologue",
   PushLabel 2 (LNamed "$exitCall"),
   PushLabel 2 (LNamed "main"),
   Opcode "jump",
   PlaceLabel (LNamed "$exitCall"),
   Opcode "jumpdest",
-  Opcode "stop"
+  Opcode "stop",
+  Comment "End prologue"
               ]
 
 --Compiles a function definition to a contiguous blob of assembly.
@@ -138,8 +149,11 @@ def2asm f (arity,(entrypoint,cfg)) =
                     --not be live.
                     --Ah... live does not record the necessary arity info...
                     --I need to pass it through the entire pipeline.
+                    debugPrint $ "Compiling function " ++ f
+                    debugPrint $ "Arity: " ++ show arity
+                    --Maybe there's an off-by-one error here?
                     stackSetLayout entrypoint $ "$ret" : ["$anon"++show n
-                                                         | n <- [1..arity]]
+                                                         | n <- [0..arity-1]]
                     compileLabel entrypoint) (f,entrypoint,cfg) $
        StackS {staxCompiledSLCs = M.empty,
                staxLayouts = M.empty,
@@ -192,6 +206,8 @@ compileLabel lab =
         then throwE $ "Layout wasn't set before compiling label " ++ show lab
         else return ()
       let Just layout = mlayout
+      debugPrint $ "Compiling label " ++ show lab
+      debugPrint $ "Layout: " ++ show layout
       --Get function name for disambiguating return address labels
       --The entrypoint is for determining whether to place the fname label
       --and add a mandatory jumpdest.
@@ -215,10 +231,16 @@ compileLabel lab =
                                sosLocation = (fname,lab),
                                sosCallCount = 1 --the next UID
                               }
+      --As part of debug, we eval the list structure of opAsm here to force
+      --prints...
+      case length opAsm of
+        1000000 -> error "That's not going to happen!"
+        _ -> return ()
                                
       let startAsm =
             [PlaceLabel $ LNamed fname | lab == entrypoint] ++
-            [PlaceLabel $ cfgLabel2AsmLabel fname lab] ++
+            [PlaceLabel $ cfgLabel2AsmLabel fname lab,
+             Comment $ "Layout: " ++ show layout] ++
             --TODO only gen JD if lab == entrypoint, rc > 1 or lab is jumped to
             --from jumpi. Implement using a Boolean parameter.
             [Opcode "jumpdest"]
@@ -249,6 +271,7 @@ compileBranch :: Map Name Int -> Map SSAName SSAName ->
 compileBranch ver sub self layout types branch =
   case branch of
     Jump lab -> do
+      debugPrint "Branch: jump"
       --lab's layout is either fixed or free
       --If fixed, we translate its layout to current SSA vars,
       --and adjust to that.
@@ -264,6 +287,7 @@ compileBranch ver sub self layout types branch =
       (br,mft) <- tryFallthrough self lab
       return (adjustmentOps ++ br,mft)
     Jumpi cond th el -> do
+      debugPrint "Branch: jumpi"
       --First: compute the combined live of th, el and the branch
       --Do not adjust to that, instead GC!
       --Why? Consider th has live x and el live y and they both map to the
@@ -292,13 +316,14 @@ compileBranch ver sub self layout types branch =
       --adjustment SLC that may fall through to the then branch.
       --If you didn't jump, adjust to the el layout and try to fall through
       adjustThen <- adjustToMaybeTarget ver sub layout th
-      adjThenLabel <- createNewSLC self adjustThen th
+      adjThenLabel <- createNewSLC self
+        ((Comment $ "Layout: " ++ show layout) : adjustThen) th
       adjThenAsmLabel <- labelToLabel adjThenLabel
       adjustElse <- adjustToMaybeTarget ver sub layout el
       (contToElse,mft) <- tryFallthrough self el
       let (_,dupCond,_) = runStackOps (soDupName cond) layout
       return (dupCond ++
-              [PushLabel 2 adjThenAsmLabel] ++
+              [PushLabel 2 adjThenAsmLabel, Opcode "jumpi"] ++
               adjustElse ++
               contToElse
              ,mft)
@@ -314,6 +339,7 @@ compileBranch ver sub self layout types branch =
     --Precondition: there may be garbage on stack, but each var is unique.
     --Each var in the goal is already present on the stack.
     BReturn vs -> do
+      debugPrint "Branch: return"
       vsW <- filterM (\v ->
                         case M.lookup v types of
                           Just (Word{}) -> return True
@@ -336,6 +362,7 @@ createNewSLC :: L -> [Asm] -> L -> Stack L
 createNewSLC from adjustmentAsm to = do
   let newLabel = -(from+1)
   asmLabel <- labelToLabel newLabel
+  debugPrint $ "Creating new label " ++ show (from,newLabel,to)
   (branchAsm,mfallthrough) <- tryFallthrough newLabel to
   modify (\stax->stax{staxCompiledSLCs =
                       M.insert newLabel (CSLC{cslcOps =
@@ -554,15 +581,24 @@ compileReturnM target = do
   tell [Opcode "jump"]
 --TODO handle failure...
 soSwapIndex :: Int -> StackOps ()
+soSwapIndex 0 = return ()
 soSwapIndex i = do
   tell [Swap i | i > 0]
-  modify (swapF i)
+  vs <- get
+  case swapF i vs of
+    Nothing -> do debugPrint $ "soSwapIndex swapF failed: " ++ show (i,vs)
+                  error "Huh"
+    Just vs' -> put vs'
 --TODO dedup with soDupName
 soSwapName :: SSAName -> StackOps ()
 soSwapName nm = do
   mi <- gets (elemIndex nm)
   case mi of
-    Nothing -> error "Compiler error soSwapName"
+    Nothing -> do
+      debugPrint $ "Name " ++ show nm ++ " missing in soSwapName"
+      layout <- get
+      debugPrint $ "Layout: " ++ show layout
+      error "Huh"
     Just i -> soSwapIndex i
 soDupIndex :: Int -> StackOps ()
 soDupIndex i = do
@@ -573,7 +609,7 @@ soDupName nm = do
   mi <- gets (elemIndex nm)
   case mi of
     Nothing -> error "Compiler error soDupName"
-    Just i -> soDupIndex i
+    Just i -> soDupIndex (i+1) --DUP1 dups index 0
 dupF :: Show a => Int -> [a] -> [a]
 dupF i as =
   case as !? i of
@@ -687,6 +723,8 @@ runSelectOps sel sos =
 --(swap,dup,pop) and the "payload" op, such as add or Call.
 selectOps :: SSAOp -> SelectOps ()
 selectOps (lhs,op,rhs) = do
+  debugPrint $ "selectOps " ++ show op
+  get >>= (\sos -> debugPrint $ "Layout: " ++ show (sosLayout sos))
   popTOS
   --Take only stack vars from lhs and rhs; virtual vars such as Mem have no
   --runtime impact.
@@ -843,18 +881,23 @@ swapIndex = \case
         --attempted by the compiler
         if length vs - 1 < i
           then error $ "Compiler error: swapIndex OOB " ++ show (i,vs)
-          else setLayout (swapF i vs)
+          else case swapF i vs of
+                 Nothing -> do debugPrint $ "swapF " ++ show (i,vs)
+                               error "Huh"
+                 Just layout -> setLayout layout
 --Handles computing the swapped layout
 --Also used in the StackOps monad
-swapF :: Int -> [a] -> [a]
-swapF i (pre:vs) =
-  let (post,vs') = swapF' i pre vs
-  in post:vs'
-swapF' :: Int -> a -> [a] -> (a,[a])
-swapF' 1 pre (post:vs) = (post,pre:vs)
-swapF' i pre (v:vs) =
-  let (post,vs') = swapF' (i-1) pre vs
-  in (post,v:vs')
+swapF :: Int -> [a] -> Maybe [a]
+swapF i (pre:vs) = do
+  (post,vs') <- swapF' i pre vs
+  return $ post:vs'
+swapF _ [] = Nothing
+swapF' :: Int -> a -> [a] -> Maybe (a,[a])
+swapF' 1 pre (post:vs) = Just (post,pre:vs)
+swapF' i pre (v:vs) = do
+  (post,vs') <- swapF' (i-1) pre vs
+  return (post,v:vs')
+swapF' _ _ [] = Nothing
 
 --Gets the first index where a name is present
 nameIndex :: SSAName -> SelectOps Int
@@ -965,15 +1008,19 @@ follow lab:
 -}
 --Result: a map label -> [asm]. To serialize, simply concatenate the elements.
 collectIntoLists :: Map L CSLC -> Map L [[Asm]]
-collectIntoLists m = snd $ execState collectIntoListsM (m,M.empty)
+collectIntoLists m = snd $ execState
+  (do --debugPrint ("Collect into lists: " ++ show (S.toList $ M.keysSet m))
+      collectIntoListsM) (m,M.empty)
 collectIntoListsM :: State (Map L CSLC, Map L [[Asm]]) ()
 collectIntoListsM = do
   m <- gets fst
   case M.lookupMax m of
     Nothing -> return ()
     Just (lab,_) -> do
+      --debugPrint $ "Collecting " ++ show lab
       asms <- follow lab
       modify (id *** M.insert lab asms)
+      collectIntoListsM
   where
     follow :: L -> State (Map L CSLC, Map L [[Asm]]) [[Asm]]
     follow lab = do
@@ -995,7 +1042,8 @@ collectIntoListsM = do
           return asms
 collectIntoAsm :: Map L [[Asm]] -> [Asm]
 collectIntoAsm l2asms = do
-  (_,asms) <- M.toList l2asms
+  --Reversing to place the highest label (usually the entrypoint) first
+  (_,asms) <- reverse $ M.toList l2asms
   asm <- asms
   asm
  

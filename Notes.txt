@@ -1,3 +1,19 @@
+Bugs:
+*Compiler> pipeline2Bytecode "module {main:()->();main _ := main()}"
+Left (AsmError "return v has no type in compileBranch: (1,\"$mem\")")
+*Compiler> pipeline2Bytecode "module {main:()->Int Unsigned 8;main _ := return 0}"
+*** Exception: Stack.hs:(854,1)-(857,17): Non-exhaustive patterns in function swapF'
+
+*Compiler> pipeline2Bytecode "module {main:Int Unsigned 8->();main x := return ()}"
+*** Exception: Stack.hs:(854,1)-(857,17): Non-exhaustive patterns in function swapF'
+
+Fixed: soSwapIndex didn't handle 0 correctly.
+TODO make my functions complete and add ExceptT to all my monads so errors are easy to locate.
+For main _ := return 0 and main x := return (x+x) it seems to return correct and even efficient code, but...
+Bug: an add of uint8s should include a mask
+Any old word seems to be accepted as a param for Int, e.g. Unisgned...
+Off-by-1 in dup.
+
 Cleanup:
 Create a consistent naming scheme for boilerplate getters and setters, such as
 monadTypeGetFieldName. getLive => stackSomething

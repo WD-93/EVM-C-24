@@ -20,11 +20,14 @@ import IR1 hiding (Ifte,While,Return)
 --TODO rename...
 import ToyCFG
 --CFG2 -> Asm
-import Asm (Asm(..))
 import Stack
+--Asm -> Bytecode
+import Asm (Asm(..),AsmError(..),assemble,toExe)
+import Data.Set (Set(..))
+import qualified Data.Set as S
 --For debugging:
 import Pretty
-import qualified Data.Set as S
+
 
 --Hopefully no longer relevant, but keeping just in case:
 {-
@@ -65,6 +68,10 @@ printCFG2 str =
   case pipeline2CFG2 str of
     Right cfg2m -> mapM_ putStrLn $ showCFG2M cfg2m
     Left err -> putStrLn $ "Error: " ++ show err
+printAsm str =
+  case pipeline2Asm str of
+    Right asms -> mapM_ (putStrLn . prettyAsm) asms
+    Left err -> putStrLn $ "Error: " ++ show err
 
 --Putting it all together (in progress):
 data CompilerError = ParserError String
@@ -72,7 +79,14 @@ data CompilerError = ParserError String
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
                    | AsmError String
+                   | BytecodeError AsmError
   deriving (Eq,Ord,Read,Show)
+--The string set is a warning of undefined labels; none should exist
+pipeline2Bytecode :: String -> Either CompilerError (Set String, [Int])
+pipeline2Bytecode str = do
+  asm <- pipeline2Asm str
+  objectFile <- assemble asm ? BytecodeError
+  return $ toExe objectFile
 pipeline2Asm :: String -> Either CompilerError [Asm]
 pipeline2Asm str = do
   cfg2m <- pipeline2CFG2 str

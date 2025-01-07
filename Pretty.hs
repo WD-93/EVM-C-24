@@ -9,6 +9,8 @@ import qualified Data.Set as S
 import DTs (Name(..),T(..),Padding(..),pattern (:->),pattern UInt, pattern SInt)
 import IR1
 import ToyCFG
+import Asm hiding (Asm(Opcode,Push),Label())
+import qualified Asm as A
 
 --Just a test module for viewing intermediate compiler output
 
@@ -126,6 +128,33 @@ showCFG2M = prettyBindings showCFG2 . M.toList
 --Just ignores arity for now
 showCFG2 :: (Arity,(Label,Map Label SLC2)) -> [String]
 showCFG2 (arity,(lab,cfg2)) =
-  let m = M.map (\(slc,verMap,substMap,inEdgeCount) -> slc) cfg2 in
-  dfsGraph slcChildren lab m >>=
-  showSLC (\(ix,nm) -> nm ++ "[" ++ show ix ++ "]")
+  --let m = M.map (\(slc,verMap,substMap,inEdgeCount) -> slc) cfg2 in
+  dfsGraph slc2Children lab cfg2 >>=
+  showSLC2
+showSLC2 :: (Label,SLC2) -> [String]
+showSLC2 (lab,(slc,ver,sub,rc)) =
+  --["Ver: " ++ prettyMap id show ver,
+  -- "Sub: " ++ prettyMap prettySSA prettySSA sub,
+  -- "Refcount: " ++ show rc] ++
+  showSLC prettySSA (lab,slc)
+prettyMap :: (k -> String) -> (v -> String) -> Map k v -> String
+prettyMap showK showV m =
+  intercalate ", " $ map (\(k,v) -> showK k ++ ": " ++ showV v) $ M.toList m
+prettySSA :: SSAName -> String
+prettySSA (ix,nm) = nm ++ "[" ++ show ix ++ "]"
+
+prettyAsm :: A.Asm -> String
+prettyAsm = \case
+  A.Push len n -> "push" ++ show len ++ " " ++ show n
+  PushLabel len lab -> "push" ++ show len ++ " " ++ prettyAsmLabel lab
+  Dup n -> "dup" ++ show n
+  Swap n -> "swap" ++ show n
+  A.Opcode str -> str
+  PlaceLabel lab -> prettyAsmLabel lab ++ ":"
+  DefLabel lab lv -> prettyAsmLabel lab ++ " = " ++ show lv
+  Bytes bs -> "bytes " ++ show bs
+  UseLabel len lab -> prettyAsmLabel lab ++ ":" ++ show len
+  Comment str -> "; " ++ str
+prettyAsmLabel = \case
+  LAnon n -> show $ "anon" ++ show n
+  LNamed str -> str

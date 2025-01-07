@@ -34,6 +34,9 @@ data Asm = Push Int Integer
          --PushRelative Label Int would let you make code relocatable.
          --push base + k would become PC + k', where k' = k - the byte offset
          --of the PushRelative in the object file
+
+         --Comments for debugging
+         | Comment String
   deriving (Eq,Ord,Read,Show,Data)
 data Label = LNamed String | LAnon Int
   deriving (Eq,Ord,Read,Show,Data)
@@ -194,6 +197,7 @@ handleAsm = \case
   DefLabel l lv -> setLabel l lv
   Bytes bs -> emitBytes bs
   UseLabel len l -> emitLabel len l
+  Comment _ -> return ()
 checkRange instr lo hi n act
   | n < lo || n > hi = puke $ InstructionOutOfRange instr n
   | let = act
