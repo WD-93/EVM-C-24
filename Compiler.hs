@@ -28,6 +28,14 @@ import qualified Data.Set as S
 --For debugging:
 import Pretty
 
+--Now for some basic testing, using past failing cases
+testModules :: [String]
+testModules = [
+  "module {main:Int Unsigned 8->Int Unsigned 8;main x := main x}",
+  "module {main:()->();main _ := main()}",
+  "module {main:()->Int Unsigned 8;main _ := return 0}",
+  "module {main:Int Unsigned 8->();main x := return ()}"
+              ]
 
 --Hopefully no longer relevant, but keeping just in case:
 {-

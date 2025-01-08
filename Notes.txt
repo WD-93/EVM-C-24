@@ -1,3 +1,61 @@
+The most important things to do now:
+* Fix bugs:
+ Restrict main to () -> ()
+ Add a kind check to types
+* Broaden the pipeline by supporting new features:
+ Storage, external contract state and tstore, with attendant virtual variables
+ Type synonyms
+ User-defined types (data ...); converted to word ops in IR
+  dynSizeof for tagged unions
+ Full primop support:
+  All appropriate C operators, esp .field and *_
+ Module support:
+  Generate linkable object files without a main
+  In-language support for manipulating code objects:
+   Load, link, set immutables
+ Static data beyond functions: 
+  Strings, in-code arrays, globals, immutables
+  Interpreter support: 
+   Generate JTs and dispatch code from instruction set spec,
+   with support for different CCs (ex: add using immediate argument or popped from interpreter stack)
+   Scripts as first-class objects, at least in a language above EVMC
+ Speculative: template polymorphism (implement in a language above EVMC?), Hindley-Milner, closures
+ Ex use: replicate Sol's sha3: sha3(Ptr a) := 
+* Libraries: Solidity ABI support
+* External: parsing and ppr of EVMC returndata based on the module's interface
+  Map function pointers to named functions...
+To put on the backburner:
+Performance opts:
+ Allow reordering of read ops by changing how their memory effect is represented.
+  It should be possible to eliminate an irrelevant read, so it should perhaps not produce a substate...
+  Instead recognize the read won't be placeable after its memory is written, so implement a barrier in code
+  scheduling preventing write placement before all reads?
+ Opt call by breaking out pushReturn into a separate op and giving call the args $mem,f,ret,argWords
+ Unnecessary jumpdest elimination
+ DFS-R2L op ordering
+ Live computation on CFG rather than IR to allow updating
+ Constant expansion
+ Common subexpression elimination, with code-optimized computation of related constants from other constants
+  (ex: mask 255 => mask 128 by shr)
+ Recognize copies on stack, don't pass as multiple words between SLCs when avoidable
+ Dataflow analysis, eliminate live but irrelevant vars
+ Demand-driven stack opt across SLCs, flexible layout selection using constraints
+ Use of branch probability in optimizing jumpi stack shuffling; transfer cost to the unlikely branch
+  Exec count and loop count annotations, exec cost vs code size optimization
+  Optimization taking code load cost into account
+ Function inline placement and full inlining, tree shaking of static data
+****
+
+Side-effecting code implicitly consumes and produces a state (ex: $mem, which represents all memory).
+FW: fine-grained representation of mutable state a la Rust's borrow checker, first-class support for virtual
+values (ex: store exclusive access to a list's elements in the list structure).
+__mem = mv; --let's say this only contains a read-only borrow of ptr p1
+*p2     --this should fail
+*p1 = x --this should also fail
+Fine-grained limitation of effects: CALL, state read/write, divergence and contract call exit.
+
+****
+
 Bugs:
 *Compiler> pipeline2Bytecode "module {main:()->();main _ := main()}"
 Left (AsmError "return v has no type in compileBranch: (1,\"$mem\")")
@@ -7,12 +65,38 @@ Left (AsmError "return v has no type in compileBranch: (1,\"$mem\")")
 *Compiler> pipeline2Bytecode "module {main:Int Unsigned 8->();main x := return ()}"
 *** Exception: Stack.hs:(854,1)-(857,17): Non-exhaustive patterns in function swapF'
 
+*Compiler L> printAsm "module {main:Int Unsigned 8->Int Unsigned 8;main x := main x}"
+*** Exception: Compiler error: usesRemaining of nonexistent var (1,"$anon3")
+CallStack (from HasCallStack):
+  error, called at .\Stack.hs:968:16 in main:Stack
+
 Fixed: soSwapIndex didn't handle 0 correctly.
 TODO make my functions complete and add ExceptT to all my monads so errors are easy to locate.
 For main _ := return 0 and main x := return (x+x) it seems to return correct and even efficient code, but...
 Bug: an add of uint8s should include a mask
 Any old word seems to be accepted as a param for Int, e.g. Unisgned...
 Off-by-1 in dup.
+
+The asm now looks correct for main x := if x then return 1 else return 0 end, but
+($ret,$anon0)
+swap1, pop
+push 0,
+swap1, jump
+(spread across two SLCs) is not optimal; it could be simplified to push 0, swap 2, pop, jump.
+My greedy layout setting is the problem: ideally I would work backwards from the point where stack is fixed.
+Also TODO: eliminate unnecessary jumpdests.
+
+"module {main:Int Unsigned 8->Int Unsigned 8;main x := return 0}"
+generates efficient bytecode (0,swap,pop,jump), but that's because it's 1 SLC.
+
+1 + 2 + 3 does not generate efficient code (3,2,1,add,add). The big question: do I reverse the eval order of
+tuple elements to reflect their order of being pushed to the stack, or do I implement treegraph with DFS
+(moving left-to-right in nodes)?
+Choice 1 introduces a gotcha if you're modifying memory in the argument subexprs, while choice 2 would lead
+to inefficient code (additional swapping) if you do.
+The latter is preferable; the compiler should be able to generate efficient code even if you have intuitive
+ordering of memory accesses.
+Rather than treegraph, I'll try just DFS (left-to-right).
 
 Cleanup:
 Create a consistent naming scheme for boilerplate getters and setters, such as

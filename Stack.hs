@@ -219,7 +219,8 @@ compileLabel lab =
       --Note: when branching, you may need to dup substituted vars!
       ucBranch <- useCountBranch slc vers subst
       let uc = M.unionWith (+) ucOps ucBranch
-          (_,opAsm,sos) = runSelectOps (mapM_ selectOps $ slcOps slc) $
+          --Changing op order to DFS (left-to-right)
+          (_,opAsm,sos) = runSelectOps (mapM_ selectOps $ dfsL2R $ slcOps slc) $
                           SOS {sosUsesRemaining = uc,
                                sosLayout = map ((,)0) layout,
                                --Hack: they're all uint256[1] except for $mem 
@@ -261,6 +262,22 @@ compileLabel lab =
       --Recurse on the original SLC's children
       mapM_ compileLabel $ slcChildren slc
   )
+--Orders ops by need, with a preference for pushing the rightmost argument first
+--to min swaps.
+--Since the ops have already been pruned, this should leave the same number of
+--ops.
+--Ops form a forest, where trees may have edges to other trees.
+--We know nothing of the target layout we're aiming for, so we eval the root
+--vars in arbitrary order.
+{-
+Algo: proceeding from the last op,
+process (lhs,op,rhs):
+ process ops of reverse rhs
+ emit op
+-}
+dfsL2R :: [SSAOp] -> [SSAOp]
+dfsL2R = id
+  
 --This is the trickiest bit in Stack
 --The type map is needed to filter the live set
 --ver and sub are needed to transform the  targets of branchees
