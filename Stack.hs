@@ -22,7 +22,7 @@ import Asm
 
 --Putting this in a monad should make it easier to predict when it will print
 --despite laziness.
-debugFlag = False
+debugFlag = True
 debugPrint :: Monad m => String -> m ()
 debugPrint str =
   if debugFlag
@@ -763,7 +763,10 @@ selectOps (lhs,op,rhs) = do
   --pushing the lhs with the given types.
   --FW: optimize codegen for reduce; whenever two last-use args to the reduce
   --are TOS, you should reduce them - before placing the args TOS!
-  emitOperator lhsW op rhsW
+
+  --Trying fix for mem ops: pass lhs, not lhsW. Don't push non-mem vars to
+  --the stack, but do record their type.
+  emitOperator lhs op rhsW
   popTOS
 
 emitOperator :: [(SSAName,IRT)] -> IR1.Operator -> [SSAName] ->
@@ -780,9 +783,12 @@ emitOperator lhs op rhs = do
   mapM decrementUses $ S.toList $ S.fromList rhs
   --Finally, add lhs to TOS and varTypes
   mapM_ (\(var,t) -> do
-           vs <- getLayout
-           setLayout (var:vs)
-           setVarType var t
+            setVarType var t
+            case t of
+              Word {} -> do
+                vs <- getLayout
+                setLayout (var:vs)
+              _ -> return ()
         ) $ reverse lhs
 emitPayload :: Int -> IR1.Operator -> SelectOps ()
 emitPayload arglen = \case

@@ -46,6 +46,43 @@ Performance opts:
  Function inline placement and full inlining, tree shaking of static data
 ****
 
+Interesting idea: user access to the IR level or lower. Access to the nth word of a value...
+User-defined primfun overloading. Defining features in terms of compile-time combinators in the language itself
+could let you simplify the compiler.
+What levels to provide access to? Control over data placement for generating JTs and static data in function
+defs would be nice.
+_+_ : (Int s n, Int s n) -> Int s n
+_+_ (x,y) = add(x,y) & mask n
+& mask 256 can be optimized to id
+An int _ 0 has a 0-word repr.
+Direct access to C var words could include assignment... and $mem.
+By setting $mem to {}, you can disable implicit memory operations.
+
+Inline decls
+
+****
+
+First: failing while loop, main () = main () failure. Perhaps all fun calls fail?
+ compileBranch fails because $mem[1] is of unknown type.
+ Is $mem[0] given type Mem? I think so.
+ Do mem ops not assign $mem a type? Perhaps I filter too early... yes, fixed.
+Type synonyms: first just check for cycles.
+ type Con args = t
+ Defer kind check until after substitution.
+ Where do you encounter types in exprs? Only coerce.
+A simple module system: just concatenate all decls.
+Global layout could be unspecified... except for calldata. The only requirement for a global is that its
+value is consistent
+
+How to handle __end__ if you have multiple modules? Just have a single global __end__ at
+first, no dynamic linking.
+Code objects could take modules first... but a compilation mode without $ret on the stack might be useful for
+piecing together snippets.
+
+Recompute live from graph; use SCC from Data.Graph.
+
+****
+
 Side-effecting code implicitly consumes and produces a state (ex: $mem, which represents all memory).
 FW: fine-grained representation of mutable state a la Rust's borrow checker, first-class support for virtual
 values (ex: store exclusive access to a list's elements in the list structure).
