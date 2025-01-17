@@ -66,6 +66,15 @@ First: failing while loop, main () = main () failure. Perhaps all fun calls fail
  compileBranch fails because $mem[1] is of unknown type.
  Is $mem[0] given type Mem? I think so.
  Do mem ops not assign $mem a type? Perhaps I filter too early... yes, fixed.
+ Call code is still inefficient, doing an unnecessary swap; TODO add DFS-R2L of ops and break out push ret
+ into a separate op. Tail calls are not just calls with ret = $ret, since you need to clean up the stack
+ first.
+ main x := main x now compiles, but the code for calling main is so inefficient... it first pushes main, then
+ permutes to get main,ret1,anon0 on top.
+ It starts with $ret,anon0, where anon0 is last-use... I should first put anon0 (a suffix of the rhs) on top,
+ then perform the prerequisite push ret1 and main ops.
+ That requires more than just R2L-order op codegen, I also need to do nested op handling, considering what
+ stack future ops need to see. Too complicated for now, just debug...
 Type synonyms: first just check for cycles.
  type Con args = t
  Defer kind check until after substitution.

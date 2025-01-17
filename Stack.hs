@@ -22,7 +22,7 @@ import Asm
 
 --Putting this in a monad should make it easier to predict when it will print
 --despite laziness.
-debugFlag = True
+debugFlag = False
 debugPrint :: Monad m => String -> m ()
 debugPrint str =
   if debugFlag
@@ -811,6 +811,7 @@ emitPayload arglen = \case
       Swap 1,
       Opcode "jump",
       PlaceLabel ret,
+      --TODO put a layout comment here?
       Opcode "jumpdest"
       ]
   Reduce opcode -> sequence_ [tell [Opcode opcode] | _ <- [1..arglen-1]]
@@ -977,8 +978,9 @@ usesRemaining :: SSAName -> SelectOps Int
 usesRemaining nm = do
   uses <- gets sosUsesRemaining
   case M.lookup nm uses of
-    Nothing -> error $ "Compiler error: usesRemaining of nonexistent var "
-               ++ show nm
+    Nothing -> return 0
+    --If a var is defined but not used it won't appear in the map, but that
+    --doesn't mean looking it up is an error.
     Just i -> return i
 decrementUses :: SSAName -> SelectOps ()
 decrementUses nm = do
