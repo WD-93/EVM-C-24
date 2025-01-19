@@ -313,7 +313,11 @@ dfsR2L ops =
       --If t1 depends on t2 it will precede it in the list
       --Note we want the opposite property, so we'll reverse it
       sortedForest = topSortOpForest opForest
-  in reverse sortedForest >>= serializeOpTree
+  in do --debugPrint $ "Op forest: " ++ show opForest
+        --debugPrint $ "Sorted forest: " ++ show sortedForest
+        --debugPrint $ "Result: " ++
+        --  show (reverse sortedForest >>= serializeOpTree)
+        reverse sortedForest >>= serializeOpTree
 --We're assisted by the fact that ops may only depend on previous ops
 --For each op starting from the last, build the transitive closure of ops it
 --depends on which have only one use. Multi-use ops become cross-tree edges.
@@ -390,6 +394,7 @@ serializeOpTree tree =
   in w
 serializeOpTreeM :: OpTree -> Writer [SSAOp] ()
 serializeOpTreeM (Node op@(_,_,rhs) s) = do
+  --debugPrint $ "Serializing: " ++ show op
   let v2tree = M.fromList $ do
         ei <- S.toList s
         case ei of
@@ -400,18 +405,25 @@ serializeOpTreeM (Node op@(_,_,rhs) s) = do
             return (v,tree)
       go lhses = \case
             [] -> return ()
-            (v:vs) ->
+            (v:vs) -> do
+              --debugPrint $ "Recursing on " ++ show v
               case M.lookup v v2tree of
-                Nothing -> return () --It's an external edge
+                Nothing -> go lhses vs --It's an external edge
                 Just tree ->
                   let lhs = opTreeKey tree
                   in if S.member lhs lhses
-                     then return () --Already visited
+                     then go lhses vs --Already visited
                      else do serializeOpTreeM tree
                              go (S.insert lhs lhses) vs
   --It's the reverse here that makes it R2L
   go S.empty $ reverse rhs
   tell [op]
+testSerializeOpTree =
+  let [x,y,z] = map ((,)1) $ words "x y z" in
+  serializeOpTree $
+  Node ([(x,tword)],IR1.Opcode"add",[y,z]) $
+  S.singleton $ Right $ Node ([(y,tword)],
+                              IR1.Push (Const 1),[]) S.empty
 
 --This is the trickiest bit in Stack
 --The type map is needed to filter the live set

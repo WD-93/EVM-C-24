@@ -31,6 +31,9 @@ import Pretty
 --Now for some basic testing, using past failing cases
 testModules :: [String]
 testModules = [
+  --The case below failed because of a bug in dfsR2L. Now it generates correct
+  --but inefficient bytecode: 2 more swaps than necessary.
+  "module {main:Int Unsigned 8->Int Unsigned 8;main x := return (1+x)}",
   "module {main:Int Unsigned 8->Int Unsigned 8;main x := main x}",
   "module {main:()->();main _ := main()}",
   "module {main:()->Int Unsigned 8;main _ := return 0}",
