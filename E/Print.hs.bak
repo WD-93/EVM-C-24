@@ -124,7 +124,7 @@ instance Print E where
     Int n -> prPrec i 3 (concatD [prt 0 n])
     EmptyTup -> prPrec i 3 (concatD [doc (showString "("), doc (showString ")")])
     Tup e_ es -> prPrec i 3 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
-    EmpyStruct -> prPrec i 3 (concatD [doc (showString "{"), doc (showString "}")])
+    EmptyStruct -> prPrec i 3 (concatD [doc (showString "{"), doc (showString "}")])
     EStruct fields -> prPrec i 3 (concatD [doc (showString "{"), prt 0 fields, doc (showString "}")])
     Wild -> prPrec i 3 (concatD [doc (showString "_")])
   prtList _ [] = (concatD [])

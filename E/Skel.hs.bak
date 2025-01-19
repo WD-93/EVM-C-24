@@ -44,7 +44,7 @@ transE x = case x of
   Int integer -> failure x
   EmptyTup -> failure x
   Tup e es -> failure x
-  EmpyStruct -> failure x
+  EmptyStruct -> failure x
   EStruct fields -> failure x
   Wild -> failure x
 transOS :: OS -> Result

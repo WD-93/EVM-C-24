@@ -160,6 +160,10 @@ desugar (P.Module ds) =
 type De = Either DError
 desugarDs :: Map Name D -> [P.D] -> De (Map Name D)
 desugarDs m [] = return m
+--First I'll implement DFS-R2L
+--desugarDs m (P.TySyn conargs t) = do
+--  (con,args) <- desugarConArgs conargs
+--  error "TODO"
 desugarDs m (P.TySig (Ident f) t :
              P.Defun (Ident f') lhs s :
              rest)

@@ -30,7 +30,7 @@ data E
     | Int Integer
     | EmptyTup
     | Tup E [E]
-    | EmpyStruct
+    | EmptyStruct
     | EStruct [Field]
     | Wild
   deriving (Eq, Ord, Show, Read)

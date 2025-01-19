@@ -13,6 +13,8 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except --for Stack
 import Data.Maybe (fromMaybe)
 import System.IO.Unsafe (unsafePerformIO) --just for debugging
+import Data.Graph (Graph(..))
+import qualified Data.Graph as G --for dfsR2L
 
 import DTs
 import qualified IR1 (Operator(Opcode)) --Opcode conflicts with Asm
@@ -219,8 +221,8 @@ compileLabel lab =
       --Note: when branching, you may need to dup substituted vars!
       ucBranch <- useCountBranch slc vers subst
       let uc = M.unionWith (+) ucOps ucBranch
-          --Changing op order to DFS (left-to-right)
-          (_,opAsm,sos) = runSelectOps (mapM_ selectOps $ dfsL2R $ slcOps slc) $
+          --Changing op order to DFS (right-to-left)
+          (_,opAsm,sos) = runSelectOps (mapM_ selectOps $ dfsR2L $ slcOps slc) $
                           SOS {sosUsesRemaining = uc,
                                sosLayout = map ((,)0) layout,
                                --Hack: they're all uint256[1] except for $mem 
@@ -269,15 +271,148 @@ compileLabel lab =
 --Ops form a forest, where trees may have edges to other trees.
 --We know nothing of the target layout we're aiming for, so we eval the root
 --vars in arbitrary order.
-{-
-Algo: proceeding from the last op,
-process (lhs,op,rhs):
- process ops of reverse rhs
- emit op
--}
-dfsL2R :: [SSAOp] -> [SSAOp]
-dfsL2R = id
-  
+--Every op must be included... I need a root node that refs them all in
+--reverse order.
+--Naive DFS will place ops with several uses too late in the code... I need
+--to build a treegraph. My ignorance of the live set here (which tells me
+--whether an op's output is consumed in the SLC or needs to be saved) is an
+--efficiency problem.
+--Precondition: no op has [] lhs, no two ops share a var in their lhs
+dfsR2L :: [SSAOp] -> [SSAOp]
+dfsR2L ops =
+  --First, map vars to the lhs of the op they're from (which uniquely
+  --identifies the op)
+  let v2lhs = M.fromList $ do
+        (lhs,_,_) <- ops
+        (v,_) <- lhs
+        return (v,lhs)
+      --First, the dependency graph between ops: lhs -> Set lhs
+      depGraph = M.fromList $ do
+        (lhs,_,rhs) <- ops
+        return (lhs, S.unions $ do
+                   v <- rhs
+                   return $ case M.lookup v v2lhs of
+                              Nothing -> S.empty
+                              Just lhs -> S.singleton lhs)
+      --For each lhs, how many ops use a var from it
+      --Note if an op has no uses, useCounts[lhs] = Nothing
+      useCounts :: Map LHS Int 
+      useCounts = M.unionsWith (+) $ do
+        (_,ks) <- M.toList $ depGraph
+        k <- S.toList ks
+        return $ M.singleton k 1
+      lhs2op = M.fromList $ do
+        op <- ops
+        let (lhs,_,_) = op
+        return (lhs,op)
+      opForest = divideIntoOpTrees (\lhs ->
+                                      case M.lookup lhs useCounts of
+                                        Nothing -> 0
+                                        Just n -> n)
+                 depGraph lhs2op $ reverse ops
+      --If t1 depends on t2 it will precede it in the list
+      --Note we want the opposite property, so we'll reverse it
+      sortedForest = topSortOpForest opForest
+  in reverse sortedForest >>= serializeOpTree
+--We're assisted by the fact that ops may only depend on previous ops
+--For each op starting from the last, build the transitive closure of ops it
+--depends on which have only one use. Multi-use ops become cross-tree edges.
+--If an op has already been included in a tree, skip it.
+--If it has 0 uses, it becomes a new tree.
+divideIntoOpTrees :: (LHS -> Int) -> --Use count
+                     (Map LHS (Set LHS)) -> --Dependency graph
+                     (Map LHS SSAOp) -> --Key -> op map
+                     [SSAOp] -> [OpTree]
+divideIntoOpTrees uses depGraph lhs2op ops =
+  evalState (go ops) S.empty
+  where
+    go = \case
+      [] -> return []
+      op:ops ->
+        --The state is the set of ops already included in a tree
+        --TODO opt: I could just look at the lhs since it's a UID
+        ifM (gets (S.member op))
+        (go ops)
+        (do tree <- collectTree op
+            trees <- go ops
+            return $ tree:trees)
+    --For each lhs op depends on, get its use count.
+    --If it's 1, collect it into a subtree.
+    --If it's >1, make it a cross-tree edge
+    --You don't need to check whether the ops are in the set here.
+    collectTree :: SSAOp -> State (Set SSAOp) OpTree
+    collectTree op@(lhs,_,_) = do
+      modify (S.insert op)
+      case M.lookup lhs depGraph of
+        Nothing -> error "Compiler error: divideIntoOpTrees invariant violated"
+        Just lhsSet -> do
+          childList <- mapM (\lhs ->
+                               case uses lhs of
+                                 1 -> case M.lookup lhs lhs2op of
+                                   Nothing -> error "CErr in divideIntoOpTrees"
+                                   Just op' ->
+                                     Right <$> collectTree op'
+                                 n -> return (Left lhs)
+                            ) $ S.toList lhsSet
+          return $ Node op $ S.fromList childList
+            
+type LHS = [(SSAName, IRT)]
+--The Left is an external edge
+data OpTree = Node SSAOp (Set (Either LHS OpTree))
+  deriving (Eq,Ord,Read,Show)
+--The external dependencies of an op tree (a set of LHSes identifying other
+--op trees). Note the ordering is arbitrary for our purposes when you convert
+--it to a list.
+opTreeDeps :: OpTree -> Set LHS
+opTreeDeps (Node _ s) =
+  S.unions $ S.map (\case Left lhs -> S.singleton lhs
+                          Right tree -> opTreeDeps tree) s
+--The LHS uniquely identifying an OpTree
+opTreeKey :: OpTree -> LHS
+opTreeKey (Node (lhs,_,_) _) = lhs
+--Now we use Data.Graph to get a topological sort of the OpTrees; any will do.
+--TODO: enumerate sorts and pick an efficient one a la the treegraph paper.
+topSortOpForest :: [OpTree] -> [OpTree]
+topSortOpForest forest =
+  let (g,v2nkks,_) = G.graphFromEdges [(tree,opTreeKey tree,
+                                        S.toList $ opTreeDeps tree)
+                                      | tree <- forest]
+      sortedVs = G.topSort g
+  in map (\v -> let (tree,_,_) = v2nkks v in tree) sortedVs
+--Given a tree, we output its ops in DFS-R2L order:
+--for each var starting from the last, find if it corresponds to a subtree.
+--If so, recursively output it.
+--If it has already been explored (only possible if an op uses >1 vars
+--from the same child op), do nothing.
+serializeOpTree :: OpTree -> [SSAOp]
+serializeOpTree tree =
+  let (_,w) = runWriter $ serializeOpTreeM tree
+  in w
+serializeOpTreeM :: OpTree -> Writer [SSAOp] ()
+serializeOpTreeM (Node op@(_,_,rhs) s) = do
+  let v2tree = M.fromList $ do
+        ei <- S.toList s
+        case ei of
+          Left _ -> []
+          Right tree -> do
+            let lhs = opTreeKey tree
+            (v,_) <- lhs
+            return (v,tree)
+      go lhses = \case
+            [] -> return ()
+            (v:vs) ->
+              case M.lookup v v2tree of
+                Nothing -> return () --It's an external edge
+                Just tree ->
+                  let lhs = opTreeKey tree
+                  in if S.member lhs lhses
+                     then return () --Already visited
+                     else do serializeOpTreeM tree
+                             go (S.insert lhs lhses) vs
+  --It's the reverse here that makes it R2L
+  go S.empty $ reverse rhs
+  tell [op]
+
 --This is the trickiest bit in Stack
 --The type map is needed to filter the live set
 --ver and sub are needed to transform the  targets of branchees

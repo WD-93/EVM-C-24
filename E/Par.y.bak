@@ -92,7 +92,7 @@ E3 : Ident { E.Abs.Var $1 }
    | Integer { E.Abs.Int $1 }
    | '(' ')' { E.Abs.EmptyTup }
    | '(' E ',' ListE ')' { E.Abs.Tup $2 $4 }
-   | '{' '}' { E.Abs.EmpyStruct }
+   | '{' '}' { E.Abs.EmptyStruct }
    | '{' ListField '}' { E.Abs.EStruct $2 }
    | '_' { E.Abs.Wild }
    | '(' E ')' { $2 }

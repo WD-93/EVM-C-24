@@ -17,6 +17,11 @@ separator D ";";
 Defun. D ::= Ident E3 ":=" S; --"{" [S] "}";
 --separator S ";";
 TySig. D ::= Ident ":" E;
+--type Con args = t
+--t ::= t t | var | Con | t -> t
+TySyn. D ::= "type" ConArgs "=" E;
+CANil. ConArgs ::= UIdent;
+CACons. ConArgs ::= ConArgs Ident;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";

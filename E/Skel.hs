@@ -25,6 +25,11 @@ transD :: D -> Result
 transD x = case x of
   Defun ident e s -> failure x
   TySig ident e -> failure x
+  TySyn conargs e -> failure x
+transConArgs :: ConArgs -> Result
+transConArgs x = case x of
+  CANil uident -> failure x
+  CACons conargs ident -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
