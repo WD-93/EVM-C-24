@@ -3,6 +3,8 @@ module DTs where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import Data.Set (Set(..))
+import qualified Data.Set as S
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.String (IsString(..))
@@ -45,11 +47,20 @@ pattern a :-> b = "->" :$$ a :$$ b
 --I should perhaps have separated structs and tuples after all...
 pattern Pair a b = Struct [(WordPad,Nothing,a),(WordPad,Nothing,b)]
 data T = TyCon Name
+       | TyVar Name --Only for data and tysyn type params initially
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
        | Struct [(Padding, Maybe Name, T)]
-       -- | Ptr Region T
   deriving (Eq,Ord,Read,Show)
+--Including kinds
+primTyCons :: Set String
+primTyCons = S.fromList $
+  words $
+  "Type Region Signedness Nat " ++ --the kinds, except ->
+  "Signed Unsigned " ++ --signedness
+  "Memory Storage Calldata Returndata Code " ++ --region
+  "Int Ptr -> " --the primitive types
+--The kind check can't be done here, you need to defer it to IR.
 tupleT = Struct . tupleF
 {-
 data Region = Memory
@@ -78,7 +89,10 @@ type Block = [S]
 type Program = [D]
 
 --Output after desugaring phase:
-data Module = Module {defuns :: Map Name D}
+data Module = Module {
+  defuns :: Map Name D,
+  tysyns :: Map Name ([Name],T)
+  }
   deriving (Eq,Ord,Read,Show)
 
 {-

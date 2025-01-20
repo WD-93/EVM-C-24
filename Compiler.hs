@@ -13,6 +13,8 @@ import qualified E.Abs as P
 import DTs
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import Control.Monad.Trans.Except
+import Control.Monad.State
 --Desugaring code written in Compiler... maybe todo move
 --AST -> IR
 import IR1 hiding (Ifte,While,Return)
@@ -152,35 +154,65 @@ data DError = TySigDefunMismatch Name Name
             | BadEInPat P.E --same for desugarP
             | BadDoInDesugarS [P.S]
             | AssignIsNotAnE P.E P.E --for now
+            | DuplicateDeclsForName Name
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
-  Module <$> desugarDs M.empty ds
---Currently DT.Module only has defuns; P.M only has tysig and defun.
+  case runState (runExceptT $ desugarDs ds) $
+  Module {defuns = M.empty,
+          tysyns = M.empty
+         } of
+    (Left derr, _) -> Left derr
+    (Right (), m) -> Right m
 --Every defun f must be preceded by a tysig f : t; together they become one
 --DT.Defun.
 --Duplicate defuns are an error.
-type De = Either DError
-desugarDs :: Map Name D -> [P.D] -> De (Map Name D)
-desugarDs m [] = return m
---First I'll implement DFS-R2L
---desugarDs m (P.TySyn conargs t) = do
---  (con,args) <- desugarConArgs conargs
---  error "TODO"
-desugarDs m (P.TySig (Ident f) t :
-             P.Defun (Ident f') lhs s :
-             rest)
-  | f /= f' = Left $ TySigDefunMismatch f f'
-  | Just d <- M.lookup f m = Left $ DuplicateDefun f
+type De = ExceptT DError (State Module)
+desugarDs :: [P.D] -> De ()
+desugarDs [] = return ()
+desugarDs (P.TySyn conargs te : rest) = do
+  let (nm,args) = desugarConArgs conargs
+  t <- desugarT te
+  modify (\m -> m{tysyns = M.insert nm (args,t) $ tysyns m})
+  desugarDs rest
+desugarDs (P.TySig (Ident f) t :
+           P.Defun (Ident f') lhs s :
+           rest)
+  | f /= f' = throwE $ TySigDefunMismatch f f'
   | let = do
+          checkForDuplicates f
           t' <- desugarT t
           --Note patterns are a subset of syntactically valid Es
           p <- desugarP lhs
           --Need to add do block support to DTs?
           block <- desugarBlock s
           let def = Defun f t' p block
-          desugarDs (M.insert f def m) rest
-desugarDs m other = Left $ BadDOrdering other
+          insertDefun f def
+          desugarDs rest
+desugarDs other = throwE $ BadDOrdering other
+
+--No decls (functions, tysyns, datatypes, globals, immutables...) may shadow
+--each other.
+checkForDuplicates :: Name -> De ()
+checkForDuplicates nm = do
+  m <- get
+  --TODO give a more informative error message
+  if S.member nm $ S.unions $
+    [M.keysSet $ defuns m,
+     M.keysSet $ tysyns m,
+     primTyCons]
+    then throwE $ DuplicateDeclsForName nm
+    else return ()
+insertDefun :: Name -> D -> De ()
+insertDefun f def =
+  modify (\m->m{defuns=M.insert f def $ defuns m})
+
+desugarConArgs :: P.ConArgs -> (Name,[Name])
+desugarConArgs = \case
+  P.CANil (UIdent nm) -> (nm,[])
+  P.CACons cargs (Ident arg) ->
+    let (nm,args) = desugarConArgs cargs
+    in (nm,args++[arg]) --Tiny inefficiency
 
 {-
 type SInt = Int Signed
@@ -201,8 +233,8 @@ desugarT = do
       return $ foldr1 (\a b -> a :-> b) $ at:bst
     --There are no type-level prefix ops
     P.App e1 e2 -> (:$$) <$> r e1 <*> r e2
-    --No type vars for now
     P.Con (UIdent nm) -> return $ TyCon nm
+    P.Var (Ident nm) -> return $ TyVar nm
     --No dot
     P.Int n -> return $ TyNat n
     P.EmptyTup -> return $ tupleT []
@@ -210,7 +242,7 @@ desugarT = do
     P.EmptyStruct -> return $ Struct []
     P.EStruct fields -> Struct <$> mapM desugarFieldT fields
     --No wild
-    e -> Left $ BadEInType e
+    e -> throwE $ BadEInType e
 
 desugarArrowOps = \case
   OSNil a -> (:[]) <$> desugarT a
@@ -218,7 +250,7 @@ desugarArrowOps = \case
     at <- desugarT a
     bst <- desugarArrowOps os
     return $ at : bst
-  OSCons a (Infix inf) os -> Left $ BadOpInType inf
+  OSCons a (Infix inf) os -> throwE $ BadOpInType inf
 --TODO add padding keywords to syntax; for now bytepad default is mandatory
 desugarFieldT :: Field -> De (Padding,Maybe Name,T)
 desugarFieldT = \case
@@ -264,7 +296,7 @@ desugarP = do
     P.EmptyStruct -> return $ PStruct []
     P.EStruct fields -> PStruct <$> mapM desugarFieldP fields
     P.Wild -> return PWild
-    e -> Left $ BadEInPat e
+    e -> throwE $ BadEInPat e
 
 --DTs.S currently has no concept of standalone do blocks...
 desugarBlock :: P.S -> De [S]
@@ -280,7 +312,7 @@ desugarS = \case
   P.Return e -> Return <$> desugarE e
   P.Do [s] -> desugarS s
   --TODO allow standalone do blocks and do expressions
-  P.Do ss -> Left $ BadDoInDesugarS ss
+  P.Do ss -> throwE $ BadDoInDesugarS ss
 
 desugarE :: P.E -> De E
 desugarE = do
@@ -291,7 +323,7 @@ desugarE = do
     --Con: it's not a higher-level description of an existing EVM pattern, but
     --rather a C feature imposed on the EVM;
     --side effects not as explicit
-    P.Assign l r -> Left $ AssignIsNotAnE l r
+    P.Assign l r -> throwE $ AssignIsNotAnE l r
     --For now, use constant fixity info. FW: gather and process fixity decls
     --before desugaring Es.
     P.Ops e (Infix op) os -> do

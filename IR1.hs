@@ -84,6 +84,14 @@ data SeqError = UnboundVar Name
               --Errors from pattern matching
               | PTupNonTuple [Pat] T
               | PTupLengthMismatch [Pat] [T]
+              --Type synonym errors
+              --Innovation: a single constructor for locating errors,
+              --structuring the error type into context-specific types
+              | InTySyn Name InTySynErr
+              --The error below isn't really specific to one syn...
+              | FoundTySynCycle [Name]
+  deriving (Eq,Ord,Read,Show)
+data InTySynErr = TyConOOS Name | TyVarOOS Name
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -113,6 +121,11 @@ data IRModule = IRM {
 type Arity = Int
 seqModule :: Module -> Either SeqError IRModule
 seqModule mod = do
+  --First, handle tysyns. After this phase they're irrelevant to output,
+  --having been substituted away. However, they should still be in the
+  --interface info.
+  mod' <- handleTySyns mod
+  let mod = mod'
   let fdefs = M.toList $ defuns mod
   irdefs <- mapM (\(fnm,defun) ->
                     let seqr = SR {seqrModule = mod,
@@ -128,6 +141,151 @@ seqModule mod = do
                  )
             fdefs
   return $ IRM {irDefuns = M.fromList irdefs}
+
+--First checks for cycles in the type synonyms.
+--Substitute all types and check their kinds. It's disappointing that can't
+--be done in the Seq monad...
+--The desugaring phase has already ruled out tysyns clashing with other defs.
+--While the kind check is deferred until use rather than done in the check of
+--the type decl itself, I can check whether the tysyn RHS contains type
+--constructors that aren't in scope.
+--For now, that only includes the primitive tycons.
+handleTySyns :: Module -> Either SeqError Module
+handleTySyns mod = do
+  checkForCycles mod
+  return mod
+--Cycle finding algo: associate tysyns with the set of tysyns they ultimately
+--refer to. We also need a stack in case we find a cycle on the first try
+--(without visiting a node that was previously visited).
+--If the current k is in the map, there's a cycle; otherwise, extend the
+--paths.
+findCycle :: Ord k => Map k (Set k) -> Either [k] ()
+findCycle m =
+  case mapM_ (findCycleM m [] S.empty) $
+         M.keys m of
+    Left path -> Left path
+    Right _ -> Right ()
+--Simplicity before efficiency... I'll remove memoization for now
+findCycleM :: Ord k => Map k (Set k) -> [k] -> Set k -> k -> Either [k] ()
+findCycleM m stk s k
+  | S.member k s = Left $ reverse stk
+  | otherwise = do
+      let stk' = k:stk
+          s' = S.insert k s
+          ks = S.toList $ m M.! k
+      mapM_ (findCycleM m stk' s') ks
+{-
+--The reported list should include k itself
+findCycleM :: Ord k =>
+              Map k (Set k) ->
+              Map k k -> --stack of visited nodes
+              k ->
+              StateT (Map k (Map k (Int,[k]))) (Except [k]) (Map k (Int,[k]))
+findCycleM m stk k
+  | M.member k stk = lift $ throwE $ reconstructPath k stk
+  | otherwise = do
+      s <- get
+      case M.lookup k s of
+        Just ret -> return ret
+        Nothing -> do
+          let ksSet = m M.! k
+          if S.member k ksSet
+            then lift $ throwE [k] --Postcond: no repetition of the first elem
+            else do
+            let ks = S.toList ksSet
+            maps <- mapM (\k' -> findCycleM m (M.insert k k' stk) k') ks
+            let mp = M.unionsWith (\lp1 lp2 ->
+                                     if fst lp2 < fst lp1
+                                     then lp2
+                                     else lp1) maps
+            --Simplicity first... check if k is in mp.
+            if M.member k mp
+              then let (_,path) = mp M.! k
+                   in lift $ throwE $ k:path
+              else do
+                let ret = M.insert k (1,[k]) $
+                      M.map (\(len,path) -> (len+1,k:path)) mp
+                    i = S.intersection (M.keysSet stk) (M.keysSet ret)
+                if i == S.empty
+                  then do
+                  --Update the memotable
+                  modify (M.insert k ret)
+                  return ret
+                  else do
+                  let offender = S.findMin i
+                      (_,path) = ret M.! offender
+                  lift $ throwE $ reconstructPath offender stk ++ path
+--Follows a acyclic path until it ends.
+reconstructPath :: Ord k => k -> Map k k -> [k]
+reconstructPath k m =
+  k : case M.lookup k m of
+        Nothing -> []
+        Just k' -> reconstructPath k' m
+-}
+
+checkForCycles :: Module -> Either SeqError ()
+checkForCycles mod = do
+  scopeCheckSyns --todo add data decls
+  case findCycle syn2syns of
+    Left path -> Left $ FoundTySynCycle path
+    Right () -> Right ()
+  where
+    --Errors: tycon out of scope, tyvar out of scope
+    scopeCheckSyns = mapM_ (\(synnm,(args,t)) -> scopeCheckSyn synnm args t)
+                     $ M.toList $ tysyns mod
+    --We don't check for underapplied tysyns here, just scope
+    --How to mitigate type FixedPoint f = f f without kinds?
+    --At application: substitute recursively;
+    --an underapplied tysyn is not a valid argument.
+    scopeCheckSyn synnm args =
+      let r = scopeCheckSyn synnm args in
+      \case
+      TyCon nm ->
+        case staticNameInfo nm mod of
+          IsPrimTyCon -> return ()
+          IsTySyn -> return ()
+          IsUnbound -> Left $ InTySyn synnm (TyConOOS nm)
+          ni -> error $ "Compiler error: unexpected name info for tycon"
+      TyVar nm
+        | nm `elem` args -> return ()
+        | otherwise -> Left $ InTySyn synnm (TyVarOOS nm)
+      tf :$$ tx -> r tf >> r tx
+      TyNat n -> return ()
+      Struct padmnmts -> sequence_ [r t | (pad,mnm,t) <- padmnmts]
+    syn2syns :: Map Name (Set Name)
+    syn2syns = M.map (\(args,t) -> collectSubSyns t)
+               $ tysyns mod
+    --TODO use generic programming to simplify
+    collectSubSyns =
+      let r = collectSubSyns in
+        \case
+          TyCon nm
+            | IsTySyn <- staticNameInfo nm mod ->
+              S.singleton nm
+          tf :$$ tx ->
+            S.union (r tf) (r tx)
+          Struct pnts ->
+            S.unions $ map r $ map (\(_,_,t) -> t) pnts
+          _ -> S.empty
+--Might be generally useful
+collectTyApps :: T -> (T,[T])
+collectTyApps = \case
+  tf :$$ tx ->
+    let (f,args) = collectTyApps tf
+    in (f,args ++ [tx])
+  t -> (t,[])
+  
+--Find info about a name defined at the module level.
+--Postcond: will not be an IsLocal.
+--Warning: if you call this on a module before tysyn substitution, the type in
+--IsFunction will be unsubstituted!
+staticNameInfo :: Name -> Module -> NameInfo
+staticNameInfo nm mod
+  | S.member nm primTyCons = IsPrimTyCon
+  | S.member nm primFunSet = IsPrimFun
+  | M.member nm $ tysyns mod = IsTySyn
+  | Just (Defun _ t _ _) <- M.lookup nm $ defuns mod = IsFunction t
+  | otherwise = IsUnbound
 
 askModule :: Seq Module
 askModule = seqrModule <$> ask
@@ -865,6 +1023,9 @@ data NameInfo = IsFunction T
               | IsPrimFun --no type specified because they're overloaded
               | IsLocal T
               | IsUnbound
+              --New name types: TyCon and TySyn
+              | IsPrimTyCon --no kind info for now
+              | IsTySyn --ditto
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
 primFunSet = M.keysSet simplePFs {-S.fromList $ concat $ map words [

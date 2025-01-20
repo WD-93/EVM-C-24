@@ -103,6 +103,35 @@ data ExtCodePtr a = ECR (Address,UInt 16)
 coerce should just mask; unsafeCoerce should ignore masking, letting you construct values from a tuple of
 words.
 
+I traverse the CST in the desugaring phase... would it be advisable to do the scan for liftable exprs such as
+strings, anonymous static data and anonymous functions there?
+It's worth a try; lifting could be considered desugaring, and I do a typecheck when generating the
+IR.
+
+TySyn handling in IR: check for cycles in the tysyns, then expand all types in the module.
+To represent the RHS of tysyns, I need to generalize T. Sweet, I'd already done so!
+Potential errors: non-fully-applied type synonym, cycle.
+I can also do the kind check at the same time.
+Predefined types: "->" (which has an ambiguous kind), Type (Type :: Type), the regions, Ptr
+Struct can still be its own constructor, to avoid having to mess with Symbol and padding.
+I can delay the kind check until monomorphization... can I do the same for datatypes?
+Problem: even if I restrict constructors to take a single argument, I must still infer the result type by
+unification.
+The reverse must be done for case, but you can check all vars in data decl rhses are in scope when
+verifying the data.
+Problem: can I get nontermination even with a passing cyclicality check since I defer the kind check?
+Consider type FixedPoint f = f f, FixedPoint FixedPoint.
+Partially applied type synonyms are not a valid parameter.
+The presence of a DoS attack on the compiler isn't that serious, since you can get exponential blowup with
+type Pair a = (a,a) anyway. If you're compiling for an untrusted party, you should containerize and
+resource limit the compiler.
+
+A better cycle finding algo: memoize a map from referenced ks to the shortest path through which it's
+accessible. Memoize the length as well for O(1) comparison.
+FW: the traversal algo should be a hof.
+Goal: find the (first) shortest path with a repetition, so it should x,y,z,y should fail in the recursive
+call to y and report [y,z,y].
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?
