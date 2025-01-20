@@ -135,6 +135,11 @@ call to y and report [y,z,y].
 TODO expose the other parser functions in E for easier debugging.
 The prologue is parameterized by the main function; the compiled artifact of a C module needn't include it...
 
+Buggy cases:
+printCFG2 "module {type Pair a = (a,a); main:Pair Word->Word;main (x,y) := return (y|x)}"
+printCFG2 "module {type Pair a = (a,a); main:Pair Word->Pair Word;main (x,y) := return (y,x)}"
+printCFG2 "module {type Pair a = (a,a); main:Pair Word->Pair Word;main (x,y) := return (1,2)}"
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?

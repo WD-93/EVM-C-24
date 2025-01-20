@@ -76,11 +76,13 @@ data SeqError = UnboundVar Name
               | Couldn'tLookupVarTypeInEDSL Name
               | BadArgsInEDSL Operator [EVar]
               | BadFirstRHSInAssign Name (Maybe IRT) [Name]
+              --C-level type errors
               | BadFunctionType Name T
               | Can'tAssignToFunction Name
               | Can'tAssignToPrimFun Name --it's useful to distinguish
               | ApplicationToNonFunction E T
               | BadArgInTruthy [Name]
+              | BadArgPrimFun Name T
               --Errors from pattern matching
               | PTupNonTuple [Pat] T
               | PTupLengthMismatch [Pat] [T]
@@ -657,16 +659,59 @@ simplePFs = M.fromList [
       case (t,ws) of
         (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
           pfMathOp "add" t1 t2 (w1,w2)
-        _ -> undefined),
+        _ -> throwE $ BadArgPrimFun "+" t),
   --Recall: mul/smul, div/sdiv need special treatment
   --Binary bitwise ops
-  --Scheme: (a,b) -> a; combine a with b starting with the lowest words
-  --If b is longer than a and a is not a whole number of words, mask the
-  --highest word of the result.
-  ("&", binaryBitOp "and")
+  ("&", binaryBitOp "&" "and" False),
+  ("|", binaryBitOp "|" "or" True),
+  ("^", binaryBitOp "^" "xor" True)
                        ]
-binaryBitOp :: String -> T -> [Name] -> Seq (T,[Name])
-binaryBitOp opcode t ws_a_b = error "TODO"
+--Scheme: (a,b) -> a; combine a with b starting with the lowest words
+--If b is longer than a and a is not a whole number of words, mask the
+--highest word of the result.
+binaryBitOp :: Name -> String -> Bool -> T -> [Name] -> Seq (T,[Name])
+binaryBitOp pfname opcode corruptible t ws_a_b =
+  case t of
+    Pair a b -> do
+      na <- numWordsT a
+      nb <- numWordsT b
+      if length ws_a_b /= na + nb
+        then error $ "Compiler error: something's gone wrong " ++ show
+             (pfname,t,na,nb,ws_a_b)
+        else do
+        let ws_a = take na ws_a_b
+            ws_b = drop na ws_a_b
+        --Starting from the end of ws_a, combine it with the respective word
+        --in ws_b. If |b| < |a|, this may be shorter than the return value.
+        ws_combined <- reverse <$> mapM (\(wa,wb) ->
+                                           head <$>
+                                           runEDSLWord (op2 opcode (EVar wa)
+                                           (EVar wb)))
+                       (zip (reverse ws_a) (reverse ws_b))
+        bitsa <- numBitsT a
+        bitsb <- numBitsT b
+        case () of
+          _ | bitsa == bitsb -> return (a,ws_combined)
+            | bitsb < bitsa ->
+                return (a, take (na-nb) ws_a ++ ws_combined)
+            --a is a whole number of words and thus can't be corrupted
+            --(modulo padding, which bit ops corrupt silently)
+            --TODO fix that by giving types non-contiguous masks?
+            --Sounds like a problem best solved by the programmer
+            --1) not applying bitops to structs unless they know what they're
+            --doing.
+            --2) not fetching structs from arbitrary addresses.
+            | bitsa `mod` 256 == 0 ->
+              return (a,ws_combined)
+            --The first word may be corrupted
+            --Note: that's not the case for &, so I pass a flag
+            | corruptible ->
+              let w:ws = ws_combined
+                  bitszw = bitsa `mod` 256
+              in do
+                (w',_) <- runEDSL $ mask bitszw (EVar w)
+                return (a,w':ws)
+    _ -> throwE $ BadArgPrimFun pfname t
 {-
 Mathop rules:
 If both are ints, result has max len of both and is signed if either arg is.
@@ -746,11 +791,6 @@ softCoerce target source ws
             runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
           | let -> runEDSLWord $ coerce (Word 1 target) (EVar w)
   --For now, no general struct coercion, only tuple -> tuple
-  --Scheme: for each field in target, softCoerce source field and then coerce
-  --to tuple words.
-  --Is it essential to actually modify the IR type? It's just a safety feature
-  --to detect bugs in codegen... but it's worth it, I should be able to
-  --optimize the copies away.
   | Just ts1 <- unTupleT target, Just ts2 <- unTupleT source =
     softCoerceTuple ts1 ts2 ws
 
@@ -764,6 +804,11 @@ unTupleT = \case
             (t:) <$> go padmnmts
           _ -> Nothing
 
+--Scheme: for each field in target, softCoerce source field and then coerce
+--to tuple words.
+--Is it essential to actually modify the IR type? It's just a safety feature
+--to detect bugs in codegen... but it's worth it, I should be able to
+--optimize the copies away.
 softCoerceTuple :: [T] -> [T] -> [Name] -> Seq [Name]
 softCoerceTuple ts1 ts2 ws =
   case ts1 of
