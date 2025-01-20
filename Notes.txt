@@ -142,7 +142,7 @@ printCFG2 "module {type Pair a = (a,a); main:Pair Word->Pair Word;main (x,y) := 
 
 Why does main (x,y) := x and y give the same result?
 printIRM "module {main:(Word,Word,Word)->Word;main (x,y,z) := return z}"
-The pattern matching is binding each var to the entire tuple!?
+The pattern matching is binding each var to the entire tuple!? --FIXED
 
 ****
 

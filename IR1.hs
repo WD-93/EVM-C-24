@@ -445,6 +445,7 @@ patternMatch p t ws =
     PWild -> return ()
     PVar x -> do
       ni <- getCNameInfo x
+      --Note constructors are syntactically prevented from being pattern vars
       case ni of
         IsFunction _ -> throwE $ Can'tAssignToFunction x
         IsPrimFun -> throwE $ Can'tAssignToPrimFun x
@@ -469,30 +470,9 @@ patternMatch p t ws =
         Just ts
           | length ps /= length ts -> throwE $ PTupLengthMismatch ps ts
           | let -> do
-              wss <- splitTupleIntoFields ts ws
+              twss <- splitTuple ts ws
               sequence_ [patternMatch p t ws
-                         | ((p,t),w) <- zip ps ts `zip` wss]
---Tuples are a special case of structs  where each field is in a separate set
---of stack words.
-splitTupleIntoFields :: [T] -> [Name] -> Seq [[Name]]
-splitTupleIntoFields ts ws =
-  case (ts,ws) of
-    ([],[]) -> return []
-    (t:ts,ws) -> do
-      n <- numWordsT t
-      let (fieldws,rest) = takeDrop n ws
-      --coerce each tuple word from fieldws to a new anon var : Word i t
-      field <- coerceT t fieldws
-      fields <- splitTupleIntoFields ts rest
-      return $ field:fields
-  where
-    --Which implementation is faster? Doesn't really matter.
-    --Maybe worker-wrapper will speed this up.
-    takeDrop 0 xs = ([],xs)
-    takeDrop n [] = error "Compiler error: too few ws in splitTupleIntoFields"
-    takeDrop n (x:xs) =
-      let (as,bs) = takeDrop (n-1) xs
-      in (x:as,bs)
+                        | (p,(t,ws)) <- zip ps twss]
 --The word-level implementation of selecting the nth struct field of a struct
 --(represented as words on the stack).
 --T, [Name] is the struct type and its on-stack repr
@@ -760,8 +740,6 @@ truthy ws = do
 assign :: Name -> [Name] -> Seq ()
 assign x [] = return ()
 assign x ws = do
-  --If this pattern fails something's gone horribly wrong; the rhs doesn't
-  --exist or 
   mt <- getIRVarType $ head ws
   case mt of
     Just (Word 1 t) -> 
@@ -831,7 +809,8 @@ softCoerceTuple targetTs sourceTs ws
                zip [1..] sourceWs
       return resWs
 --Given the words of a tuple, divide it into the words of each field and its
---type. Does not coerce the words.
+--type. Coerces the words so assign works (TODO relax assign? Accurate IR
+--types are actually a useful hint when debugging).
 --TODO deduplicate if there's any similar logic; use it in primop logic.
 splitTuple :: [T] -> [Name] -> Seq [(T,[Name])]
 splitTuple [] [] = return []
@@ -842,7 +821,10 @@ splitTuple (t:ts) ws = do
          ++ show (t:ts,ws)
      else do
     let wst = take nt ws
-    ((t,wst):) <$> splitTuple ts (drop nt ws)
+    --Now we coerce the words (currently of a tuple IR type) to t[1],t[2]...
+    --TODO make/find
+    wsFinal <- coerceT t wst
+    ((t,wsFinal):) <$> splitTuple ts (drop nt ws)
 --The result of coercing 0 to any type t: all zeroes in the bitpattern.
 --May not be a valid value of that type; use of e.g. null ptr may be UB.
 --We do some free constant sharing here.
