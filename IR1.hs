@@ -96,6 +96,9 @@ data SeqError = UnboundVar Name
               | UnderAppliedSynInDefun Name [T]
               --Substituting
               | ArgsAppliedToStructInDefun [(Padding,Maybe Name,T)] [T]
+              --A placeholder error to avoid having to add new error types
+              --constantly while developing
+              | GenericError String
   deriving (Eq,Ord,Read,Show)
 data InTySynErr = TyConOOS Name | TyVarOOS Name | TySynRepeatedArgs [Name]
   | UnderAppliedSyn Name | ArgsAppliedToStruct [(Padding,Maybe Name,T)]
@@ -806,18 +809,40 @@ unTupleT = \case
 
 --Scheme: for each field in target, softCoerce source field and then coerce
 --to tuple words.
+--I'll add a restriction for now: require the lenghts are equal.
 --Is it essential to actually modify the IR type? It's just a safety feature
 --to detect bugs in codegen... but it's worth it, I should be able to
 --optimize the copies away.
 softCoerceTuple :: [T] -> [T] -> [Name] -> Seq [Name]
-softCoerceTuple ts1 ts2 ws =
-  case ts1 of
-    [] -> return [] --coercing to an empty tuple
-    t:ts1' ->
-      case ts2 of
-        --now the rest is all zeroes
-        [] -> undefined
-
+softCoerceTuple targetTs sourceTs ws
+  | length targetTs /= length sourceTs = throwE $ GenericError $
+    "Tuple length mismatch: " ++ show (targetTs,sourceTs)
+  | otherwise = do
+      twss <- splitTuple sourceTs ws
+      wss' <- mapM (\(target,(source,ws)) ->
+                      softCoerce target source ws) $ zip targetTs twss
+      --Now we just assemble the words into a single tuple by copying
+      let sourceWs = concat wss'
+          resT = tupleT targetTs
+      resWs <- mapM (\(i,w) -> do
+                        (v,_) <- runEDSL $ coerce (Word i resT) (EVar w)
+                        return v
+                    ) $
+               zip [1..] sourceWs
+      return resWs
+--Given the words of a tuple, divide it into the words of each field and its
+--type. Does not coerce the words.
+--TODO deduplicate if there's any similar logic; use it in primop logic.
+splitTuple :: [T] -> [Name] -> Seq [(T,[Name])]
+splitTuple [] [] = return []
+splitTuple (t:ts) ws = do
+  nt <- numWordsT t
+  if length ws < nt
+    then throwE $ GenericError $ "Too few words in splitTuple: "
+         ++ show (t:ts,ws)
+     else do
+    let wst = take nt ws
+    ((t,wst):) <$> splitTuple ts (drop nt ws)
 --The result of coercing 0 to any type t: all zeroes in the bitpattern.
 --May not be a valid value of that type; use of e.g. null ptr may be UB.
 --We do some free constant sharing here.

@@ -140,6 +140,10 @@ printCFG2 "module {type Pair a = (a,a); main:Pair Word->Word;main (x,y) := retur
 printCFG2 "module {type Pair a = (a,a); main:Pair Word->Pair Word;main (x,y) := return (y,x)}"
 printCFG2 "module {type Pair a = (a,a); main:Pair Word->Pair Word;main (x,y) := return (1,2)}"
 
+Why does main (x,y) := x and y give the same result?
+printIRM "module {main:(Word,Word,Word)->Word;main (x,y,z) := return z}"
+The pattern matching is binding each var to the entire tuple!?
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?
