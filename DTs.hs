@@ -53,13 +53,25 @@ data T = TyCon Name
        | Struct [(Padding, Maybe Name, T)]
   deriving (Eq,Ord,Read,Show)
 --Including kinds
-primTyCons :: Set String
+primTyCons :: Set Name
 primTyCons = S.fromList $
   words $
   "Type Region Signedness Nat " ++ --the kinds, except ->
   "Signed Unsigned " ++ --signedness
   "Memory Storage Calldata Returndata Code " ++ --region
   "Int Ptr -> " --the primitive types
+primTySyns :: Map Name ([Name],T)
+primTySyns = M.fromList [
+  "Char" =: UInt 8,
+  "Short" =: UInt 16,
+  "Size_T" =: UInt 16,
+  "Long" =: UInt 32,
+  "Half" =: UInt 128, --why not?
+  "Word" =: UInt 256,
+  "UInt" =: ("Int" :$$ "Unsigned"),
+  "SInt" =: ("Int" :$$ "Signed")
+  ]
+  where nm =: t = (nm,([],t))
 --The kind check can't be done here, you need to defer it to IR.
 tupleT = Struct . tupleF
 {-

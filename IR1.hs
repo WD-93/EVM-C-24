@@ -85,13 +85,18 @@ data SeqError = UnboundVar Name
               | PTupNonTuple [Pat] T
               | PTupLengthMismatch [Pat] [T]
               --Type synonym errors
+              | TySynsShadowPrimTySyns (Set Name)
               --Innovation: a single constructor for locating errors,
               --structuring the error type into context-specific types
               | InTySyn Name InTySynErr
               --The error below isn't really specific to one syn...
               | FoundTySynCycle [Name]
+              | UnderAppliedSynInDefun Name [T]
+              --Substituting
+              | ArgsAppliedToStructInDefun [(Padding,Maybe Name,T)] [T]
   deriving (Eq,Ord,Read,Show)
-data InTySynErr = TyConOOS Name | TyVarOOS Name
+data InTySynErr = TyConOOS Name | TyVarOOS Name | TySynRepeatedArgs [Name]
+  | UnderAppliedSyn Name | ArgsAppliedToStruct [(Padding,Maybe Name,T)]
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -152,13 +157,132 @@ seqModule mod = do
 --For now, that only includes the primitive tycons.
 handleTySyns :: Module -> Either SeqError Module
 handleTySyns mod = do
-  checkForCycles mod
-  return mod
---Cycle finding algo: associate tysyns with the set of tysyns they ultimately
---refer to. We also need a stack in case we find a cycle on the first try
---(without visiting a node that was previously visited).
---If the current k is in the map, there's a cycle; otherwise, extend the
---paths.
+  --We must first add the primitive tysyns to prevent out of scope errors for
+  --them.
+  let i = S.intersection (M.keysSet primTySyns) (M.keysSet $ tysyns mod)
+  if i /= S.empty
+    then Left $ TySynsShadowPrimTySyns i
+    else return ()
+  let ts = M.union primTySyns $ tysyns mod
+  checkForCycles mod{tysyns = ts}
+  --For each tysyn, substitute all tysyns (fails if they're not fully applied)
+  --Result: type Syn args = T<args>, where T contains no tysyns
+  --We also add the primitive tysyns here; TODO break them out into a module
+  --a la GHC.Prim?
+  tysyns' <- substTySyns ts
+  --For each defun, substitute the type signature.
+  defuns' <- substDefuns tysyns' mod
+  --TODO add coerce and substitute in the function body
+  return mod{tysyns = tysyns', defuns = defuns'}
+
+--What can go wrong? An underapplied syn or a kind check failure.
+--In future the kind check will need to consider user-defined types.
+--Without a kind check on data decl creation, you need to defer the check until
+--data types are fully applied and then see whether their constructor args are
+--Type (or in future, a non-stack value type).
+--For now I'll just do the substitution.
+substDefuns :: Syns -> Module -> Either SeqError (Map Name D)
+substDefuns syns mod = do
+  let defs = map snd $ M.toList $ defuns mod
+  sdefs <- mapM (\case Defun fnm t pat body -> do
+                         t' <- substDefunT t
+                         return $ (fnm,Defun fnm t' pat body)) defs
+  return $ M.fromList sdefs
+  where substDefunT t =
+          case applyTySyns syns t of
+            Left (Left (nm,ts)) -> Left $ UnderAppliedSynInDefun nm ts
+            Left (Right (pnts,ts)) -> Left $ ArgsAppliedToStructInDefun pnts ts
+            Right t' -> Right t'
+
+--Accumulate a map of fully expanded tysyns, containing no other syns
+--When exploring a syn, if you encounter another syn then explore it before
+--attempting to apply it. The absence of cycles will ensure this terminates.
+type Syns = Map Name ([Name],T)
+substTySyns :: Syns -> Either SeqError Syns
+substTySyns syns =
+  runExcept (execStateT (mapM_ (substTySynsM syns) $ M.keys syns) M.empty)
+substTySynsM :: Syns -> Name -> StateT Syns (Except SeqError) ()
+substTySynsM oldSyns syn = do
+  done <- gets (M.member syn)
+  if done
+    then return ()
+    else do
+    let (args,t) = oldSyns M.! syn
+    t' <- substTySynT syn t
+    modify (M.insert syn (args,t'))
+    where
+      --The syn is just for error reporting
+      --TODO deduplicate: first get the set of referenced syns (using a
+      --preexisting function), use substTySynsM to initialize them, then
+      --use applyTySyns with the state.
+      substTySynT syn t = do
+        let (tf,targs) = collectTyApps t
+        targs' <- mapM (substTySynT syn) targs
+        --If tf is a tysyn, it may be overapplied
+        case tf of
+          TyCon nm
+            | M.member nm oldSyns -> do
+                substTySynsM oldSyns nm
+                (args,template) <- gets (M.! nm)
+                let argslen = length args
+                if argslen > length targs
+                  then lift $ throwE $ InTySyn syn (UnderAppliedSyn nm)
+                  else do
+                  let targsPrefix = take argslen targs
+                      targsSuffix = drop argslen targs
+                      res = applyTySyn args template targsPrefix
+                  return $ unCollectTyApps res targsSuffix
+          Struct pnts ->
+            if null targs
+            then Struct <$> mapM (\(pad,mnm,t) -> do
+                                     t' <- substTySynT syn t
+                                     return (pad,mnm,t')) pnts
+            else lift $ throwE $ InTySyn syn (ArgsAppliedToStruct pnts)
+          _ -> return $ tf `unCollectTyApps` targs'
+          
+--Applies a map of tysyns to a type, potentially producing an underapplied
+--syn error or args applied to struct. TODO deduplicate
+applyTySyns :: Syns -> T -> Either (Either (Name,[T])
+                                    ([(Padding,Maybe Name,T)],[T])) T
+applyTySyns syns t = do
+  let (tf,targs) = collectTyApps t
+      r = applyTySyns syns
+  targs' <- mapM (applyTySyns syns) targs
+  case tf of
+    TyCon nm
+      | Just (vars,template) <- M.lookup nm syns -> do
+          let varslen = length vars
+          if varslen > length targs'
+            then Left $ Left (nm,targs') --underapplied syn
+            else do
+            let targsPre = take varslen targs'
+                targsSuf = drop varslen targs'
+            return $ applyTySyn vars template targsPre
+              `unCollectTyApps` targsSuf
+    Struct pnts ->
+      if null targs
+      then Struct <$> mapM (\(p,n,t) -> do
+                               t' <- r t
+                               return (p,n,t')) pnts
+      else Left $ Right (pnts,targs)
+    _ -> return $ tf `unCollectTyApps` targs'
+--Performs a single instantiation of a tysyn.
+--Precondition: the length of vars and ts match
+--TODO use generic
+applyTySyn vars template ts =
+  go template
+  where
+    substMap = M.fromList $ zip vars ts
+    go = \case
+      --The earlier scope check guarantees this is in substMap, but it's worth
+      --having a custom error just in case
+      TyVar nm ->
+        case M.lookup nm substMap of
+          Nothing -> error $ "Compiler error: unknown var in applyTySyn: "++nm
+          Just t -> t
+      tf :$$ tx -> go tf :$$ go tx
+      Struct pnts -> Struct $ map (\(p,n,t) -> (p,n,go t)) pnts
+      t -> t
 findCycle :: Ord k => Map k (Set k) -> Either [k] ()
 findCycle m =
   case mapM_ (findCycleM m [] S.empty) $
@@ -174,54 +298,6 @@ findCycleM m stk s k
           s' = S.insert k s
           ks = S.toList $ m M.! k
       mapM_ (findCycleM m stk' s') ks
-{-
---The reported list should include k itself
-findCycleM :: Ord k =>
-              Map k (Set k) ->
-              Map k k -> --stack of visited nodes
-              k ->
-              StateT (Map k (Map k (Int,[k]))) (Except [k]) (Map k (Int,[k]))
-findCycleM m stk k
-  | M.member k stk = lift $ throwE $ reconstructPath k stk
-  | otherwise = do
-      s <- get
-      case M.lookup k s of
-        Just ret -> return ret
-        Nothing -> do
-          let ksSet = m M.! k
-          if S.member k ksSet
-            then lift $ throwE [k] --Postcond: no repetition of the first elem
-            else do
-            let ks = S.toList ksSet
-            maps <- mapM (\k' -> findCycleM m (M.insert k k' stk) k') ks
-            let mp = M.unionsWith (\lp1 lp2 ->
-                                     if fst lp2 < fst lp1
-                                     then lp2
-                                     else lp1) maps
-            --Simplicity first... check if k is in mp.
-            if M.member k mp
-              then let (_,path) = mp M.! k
-                   in lift $ throwE $ k:path
-              else do
-                let ret = M.insert k (1,[k]) $
-                      M.map (\(len,path) -> (len+1,k:path)) mp
-                    i = S.intersection (M.keysSet stk) (M.keysSet ret)
-                if i == S.empty
-                  then do
-                  --Update the memotable
-                  modify (M.insert k ret)
-                  return ret
-                  else do
-                  let offender = S.findMin i
-                      (_,path) = ret M.! offender
-                  lift $ throwE $ reconstructPath offender stk ++ path
---Follows a acyclic path until it ends.
-reconstructPath :: Ord k => k -> Map k k -> [k]
-reconstructPath k m =
-  k : case M.lookup k m of
-        Nothing -> []
-        Just k' -> reconstructPath k' m
--}
 
 checkForCycles :: Module -> Either SeqError ()
 checkForCycles mod = do
@@ -231,7 +307,12 @@ checkForCycles mod = do
     Right () -> Right ()
   where
     --Errors: tycon out of scope, tyvar out of scope
-    scopeCheckSyns = mapM_ (\(synnm,(args,t)) -> scopeCheckSyn synnm args t)
+    --Repeated arg vars are an error; we check for it here
+    scopeCheckSyns = mapM_ (\(synnm,(args,t)) ->
+                              if S.size (S.fromList args) /=
+                                 length args
+                              then Left $ InTySyn synnm (TySynRepeatedArgs args)
+                              else scopeCheckSyn synnm args t)
                      $ M.toList $ tysyns mod
     --We don't check for underapplied tysyns here, just scope
     --How to mitigate type FixedPoint f = f f without kinds?
@@ -253,20 +334,21 @@ checkForCycles mod = do
       TyNat n -> return ()
       Struct padmnmts -> sequence_ [r t | (pad,mnm,t) <- padmnmts]
     syn2syns :: Map Name (Set Name)
-    syn2syns = M.map (\(args,t) -> collectSubSyns t)
+    syn2syns = M.map (\(args,t) -> collectSubSyns mod t)
                $ tysyns mod
-    --TODO use generic programming to simplify
-    collectSubSyns =
-      let r = collectSubSyns in
-        \case
-          TyCon nm
-            | IsTySyn <- staticNameInfo nm mod ->
-              S.singleton nm
-          tf :$$ tx ->
-            S.union (r tf) (r tx)
-          Struct pnts ->
-            S.unions $ map r $ map (\(_,_,t) -> t) pnts
-          _ -> S.empty
+--TODO use generic programming to simplify
+collectSubSyns :: Module -> T -> Set Name
+collectSubSyns mod =
+  let r = collectSubSyns mod in
+    \case
+      TyCon nm
+        | IsTySyn <- staticNameInfo nm mod ->
+            S.singleton nm
+      tf :$$ tx ->
+        S.union (r tf) (r tx)
+      Struct pnts ->
+        S.unions $ map r $ map (\(_,_,t) -> t) pnts
+      _ -> S.empty
 --Might be generally useful
 collectTyApps :: T -> (T,[T])
 collectTyApps = \case
@@ -274,11 +356,16 @@ collectTyApps = \case
     let (f,args) = collectTyApps tf
     in (f,args ++ [tx])
   t -> (t,[])
+unCollectTyApps :: T -> [T] -> T
+unCollectTyApps tf = \case
+  [] -> tf
+  x:xs -> (tf :$$ x) `unCollectTyApps` xs
   
 --Find info about a name defined at the module level.
 --Postcond: will not be an IsLocal.
 --Warning: if you call this on a module before tysyn substitution, the type in
 --IsFunction will be unsubstituted!
+--Primitive tysyns are described as IsTySyns
 staticNameInfo :: Name -> Module -> NameInfo
 staticNameInfo nm mod
   | S.member nm primTyCons = IsPrimTyCon
@@ -558,20 +645,28 @@ seqE = \case
   --The fields are concatenated, with the field values emitted in reverse
   --order.
   EStruct padnmes -> buildStruct padnmes
-  _ -> error "TODO"
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
 --Badargs should lead to a Seq exception.
 simplePFs :: Map Name (T -> [Name] -> Seq (T,[Name]))
 simplePFs = M.fromList [
+  --Mathops
   --C has unary +, but it's pretty vestigial... I'll just ignore it
   ("+",\t ws ->
       case (t,ws) of
         (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
           pfMathOp "add" t1 t2 (w1,w2)
-        _ -> undefined)
+        _ -> undefined),
+  --Recall: mul/smul, div/sdiv need special treatment
+  --Binary bitwise ops
+  --Scheme: (a,b) -> a; combine a with b starting with the lowest words
+  --If b is longer than a and a is not a whole number of words, mask the
+  --highest word of the result.
+  ("&", binaryBitOp "and")
                        ]
+binaryBitOp :: String -> T -> [Name] -> Seq (T,[Name])
+binaryBitOp opcode t ws_a_b = error "TODO"
 {-
 Mathop rules:
 If both are ints, result has max len of both and is signed if either arg is.

@@ -132,6 +132,9 @@ FW: the traversal algo should be a hof.
 Goal: find the (first) shortest path with a repetition, so it should x,y,z,y should fail in the recursive
 call to y and report [y,z,y].
 
+TODO expose the other parser functions in E for easier debugging.
+The prologue is parameterized by the main function; the compiled artifact of a C module needn't include it...
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?
