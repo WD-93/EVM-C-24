@@ -144,6 +144,63 @@ Why does main (x,y) := x and y give the same result?
 printIRM "module {main:(Word,Word,Word)->Word;main (x,y,z) := return z}"
 The pattern matching is binding each var to the entire tuple!? --FIXED
 
+printCFG2 "module {main:(Word,Word)->Word;main (x,y) := return (x&(y,y))}"
+printCFG2 "module {main:(Word,Word)->Word;main (x,y) := return (x&(y,x))}"
+--Give the same result - but x should be and-ed with the lower word, not the upper one!
+
+*Compiler> printIRM "module {main:(Word,Word)->Word;main (x,y) := return (x&(x,y))}"
+main(arity 2):
+ $anon2 : uint256#1 = copy $anon0
+ $anon3 : uint256#1 = copy $anon1
+ x#1 : uint256#1 = copy $anon2
+ y#1 : uint256#1 = copy $anon3
+ $anon4 : uint256#1 = copy x#1
+ $anon5 : uint256#1 = copy x#1
+ $anon6 : uint256#1 = copy y#1
+ $anon7 : (uint256, uint256)#1 = copy $anon5
+ $anon8 : (uint256, uint256)#2 = copy $anon6
+ $anon9 : (uint256, (uint256, uint256))#1 = copy $anon4
+ $anon10 : (uint256, (uint256, uint256))#2 = copy $anon8 --!??
+ $anon11 : (uint256, (uint256, uint256))#3 = copy $anon7
+ $anon12 : uint256#1 = and $anon9, $anon11
+ return $mem, $ret, $anon12
+ $anon13 : uint256#1 = 0
+ $anon14 : uint256#1 = copy $anon13
+ return $mem, $ret, $anon14
+
+*Compiler> printCFG2 "module {main:()->(Word,Word);main () := return ((1,2)&())}"
+*** Exception: IR1.hs:(916,3)-(918,56): Non-exhaustive patterns in case
+--Oh no, a bug in the tuple construction logic? Yes, return (1,()) fails too.
+return (1,(2,3)) shows the problem
+
+Rewriting struct construction logic:
+Redesign padding and alignment? Bitfields could be a separate type...? Or a type of field.
+A struct is a concatenation of values and padding bits... to access a field efficiently, it
+needs to be byte-aligned. A word-aligned, word-padded field is the most efficient to access.
+*ptr fits under prefixOp.
+The IR can't distinguish between prefix and infix ops without a hint provided by the desugar step...
+limit prefix ops to appropriate primops? *, +, -, maybe & (for exposing global ptrs).
+p->field* is a ptr, stackWord->field* a slice.
+
+Alternative approach: the bitsize of a struct is the sum of the bitsizes of fields + paddings.
+Its wordsize can be computed from that.
+struct[offset] = e --first split e into words: struct[off] = w.
+Split that into struct words: structW |= w shift k
+Use a map to accumulate the struct word => field word mapping.
+
+Idea: padding annotations as syntactic sugar, with the T simply including padding sizes.
+That won't work: size information of types is only known in the IR stage. It also wouldn't work with
+overloading.
+Useful overloaded transformations: pack (zeroing all padding), unpack to tuple.
+Note such views have no runtime cost for unused words.
+Word alignment and padding means cheaper stack access; for memory, only byte alignment and word padding
+matter.
+A struct is a multi-word value with dependencies on input values... what if you passed around symbolic value
+refs rather than words? Then you could query them symbolically and perform opts that way.
+Problem: if e = x + y, modifying x between e's definition and use could be buggy. You must still create an
+output var for e to uniquely identify it.
+Not worth it for now.
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?

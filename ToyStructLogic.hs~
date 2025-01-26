@@ -1,0 +1,4 @@
+module ToyStructLogic where
+
+data OutWord = V InWord
+             | 

@@ -73,6 +73,7 @@ primTySyns = M.fromList [
   ]
   where nm =: t = (nm,([],t))
 --The kind check can't be done here, you need to defer it to IR.
+tupleT :: [T] -> T
 tupleT = Struct . tupleF
 {-
 data Region = Memory
