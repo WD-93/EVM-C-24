@@ -9,24 +9,25 @@ import Control.Monad.State
 import Control.Arrow ((***))
 import Data.List (sortOn)
 
---Ex: x[3]
-type I = (String,Int)
-data O = V (I,Int) --we tag with number of relevant bits
-       | Shift O Int --left shift, -ve is right shift
-       | O :|| O
+--It's parameterized by input type so we can both debug and use it easily
+--Debug parameter: (String,Int)
+--Real: Name (used for vars in IR)
+data O i = V (i,Int) --we tag with number of relevant bits
+       | Shift (O i) Int --left shift, -ve is right shift
+       | O i :|| O i
   deriving (Eq,Ord,Read)
-instance Show O where
-  show (V ((s,n),sz)) = s ++ "[" ++ show n ++ "]:" ++ show sz
+instance Show i => Show (O i) where
+  show (V (i,sz)) = show i ++ ":" ++ show sz
   show (Shift o n)
     | n > 0 = show o ++ " << " ++ show n
     | n < 0 = show o ++ " >> " ++ show (-n)
     | otherwise = error $  "Should be normed away: " ++ show (o,n)
   --Note this show is ambiguous...
   show (o1 :|| o2) = show o1 ++ " | " ++ show o2
-shift :: O -> Int -> O
+shift :: O i -> Int -> O i
 shift o 0 = o
 shift o n = Shift o n
-(.<<) :: O -> Int -> O
+(.<<) :: O i -> Int -> O i
 o .<< n | n < 0 = error "Badarg in .<<"
         | let = Shift o n
 o .>> n | n < 0 = error "Badarg in .>>"
@@ -34,8 +35,8 @@ o .>> n | n < 0 = error "Badarg in .>>"
 
 --Represents the list of words of nm, a C value of bitsize sz
 --It's 1-indexed: a 257-bit value x becomes (257,[("x",1),("x",2)])
-type Value = (Int,[I])
-value :: Int -> String -> Value
+type Value i = (Int,[i])
+value :: Int -> String -> Value (String,Int)
 value sz nm =
   let wsz = (sz `roundedUpMod` 256) `div` 256
   in (sz,[(nm,i) | i <- [1..wsz]])
@@ -64,7 +65,7 @@ n `roundedUpMod` m = m * ((if (n `mod` m) > 1
 --bitsize of the field + padding is a multiple of info2Sz i.
 --Pad i of the next field does not render align i a noop, since the next field
 --may start at an unaligned position.
-buildStruct :: [(Info,Info,Value)] -> [O]
+buildStruct :: Ord i => [(Info,Info,Value i)] -> [O i]
 buildStruct [] = []
 buildStruct padalfs =
   --First, we replace the alignment info in each elem with the alignment of
@@ -106,7 +107,7 @@ computePad pad al sz off =
   
 --For well-formed Values (created with value), all but the first word will be
 --256b and sz will match the number of words.
-tagWordsWithSize :: Value -> [(I,Int)]
+tagWordsWithSize :: Value i -> [(i,Int)]
 tagWordsWithSize (0,[]) = []
 tagWordsWithSize (sz,w:ws)
   | sz `mod` 256 > 0 = (w,sz`mod`256): map (\w -> (w,256)) ws
@@ -116,14 +117,14 @@ tagWordsWithSize (sz,w:ws)
 --with offsets,
 --the current offset.
 --Really you could use a list instead of a map, but why invite bugs?
-type SB = State (Map Int (Set ((I,Int),Int)), Int)
-incOff :: Int -> SB ()
+type SB i = State (Map Int (Set ((i,Int),Int)), Int)
+incOff :: Int -> SB i ()
 incOff k = modify (id *** (+ k))
 --The word is guaranteed to be added to the current struct word, but it may
 --also overlap with the next, in which case it should be right-shifted and
 --added to that as well.
 --Note the word is guaranteed to have sz <= 256
-emitWord :: (I,Int) -> SB ()
+emitWord :: Ord i => (i,Int) -> SB i ()
 emitWord (i,sz) = do
   off <- gets snd
   let currWord = off `div` 256
@@ -139,12 +140,11 @@ emitWord (i,sz) = do
     addShiftedWord highestWord ((i,sz),negRightShift)
     else return ()
   incOff sz
-  where
-    addShiftedWord :: Int -> ((I,Int),Int) -> SB ()
-    addShiftedWord i elem =
-      modify (M.alter (\case Just s -> Just (S.insert elem s)
-                             Nothing -> Just (S.singleton elem)
-                      ) i *** id)
+addShiftedWord :: Ord i => Int -> ((i,Int),Int) -> SB i ()
+addShiftedWord ix elem =
+  modify (M.alter (\case Just s -> Just (S.insert elem s)
+                         Nothing -> Just (S.singleton elem)
+                  ) ix *** id)
 
 --Proposed syntax:
 --{[align i] [pad i] [fieldNm =] v}
