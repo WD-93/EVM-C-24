@@ -12,6 +12,10 @@ import Control.Monad.Trans.Except
 import Control.Monad.Fail
 
 import DTs
+--The logic for assembling structs from field values, split out into another
+--module:
+import qualified BuildStruct as B
+
 --The first stage of compilation from AST: word-level ops with structured
 --patterns.
 --Function call is treated as an op.
@@ -694,6 +698,7 @@ binaryBitOp pfname opcode corruptible t ws_a_b =
               in do
                 (w',_) <- runEDSL $ mask bitszw (EVar w)
                 return (a,w':ws)
+            | otherwise -> return (a,ws_combined)
     _ -> throwE $ BadArgPrimFun pfname t
 {-
 Mathop rules:
@@ -849,7 +854,42 @@ nullValue t = do
 --cheapest case is when the word contains a single unsliced field.
 --Layout: the padded fields are placed rightmost in the struct, with the struct
 --itself word-padded.
+--New logic using BuildStruct.hs: first get the bitsize of each field, then
+--apply its buildStruct function and interpret it.
+--Default alignment: bit. TODO add alignment pragmas to struct types and
+--exprs.
 buildStruct :: [(Padding,Maybe Name,E)] -> Seq (T,[Name])
+buildStruct padmnmes = do
+  --First we get the types and words
+  padmnmtws <- mapM (\(pad,mnm,e) -> do
+                       (t,ws) <- seqE e
+                       return (pad,mnm,t,ws)) padmnmes
+  --Computing the return type:
+  let padmnmts = map (\(pad,mnm,t,_) -> (pad,mnm,t)) padmnmtws
+      structType = Struct padmnmts
+  --For each field value, the words it consists, the bitsize of the unpadded
+  --field, plus pad and alignment info.
+  bsArg <- mapM (\(pad,_,t,ws) -> do
+                  bsz <- numBitsT t
+                  let p = case pad of
+                            BitPad -> B.Bit
+                            BytePad -> B.Byte
+                            WordPad -> B.Word
+                      al = B.Bit
+                  return (p,al,(bsz,ws))) padmnmtws
+  --The exprs describing each struct word
+  let outputs = B.buildStruct bsArg
+  ws <- map fst <$> runEDSL (mapM interp outputs)
+  return (structType,ws)
+  where interp :: B.O Name -> Expr
+        interp = \case
+          B.V (nm,_sz) -> EVar nm
+          B.Shift o sh
+            | sh > 0 -> shl (word $ fromIntegral sh) $ interp o
+            | sh < 0 -> shr (word $ fromIntegral $ negate sh) $ interp o
+            | otherwise -> error $ "Compiler error: 0 shift in BuildStruct"
+          o1 B.:|| o2 -> interp o1 .| interp o2
+{-
 buildStruct padmnmes = do
   padmnmtws <- mapM (\(pad,mnm,e) -> do
                        (t,ws) <- seqE e
@@ -866,6 +906,7 @@ buildStruct padmnmes = do
   wc <- numWordsT structType
   sws <- buildStructOps structType wc bszws
   return (structType,sws)
+-}
 --Concat scheme:
 --a ++ b = a << bitsizeof b | b
 --Starting from the last field, concatenate the last 256b worth of field

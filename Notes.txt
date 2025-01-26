@@ -201,6 +201,11 @@ Problem: if e = x + y, modifying x between e's definition and use could be buggy
 output var for e to uniquely identify it.
 Not worth it for now.
 
+TODO prune old struct building code
+Inefficiency: in 1|(2,3), the result is masked by 255 because the compiler doesn't recognize that the
+"potentially corrupting" bits of (2,3) are padding, which may be assumed to be 0.
+TODO improve corruptibility detection logic.
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?
