@@ -143,8 +143,16 @@ instance Print OS where
 
 instance Print Field where
   prt i e = case e of
+    AnnotPad padinfo field -> prPrec i 0 (concatD [doc (showString "pad"), prt 0 padinfo, prt 0 field])
+    AnnotAlign padinfo field -> prPrec i 0 (concatD [doc (showString "align"), prt 0 padinfo, prt 0 field])
     Named id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
     Anon e_ -> prPrec i 0 (concatD [prt 0 e_])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
+instance Print PadInfo where
+  prt i e = case e of
+    Bit -> prPrec i 0 (concatD [doc (showString "bit")])
+    Byte -> prPrec i 0 (concatD [doc (showString "byte")])
+    Word -> prPrec i 0 (concatD [doc (showString "word")])
+
 

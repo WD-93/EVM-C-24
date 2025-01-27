@@ -206,6 +206,18 @@ Inefficiency: in 1|(2,3), the result is masked by 255 because the compiler doesn
 "potentially corrupting" bits of (2,3) are padding, which may be assumed to be 0.
 TODO improve corruptibility detection logic.
 
+Allow align and pad byte despite them being defaults.
+Make multiple pad/align pragmas a desugar error.
+
+Renaming BitPad etc to Bit etc to reflect pad/align not just being about padding.
+A useful overloaded op for EVMC: the nth word.
+
+Accessing struct fields: compile .field* to a single slice. Make use of padding to avoid masking.
+TODO: treat global or *ptr .field* specially; ditto for assignment.
+e.slice(off,len) needn't be a new primitive; just implement in terms of struct coercion.
+
+Next: .field* and .field* = e
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?

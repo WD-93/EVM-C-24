@@ -11,6 +11,7 @@ import E.ErrM
 %name pM M
 %name pListD ListD
 %name pD D
+%name pConArgs ConArgs
 %name pS S
 %name pListS ListS
 %name pE E
@@ -41,9 +42,10 @@ import E.ErrM
   'module' { PT _ (TS _ 14) }
   'return' { PT _ (TS _ 15) }
   'then' { PT _ (TS _ 16) }
-  'while' { PT _ (TS _ 17) }
-  '{' { PT _ (TS _ 18) }
-  '}' { PT _ (TS _ 19) }
+  'type' { PT _ (TS _ 17) }
+  'while' { PT _ (TS _ 18) }
+  '{' { PT _ (TS _ 19) }
+  '}' { PT _ (TS _ 20) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -67,6 +69,10 @@ ListD : {- empty -} { [] }
 D :: { D }
 D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' E { E.Abs.TySig $1 $3 }
+  | 'type' ConArgs '=' E { E.Abs.TySyn $2 $4 }
+ConArgs :: { ConArgs }
+ConArgs : UIdent { E.Abs.CANil $1 }
+        | ConArgs Ident { E.Abs.CACons $1 $2 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }

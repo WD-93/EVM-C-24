@@ -221,9 +221,10 @@ sToken p s = PT p (TS s i)
       "module" -> 14
       "return" -> 15
       "then" -> 16
-      "while" -> 17
-      "{" -> 18
-      "}" -> 19
+      "type" -> 17
+      "while" -> 18
+      "{" -> 19
+      "}" -> 20
       _ -> error $ "not a reserved word: " ++ show s
 
 -- | Get the position of a token.

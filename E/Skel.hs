@@ -58,6 +58,13 @@ transOS x = case x of
   OSCons e infix_ os -> failure x
 transField :: Field -> Result
 transField x = case x of
+  AnnotPad padinfo field -> failure x
+  AnnotAlign padinfo field -> failure x
   Named ident e -> failure x
   Anon e -> failure x
+transPadInfo :: PadInfo -> Result
+transPadInfo x = case x of
+  Bit -> failure x
+  Byte -> failure x
+  Word -> failure x
 

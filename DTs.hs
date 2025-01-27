@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternSynonyms, OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms, OverloadedStrings, LambdaCase #-}
 module DTs where
 
 import Data.Map (Map(..))
@@ -17,19 +17,31 @@ type Name = String
 data E = EInteger Integer
        | Var Name --includes overloaded ops
        | E :$ E
-       | EStruct [(Padding, Maybe Name,E)] --tuples are sugar for structs
+       --The second Padding is alignment
+       | EStruct [Field E]
+       --tuples are sugar for structs
        -- | Coerce T E
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
 --bitfields are bitpadded
-data Padding = BitPad | BytePad | WordPad
+data Padding = Bit | Byte | Word
   deriving (Eq,Ord,Read,Show)
-padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0) 
+pad2Sz :: Num a => Padding -> a
+pad2Sz = \case
+  Bit -> 1
+  Byte -> 8
+  Word -> 256
+--padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0)
+n `roundedUpMod` m = m * ((if (n `mod` m) > 0
+                          then 1
+                          else 0) + (n `div` m))
+n `padWith` p = n `roundedUpMod` pad2Sz p
+
 tupleE :: [E] -> E
 tupleE = EStruct . tupleF
-tupleF :: [e] -> [(Padding,Maybe Name,e)]
-tupleF = map (\x -> (WordPad,Nothing,x))
+tupleF :: [e] -> [Field e]
+tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type
 instance IsString T where
   fromString = TyCon
@@ -45,12 +57,14 @@ pattern UInt n = Int "Unsigned" n
 pattern Int s n = "Int" :$$ s :$$ TyNat n
 pattern a :-> b = "->" :$$ a :$$ b
 --I should perhaps have separated structs and tuples after all...
-pattern Pair a b = Struct [(WordPad,Nothing,a),(WordPad,Nothing,b)]
+pattern Pair a b = Struct [((Word,Word),Nothing,a),
+                           ((Word,Word),Nothing,b)]
+type Field a = ((Padding,Padding), Maybe Name, a)
 data T = TyCon Name
        | TyVar Name --Only for data and tysyn type params initially
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
-       | Struct [(Padding, Maybe Name, T)]
+       | Struct [Field T]
   deriving (Eq,Ord,Read,Show)
 --Including kinds
 primTyCons :: Set Name

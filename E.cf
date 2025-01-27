@@ -54,5 +54,13 @@ OSNil. OS ::= E2;
 OSCons. OS ::= E2 Infix OS;
 
 --Struct fields
+--May be annotated with pad <info>, align <info>,
+--where info ::= bit | byte | word
+AnnotPad. Field ::= "pad" PadInfo Field;
+AnnotAlign. Field ::= "align" PadInfo Field;
 Named. Field ::= Ident ":" E;
 Anon. Field ::= E;
+
+Bit. PadInfo ::= "bit";
+Byte. PadInfo ::= "byte";
+Word. PadInfo ::= "word";

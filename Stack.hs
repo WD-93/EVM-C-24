@@ -94,7 +94,7 @@ debugPrint str =
 --After mapping to a canonical label, a label is either unplaced, placed and
 --at the head of one of the lists, or in one of the lists.
 
---Each op has input and output words; vars of IRT type Word {} are stack
+--Each op has input and output words; vars of IRT type W {} are stack
 --words, the rest are virtual.
 --The SSAOp does not contain info on the type of rhs vars; consequently that
 --must be tracked in the SLC to asm monad.
@@ -506,7 +506,7 @@ compileBranch ver sub self layout types branch =
       debugPrint "Branch: return"
       vsW <- filterM (\v ->
                         case M.lookup v types of
-                          Just (Word{}) -> return True
+                          Just (W{}) -> return True
                           Just _ -> return False
                           Nothing ->
                             throwE $ "return v has no type in compileBranch: "
@@ -895,7 +895,7 @@ selectOps (lhs,op,rhs) = do
   let onlyWords vts = do
         (var,t) <- vts
         case t of
-          Word {} -> [(var,t)]
+          W {} -> [(var,t)]
           _ -> []
       lhsW = onlyWords lhs
   rhsW <- map fst <$> onlyWords <$> mapM (\v -> do
@@ -932,7 +932,7 @@ emitOperator lhs op rhs = do
   mapM_ (\(var,t) -> do
             setVarType var t
             case t of
-              Word {} -> do
+              W {} -> do
                 vs <- getLayout
                 setLayout (var:vs)
               _ -> return ()

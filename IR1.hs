@@ -20,7 +20,8 @@ import qualified BuildStruct as B
 --patterns.
 --Function call is treated as an op.
 data IRT = Mem --has no runtime repr
-         | Word Int T --nth word of C-level t; 1-indexed
+         | W Int T --nth word of C-level t; 1-indexed
+         --Renamed from Word to avoid clash with Padding
   deriving (Eq,Ord,Read,Show)
 --Name mangling: nth word of local x becomes x#n
 --From ToyCFG: IR is tagged with () or Live annots.
@@ -99,13 +100,13 @@ data SeqError = UnboundVar Name
               | FoundTySynCycle [Name]
               | UnderAppliedSynInDefun Name [T]
               --Substituting
-              | ArgsAppliedToStructInDefun [(Padding,Maybe Name,T)] [T]
+              | ArgsAppliedToStructInDefun [Field T] [T]
               --A placeholder error to avoid having to add new error types
               --constantly while developing
               | GenericError String
   deriving (Eq,Ord,Read,Show)
 data InTySynErr = TyConOOS Name | TyVarOOS Name | TySynRepeatedArgs [Name]
-  | UnderAppliedSyn Name | ArgsAppliedToStruct [(Padding,Maybe Name,T)]
+  | UnderAppliedSyn Name | ArgsAppliedToStruct [Field T]
   deriving (Eq,Ord,Read,Show)
 --pronounced seek s...
 data SeqS = SS {
@@ -252,7 +253,7 @@ substTySynsM oldSyns syn = do
 --Applies a map of tysyns to a type, potentially producing an underapplied
 --syn error or args applied to struct. TODO deduplicate
 applyTySyns :: Syns -> T -> Either (Either (Name,[T])
-                                    ([(Padding,Maybe Name,T)],[T])) T
+                                    ([Field T],[T])) T
 applyTySyns syns t = do
   let (tf,targs) = collectTyApps t
       r = applyTySyns syns
@@ -490,7 +491,7 @@ coerceT t ws = do
   n <- numWordsT t
   if n /= length ws
     then error "Compiler error: word length mismatch in coerceT"
-    else sequence [coerceIRT (Word i t) w | (i,w) <- zip [1..] ws]
+    else sequence [coerceIRT (W i t) w | (i,w) <- zip [1..] ws]
 --Coerces a single IR var to a new anon var
 coerceIRT :: IRT -> Name -> Seq Name
 coerceIRT t w = do
@@ -504,7 +505,7 @@ anonVarsT t = do
   n <- numWordsT t
   mapM (\n -> do
            v <- newAnonVar
-           putIRVarType v (Word n t)
+           putIRVarType v (W n t)
            return v) [1..n]
 
 --The scope is reset at the end
@@ -588,7 +589,7 @@ seqE = \case
         --A use of a var is not a noop, it's a renaming. The difference is
         --a subsequent assignment to the original var won't affect the
         --renamed one.
-        ws <- sequence [copyVar (Word i t) (nm ++ "#" ++ show i)
+        ws <- sequence [copyVar (W i t) (nm ++ "#" ++ show i)
                        | i <- [1..n]]
         return (t,ws)
       IsUnbound -> throwE $ UnboundVar nm
@@ -623,7 +624,7 @@ seqE = \case
         --return type: b
         n <- numWordsT b
         retws <- replicateM n newAnonVar
-        let retts = [Word m b | m <- [1..n]]
+        let retts = [W m b | m <- [1..n]]
         --We thread $mem through calls, but it's not part of the expr's
         --word output.
         --Stack layout before jump: wf,args,ret.
@@ -692,6 +693,7 @@ binaryBitOp pfname opcode corruptible t ws_a_b =
               return (a,ws_combined)
             --The first word may be corrupted
             --Note: that's not the case for &, so I pass a flag
+            --TODO check the "corrupting" bits aren't just padding.
             | corruptible ->
               let w:ws = ws_combined
                   bitszw = bitsa `mod` 256
@@ -732,7 +734,7 @@ truthy :: [Name] -> Seq Name
 truthy ws = do
   irts <- mapM getIRVarType ws
   --Truthy only works on concrete values
-  if all (\case Just (Word {}) -> True
+  if all (\case Just (W {}) -> True
                 _ -> False) irts
     then do
     v <- newAnonVar
@@ -747,8 +749,8 @@ assign x [] = return ()
 assign x ws = do
   mt <- getIRVarType $ head ws
   case mt of
-    Just (Word 1 t) -> 
-      sequence_ [emitOp [(x ++ "#" ++ show n, Word n t)] Copy [w]
+    Just (W 1 t) -> 
+      sequence_ [emitOp [(x ++ "#" ++ show n, W n t)] Copy [w]
                 | (n,w) <- zip [1..] ws]
     _ -> throwE $ BadFirstRHSInAssign x mt ws
 
@@ -775,7 +777,7 @@ softCoerce target source ws
         _ | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
           | len1 > len2, s1 == "Signed" ->
             runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
-          | let -> runEDSLWord $ coerce (Word 1 target) (EVar w)
+          | let -> runEDSLWord $ coerce (W 1 target) (EVar w)
   --For now, no general struct coercion, only tuple -> tuple
   | Just ts1 <- unTupleT target, Just ts2 <- unTupleT source =
     softCoerceTuple ts1 ts2 ws
@@ -786,7 +788,7 @@ unTupleT = \case
   _ -> Nothing
   where go = \case
           [] -> Just []
-          (WordPad,Nothing,t):padmnmts ->
+          ((Word,Word),Nothing,t):padmnmts ->
             (t:) <$> go padmnmts
           _ -> Nothing
 
@@ -808,7 +810,7 @@ softCoerceTuple targetTs sourceTs ws
       let sourceWs = concat wss'
           resT = tupleT targetTs
       resWs <- mapM (\(i,w) -> do
-                        (v,_) <- runEDSL $ coerce (Word i resT) (EVar w)
+                        (v,_) <- runEDSL $ coerce (W i resT) (EVar w)
                         return v
                     ) $
                zip [1..] sourceWs
@@ -838,7 +840,7 @@ nullValue t = do
   n <- numWordsT t
   map fst <$> runEDSL (do
     z <- word 0
-    sequence [coerce (Word i t) (return z) | i <- [1..n]])
+    sequence [coerce (W i t) (return z) | i <- [1..n]])
           
 {-
 --TODO update pkgs...
@@ -858,7 +860,7 @@ nullValue t = do
 --apply its buildStruct function and interpret it.
 --Default alignment: bit. TODO add alignment pragmas to struct types and
 --exprs.
-buildStruct :: [(Padding,Maybe Name,E)] -> Seq (T,[Name])
+buildStruct :: [((Padding,Padding),Maybe Name,E)] -> Seq (T,[Name])
 buildStruct padmnmes = do
   --First we get the types and words
   padmnmtws <- mapM (\(pad,mnm,e) -> do
@@ -867,23 +869,19 @@ buildStruct padmnmes = do
   --Computing the return type:
   let padmnmts = map (\(pad,mnm,t,_) -> (pad,mnm,t)) padmnmtws
       structType = Struct padmnmts
-  --For each field value, the words it consists, the bitsize of the unpadded
-  --field, plus pad and alignment info.
-  bsArg <- mapM (\(pad,_,t,ws) -> do
-                  bsz <- numBitsT t
-                  let p = case pad of
-                            BitPad -> B.Bit
-                            BytePad -> B.Byte
-                            WordPad -> B.Word
-                      al = B.Bit
-                  return (p,al,(bsz,ws))) padmnmtws
-  --The exprs describing each struct word
-  let outputs = B.buildStruct bsArg
+  --First, we compute the layout using structLayout.
+  --It needs the padding, alignment and size of each field
+  layout <- B.structLayout <$> mapM (\((pad,al),_,t,_) -> do
+                                      bsz <- numBitsT t
+                                      return (pad,al,bsz)) padmnmtws
+  --createStruct needs the layout and the words
+  let wss = map (\(_,_,_,ws) -> ws) padmnmtws
+  let outputs = B.createStruct layout wss
   ws <- map fst <$> runEDSL (mapM interp outputs)
   return (structType,ws)
-  where interp :: B.O Name -> Expr
+  where interp :: B.O [Name] -> Expr
         interp = \case
-          B.V (nm,_sz) -> EVar nm
+          B.V ws i -> EVar $ ws !! (i-1)
           B.Shift o sh
             | sh > 0 -> shl (word $ fromIntegral sh) $ interp o
             | sh < 0 -> shr (word $ fromIntegral $ negate sh) $ interp o
@@ -936,7 +934,7 @@ buildStructWord st (n,shiftws) = do
                              | shift < 0 ->
                                shr (word $ fromIntegral $ negate shift) (EVar v)
                              | let -> EVar v) shiftws
-      disjunction = coerce (Word n st) $ foldr1 (.|) shifted
+      disjunction = coerce (W n st) $ foldr1 (.|) shifted
   runEDSL disjunction
   
 --field values (bitlen, words) -> [struct word recipe]
@@ -1054,7 +1052,7 @@ typedAnonVar irt = do
 type Expr = EDSL EVar
 word :: Integer -> Expr
 word k = head <$> App (Push $ Const k) (\_ -> Just [tword]) []
-tword = Word 1 (UInt 256)
+tword = W 1 (UInt 256)
 --Coerces an arbitrary var to a var of another type; ignores kind so mem
 --can be coerced to word and vice versa!
 coerce :: IRT -> Expr -> Expr
@@ -1070,13 +1068,13 @@ shr = op2 "shr"
 (.|) = op2 "or"
 op1 :: String -> Expr -> Expr
 op1 opcode a = do
-  [v] <- App (Opcode opcode) (\case [Word{}] -> Just [tword]
+  [v] <- App (Opcode opcode) (\case [W{}] -> Just [tword]
                                     _ -> Nothing) [a]
   return v
 op2 :: String -> Expr -> Expr -> Expr
 op2 opcode a b = do
   [v] <- App (Opcode opcode) (\case
-                                [Word {}, Word {}] -> Just [tword]
+                                [W {}, W {}] -> Just [tword]
                                 _ -> Nothing) [a,b]
   return v
 --What is the correct arg order...? TODO find out
@@ -1129,7 +1127,7 @@ copyVar irt nm = do
 pushK :: T -> StaticValue -> Seq Name
 pushK t sv = do
   v <- newAnonVar
-  emitOp [(v,Word 1 t)] (Push sv) []
+  emitOp [(v,W 1 t)] (Push sv) []
   return v
 
 emit :: IR -> Seq ()
@@ -1246,22 +1244,21 @@ getCNameInfo nm
 numWordsT :: T -> Seq Int
 numWordsT t = do
   n <- numBitsT t
-  return $ (padTo 256 n) `div` 256
+  return $ (n `padWith` Word) `div` 256
+--With alignment, size calc of structs becomes more complex
+--TODO deduplicate the logic between size calc, construction and access
 numBitsT :: T -> Seq Int
 numBitsT = \case
   Int _ n -> return $ fromInteger n
   a :-> b -> return 16
-  Struct padnmts ->
-     sum <$> mapM (\(pad,_,t) -> padWith pad <$> numBitsT t) padnmts
+  Struct padnmts -> do
+    padalszs <- mapM (\((pad,al),_,t) -> do
+                       sz <- numBitsT t
+                       return (pad,al,sz)) padnmts
+    let (sz,structure) = B.structLayout padalszs
+    return sz
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
-padWith pad = padTo (case pad of
-                       BitPad -> 1
-                       BytePad -> 8
-                       WordPad -> 256)
-padTo n m = n * ((if m `mod` n == 0
-                  then 0
-                  else 1) + (m `div` n))
 
 --I need to type check at the same time...
 --integer literals become the smallest type that fits; limit to 256b

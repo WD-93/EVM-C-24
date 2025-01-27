@@ -57,7 +57,7 @@ showLHS = intercalate ", " . map showNMT
 showNMT (nm,irt) = nm ++ " : " ++ showIRT irt
 showIRT = \case
   Mem -> "Mem"
-  Word n t -> showT t ++ "#" ++ show n
+  W n t -> showT t ++ "#" ++ show n
 showT = do
   let r = showT
   \case
@@ -70,11 +70,15 @@ showT = do
     tup | Just ts <- unTupleT tup ->
           "(" ++ intercalate ", " (map showT ts) ++ ")"
     Struct fields -> "{" ++ intercalate ", " (map showFieldT fields) ++ "}"
-showFieldT (padding,mnm,t) =
-  let p = case padding of
-            BitPad -> ["bitpad"]
-            BytePad -> []
-            WordPad -> ["wordpad"]
+showFieldT ((pad,al),mnm,t) =
+  let p = case pad of
+            Bit -> ["pad bit"]
+            Byte -> []
+            Word -> ["pad word"]
+      a = case al of
+            Bit -> ["align bit"]
+            Byte -> []
+            Word -> ["align word"]
       n = case mnm of
             Nothing -> []
             Just nm -> [nm,":"]

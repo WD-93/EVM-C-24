@@ -22,6 +22,7 @@ import E.ErrM
 %name pListField ListField
 %name pOS OS
 %name pField Field
+%name pPadInfo PadInfo
 -- no lexer declaration
 %monad { Err } { thenM } { returnM }
 %tokentype {Token}
@@ -35,17 +36,22 @@ import E.ErrM
   ';' { PT _ (TS _ 7) }
   '=' { PT _ (TS _ 8) }
   '_' { PT _ (TS _ 9) }
-  'do' { PT _ (TS _ 10) }
-  'else' { PT _ (TS _ 11) }
-  'end' { PT _ (TS _ 12) }
-  'if' { PT _ (TS _ 13) }
-  'module' { PT _ (TS _ 14) }
-  'return' { PT _ (TS _ 15) }
-  'then' { PT _ (TS _ 16) }
-  'type' { PT _ (TS _ 17) }
-  'while' { PT _ (TS _ 18) }
-  '{' { PT _ (TS _ 19) }
-  '}' { PT _ (TS _ 20) }
+  'align' { PT _ (TS _ 10) }
+  'bit' { PT _ (TS _ 11) }
+  'byte' { PT _ (TS _ 12) }
+  'do' { PT _ (TS _ 13) }
+  'else' { PT _ (TS _ 14) }
+  'end' { PT _ (TS _ 15) }
+  'if' { PT _ (TS _ 16) }
+  'module' { PT _ (TS _ 17) }
+  'pad' { PT _ (TS _ 18) }
+  'return' { PT _ (TS _ 19) }
+  'then' { PT _ (TS _ 20) }
+  'type' { PT _ (TS _ 21) }
+  'while' { PT _ (TS _ 22) }
+  'word' { PT _ (TS _ 23) }
+  '{' { PT _ (TS _ 24) }
+  '}' { PT _ (TS _ 25) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -111,7 +117,14 @@ ListField : Field { (:[]) $1 } | Field ',' ListField { (:) $1 $3 }
 OS :: { OS }
 OS : E2 { E.Abs.OSNil $1 } | E2 Infix OS { E.Abs.OSCons $1 $2 $3 }
 Field :: { Field }
-Field : Ident ':' E { E.Abs.Named $1 $3 } | E { E.Abs.Anon $1 }
+Field : 'pad' PadInfo Field { E.Abs.AnnotPad $2 $3 }
+      | 'align' PadInfo Field { E.Abs.AnnotAlign $2 $3 }
+      | Ident ':' E { E.Abs.Named $1 $3 }
+      | E { E.Abs.Anon $1 }
+PadInfo :: { PadInfo }
+PadInfo : 'bit' { E.Abs.Bit }
+        | 'byte' { E.Abs.Byte }
+        | 'word' { E.Abs.Word }
 {
 
 returnM :: a -> Err a

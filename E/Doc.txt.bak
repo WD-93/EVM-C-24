@@ -36,11 +36,12 @@ The set of reserved words is the set of terminals appearing in the grammar. Thos
 
 The reserved words used in E are the following:
   | ``do`` | ``else`` | ``end`` | ``if``
-  | ``module`` | ``return`` | ``then`` | ``while``
+  | ``module`` | ``return`` | ``then`` | ``type``
+  | ``while`` |  |  | 
 
 The symbols used in E are the following:
   | { | } | ; | :=
-  | : | ( | ) | =
+  | : | = | ( | )
   | . | , | _ | 
 
 ===Comments===
@@ -58,6 +59,9 @@ All other symbols are terminals.
   |  |  **|**  | //D// ``;`` //[D]// 
   | //D// | -> | //Ident// //E3// ``:=`` //S// 
   |  |  **|**  | //Ident// ``:`` //E// 
+  |  |  **|**  | ``type`` //ConArgs// ``=`` //E// 
+  | //ConArgs// | -> | //UIdent// 
+  |  |  **|**  | //ConArgs// //Ident// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 

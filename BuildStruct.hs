@@ -9,15 +9,17 @@ import Control.Monad.State
 import Control.Arrow ((***))
 import Data.List (sortOn)
 
+import DTs (Padding(..),padWith,roundedUpMod)
+
 --It's parameterized by input type so we can both debug and use it easily
 --Debug parameter: (String,Int)
 --Real: Name (used for vars in IR)
-data O i = V (i,Int) --we tag with number of relevant bits
+data O i = V i Int --Int: select nth word
        | Shift (O i) Int --left shift, -ve is right shift
        | O i :|| O i
   deriving (Eq,Ord,Read)
 instance Show i => Show (O i) where
-  show (V (i,sz)) = show i ++ ":" ++ show sz
+  show (V i ix) = show i ++ "[" ++ show ix ++ "]"
   show (Shift o n)
     | n > 0 = show o ++ " << " ++ show n
     | n < 0 = show o ++ " >> " ++ show (-n)
@@ -40,17 +42,78 @@ value :: Int -> String -> Value (String,Int)
 value sz nm =
   let wsz = (sz `roundedUpMod` 256) `div` 256
   in (sz,[(nm,i) | i <- [1..wsz]])
-data Info = Bit | Byte | Word
-  deriving (Eq,Ord,Read,Show)
-info2Sz :: Info -> Int
-info2Sz = \case
-  Bit -> 1
-  Byte -> 8
-  Word -> 256
-n `roundedUpMod` m = m * ((if (n `mod` m) > 1
-                          then 1
-                          else 0) + (n `div` m))
 
+--Now we deduplicate the logic for struct size calculation, creation and
+--access: given a list of fields, compute layout in terms of left-offset and
+--bitsize per field.
+--Bitsize of struct = sz of first field + its offset
+--Creation: insert each word of field at offset, offset + 256, ...
+--Access: ...
+--The logic, including for field access, can go here; just interpret it in IR.
+--Niggle: should 0-size fields trigger alignment? No.
+
+--(struct bitsize,[(bitsize,offset)])
+--Why the first Int? Because the leftmost field is padded too, so when reading
+--the struct from memory you may assume that pad exists.
+type StructLayout = (Int,[(Int,Int)])
+structLayout :: [(Padding,Padding,Int)] -> StructLayout
+structLayout padalszs =
+  let als = map (\(pad,al,sz) -> al) padalszs
+      --Associate each field with alignment of next, or Bit (noop) for
+      --leftmost
+      padalszs' = zipWith (\al (pad,_,sz) -> (pad,al,sz)) (Bit:als) padalszs
+      --Offset after each field: (off + (sz paddedWith pad)) paddedWith al
+  in go padalszs'
+  where go [] = (0,[])
+        go ((pad,al,sz):rest) =
+          let (off,fs) = go rest
+               --Special case: 0-sized fields ignore alignment
+              al' = if sz == 0 then Bit else al
+          in ((off + (sz `padWith` pad)) `padWith` al',
+              (sz,off):fs)
+--The creation logic needn't be handed the list of words; O has a concept of
+--nth word via V.
+--For each field (sz,off) i, split into words and place them at off, off+256..
+createStruct :: StructLayout -> [i] -> [O i]
+createStruct (_,layout) is =
+  let i2o = flip execState M.empty $ zipWithM handleField layout is
+  in reverse $ M.elems i2o
+  where handleField (sz,off) i =
+          let wszs = tagWordsWithSize sz $ splitIntoWords sz i
+          in zipWithM (\off (w,sz) -> placeWord off sz w) [off,off+256..] $
+             reverse wszs
+--The struct builder monad
+--We eliminate the Ord constraint on i by mapping from struct word index to
+--a single O, which we modify by or-ing it with field words.
+--Inv: no nonexistent words of i's (the second word of a uint8, for example).
+--Inv: no empty struct words.
+type SB i = State (Map Int (O i))
+--sz matters because it determines whether a value will spill over into the
+--next word.
+placeWord :: Int -> Int -> O i -> SB i ()
+placeWord off sz w = do
+  --The first struct word to add w to
+  let startW = off `div` 256
+  insertWord startW (w `shift` (off `mod` 256))
+  let endW = (off + sz - 1) `div` 256
+  if endW /= startW
+    then insertWord endW (w `shift` ((off `mod` 256)-256))
+    else return ()
+insertWord :: Int -> O i -> SB i ()
+insertWord i o = modify $ M.alter (Just . (\case Nothing -> o
+                                                 Just o' -> o' :|| o)
+                                  ) i
+splitIntoWords :: Int -> i -> [O i]
+splitIntoWords sz i = [V i n | n <- [1.. (sz `padWith` Word) `div` 256]]
+--Given a list of words containing a value and the bitsize of that value, tag
+--each word with the number of bits of the value it contains.
+tagWordsWithSize :: Int -> [a] -> [(a,Int)]
+tagWordsWithSize 0 [] = []
+tagWordsWithSize sz (w:ws)
+  | sz `mod` 256 > 0 = (w,sz`mod`256): map (\w -> (w,256)) ws
+  | otherwise = map (\w -> (w,256)) (w:ws)
+
+{-
 --Computes the layout of a struct.
 --Arguments: [(padding info,alignment info, field value)]
 --Result: output values of the struct
@@ -145,6 +208,7 @@ addShiftedWord ix elem =
   modify (M.alter (\case Just s -> Just (S.insert elem s)
                          Nothing -> Just (S.singleton elem)
                   ) ix *** id)
+-}
 
 --Proposed syntax:
 --{[align i] [pad i] [fieldNm =] v}

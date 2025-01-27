@@ -41,6 +41,13 @@ data E
 data OS = OSNil E | OSCons E Infix OS
   deriving (Eq, Ord, Show, Read)
 
-data Field = Named Ident E | Anon E
+data Field
+    = AnnotPad PadInfo Field
+    | AnnotAlign PadInfo Field
+    | Named Ident E
+    | Anon E
+  deriving (Eq, Ord, Show, Read)
+
+data PadInfo = Bit | Byte | Word
   deriving (Eq, Ord, Show, Read)
 
