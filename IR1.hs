@@ -478,6 +478,7 @@ patternMatch p t ws =
               twss <- splitTuple ts ws
               sequence_ [patternMatch p t ws
                         | (p,(t,ws)) <- zip ps twss]
+    PDot p field -> error "TODO field pattern matching"
 --The word-level implementation of selecting the nth struct field of a struct
 --(represented as words on the stack).
 --T, [Name] is the struct type and its on-stack repr
@@ -635,6 +636,29 @@ seqE = \case
   --The fields are concatenated, with the field values emitted in reverse
   --order.
   EStruct padnmes -> buildStruct padnmes
+  --In future, I may add new uses of .field beyond struct, such as
+  --n.slice(a,b)
+  --Structs with duplicate field names should arguably be forbidden, but I
+  --don't need to check for them here; do so in kind check (TODO) and
+  --on struct creation.
+  e :. field -> do
+    (t,ws) <- seqE e
+    case t of
+      Struct fields -> do
+        let kvs = do
+              (_,mnm,t) <- fields
+              case mnm of
+                Just nm -> [(nm,t)]
+                _ -> []
+        case lookup field kvs of
+          Just t -> do
+            --Now we need to consider padding; I'll put the logic for field
+            --access in StructBuilder
+            error "TODO .field"
+          Nothing -> throwE $ GenericError $
+          ".field of nonexistent field in struct: " ++ show (e,t,field)
+      _ -> throwE $ GenericError $ ".field of non-struct type: " ++
+        show (e,t,field)
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).

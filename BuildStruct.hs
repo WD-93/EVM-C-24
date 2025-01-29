@@ -82,6 +82,7 @@ createStruct (_,layout) is =
           let wszs = tagWordsWithSize sz $ splitIntoWords sz i
           in zipWithM (\off (w,sz) -> placeWord off sz w) [off,off+256..] $
              reverse wszs
+             
 --The struct builder monad
 --We eliminate the Ord constraint on i by mapping from struct word index to
 --a single O, which we modify by or-ing it with field words.

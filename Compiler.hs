@@ -320,6 +320,7 @@ desugarP = do
     P.EmptyStruct -> return $ PStruct []
     P.EStruct fields -> PStruct <$> mapM desugarFieldP fields
     P.Wild -> return PWild
+    P.Dot p (Ident field) -> PDot <$> r p <*> return field 
     e -> throwE $ BadEInPat e
 
 --DTs.S currently has no concept of standalone do blocks...
@@ -357,7 +358,7 @@ desugarE = do
     P.App f x -> (:$) <$> r f <*> r x
     P.Var (Ident x) -> return $ Var x
     P.Con (UIdent x) -> return $ Var x --a name's a name to the IR
-    P.Dot e (Ident f) -> error "TODO support dot in DTs.E"
+    P.Dot e (Ident f) -> (:.) <$> r e <*> return f
     P.Int n -> return $ EInteger n
     P.EmptyTup -> return $ EStruct []
     P.Tup e es -> tupleE <$> ((:) <$> r e <*> mapM r es)

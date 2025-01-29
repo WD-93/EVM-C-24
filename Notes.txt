@@ -217,6 +217,14 @@ TODO: treat global or *ptr .field* specially; ditto for assignment.
 e.slice(off,len) needn't be a new primitive; just implement in terms of struct coercion.
 
 Next: .field* and .field* = e
+First: get, then set.
+Also: softCoerce of structs to allow me to use them in assignment and returns.
+structDest <= structSource =>
+ for field in dest,
+  if it's named f and source has a field named f, dest.f = source.f (softCoerce)
+  otherwise copy the field at the same index; require it's nameless.
+  {a,b,c} = {x,y} => a = 0 --work from the back
+Disallow duplicate names in structs.
 
 ****
 

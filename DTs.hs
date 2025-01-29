@@ -19,6 +19,7 @@ data E = EInteger Integer
        | E :$ E
        --The second Padding is alignment
        | EStruct [Field E]
+       | E :. Name --struct field access
        --tuples are sugar for structs
        -- | Coerce T E
   deriving (Eq,Ord,Read,Show)
@@ -109,6 +110,7 @@ data Pat = PWild
          | PStruct [(Maybe Name, Pat)]
          | PTup [Pat] --rhs must have exactly that many fields and it
          --must be a tuple (word-padded with default names)
+         | PDot Pat Name
   deriving (Eq,Ord,Read,Show)
 data D = Defun Name T Pat Block
   deriving (Eq,Ord,Read,Show)
