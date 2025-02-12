@@ -77,6 +77,7 @@ primTyCons = S.fromList $
   "Int Ptr -> " --the primitive types
 primTySyns :: Map Name ([Name],T)
 primTySyns = M.fromList [
+  "Byte" =: UInt 8,
   "Char" =: UInt 8,
   "Short" =: UInt 16,
   "Size_T" =: UInt 16,
@@ -123,6 +124,16 @@ data Module = Module {
   tysyns :: Map Name ([Name],T)
   }
   deriving (Eq,Ord,Read,Show)
+
+--Putting this utility function here to make it widely available.
+--TODO update pkgs...
+(!?) :: [a] -> Int -> Maybe a
+xs !? n | n < 0 = Nothing
+        | let = go xs n
+                where go [] _ = Nothing
+                      go (x:xs) n
+                        | n == 0 = Just x
+                        | let = go xs (n-1)
 
 {-
 --Type checking

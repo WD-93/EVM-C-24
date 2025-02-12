@@ -635,13 +635,27 @@ seqE = \case
       _ -> throwE $ ApplicationToNonFunction f tf
   --The fields are concatenated, with the field values emitted in reverse
   --order.
-  EStruct padnmes -> buildStruct padnmes
+  EStruct padnmes -> do
+    padnmtws <- mapM (\((pad,al),mnm,e) -> do
+                         (t,ws) <- seqE e
+                         return ((pad,al),mnm,t,ws)) padnmes
+    buildStruct padnmtws
   --In future, I may add new uses of .field beyond struct, such as
   --n.slice(a,b)
   --Structs with duplicate field names should arguably be forbidden, but I
   --don't need to check for them here; do so in kind check (TODO) and
   --on struct creation.
   e :. field -> do
+    --First I unroll all the nested accesses
+    let (struct,nmixs) = unroll (e :. field)
+        --TODO add E :# Int
+        unroll (e :. field) =
+          let (e',nmixs) = unroll e
+          in (e',Left field : nmixs)
+        unroll e = (e,[])
+    (structT,structWs) <- seqE struct
+    getStructFields structT structWs nmixs
+    {-
     (t,ws) <- seqE e
     case t of
       Struct fields -> do
@@ -656,9 +670,10 @@ seqE = \case
             --access in StructBuilder
             error "TODO .field"
           Nothing -> throwE $ GenericError $
-          ".field of nonexistent field in struct: " ++ show (e,t,field)
+            ".field of nonexistent field in struct: " ++ show (e,t,field)
       _ -> throwE $ GenericError $ ".field of non-struct type: " ++
         show (e,t,field)
+-}
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
@@ -783,7 +798,7 @@ assign x ws = do
 {-Struct coercion scheme:
 for nth field = name, t in target:
  if source has .name : t', result.name = source.name; break
- if source has nth field = __fieldN : t', result.name = source.__fieldN; break
+ if source has nth anon field : t', result.name = source<n>; break
  else result.name = all zeroes --constant sharing could be useful here
 
 Note result.field = source.field also involves soft coercion
@@ -802,6 +817,9 @@ softCoerce target source ws
           | len1 > len2, s1 == "Signed" ->
             runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
           | let -> runEDSLWord $ coerce (W 1 target) (EVar w)
+  --Adding general tuple coercion
+  --Goal: {2,3} can be coerced to {foo: Word, bar: Word}
+  --{bar: 1, foo: 1} can be coerced to ditto by swapping field order.
   --For now, no general struct coercion, only tuple -> tuple
   | Just ts1 <- unTupleT target, Just ts2 <- unTupleT source =
     softCoerceTuple ts1 ts2 ws
@@ -865,15 +883,292 @@ nullValue t = do
   map fst <$> runEDSL (do
     z <- word 0
     sequence [coerce (W i t) (return z) | i <- [1..n]])
-          
+
+--Given a field index, returns the type of the field, bitsize and left offset,
+--and the number of padding bits to left and right.
+--Note that on the right the padding may include left-padding of the first
+--field of the value to the right + the padding of its first field and so on.
+--Why number of bits and not just Booleans indicating there are no non-padding
+--bits in the same word? Because memory is byte-addressed, and so a
+--align byte pad word Byte field that overlaps two words in the stack repr can
+--still be read and written cheaply.
+--The layout may contain 0-size fields; they don't interrupt contiguous
+--padding.
+--Note special case for get/put on stack: if the field is leftmost, there's
+--guaranteed to only be zero bits to the left of it.
+--For memory put/get that's not the case: unless the field is in the last byte
+--of the last word, there may be data to write back.
+--Note that with the new structLayout implementation 0-sized fields may
+--impact layout via alignment.
+fieldInfo :: Int -> [Field T] -> Seq (T,Int,Int,Int,Int)
+fieldInfo ix fields
+  | ix < 0 = throwE $ GenericError $ "Negative ix in fieldInfo: "
+    ++ show (ix,fields)
+  | otherwise = do
+      let len = length fields
+      if ix >= len
+        then throwE $ GenericError $ "Too great ix in fieldInfo: " ++
+             show (ix,fields)
+        else return ()
+      --Get type, sz, off of each field
+      padalszs <- mapM (\((pad,al),_,t) -> do
+                          sz <- numBitsT t
+                          return (pad,al,sz)) fields
+      let (structSz,szoffs) = B.structLayout padalszs
+          types = map (\(_,_,t) -> t) fields
+          (revPre,(tyField,(szField,offField)),post) =
+            preElemPost ix $ zip types szoffs
+      --The relevant left-padding is the difference between offset of the
+      --first non-0-size field to the left and the end of the field.
+      --(Or the sz of the entire struct if there is none)
+      --Q: Does the field value's own left-padding matter? No.
+      let nzRevPre = filter (\(sz,_) -> sz > 0) revPre
+          leftPad = (case nzRevPre of
+                      [] -> structSz
+                      (_,(_,offLeft)):_ -> offLeft) - (offField + szField)
+      --The right-padding is similar, but also includes the right-padding
+      --of the first nonzero field to the right. 
+      let nzPost = filter (\(_,(sz,_)) -> sz > 0) post
+      rightPad <- case nzPost of
+                    [] -> return 0
+                    (tyRight,(szRight,offRight)):_ -> do
+                      lpr <- leftPadding tyRight
+                      return $ offField - (offRight + szRight - lpr)
+      return (tyField,szField,offField,leftPad,rightPad)
+      where
+        --Deja vu...
+        --Returns reversed prefix, the elem indexed, and the suffix
+        --Note we already know n is in range
+        preElemPost n = go [] n
+        go rpre n (x:xs)
+          | n == 0 = (rpre,x,xs)
+          | let = go (x:rpre) (n-1) xs
+
+--Given a nested field .field*, return its type,sz,off,leftPad,rightPad
+--leftPad and rightPad may include padding from all enclosing structs.
+--Left-padding includes the enclosing struct iff sz + off + lp == the sz
+--of the struct itself.
+--Right-padding is that of the enclosing struct iff off == 0.
+fieldsInfo :: [Int] -> T -> Seq (T,Int,Int,Int,Int)
+fieldsInfo [] t = throwE $ GenericError $ "fieldsInfo for empty .field*, " ++
+                  "struct type = " ++ show t
+fieldsInfo [ix] (Struct fields) = fieldInfo ix fields
+fieldsInfo (ix:ixs) (Struct fields) = do
+  --Fetch enclosed struct
+  (tE,szE,offE,lpE,rpE) <- fieldInfo ix fields
+  --Ultimate type, its size, offset in the enclosed struct, left and right
+  --padding in that struct
+  (tF,szF,offF,lpF,rpF) <- fieldsInfo ixs tE
+  --If its left-padding reaches all the way to the enclosed struct boundary,
+  --left-padding from the enclosing struct is included.
+  szEnclosed <- numBitsT tE
+  let lpFull = if offF + szF + lpF == szEnclosed
+               then lpF + lpE
+               else lpF
+  --If the field starts at 0, right-padding from the enclosing struct is
+  --used. Note that can only occur several times if the right-padding is 0.
+  let rpFull = if offF == 0
+               then rpE
+               else rpF
+  --We return the offset in the stack of enclosing structs
+  return (tF,szF,offF + offE,lpFull,rpFull)
+fieldsInfo ixs t = throwE $ GenericError $
+                   "fieldsInfo on non-indexable type: " ++ show (ixs,t)
+
+--Converts .field#n.field2... to #n1#n2#n3... for a given struct type.
+--This repeated traversal could perhaps be merged with fieldsInfo, but that
+--would make the code more complex.
+--Throws an error if 
+indicesAndNamesToIndices :: [Either Name Int] -> T -> Seq [Int]
+indicesAndNamesToIndices eis t = go eis t
+  where go [] _ = return []
+        go (ei:eis) t =
+          case t of
+            Struct fields ->
+              case ei of
+                Left nm -> do
+                  --Look up the index of the name; throwE if not present
+                  let nmts = map (\(_,mnm,t) -> (mnm,t)) fields
+                      nmtix = filter (\(_,(mnm,t)) -> mnm == Just nm) $
+                              zip [0..] nmts
+                  case nmtix of
+                    (ix,(_,tField)):_ -> (ix:) <$> go eis tField
+                    [] -> throwE $ GenericError $
+                          "Name not present in struct: " ++ show (nm,fields)
+                Right ix
+                  | ix >= 0, ix < length fields ->
+                    let (_,_,t) = fields !! ix
+                    in (ix:) <$> go eis t
+                  | let -> throwE $ GenericError $
+                           "Index out of bounds in IANTI: " ++ show (ix,fields)
+            _ -> throwE $ GenericError $
+                 "Attempted to index non-struct type in IANTI: " ++ show (ei,t)
+
+fieldsToSlice :: [Field T] -> [Either Name Int] -> Seq (T,(Int,Int))
+fieldsToSlice = go 0
+  where go offAccum fields (ix:ixs) = undefined
+        name2ix nm fields =
+          undefined
+
 {-
---TODO update pkgs...
-(!?) :: [a] -> Int -> Maybe a
-[] !?  _ = Nothing
-(x:xs) !? n
-  | n == 0 = Just x
-  | let = xs !? n
+--(bit size, left offset) ws => slice of ws
+--Starting word from the left: off `div` 256
+--Num words: sz rounded up mod 256 div 256
+--Right shift: off `mod` 256
+--Whether there are bits to the left you need to mask out is Boolean; you need
+--only look at whether another field of nonzero size starts before the next
+--word boundary.
+getSlice :: Bool -> (Int,Int) -> [Name] -> Seq [Name]
+getSlice _ (0,_) [] = return []
+getSlice bitsToleft (sz,off) ws = do
+  let rws = reverse ws
+      startIx = off `div` 256
+      numWords = (sz `roundedUpMod` 256) `div` 256
+      rightShift = off `mod` 256
+      --Now we select only the relevant words: those containing the slice
+      relWs = take numWords $ drop startIx ws
+  --The relevant words must all be right-shifted; if the shift is zero that's
+  --a noop
+  shiftedWs <- reverse <$> (if rightShift == 0
+                            then return ws
+                            else mapM (\w -> runEDSL $
+                                      word (fromIntegral rightShift) `shr`
+                                      EVar w) relWs)
+  undefined
 -}
+--The full padding of a struct field is the field's padding, plus the
+--full padding of the leftmost field of its value if it has one.
+--Only structs and newtypes may have leftmost field padding; there is no
+--support for datatypes right now so only structs.
+--Note left-padding is the difference between the type's bitsize and the
+--first index from the right which is guaranteed to be zero; a Byte's repr
+--on the stack has 248 bits guaranteed to be zero (modulo unsafe coerce),
+--but no padding.
+leftPadding :: T -> Seq Int
+leftPadding = \case
+  Struct fields -> do
+    padszs <- mapM (\(pad,al,t) -> do
+                       sz <- numBitsT t
+                       return (pad,al,sz))  $
+              map (\((pad,al),_,t) -> (pad,al,t)) fields
+    let (szTotal,szoffs) = B.structLayout padszs
+    case fields of
+      [] -> return 0
+      (_,_,t):fields' -> do
+        let (szLeft,offLeft):_ = szoffs
+        padValue <- leftPadding t
+        return $ padValue + szTotal - (offLeft + szLeft)
+  _ -> return 0
+--Given a struct value (T,[Name]) and (.field | #n)*, get the value.
+--This generates code for indexing a struct on the stack.
+getStructFields :: T -> [Name] -> [Either Name Int] -> Seq (T,[Name])
+getStructFields t ws fieldIxs = do
+  ixs <- indicesAndNamesToIndices fieldIxs t
+  --Return type, its size, offset in the struct, left and right-padding
+  --We don't need right-padding, so we ignore it.
+  (tRes,szRes,offRes,lpRes,_) <- fieldsInfo ixs t
+  if szRes == 0
+    --Get on an empty field is a noop
+    then return (tRes,[])
+    else do
+    --How much we must right-shift the field's value when reconstructing it
+    let rightShift = offRes `mod` 256
+        --The index from the right of the rightmost relevant word
+        ixR = offRes `div` 256
+        --Ditto for leftmost
+        ixL = (offRes + szRes) `div` 256
+        --The words containing the field
+        relWs = take (ixL-ixR+1) $ drop ixR $ reverse ws
+        --We can't determine whether we must mask garbage just from whether
+        --it's in the same word; it may be left-shifted out.
+    valueRes <- reconstructField lpRes szRes rightShift relWs
+    return (tRes,valueRes)
+
+--Given left-padding, right shift and words in reverse order containing a field
+--to be shifted out and glued back together, does so.
+--Precondition: ws is nonempty.
+--The first word is to be right-shifted by the original amount... if it's
+--not the only one, the next index to
+--The field size matters, because it determines whether the leftmost word will
+--spill over into a new word when right-shifted.
+--Field bits of the rightmost word = 256 - rightShift `min` sz
+--Of intermediate words: 256
+--Of the leftmost: the remainder.
+--Complication: the exact value of left-padding matters, because the content
+--of the leftmost word may be left-shifted. Ex: there's a byte of left-padding
+--and the content is placed in the last byte of the leftmost result word.
+--Then you don't need to do any masking!
+reconstructField :: Int -> Int -> Int -> [Name] -> Seq [Name]
+reconstructField leftPadding sz rightShift ws = do
+  unmaskedWs <- reconstructWithoutMasking sz rightShift ws
+  --Now we have the value, potentially corrupted with nonzero bits to the left
+  --in the leftmost word.
+  --Padding starts at bit sz and the first possible corrupt bit at
+  --sz+leftPadding.
+  --If that's not within the same word, we're good; otherwise we need to mask.
+  let corruptIx = (sz + leftPadding) `div` 256
+      leftmostIx = sz `div` 256
+  if corruptIx > leftmostIx
+    --We're good
+    then return unmaskedWs
+    --We need to mask
+    else let leftmostSz = sz `mod` 256
+         in case unmaskedWs of
+              [] -> return [] --hmm... should this ever happen?
+              w:ws -> do
+                (maskedW,_) <- runEDSL $ mask leftmostSz $ EVar w
+                return (maskedW:ws)
+--Given size of field, left offset in the relevant words and the words in
+--reverse order, returns the field value without any garbage to its left
+--masked out.
+{-
+Algo: copy sz bits from inptr = rsh to outptr = 0
+Both source and dest are divided into words: the maximum that can be copied in
+one step is min (256 - inptr % 256) (256 - outptr % 256)
+while inptr < sz:
+ inix = inptr div 256
+ inoff = inptr mod 256
+ outix = outptr div 256
+ outoff = outptr mod 256
+ out[outix] |= in[inix] << (outoff - inoff)
+ copied = min (256 - inoff) (256 - outoff)
+ inptr += copied
+ outptr += copied
+-}
+--The state can be a map Int -> Expr;
+--Nothing |= e => replace with e
+reconstructWithoutMasking :: Int -> Int -> [Name] -> Seq [Name]
+reconstructWithoutMasking sz rsh ws =
+  let ix2e = go rsh 0 M.empty $ map EVar ws
+  in map fst <$> (runEDSL $ sequence $ reverse $ M.elems ix2e)
+  where go inptr outptr out inws
+          | inptr > sz = out
+          | let = let inix = inptr `div` 256
+                      inoff = inptr `mod` 256
+                      outix = outptr `div` 256
+                      outoff = outptr `mod` 256
+                      out' = (outix |= shift (outoff - inoff) (inws !! inix))
+                             out
+                      copied = min (256-inoff) (256-outoff)
+                  in go (inptr+copied) (outptr+copied) out' inws
+        (|=) outix e out =
+          M.insert outix (case M.lookup outix out of
+                            Nothing -> e
+                            Just e' -> e .| e') out
+--Gets struct<n1><n2>..., also used to implement struct.field
+--The result field's offset is the sum of the offsets of <n1><n2>...
+--Problem: the true padding to right and left depends on the stack of
+--enclosing structs.
+--That applies to the left or rightmost nonzero field.
+--But you can easily find out if the nested field's padding is contiguous
+--with the other padding 
+getStructIndices :: [Field T] -> [Name] -> [Int] -> Seq (T,[Name])
+getStructIndices fs ws indices = error "TODO"
+--Generates code for struct.field* = value, where struct is a C local.
+-- *ptr.field* = e requires separate treatment; that's what global, *ptr and
+-- arr[ix] turns into.
+setStructLocal :: Name -> T -> [Name] -> Seq ()
+setStructLocal = error "TODO"
                              
 --The type of the struct is given by the padding, names and types of elements.
 --Each word of the struct is the concatenation of slices of fields; the
@@ -884,12 +1179,10 @@ nullValue t = do
 --apply its buildStruct function and interpret it.
 --Default alignment: bit. TODO add alignment pragmas to struct types and
 --exprs.
-buildStruct :: [((Padding,Padding),Maybe Name,E)] -> Seq (T,[Name])
-buildStruct padmnmes = do
-  --First we get the types and words
-  padmnmtws <- mapM (\(pad,mnm,e) -> do
-                       (t,ws) <- seqE e
-                       return (pad,mnm,t,ws)) padmnmes
+--Generalization: operate on words instead of Es so it can be used in
+--softCoerce etc
+buildStruct :: [((Padding,Padding),Maybe Name,T,[Name])] -> Seq (T,[Name])
+buildStruct padmnmtws = do
   --Computing the return type:
   let padmnmts = map (\(pad,mnm,t,_) -> (pad,mnm,t)) padmnmtws
       structType = Struct padmnmts
@@ -1090,6 +1383,17 @@ shl = op2 "shl"
 shr = op2 "shr"
 (&) = op2 "and"
 (.|) = op2 "or"
+--Utility function: shift n shifts an EVar n bits left (or right if n is
+--negative)
+--If n > 256 or < -256, returns 0
+--If n == 0, returns the value unchanged
+shift :: Int -> Expr -> Expr
+shift n e
+  | n > 256 || n < -256 = word 0
+  | n > 0 = shl (word $ fromIntegral n) e
+  | n == 0 = e
+  | n < 0 = shr (word $ fromIntegral $ negate n) e
+
 op1 :: String -> Expr -> Expr
 op1 opcode a = do
   [v] <- App (Opcode opcode) (\case [W{}] -> Just [tword]

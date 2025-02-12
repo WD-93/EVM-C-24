@@ -10,7 +10,7 @@ import Data.Maybe (fromMaybe)
 import Control.Monad.Reader
 import Control.Arrow ((***))
 
-import DTs (Name(..))
+import DTs (Name(..),(!?))
 import IR1
 
 --To pretty-print CFGs in Pretty.hs I need to present them in a logical order;
@@ -133,9 +133,11 @@ annIRWithLive loopLs end =
           Just (start,end) -> (Continue start ix, start)
           Nothing -> error $ "Continue index OOB: " ++ show (ix,loopLs)
 
+{-
 (x:xs) !? 0 = Just x
 (x:xs) !? n | n > 0 = xs !? (n - 1)
 _ !? _ = Nothing
+-}
 --It's a foldr so we're accumulating from the back
 annIRsWithLive loopLs end irs =
   go end irs

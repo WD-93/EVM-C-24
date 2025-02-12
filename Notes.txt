@@ -217,6 +217,7 @@ TODO: treat global or *ptr .field* specially; ditto for assignment.
 e.slice(off,len) needn't be a new primitive; just implement in terms of struct coercion.
 
 Next: .field* and .field* = e
+.field* is optimized for free, as is svar.field*! ptr->field* is not, however.
 First: get, then set.
 Also: softCoerce of structs to allow me to use them in assignment and returns.
 structDest <= structSource =>
@@ -225,6 +226,232 @@ structDest <= structSource =>
   otherwise copy the field at the same index; require it's nameless.
   {a,b,c} = {x,y} => a = 0 --work from the back
 Disallow duplicate names in structs.
+
+Also need struct<n>, which gets the nth field.
+TODO: make assignment a proper expr, return the updated value (that has no runtime impact unless you use it).
+Opt: recognize b = a.field1, c = b.field2 as c = a.field1.field2. That could be done via symbolic evaluation
+at the IR level, if you comprehend slice/mask and shift.
+w.slice(15,31) should also perform shifting.
+
+BuildStruct's field offset calculator requires only a single type (and type->size info); it can compute the
+rest. Alt: put the logic in IR, where type size calculation belongs. Type size querying should be pure, so
+I can just wrap the SeqR and S in a function :: T -> Int.
+
+Idea: out = op=(mask,template,field) as an IR op.
+Mload needs a mem parameter, but it should not update it, allowing it to be discarded if the
+result is not used.
+Mstore returns a $mem parameter which causes it to be included unless you do something that
+discards $mem (nothing supported yet, but perhaps invalid or revert(const) in future.
+
+Struct opt: += of the highest field requires only masking, and if it's at the top of a word not
+even that.
+Symbolic opt: subword slices, ++.
+Second design: formalize constraints on code, expose choices.
+
+FW: pass compiler flags, allow static and dynamic import.
+Constructor args are akin to a dynamic import.
+What is a DI? Just a blob you link into... but resolution could also be done at runtime.
+Code upload cost ~16 per, ext/codecopy will soon be about that much... so on-chain libraries are unlikely to
+be worth it long term unless they're CALLed? But short-term value is enough... anything could change.
+Also, 16 per byte is 512 per word, whereas current marginal load cost is only 3.
+TODO: functions for typed CALLs, in-memory ABI objects for calldata, C value <-> ABI conversion.
+The clobbering of returndata is justification for exposing CALLs and returndata, rather than hiding it as sol
+does. Also, sharing callata between calls.
+Dynamic linking is still useful for: on-chain factories which can create contracts without hints, sharing
+code between creations (e.g. if deploying multiple contracts that share lib funs).
+Libs used to assist contract creation could include short snippets, e.g. functions or common combinations of
+instructions. Compile down workload to TCI actions based on available data on chain.
+C: types could represent dynamic module interfaces, letting you write the linking in readable C.
+mptr.externalFun = ... functions in in-memory modules could also be typed.
+It might be better to just generate the linking code in Haskell from modules with interface descriptions.
+
+HOFs such as map could reduce code size, but each static function param adds 3 bytes per call site and each
+call costs ~ 24 gas (2x push, jump, jumpdest).
+Decompression via linkable code snippets could be used for a single module.
+What are the static and dynamic (in-bytecode) features of a module?
+Static:
+ type synonyms, data formats, name => type, def and location (function ptr, immutable, static constants,
+ globals, arrays)
+Dynamic:
+ placed functions
+ code arrays and ptrs
+ JTs
+ immutable/extern values
+JT pointers could be a type akin to function pointers...
+
+Recall: f(g(x)) can be optimized to jump from g to f directly, avoiding the intermediate jump back to the
+caller function body. That requires $ret be BOS.
+Downside: identity functions become slightly more expensive (~3 per argument word), but most of the code
+won't be ids anyway... Downside 2: more swapping, since x is computed first and ret must then be swapped to
+the bottom. If push ret is split out from call, DFS-R2L should handle that.
+Scheme:
+push bodyRet
+push f
+x
+jump g
+That applies to exprs of the form f $ g $ h $ ... e. Problem: IR has no concept of the stack... maybe need
+a call series op instead of just call. It can be implemented with the existing call op: 
+call $mem,g,xVars,f,bodyRet.
+Issue: if the return value is ~4 words, it's no longer worth it. No matter, that'll rarely be the case.
+But to create bodyRet with a separate op requires I place a label in the IR. To keep return labels
+SLC-local, eval e (which may contain control flow such as (a && b)) first.
+IR is not aware of SLC division; var allocation can be used to give ret labels UIDs.
+Note: if the return value must be softCoerced then you can't apply this opt.
+Can the opt be applied at the SLC level?
+Pattern:
+$mem, args = call $mem,g,x,ret1
+ret1:
+$mem, res = call $mem,f,args,ret2)
+ret2:
+--Where all (SSA) vars in $mem,args have only one use, the subsequent call.
+Becomes $mem, res = call $mem,g,x,f,ret2; ret2:
+Note another opt: if ret2 occurs immediately before a jump continuation, you could give that as the
+return address instead. That requires a "label n (of function f)" in StaticValue.
+Then the branch should be replaced with a call and fallthrough becomes impossible. The SLC will still have an
+edge to the next SLC.
+Is it ever cheaper to compute the dest address of an ifte (cond*diff + el) to pass it as a return address?
+If the else branch doesn't fall through, perhaps - an ifte costs ~17.5 without fallthrough and computing
+costs 17.
+When may the calls be moved next to each other? When there are no intermediate dependencies on the output
+of g(x). That means count = 1, so DFS-R2L should handle that.
+When last op order is flexible and you don't fall through, placing a call last could be preferable.
+
+Handling mloads which may be prunable: first tree shake, then add an artificial dependence from the next
+mem modification to the read. That can be done without introducing new vars (tricky after SSA).
+General algo: designate IR types such as Mem (and in future storage, perhaps subsets) as exclusive; all
+reads of one must then be completed before another var of the same type is created (part of an LHS).
+Intuition: unlike stack vars, there can only be one at a time in the runtime repr.
+Generalization to subsets: param Mem type by subset of memory contained; add ops to split and merge mems.
+Those ops influence ordering but don't have an opcode payload or stack requirements.
+Problem: subsets may include constants, globals and dynamic values.
+Obvious use: for a multi-word pointer write, p and p+32 are distinct and so writes to them can be in any
+order.
+For now, just modify $mem on every access (read or write) and don't apply the f(g(x)) optimization.
+
+Opt idea for smart metatxns: incentivized ifte, batcher makes a prediction about future oracle state and
+txn principal or watchdog can appeal.
+
+Recall: message-passing compute accelerators using coroutines to allow deferred CALL for sends and blocking
+receive. Perhaps not worth it with 100-gas marginal calls...
+Idea: cheap mass move instructions to amortize dispatch. MCOPY could make array copies cheap at least.
+
+If Merkles had their own access control you could cheaply freeze and unfreeze objects in-place.
+Problems: linking persistent UIDs to pointers, invalidating pointers when you flush a Merkle, limiting access
+to in-Merkle objects.
+Reclaiming memory after a Merkle is flushed.
+Thought: immutable-only Merkles are themselves pure objects, could be freely copied to place e.g. relevant
+closure code in multiple locations.
+Recall: closure type could guarantee at least n words on coroutine stack, eliminating dynamic checks.
+
+How to design modules?
+Note: f args := body ~ f := \args -> body --defines a constant, lambda is added to text via scan
+
+Immediate:
+Fully support structs in locals: .field*, .field* =
+Roadmap:
+Memory pointers, then other regions
+Coercion (and tysyn support in in-expr types)
+Kind check; give datatypes explicit monomorphic kind signatures if not the Type* -> Type default
+Support for struct access via ptrs
+Globals, global arrays
+Assignment => expression
+Strings, static constants
+JTs?
+data, case, closures
+Inline assembly
+f(g(x)) opt, various intermediate jump elim opts?
+A module system - perhaps a monad with "load module" action.
+
+Test application: a high-perf interpreter
+
+Long-term: rewrite with choices exposed for modular opts
+
+Kind check: every tycon except -> is monomorphic. Tyvars are also monomorphic.
+Type :: Type. What is the kind of Region? Perhaps add Kind, or disallow kinds in type arguments.
+data check: require every con takes an argument :: Type.
+tysyn kind checking: default kind signature Type* -> ..., otherwise add a signature.
+Function arguments and coercion lhs must also be :: Type.
+
+datatype layout: {tag: align byte Byte, <union>}. First tag scheme: sequential from 0.
+One-constructor types instead may have an identical repr to their argument.
+case (ws) => dup byte k, jump into JT: jump (jt + tag << k).
+In case Con t, copy the content and mask out the tag.
+The pad mask of a type may be complex due to nested structs (or data).
+For field += n where there's padding to the left of the field, you just need to shift n to the right location
+and mask that padding.
+
+pointer case: jump into appropriate cont, p+1 points to content. That lets you set head and tail.
+case *xs of
+ Cons (*h,*t) -> ... --How to diff "set *h to the head" and "set h to head's address"?
+case on types with many constructors could lead to large JTs... if you only use a subset of the constructors,
+binary search via iftes could be preferable.
+Binding vars to point into structs doesn't work for structs on the stack.
+
+Note padding is also relevant during pointer writes: ptr :: {pad word f: Byte}, *ptr.f = 3 requires no copy
+and writeback. Byte-pad values in memory, since they must be byte-aligned anyway.
+Are the masks in the field value relevant to field put and get?
+What should the syntax for nth field be? Not [n] or <n>. nth(struct,n) or field n struct. struct # n...
+[n] will create the same syntactic complication, so it's no loss
+
+Struct get logic: identify words in which struct is contained, mask out any other fields to the left,
+right-shift and reassemble.
+Special case: if the field is of size <=8 and occupies its own byte, use BYTE instead.
+Can mstore8 in scratch be cheaper than on-stack manipulation?
+mstore k, mstore8 k v, mload k --21
+& mask | v << k --18... if you ignore the cost of mask
+Worst-case mask cost: not(0xff << k) --12
+Compiler flags: scratch bytes available, exe compilation/fixed global layout. With fixed globals, their
+addresses can be resolved to constants rather than labels, allowing optimization before bytecode gen.
+With no permanent scratch, the sha3(ptr) primop must alloc. However, if a function uses a ptr it alloc'd
+that then goes out of scope without being saved, it can be used as scratch repeatedly.
+global memory v : t --is ~sugar for an array of size 1, except the pointer is &v, not v.
+Scratch n => array memory __scratch n : Byte, assume scratch contains arbitrary data between SLCs.
+Whenever a region will be overwritten before it's read again, it can be used as scratch.
+p = allocScratch(sz)
+Ideally the most frequently accessed global would be at 0.
+Struct put: left-shift and reassemble; or with old leftmost and rightmost. Ignore padding for now.
+Field value padding is relevant for get and put: consider a {pad word Byte} which overlaps two words w1,w2
+but the byte is entirely in w2. Get need not reassemble from w1, and put need not modify w1.
+Field info: actually relevant words (potentially containing 1-bits from the value), leftshift, whether
+there are potential 1-bits to the left or right. There is no right-padding; internal padding matters only for
+the field to the right. Greatest possible padding: 255b from align word, then 255 from pad word.
+Ex: {align word Byte, align bit {pad word Bit}, pad bit Bit}
+That's a mistake... there's no reason to word-pad unless you're on a byte boundary. I'll just leave that to
+the programmer...
+The worst-case scenario for put and get is the field is in a single word with nonzero bits to the left and
+right.
+When do you need to include left? When the field is not the first and the next field starts in the same word.
+Ditto right? When nonzero area of the last field ends in the same word.
+The left-padding of a type is easiest to get by computing a full pad mask.
+Full-word mask M: 0-1. No, better: ~0 (PUSH0 NOT, 6 gas 2 bytes). shr k is an additional 3 bytes; for
+4 bytes or less a single push is preferable.
+Zero above: & M >> k --12 for arbitrary mask n
+Zero below: & M << k
+Zero in a range: & ~(M << k1 >> k2)
+Constant sharing and reuse are essential if you're doing a lot of struct modification.
+Sharing constants across SLCs could reduce cost. Note: if there's padding you need only use an approximate
+mask (which you might get for free).
+Alt to &: >>k1 <<k2. Cost: 12 gas, 6 bytes.
+Simple constant sharing opt: if constant k is on the stack and you're placing a push k, replace with a DUP.
+Constant propagation: if an op would produce a small constant, replace with a push. That's esp useful for
+constant pointer access.
+The code size vs exec cost tradeoff depends on exec intensity...
+Intensity += and intensity = annot statements, branch p/iter count statements could be translated down to
+annots of SLCs and branches.
+
+TODO opt: fields' put and get ~a lens. Put and get of contiguous fields ~also a lens, where what you put/get
+is a struct.
+
+return f(g(x)) can be optimized to a single tail call: tailcall $mem,g,x,f,$ret
+
+Memory repr: byte-pad values, then store the top byte at the address pointed to by ptr. That means when you
+load/store a uint16, you must shift it 240 bits.
+
+Perhaps I should implement union before data, since that's the most elegant way to implement data...
+But union can't implement recursive datatypes by itself.
+
+Next commit notes:
+Simplified and fixed structLayout.
 
 ****
 
