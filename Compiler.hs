@@ -157,6 +157,7 @@ data DError = TySigDefunMismatch Name Name
             | DuplicateDeclsForName Name
             | DuplicatePads Padding P.Field
             | DuplicateAligns Padding P.Field
+            | CoerceMixedWithOps [Name]
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -320,7 +321,8 @@ desugarP = do
     P.EmptyStruct -> return $ PStruct []
     P.EStruct fields -> PStruct <$> mapM desugarFieldP fields
     P.Wild -> return PWild
-    P.Dot p (Ident field) -> PDot <$> r p <*> return field 
+    P.Dot p (Ident field) -> PDot <$> r p <*> return field
+    P.Hash p n -> PHash <$> r p <*> return (fromInteger n)
     e -> throwE $ BadEInPat e
 
 --DTs.S currently has no concept of standalone do blocks...
@@ -349,6 +351,15 @@ desugarE = do
     --rather a C feature imposed on the EVM;
     --side effects not as explicit
     P.Assign l r -> throwE $ AssignIsNotAnE l r
+    --Special handling of e :: t, the coercion operator
+    --No handling of e :: t1 :: t2 for now
+    --(::) mixed with other operators => parse failure
+    P.Ops e (Infix "::") (OSNil te) ->
+      Coerce <$> desugarT te <*> desugarE e
+    P.Ops _ (Infix op) os
+      | let os2ops (OSNil _) = []
+            os2ops (OSCons _ (Infix op) os) = op:os2ops os,
+        "::" `elem` (op:os2ops os) -> throwE $ CoerceMixedWithOps (op:os2ops os)
     --For now, use constant fixity info. FW: gather and process fixity decls
     --before desugaring Es.
     P.Ops e (Infix op) os -> do
@@ -359,6 +370,7 @@ desugarE = do
     P.Var (Ident x) -> return $ Var x
     P.Con (UIdent x) -> return $ Var x --a name's a name to the IR
     P.Dot e (Ident f) -> (:.) <$> r e <*> return f
+    P.Hash e n -> (:#) <$> r e <*> return (fromInteger n)
     P.Int n -> return $ EInteger n
     P.EmptyTup -> return $ EStruct []
     P.Tup e es -> tupleE <$> ((:) <$> r e <*> mapM r es)

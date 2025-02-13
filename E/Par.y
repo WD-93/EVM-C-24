@@ -27,31 +27,32 @@ import E.ErrM
 %monad { Err } { thenM } { returnM }
 %tokentype {Token}
 %token
-  '(' { PT _ (TS _ 1) }
-  ')' { PT _ (TS _ 2) }
-  ',' { PT _ (TS _ 3) }
-  '.' { PT _ (TS _ 4) }
-  ':' { PT _ (TS _ 5) }
-  ':=' { PT _ (TS _ 6) }
-  ';' { PT _ (TS _ 7) }
-  '=' { PT _ (TS _ 8) }
-  '_' { PT _ (TS _ 9) }
-  'align' { PT _ (TS _ 10) }
-  'bit' { PT _ (TS _ 11) }
-  'byte' { PT _ (TS _ 12) }
-  'do' { PT _ (TS _ 13) }
-  'else' { PT _ (TS _ 14) }
-  'end' { PT _ (TS _ 15) }
-  'if' { PT _ (TS _ 16) }
-  'module' { PT _ (TS _ 17) }
-  'pad' { PT _ (TS _ 18) }
-  'return' { PT _ (TS _ 19) }
-  'then' { PT _ (TS _ 20) }
-  'type' { PT _ (TS _ 21) }
-  'while' { PT _ (TS _ 22) }
-  'word' { PT _ (TS _ 23) }
-  '{' { PT _ (TS _ 24) }
-  '}' { PT _ (TS _ 25) }
+  '#' { PT _ (TS _ 1) }
+  '(' { PT _ (TS _ 2) }
+  ')' { PT _ (TS _ 3) }
+  ',' { PT _ (TS _ 4) }
+  '.' { PT _ (TS _ 5) }
+  ':' { PT _ (TS _ 6) }
+  ':=' { PT _ (TS _ 7) }
+  ';' { PT _ (TS _ 8) }
+  '=' { PT _ (TS _ 9) }
+  '_' { PT _ (TS _ 10) }
+  'align' { PT _ (TS _ 11) }
+  'bit' { PT _ (TS _ 12) }
+  'byte' { PT _ (TS _ 13) }
+  'do' { PT _ (TS _ 14) }
+  'else' { PT _ (TS _ 15) }
+  'end' { PT _ (TS _ 16) }
+  'if' { PT _ (TS _ 17) }
+  'module' { PT _ (TS _ 18) }
+  'pad' { PT _ (TS _ 19) }
+  'return' { PT _ (TS _ 20) }
+  'then' { PT _ (TS _ 21) }
+  'type' { PT _ (TS _ 22) }
+  'while' { PT _ (TS _ 23) }
+  'word' { PT _ (TS _ 24) }
+  '{' { PT _ (TS _ 25) }
+  '}' { PT _ (TS _ 26) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -101,6 +102,7 @@ E3 :: { E }
 E3 : Ident { E.Abs.Var $1 }
    | UIdent { E.Abs.Con $1 }
    | E3 '.' Ident { E.Abs.Dot $1 $3 }
+   | E3 '#' Integer { E.Abs.Hash $1 $3 }
    | Integer { E.Abs.Int $1 }
    | '(' ')' { E.Abs.EmptyTup }
    | '(' E ',' ListE ')' { E.Abs.Tup $2 $4 }

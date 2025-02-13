@@ -46,6 +46,8 @@ transE x = case x of
   Var ident -> failure x
   Con uident -> failure x
   Dot e ident -> failure x
+  Hash e integer -> failure x
+  Coerce e1 e2 -> failure x
   Int integer -> failure x
   EmptyTup -> failure x
   Tup e es -> failure x
@@ -58,6 +60,13 @@ transOS x = case x of
   OSCons e infix_ os -> failure x
 transField :: Field -> Result
 transField x = case x of
+  AnnotPad padinfo field -> failure x
+  AnnotAlign padinfo field -> failure x
   Named ident e -> failure x
   Anon e -> failure x
+transPadInfo :: PadInfo -> Result
+transPadInfo x = case x of
+  Bit -> failure x
+  Byte -> failure x
+  Word -> failure x
 

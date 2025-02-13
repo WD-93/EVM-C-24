@@ -127,6 +127,7 @@ instance Print E where
     Var id -> prPrec i 3 (concatD [prt 0 id])
     Con uident -> prPrec i 3 (concatD [prt 0 uident])
     Dot e_ id -> prPrec i 3 (concatD [prt 3 e_, doc (showString "."), prt 0 id])
+    Hash e_ n -> prPrec i 3 (concatD [prt 3 e_, doc (showString "#"), prt 0 n])
     Int n -> prPrec i 3 (concatD [prt 0 n])
     EmptyTup -> prPrec i 3 (concatD [doc (showString "("), doc (showString ")")])
     Tup e_ es -> prPrec i 3 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])

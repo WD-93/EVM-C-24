@@ -20,8 +20,12 @@ data E = EInteger Integer
        --The second Padding is alignment
        | EStruct [Field E]
        | E :. Name --struct field access
+       | E :# Int --struct field access by index
        --tuples are sugar for structs
-       -- | Coerce T E
+       --Hard coercion: zero-pads or truncates e
+       --Doesn't zero internal padding for now; coercing to a struct
+       --is dangerous.
+       | Coerce T E
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
@@ -112,6 +116,7 @@ data Pat = PWild
          | PTup [Pat] --rhs must have exactly that many fields and it
          --must be a tuple (word-padded with default names)
          | PDot Pat Name
+         | PHash Pat Int
   deriving (Eq,Ord,Read,Show)
 data D = Defun Name T Pat Block
   deriving (Eq,Ord,Read,Show)

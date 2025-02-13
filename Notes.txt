@@ -356,6 +356,8 @@ Fully support structs in locals: .field*, .field* =
  to return it and it got optimized out.
  printAsm "module {main:()->Byte;main _ := return ({baz:3,bar: 5}.bar)}"
   is not properly masking out baz... Fixed.
+ put implemented. Now: Ptr. First coercion, since that's needed to create ptrs from integers.
+ Also struct # Int syntax support. Done; it's now fully supported. Coercion supported as well.
 Roadmap:
 Memory pointers, then other regions
 Coercion (and tysyn support in in-expr types)

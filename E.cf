@@ -39,6 +39,11 @@ App. E2 ::= E2 E3;
 Var. E3 ::= Ident;
 Con. E3 ::= UIdent;
 Dot. E3 ::= E3 "." Ident;
+Hash. E3 ::= E3 "#" Integer;
+--Since (E) E is identical to application, I need non-C syntax for
+--coercion.
+--For now Ill use e :: t, though thats a bit misleading: it doesnt inform
+--any overloading of e since there is none, nor does it fail if e isn't t.
 Int. E3 ::= Integer;
 EmptyTup. E3 ::= "(" ")";
 Tup. E3 ::= "(" E "," [E] ")";

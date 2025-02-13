@@ -22,30 +22,38 @@ import E.ErrM
 %name pListField ListField
 %name pOS OS
 %name pField Field
+%name pPadInfo PadInfo
 -- no lexer declaration
 %monad { Err } { thenM } { returnM }
 %tokentype {Token}
 %token
-  '(' { PT _ (TS _ 1) }
-  ')' { PT _ (TS _ 2) }
-  ',' { PT _ (TS _ 3) }
-  '.' { PT _ (TS _ 4) }
-  ':' { PT _ (TS _ 5) }
-  ':=' { PT _ (TS _ 6) }
-  ';' { PT _ (TS _ 7) }
-  '=' { PT _ (TS _ 8) }
-  '_' { PT _ (TS _ 9) }
-  'do' { PT _ (TS _ 10) }
-  'else' { PT _ (TS _ 11) }
-  'end' { PT _ (TS _ 12) }
-  'if' { PT _ (TS _ 13) }
-  'module' { PT _ (TS _ 14) }
-  'return' { PT _ (TS _ 15) }
-  'then' { PT _ (TS _ 16) }
-  'type' { PT _ (TS _ 17) }
-  'while' { PT _ (TS _ 18) }
-  '{' { PT _ (TS _ 19) }
-  '}' { PT _ (TS _ 20) }
+  '#' { PT _ (TS _ 1) }
+  '(' { PT _ (TS _ 2) }
+  ')' { PT _ (TS _ 3) }
+  ',' { PT _ (TS _ 4) }
+  '.' { PT _ (TS _ 5) }
+  ':' { PT _ (TS _ 6) }
+  ':=' { PT _ (TS _ 7) }
+  ';' { PT _ (TS _ 8) }
+  '=' { PT _ (TS _ 9) }
+  '_' { PT _ (TS _ 10) }
+  'align' { PT _ (TS _ 11) }
+  'bit' { PT _ (TS _ 12) }
+  'byte' { PT _ (TS _ 13) }
+  'coerce' { PT _ (TS _ 14) }
+  'do' { PT _ (TS _ 15) }
+  'else' { PT _ (TS _ 16) }
+  'end' { PT _ (TS _ 17) }
+  'if' { PT _ (TS _ 18) }
+  'module' { PT _ (TS _ 19) }
+  'pad' { PT _ (TS _ 20) }
+  'return' { PT _ (TS _ 21) }
+  'then' { PT _ (TS _ 22) }
+  'type' { PT _ (TS _ 23) }
+  'while' { PT _ (TS _ 24) }
+  'word' { PT _ (TS _ 25) }
+  '{' { PT _ (TS _ 26) }
+  '}' { PT _ (TS _ 27) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -95,6 +103,8 @@ E3 :: { E }
 E3 : Ident { E.Abs.Var $1 }
    | UIdent { E.Abs.Con $1 }
    | E3 '.' Ident { E.Abs.Dot $1 $3 }
+   | E3 '#' Integer { E.Abs.Hash $1 $3 }
+   | 'coerce' '(' E3 ')' E3 { E.Abs.Coerce $3 $5 }
    | Integer { E.Abs.Int $1 }
    | '(' ')' { E.Abs.EmptyTup }
    | '(' E ',' ListE ')' { E.Abs.Tup $2 $4 }
@@ -111,7 +121,14 @@ ListField : Field { (:[]) $1 } | Field ',' ListField { (:) $1 $3 }
 OS :: { OS }
 OS : E2 { E.Abs.OSNil $1 } | E2 Infix OS { E.Abs.OSCons $1 $2 $3 }
 Field :: { Field }
-Field : Ident ':' E { E.Abs.Named $1 $3 } | E { E.Abs.Anon $1 }
+Field : 'pad' PadInfo Field { E.Abs.AnnotPad $2 $3 }
+      | 'align' PadInfo Field { E.Abs.AnnotAlign $2 $3 }
+      | Ident ':' E { E.Abs.Named $1 $3 }
+      | E { E.Abs.Anon $1 }
+PadInfo :: { PadInfo }
+PadInfo : 'bit' { E.Abs.Bit }
+        | 'byte' { E.Abs.Byte }
+        | 'word' { E.Abs.Word }
 {
 
 returnM :: a -> Err a

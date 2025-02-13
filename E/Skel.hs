@@ -46,6 +46,7 @@ transE x = case x of
   Var ident -> failure x
   Con uident -> failure x
   Dot e ident -> failure x
+  Hash e integer -> failure x
   Int integer -> failure x
   EmptyTup -> failure x
   Tup e es -> failure x

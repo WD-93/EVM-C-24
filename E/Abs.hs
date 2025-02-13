@@ -30,6 +30,7 @@ data E
     | Var Ident
     | Con UIdent
     | Dot E Ident
+    | Hash E Integer
     | Int Integer
     | EmptyTup
     | Tup E [E]

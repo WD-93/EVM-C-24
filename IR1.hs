@@ -10,6 +10,7 @@ import Control.Monad.Writer
 import Control.Monad.State
 import Control.Monad.Trans.Except
 import Control.Monad.Fail
+import Control.Arrow ((***))
 
 import DTs
 --The logic for assembling structs from field values, split out into another
@@ -672,36 +673,61 @@ seqE = \case
   --Structs with duplicate field names should arguably be forbidden, but I
   --don't need to check for them here; do so in kind check (TODO) and
   --on struct creation.
-  e :. field -> do
-    --First I unroll all the nested accesses
-    let (struct,rnmixs) = unroll (e :. field)
-        nmixs = reverse rnmixs
-        --TODO add E :# Int
-        unroll (e :. field) =
-          let (e',nmixs) = unroll e
-          in (e',Left field : nmixs)
-        unroll e = (e,[])
-    (structT,structWs) <- seqE struct
-    getStructFields structT structWs nmixs
-    {-
-    (t,ws) <- seqE e
-    case t of
-      Struct fields -> do
-        let kvs = do
-              (_,mnm,t) <- fields
-              case mnm of
-                Just nm -> [(nm,t)]
-                _ -> []
-        case lookup field kvs of
-          Just t -> do
-            --Now we need to consider padding; I'll put the logic for field
-            --access in StructBuilder
-            error "TODO .field"
-          Nothing -> throwE $ GenericError $
-            ".field of nonexistent field in struct: " ++ show (e,t,field)
-      _ -> throwE $ GenericError $ ".field of non-struct type: " ++
-        show (e,t,field)
--}
+  e :. field -> handleIndexing (e :. field)
+  e :# n -> handleIndexing (e :# n)
+  --Simple hard coercion: if e is longer than the target type, truncate it;
+  --if it's shorter, zero-pad it. Ignore internal padding.
+  Coerce targetT e -> do
+    (sourceT,ws) <- seqE e
+    targetBits <- numBitsT targetT
+    --Why misleading? Because the value might include left-padding we don't
+    --need to mask
+    misleadingSourceBits <- numBitsT sourceT
+    lp <- leftPadding sourceT
+    --This is the number we care about
+    let sourceBits = misleadingSourceBits - lp
+        targetWords = (targetBits `roundedUpMod` 256) `div` 256
+        sourceWords = (sourceBits `roundedUpMod` 256) `div` 256
+    case () of
+      --No masking needed; just copy the lowest words from ws
+      _ | targetBits >= sourceBits -> do
+            --Avoiding redundant computation at cost of complexity
+            let 
+            --Will be optimized away if unused
+            (z,_) <- runEDSL $ word 0
+            let paddedWs = replicate (targetWords-sourceWords) z ++
+                           ws
+            --We adjust the IR types for readability
+            retypedWs <- mapM (\(irt,w) ->
+                                 fst <$> (runEDSL $ coerce irt (EVar w))) $
+                         zip [W n targetT | n <- [1..]] paddedWs
+            return (targetT,retypedWs)
+        --We must mask the top word of the target words if there are any
+        --If targetT is a whole number of words, that has no runtime impact
+        | targetBits == 0 ->
+          return (targetT,[])
+        | let -> do
+            --The target words before truncation and coercion; taken from the
+            --bottom words of the source
+            let leftmost:rest = drop (targetWords-sourceWords) ws
+            (maskedLeftmost,_) <- runEDSL $ mask (targetBits `mod` 256) $
+                                  EVar leftmost
+            retypedWs <- mapM (\(irt,w) ->
+                                 fst <$> (runEDSL $ coerce irt (EVar w))) $
+                         zip [W n targetT | n <- [1..]] (maskedLeftmost:rest)
+            return (targetT,retypedWs)
+          
+unrollEFields :: E -> (E,[Either Name Int])
+unrollEFields = (id *** reverse) . go
+  where go = \case
+          e :. field -> (id *** (Left field:)) $ go e
+          e :# ix -> (id *** (Right ix:)) $ go e
+          e -> (e,[])
+handleIndexing e = do
+  --First I unroll all the nested accesses
+  let (struct,nmixs) = unrollEFields e
+  (structT,structWs) <- seqE struct
+  getStructFields structT structWs nmixs
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
@@ -1572,9 +1598,13 @@ signextend = op2 "signextend"
 mask :: Int -> Expr -> Expr
 mask = lowestBits
 lowestBits :: Int -> Expr -> Expr
+--Opt: if len = 0, just return 0 (but don't discard potential side effects in
+--e)
+lowestBits 0 e = e >> word 0
+lowestBits 256 e = e
 lowestBits len e = maskValue len & e
 maskValue :: Int -> Expr
-maskValue 255 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
+maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
