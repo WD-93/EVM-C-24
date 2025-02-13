@@ -1078,10 +1078,11 @@ getStructFields t ws fieldIxs = do
     then return (tRes,[])
     else do
     --If offRes + szRes + lpRes extends all the way to the last bit of the
-    --struct, the spare bits are added to the left-padding.
+    --struct, there can be no nonzero bits to the left; we set left-padding
+    --to infinity (well, 256 is enough).
     szStruct <- numBitsT t
     let lpFull = if offRes + szRes + lpRes == szStruct
-                 then lpRes + (szStruct `roundedUpMod` 256) - szStruct
+                 then 256
                  else lpRes 
     --How much we must right-shift the field's value when reconstructing it
     let rightShift = offRes `mod` 256
@@ -1117,11 +1118,12 @@ reconstructField leftPadding sz rightShift ws = do
   --Padding starts at bit sz and the first possible corrupt bit at
   --sz+leftPadding.
   --If that's not within the same word, we're good; otherwise we need to mask.
+  --{bar:1,foo:2}.bar should not need to mask
   let corruptIx = (sz + leftPadding) `div` 256
       leftmostIx = sz `div` 256
   if corruptIx > leftmostIx
     --We're good
-    then error $ show (unmaskedWs,sz,leftPadding,rightShift) --return unmaskedWs
+    then return unmaskedWs
     --We need to mask
     else let leftmostSz = sz `mod` 256
          in case unmaskedWs of
