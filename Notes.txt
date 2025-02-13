@@ -461,6 +461,8 @@ But union can't implement recursive datatypes by itself.
 Next commit notes:
 Simplified and fixed structLayout.
 
+Should I stop using EVar in EDSL? I'd still need to embed words in the monad.
+
 ****
 
 First: failing while loop, main () = main () failure. Perhaps all fun calls fail?

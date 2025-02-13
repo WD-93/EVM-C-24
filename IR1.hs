@@ -478,7 +478,34 @@ patternMatch p t ws =
               twss <- splitTuple ts ws
               sequence_ [patternMatch p t ws
                         | (p,(t,ws)) <- zip ps twss]
-    PDot p field -> error "TODO field pattern matching"
+    --TODO add PHash (:# for patterns)
+    --What p's are valid for p.field* = e?
+    --_.field* = e should reasonably just be a noop (though no sane programmer
+    --would write that)
+    PDot p field -> do
+      let (p',nmixs) = unrollPFields (PDot p field)
+      case p' of
+        PWild -> return ()
+        PVar nm -> do
+          ni <- getCNameInfo nm
+          let ge = throwE $ GenericError $
+                "Bad name info for struct.field* = e :" ++
+                show (nm,ni,nmixs)
+          case ni of
+            IsLocal structT -> setStructLocal nm structT nmixs t ws
+            IsFunction _ -> ge
+            IsPrimFun -> ge
+            IsUnbound -> throwE $ GenericError $
+              "You can't assign fields of unbound vars: " ++ show (nm,nmixs)
+        _ -> throwE $ GenericError $
+             "Bad pattern for .field* = e: " ++ show (p',nmixs)
+unrollPFields :: Pat -> (Pat,[Either Name Int])
+unrollPFields p = let (p',nmixs) = go p
+                  in (p',reverse nmixs)
+  where go (PDot p field) =
+          let (p',nmixs) = go p
+          in (p',Left field : nmixs)
+        go p = (p,[])
 --The word-level implementation of selecting the nth struct field of a struct
 --(represented as words on the stack).
 --T, [Name] is the struct type and its on-stack repr
@@ -647,7 +674,8 @@ seqE = \case
   --on struct creation.
   e :. field -> do
     --First I unroll all the nested accesses
-    let (struct,nmixs) = unroll (e :. field)
+    let (struct,rnmixs) = unroll (e :. field)
+        nmixs = reverse rnmixs
         --TODO add E :# Int
         unroll (e :. field) =
           let (e',nmixs) = unroll e
@@ -823,6 +851,8 @@ softCoerce target source ws
   --For now, no general struct coercion, only tuple -> tuple
   | Just ts1 <- unTupleT target, Just ts2 <- unTupleT source =
     softCoerceTuple ts1 ts2 ws
+  | let = throwE $ GenericError $
+          "Unsupported in softCoerce " ++ show (target,source,ws)
 
 unTupleT :: T -> Maybe [T]
 unTupleT = \case
@@ -1111,8 +1141,7 @@ getStructFields t ws fieldIxs = do
 --Then you don't need to do any masking!
 reconstructField :: Int -> Int -> Int -> [Name] -> Seq [Name]
 reconstructField leftPadding sz rightShift ws = do
-  --error $ "Foo " ++ show (leftPadding,sz,rightShift,ws)
-  unmaskedWs <- reconstructWithoutMasking sz rightShift ws
+  unmaskedWs <- reconstructWithoutMasking sz rightShift 0 ws
   --Now we have the value, potentially corrupted with nonzero bits to the left
   --in the leftmost word.
   --Padding starts at bit sz and the first possible corrupt bit at
@@ -1138,7 +1167,7 @@ reconstructField leftPadding sz rightShift ws = do
 Algo: copy sz bits from inptr = rsh to outptr = 0
 Both source and dest are divided into words: the maximum that can be copied in
 one step is min (256 - inptr % 256) (256 - outptr % 256)
-while inptr < sz:
+while inptr < sz + rsh:
  inix = inptr div 256
  inoff = inptr mod 256
  outix = outptr div 256
@@ -1150,12 +1179,13 @@ while inptr < sz:
 -}
 --The state can be a map Int -> Expr;
 --Nothing |= e => replace with e
-reconstructWithoutMasking :: Int -> Int -> [Name] -> Seq [Name]
-reconstructWithoutMasking sz rsh ws =
-  let ix2e = go rsh 0 M.empty $ map EVar ws
+--Yay, the logic can be reused for going from field to value!
+reconstructWithoutMasking :: Int -> Int -> Int -> [Name] -> Seq [Name]
+reconstructWithoutMasking sz rsh outptr ws =
+  let ix2e = go rsh outptr M.empty $ map EVar ws
   in map fst <$> (runEDSL $ sequence $ reverse $ M.elems ix2e)
   where go inptr outptr out inws
-          | inptr > sz = out
+          | inptr - rsh >= sz = out
           | let = let inix = inptr `div` 256
                       inoff = inptr `mod` 256
                       outix = outptr `div` 256
@@ -1175,14 +1205,113 @@ reconstructWithoutMasking sz rsh ws =
 --That applies to the left or rightmost nonzero field.
 --But you can easily find out if the nested field's padding is contiguous
 --with the other padding 
-getStructIndices :: [Field T] -> [Name] -> [Int] -> Seq (T,[Name])
-getStructIndices fs ws indices = error "TODO"
+--getStructIndices :: [Field T] -> [Name] -> [Int] -> Seq (T,[Name])
+--getStructIndices fs ws indices = error "TODO"
+
 --Generates code for struct.field* = value, where struct is a C local.
 -- *ptr.field* = e requires separate treatment; that's what global, *ptr and
 -- arr[ix] turns into.
-setStructLocal :: Name -> T -> [Name] -> Seq ()
-setStructLocal = error "TODO"
-                             
+--The argument is a C local rather than a list of IR vars [Name] because
+--we're writing to a variable; writing to a value would be nonsensical.
+setStructLocal :: Name -> T -> [Either Name Int] -> T -> [Name] -> Seq ()
+setStructLocal structCVar structT nmixs valueT valueWs = do
+  --error $ "Here: " ++ show (structCVar,structT,nmixs,valueT,valueWs)
+  ixs <- indicesAndNamesToIndices nmixs structT
+  (fieldT,sz,off,pl,pr) <- fieldsInfo ixs structT
+  --Since we're modifying a struct on stack, we can use the spare bits as
+  --infinite padding if the field is leftmost
+  szStruct <- numBitsT structT
+  let fullPL = if off + sz == szStruct
+               then 256
+               else pl
+  let pl = fullPL
+  --Needed to compute struct word names from offset:
+  nStruct <- numWordsT structT
+  --The name of the IR var containing bit offset off
+  let structIRVar off = structCVar ++ "#" ++ show (nStruct - (off`div`256))
+  --First, soft coerce the value to the appropriate field type
+  coercedWs <- softCoerce fieldT valueT valueWs
+  if sz == 0
+    then return () --writing to empty fields is a noop
+    else do
+    let leftShift = off `mod` 256
+    --"deconstruct" the field value, left-shifting it and splitting
+    --it across sz + leftShift div 256 words.
+    newFieldWs <- reconstructWithoutMasking sz 0 leftShift coercedWs
+    
+    or'dFieldWs <- case newFieldWs of
+                     --Special case: if there is only one word you may need to
+                     --mask to both left and right of the field.
+                     --The field starts at leftShift and padding begins at
+                     --leftShift + sz; if pl+that > 255 then there's nothing
+                     --to the left.
+                     --If pr >= leftShift there's nothing to the right.
+                     [w] -> do
+                       let emptyLeft = leftShift + sz + pl > 255
+                           emptyRight = pr >= leftShift
+                           oldWord = structIRVar off
+                       --error $ "Woo: " ++ show (w,emptyLeft,emptyRight,
+                       --                         leftShift,sz,pl)
+                       case () of
+                         _ | emptyLeft, emptyRight ->
+                             return [w]
+                           | emptyLeft ->
+                             runEDSLWord $ EVar w .|
+                             mask leftShift (EVar oldWord)
+                           | emptyRight ->
+                             --I also min the mask value by the struct size
+                             --because otherwise {foo:3,bar:5}.bar = 2
+                             --generates a ridiculously large left-mask
+                             runEDSLWord $ EVar w .|
+                             (shift (sz + leftShift)
+                               (maskValue (min szStruct
+                                           255 - (leftShift + sz))) &
+                                EVar oldWord)
+                           --The most complex mask: 0b111..000...111
+                           | let ->
+                             runEDSLWord $ EVar w .|
+                             (op1 "not" (shift leftShift (maskValue sz)) &
+                              EVar oldWord)
+                     --The first and last words may need to be or'd with old
+                     --words with the field masked out.
+                     leftmost:ws -> do
+                       let intermediate = init ws
+                           rightmost = last ws
+                           --If the first potential nonzero bit to the left
+                           --of the field isn't in the same word, you don't
+                           --need to mask the leftmost field word.
+                           emptyLeft = (off + sz + pl) `div` 256 /=
+                                       (off + sz - 1) `div` 256
+                           --Ditto right
+                           emptyRight = (off - pr) `div` 256 /=
+                                        off `div` 256
+                       leftmost' <- if emptyLeft
+                                    then return leftmost
+                                    else do
+                         let leftmostOld = structIRVar (off + sz - 1)
+                         fst <$> (runEDSL $
+                                   mask ((sz + off) `mod` 256)
+                                    (EVar leftmostOld) .|
+                                   EVar leftmost)
+                       rightmost' <- if emptyRight
+                                     then return rightmost
+                                     else do
+                         let rightmostOld = structIRVar off
+                         fst <$> (runEDSL $
+                                   mask (off `mod` 256) (EVar rightmostOld) .|
+                                   EVar rightmost)
+                       return $ [leftmost'] ++
+                         intermediate ++
+                         [rightmost']
+    --Finally, copy the updated words back to the relevant words of the
+    --struct var (this has zero runtime overhead).
+    let fieldStart = nStruct - (off + sz - 1) `div` 256
+    --error $ "Wah: " ++ show (fieldStart,nStruct,off,sz,pl)
+    sequence_ [
+      emitOp [(structCVar++"#"++show n,W n structT)] Copy [w]
+      | (n,w) <- zip [fieldStart..] or'dFieldWs
+      ]
+  
 --The type of the struct is given by the padding, names and types of elements.
 --Each word of the struct is the concatenation of slices of fields; the
 --cheapest case is when the word contains a single unsliced field.
@@ -1425,11 +1554,28 @@ signextend = op2 "signextend"
 --Using mask rather than shl, shr
 --For large fields this will generate a large amount of code; FW: opt for
 --program size
---Synonym:
+--For large masks, not 0 >> k (12 gas, 5 bytes) will be smaller.
+--The cost of a byte is 200 gas (not counting future code load costs or
+--accounting for execution potentially having a higher gas price due to
+--urgency)
+--The cost of computing is 9 gas. For an n>5-byte mask, you need to
+--execute it (200/9)*(n-5) times before it's worth just pushing it instead
+--(modulo the code size limit).
+--For n = 32 (the maximum), that translates to exactly 600 - not very much
+--in the context of a popular smart contract. I just won't compute masks
+--except for the special case of maskValue 255 then.
+--FW: take discounted execution intensity into account, make it a configurable
+--choice based on intensity and the code size constraint.
+--Ex algo: when you run out of code space, try computing the number with the
+--highest byte reduction / exec overhead.
+--Synonym for lowestBits:
 mask :: Int -> Expr -> Expr
 mask = lowestBits
 lowestBits :: Int -> Expr -> Expr
-lowestBits len e = (word $ 2 ^ len - 1) & e
+lowestBits len e = maskValue len & e
+maskValue :: Int -> Expr
+maskValue 255 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
+maskValue len = word $ 2 ^ len - 1
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
 --Consider (x,f(),x); use fields of tuple.
@@ -1541,7 +1687,9 @@ newAnonVar = do
 typeOfInteger :: Integer -> T
 typeOfInteger n =
   Int (n <? 0) --it's signed iff it's negative
-  (min 256 $ 8 * (byteLen $ abs n))
+  (min 256 $ 8 * (max 1 $ byteLen $ abs n))
+  --0 is a special case: 1B is more than needed to represent it, but we use
+  --that to ensure integers always have a 1-word representation.
   where byteLen 0 = 0
         byteLen n = 1 + byteLen (n `div` 256)
         a <? b = if a < b then "Signed" else "Unsigned"
