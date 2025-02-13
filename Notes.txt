@@ -348,6 +348,14 @@ Note: f args := body ~ f := \args -> body --defines a constant, lambda is added 
 
 Immediate:
 Fully support structs in locals: .field*, .field* =
+ Get added; next: put
+ To fix: spare bits to the left of the leftmost field aren't counted as padding, leading to an unnecessary
+ mask.
+ Note there are at most 7 spare bits when the struct is in memory.
+ Weird... {9,bar:5,foo:3}.bar seems to just become push 0... something to do with shift? No, I just forgot
+ to return it and it got optimized out.
+ printAsm "module {main:()->Byte;main _ := return ({baz:3,bar: 5}.bar)}"
+  is not properly masking out baz... Fixed.
 Roadmap:
 Memory pointers, then other regions
 Coercion (and tysyn support in in-expr types)

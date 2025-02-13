@@ -922,7 +922,9 @@ fieldInfo ix fields
       --first non-0-size field to the left and the end of the field.
       --(Or the sz of the entire struct if there is none)
       --Q: Does the field value's own left-padding matter? No.
-      let nzRevPre = filter (\(sz,_) -> sz > 0) revPre
+      --Bug: the type has a Num instance, so I accidentally filtered out
+      --all elems with type <= TyNat 0...)
+      let nzRevPre = filter (\(_,(sz,_)) -> sz > 0) revPre
           leftPad = (case nzRevPre of
                       [] -> structSz
                       (_,(_,offLeft)):_ -> offLeft) - (offField + szField)
@@ -1004,11 +1006,13 @@ indicesAndNamesToIndices eis t = go eis t
             _ -> throwE $ GenericError $
                  "Attempted to index non-struct type in IANTI: " ++ show (ei,t)
 
+{-
 fieldsToSlice :: [Field T] -> [Either Name Int] -> Seq (T,(Int,Int))
 fieldsToSlice = go 0
   where go offAccum fields (ix:ixs) = undefined
         name2ix nm fields =
           undefined
+-}
 
 {-
 --(bit size, left offset) ws => slice of ws
@@ -1061,6 +1065,8 @@ leftPadding = \case
   _ -> return 0
 --Given a struct value (T,[Name]) and (.field | #n)*, get the value.
 --This generates code for indexing a struct on the stack.
+--Special case, applicable only to get on stack structs: the spare bits
+--in the word repr count as padding.
 getStructFields :: T -> [Name] -> [Either Name Int] -> Seq (T,[Name])
 getStructFields t ws fieldIxs = do
   ixs <- indicesAndNamesToIndices fieldIxs t
@@ -1071,6 +1077,12 @@ getStructFields t ws fieldIxs = do
     --Get on an empty field is a noop
     then return (tRes,[])
     else do
+    --If offRes + szRes + lpRes extends all the way to the last bit of the
+    --struct, the spare bits are added to the left-padding.
+    szStruct <- numBitsT t
+    let lpFull = if offRes + szRes + lpRes == szStruct
+                 then lpRes + (szStruct `roundedUpMod` 256) - szStruct
+                 else lpRes 
     --How much we must right-shift the field's value when reconstructing it
     let rightShift = offRes `mod` 256
         --The index from the right of the rightmost relevant word
@@ -1079,9 +1091,7 @@ getStructFields t ws fieldIxs = do
         ixL = (offRes + szRes) `div` 256
         --The words containing the field
         relWs = take (ixL-ixR+1) $ drop ixR $ reverse ws
-        --We can't determine whether we must mask garbage just from whether
-        --it's in the same word; it may be left-shifted out.
-    valueRes <- reconstructField lpRes szRes rightShift relWs
+    valueRes <- reconstructField lpFull szRes rightShift relWs
     return (tRes,valueRes)
 
 --Given left-padding, right shift and words in reverse order containing a field
@@ -1100,6 +1110,7 @@ getStructFields t ws fieldIxs = do
 --Then you don't need to do any masking!
 reconstructField :: Int -> Int -> Int -> [Name] -> Seq [Name]
 reconstructField leftPadding sz rightShift ws = do
+  --error $ "Foo " ++ show (leftPadding,sz,rightShift,ws)
   unmaskedWs <- reconstructWithoutMasking sz rightShift ws
   --Now we have the value, potentially corrupted with nonzero bits to the left
   --in the leftmost word.
@@ -1110,7 +1121,7 @@ reconstructField leftPadding sz rightShift ws = do
       leftmostIx = sz `div` 256
   if corruptIx > leftmostIx
     --We're good
-    then return unmaskedWs
+    then error $ show (unmaskedWs,sz,leftPadding,rightShift) --return unmaskedWs
     --We need to mask
     else let leftmostSz = sz `mod` 256
          in case unmaskedWs of
