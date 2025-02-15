@@ -192,12 +192,14 @@ handleTySyns mod = do
 --data types are fully applied and then see whether their constructor args are
 --Type (or in future, a non-stack value type).
 --For now I'll just do the substitution.
+--Edit: adding substitution in the function body.
 substDefuns :: Syns -> Module -> Either SeqError (Map Name D)
 substDefuns syns mod = do
   let defs = map snd $ M.toList $ defuns mod
   sdefs <- mapM (\case Defun fnm t pat body -> do
                          t' <- substDefunT t
-                         return $ (fnm,Defun fnm t' pat body)) defs
+                         body' <- mapM (substTySynS syns) body
+                         return $ (fnm,Defun fnm t' pat body')) defs
   return $ M.fromList sdefs
   where substDefunT t =
           case applyTySyns syns t of
@@ -205,6 +207,54 @@ substDefuns syns mod = do
             Left (Right (pnts,ts)) -> Left $ ArgsAppliedToStructInDefun pnts ts
             Right t' -> Right t'
 
+--TODO switch to generic implementation...
+substTySynS :: Syns -> S -> Either SeqError S
+substTySynS syns =
+  let r = substTySynS syns
+      re = substTySynE syns
+      rp = substTySynPat syns
+  in \case
+    p := e -> (:=) <$> rp p <*> re e
+    DTs.Return e -> DTs.Return <$> re e
+    DTs.Ifte b th el -> DTs.Ifte <$> re b <*> mapM r th <*> mapM r el
+    DTs.While e body -> DTs.While <$> re e <*> mapM r body
+substTySynE :: Syns -> E -> Either SeqError E
+substTySynE syns =
+  let r = substTySynE syns
+  in \case
+    f :$ x -> (:$) <$> r f <*> r x
+    EStruct fields -> EStruct <$>
+      mapM (\(p,mnm,e) -> do
+               e' <- r e
+               return (p,mnm,e')) fields
+    e :. field -> (:. field) <$> r e
+    e :# ix -> (:# ix) <$> r e
+    --The one interesting case
+    Coerce t e ->
+      case applyTySyns syns t of
+        Left err -> Left $ GenericError $ "TySyn subst in coerce failed: "
+          ++ show (t,e,err)
+        Right t' -> Coerce t' <$> r e
+    e -> return e
+substTySynPat :: Syns -> Pat -> Either SeqError Pat
+substTySynPat syns =
+  let r = substTySynPat syns
+      re = substTySynE syns
+  in \case
+    PStruct mnmps -> PStruct <$> mapM (\(mnm,p) -> do
+                                          p' <- r p
+                                          return (mnm,p')) mnmps
+    PTup ps -> PTup <$> mapM r ps
+    PDot p nm -> (`PDot` nm) <$> r p
+    PHash p ix -> (`PHash` ix) <$> r p
+    --TODO add Deref e case
+{-
+--Applies a map of tysyns to a type, potentially producing an underapplied
+--syn error or args applied to struct. TODO deduplicate
+applyTySyns :: Syns -> T -> Either (Either (Name,[T])
+                                    ([Field T],[T])) T
+-}
+      
 --Accumulate a map of fully expanded tysyns, containing no other syns
 --When exploring a syn, if you encounter another syn then explore it before
 --attempting to apply it. The absence of cycles will ensure this terminates.
@@ -1770,6 +1820,7 @@ numBitsT :: T -> Seq Int
 numBitsT = \case
   Int _ n -> return $ fromInteger n
   a :-> b -> return 16
+  Ptr r a -> return 16
   Struct padnmts -> do
     padalszs <- mapM (\((pad,al),_,t) -> do
                        sz <- numBitsT t

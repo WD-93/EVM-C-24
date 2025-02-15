@@ -64,6 +64,8 @@ pattern a :-> b = "->" :$$ a :$$ b
 --I should perhaps have separated structs and tuples after all...
 pattern Pair a b = Struct [((Word,Word),Nothing,a),
                            ((Word,Word),Nothing,b)]
+pattern Memory = TyCon "Memory"
+pattern Ptr r a = "Ptr" :$$ r :$$ a
 type Field a = ((Padding,Padding), Maybe Name, a)
 data T = TyCon Name
        | TyVar Name --Only for data and tysyn type params initially

@@ -358,6 +358,23 @@ Fully support structs in locals: .field*, .field* =
   is not properly masking out baz... Fixed.
  put implemented. Now: Ptr. First coercion, since that's needed to create ptrs from integers.
  Also struct # Int syntax support. Done; it's now fully supported. Coercion supported as well.
+ First: apply tysyn substitution in coerce.
+Now:
+ Pointers, arrays
+ *ptr = [a,b,c] --sugar for indexing ptr or allocating a new array?
+ Array syntax is problematic: arrays aren't proper expressions... and brackets would create confusion
+ between applying a one-element array and indexing.
+ What does int arr[] = {x,y,z} mean in C? Push x,y,z to stack; arr (an array value) points to them.
+ But we don't have an addressable stack... and allocation in primitives is too extravagant.
+ Maintain the byte addressing abstraction for Ptr Storage... the overhead compared to SLOAD is small.
+ All data in storage byte-aligned... but any pointer may overlap a word.
+ With constant expansion you could eliminate false branches such as overlap.
+ Extend + and - to support pointers.
+ Arrays of static size? Could be useful for objects so large they're never put on the stack.
+ *pA = *pB => mcopy, calldatacopy or codecopy --problem: soft coercion; if it's not a noop the opt can't be
+ applied.
+ Indexing an on-stack array spread over multiple words is possible with a switch, but not worth it.
+ Primop: copy(pA,pB,numElems)
 Roadmap:
 Memory pointers, then other regions
 Coercion (and tysyn support in in-expr types)
@@ -365,7 +382,9 @@ Kind check; give datatypes explicit monomorphic kind signatures if not the Type*
 Support for struct access via ptrs
 Globals, global arrays
 Assignment => expression
-Strings, static constants
+Strings, static constants --Q: how to represent strings? C-style 0-terminated is too expensive...
+ length-tagged is ideal for EVM opcodes.
+ type String = {UInt 16, Ptr Code Byte}
 JTs?
 data, case, closures
 Inline assembly
