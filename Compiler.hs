@@ -323,6 +323,7 @@ desugarP = do
     P.Wild -> return PWild
     P.Dot p (Ident field) -> PDot <$> r p <*> return field
     P.Hash p n -> PHash <$> r p <*> return (fromInteger n)
+    P.PrefixOp (Infix "*") e -> Deref <$> desugarE e
     e -> throwE $ BadEInPat e
 
 --DTs.S currently has no concept of standalone do blocks...
@@ -376,6 +377,10 @@ desugarE = do
     P.Tup e es -> tupleE <$> ((:) <$> r e <*> mapM r es)
     P.EmptyStruct -> return $ EStruct []
     P.EStruct fields -> EStruct <$> mapM desugarFieldE fields
+    --Prefix ops: * & ! ~ -
+    P.PrefixOp (Infix nm) e
+      | "*" <- nm ->
+       (Var "deref" :$) <$> desugarE e
 
 desugarOpsE op = \case
   OSNil e -> do

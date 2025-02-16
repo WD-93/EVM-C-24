@@ -247,7 +247,8 @@ substTySynPat syns =
     PTup ps -> PTup <$> mapM r ps
     PDot p nm -> (`PDot` nm) <$> r p
     PHash p ix -> (`PHash` ix) <$> r p
-    --TODO add Deref e case
+    Deref e -> Deref <$> re e
+    p -> return p
 {-
 --Applies a map of tysyns to a type, potentially producing an underapplied
 --syn error or args applied to struct. TODO deduplicate
@@ -786,6 +787,7 @@ simplePFs :: Map Name (T -> [Name] -> Seq (T,[Name]))
 simplePFs = M.fromList [
   --Mathops
   --C has unary +, but it's pretty vestigial... I'll just ignore it
+  --TODO add Ptr r a + Int {}
   ("+",\t ws ->
       case (t,ws) of
         (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
@@ -795,8 +797,67 @@ simplePFs = M.fromList [
   --Binary bitwise ops
   ("&", binaryBitOp "&" "and" False),
   ("|", binaryBitOp "|" "or" True),
-  ("^", binaryBitOp "^" "xor" True)
+  ("^", binaryBitOp "^" "xor" True),
+  --Pointer derefence
+  ("deref",derefPtr)
                        ]
+--Pointer type, pointer word (singular) -> *ptr
+--All regions are byte-addressed starting from 0; all values stored in a
+--region are byte-padded, with their first byte starting at address p.
+--That means a uint16 at 0 must be left-shifted by 240 before mstoring and
+--right-shifted on mload.
+--For now, mloads touch memory so their order is strict. To ensure multi-word
+--values are loaded in the stack order used in calling conventions, you
+--must load words from the right.
+--deref of a 33-byte value at ptr becomes mload(ptr+1), mload(ptr) >> 8*31
+--Generalizing: n*32 + modulus at ptr becomes mload(ptr+modulus+32*i), i <-
+--n-1 to 0, mload(ptr) >> 8*(32-modulus)
+derefPtr :: T -> [Name] -> Seq (T,[Name])
+derefPtr (Ptr r a) [w] = do
+  sz <- (`roundedUpMod` 8) <$> numBitsT a
+  ws <- case r of
+          Memory -> derefMem sz w
+  ws' <- coerceValue a ws
+  return (a,ws')
+derefPtr t ws = throwE $ GenericError $ "Badarg to *_ : " ++ show (t,ws)
+--sz is the byte size of the (byte-padded) value
+derefMem :: Int -> Name -> Seq [Name]
+derefMem sz ptr = do
+  let nbytes = sz `div` 8
+      modulus = nbytes `mod` 32
+      remwords = nbytes `div` 32
+  
+  --Note: ptr + k may extend beyond the normal 16b range of a pointer;
+  --then &(ptr->field) will overflow. Solution: just don't get near the
+  --wraparound boundary.
+ 
+  --The simplest case. Load ptr, ptr + 32, ... in reverse order.
+  --Return them in original order.
+  wholeWords <- reverse <$>
+                (sequence $
+                 reverse [do (ptr',_) <- runEDSL $ addK (fromIntegral n)
+                                         (EVar ptr)
+                             mload ptr'
+                         | n <- map (+ modulus) [0,32..32*(remwords-1)]
+                         ])
+  if modulus > 0
+    then do
+    w <- mload ptr
+    (partialWord,_) <- runEDSL $ shift (8*modulus - 256) $ EVar w
+    return (partialWord:wholeWords)
+    else return wholeWords
+--($mem,result) = mload ($mem,addr)
+--TODO first tree shake away unused mloads, then force the next write to be
+--placed after all remaining ones.
+--Doesn't fit in EDSL because it manipulates a specific var, $mem.
+--TODO use EDSL anyway, allow memory regions other than a
+--single global one ($mem) to be passed.
+mload :: Name -> Seq Name
+mload addr = do
+  res <- newAnonVar
+  emitOp [("$mem",Mem),(res,tword)] (Opcode "mload") ["$mem",addr]
+  return res
+
 --Scheme: (a,b) -> a; combine a with b starting with the lowest words
 --If b is longer than a and a is not a whole number of words, mask the
 --highest word of the result.
@@ -1588,6 +1649,18 @@ type Expr = EDSL EVar
 word :: Integer -> Expr
 word k = head <$> App (Push $ Const k) (\_ -> Just [tword]) []
 tword = W 1 (UInt 256)
+--Internal coercion, coerces the given words to the words of the target C type.
+--Errors if the number of words given doesn't match the target's word size.
+coerceValue :: T -> [Name] -> Seq [Name]
+coerceValue t ws = do
+  n <- numWordsT t
+  if length ws /= n
+    then throwE $ GenericError $ "Word size mismatch in coerceValue: " ++
+         show (t,n,ws)
+    else sequence [runEDSL $ do
+                      (v,_) <- coerce (W i t) (EVar w)
+                      return v
+                  | (i,w) <- zip [1..] ws]
 --Coerces an arbitrary var to a var of another type; ignores kind so mem
 --can be coerced to word and vice versa!
 coerce :: IRT -> Expr -> Expr
@@ -1623,6 +1696,7 @@ op2 opcode a b = do
                                 [W {}, W {}] -> Just [tword]
                                 _ -> Nothing) [a,b]
   return v
+ 
 --What is the correct arg order...? TODO find out
 signextend :: Expr -> Expr -> Expr
 signextend = op2 "signextend"
@@ -1656,6 +1730,10 @@ lowestBits len e = maskValue len & e
 maskValue :: Int -> Expr
 maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
+--k + x
+addK :: Integer -> Expr -> Expr
+addK 0 e = e
+addK k e = op2 "add" e (word k)
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
 --Consider (x,f(),x); use fields of tuple.

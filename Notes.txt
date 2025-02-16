@@ -361,6 +361,12 @@ Fully support structs in locals: .field*, .field* =
  First: apply tysyn substitution in coerce.
 Now:
  Pointers, arrays
+ Deduplicate var = e and var.field* = e? No, their behavior is distinct: unbound.field* = e is an error.
+ First step: *ptr. Desugar prefixOp "*" e to deref(e) in E and Deref e in Pat.
+ p->field => (*p).field. &(p->field) is only valid for byte-aligned fields and is equal to p+k.
+ What is &_ applicable to? Globals, *p, *p.field*
+ (p : Ptr {})[ix] => *(p + ix)
+ I can reuse infix op syntax for -> in an E context.
  *ptr = [a,b,c] --sugar for indexing ptr or allocating a new array?
  Array syntax is problematic: arrays aren't proper expressions... and brackets would create confusion
  between applying a one-element array and indexing.
@@ -375,9 +381,23 @@ Now:
  applied.
  Indexing an on-stack array spread over multiple words is possible with a switch, but not worth it.
  Primop: copy(pA,pB,numElems)
+ printAsm "module{main:()->Pair Word;main _ := do {return *(0 :: Ptr Memory (Pair Word))}}" --is generating
+  incorrect code...
+ I swapped the add ordering in addK. It wasn't incorrect, just inefficient... TODO constant expand, exploit
+ commutativity, improve stack scheduling. mload 0, mload 32 are independent; it should be possible to run in
+ any order. Optimal code:
+ --$ret
+ mload 32
+ mload 0
+ swap2, jump
+ Opt choice monad for compiler, output <object with choices> so the solver can be configured. Opt problem:
+ a set of such objects + a cost function. Features first, then opt...
+  Don't forget to opt ptr->field*!
+
+
 Roadmap:
 Memory pointers, then other regions
-Coercion (and tysyn support in in-expr types)
+Coercion (and tysyn support in in-expr types) --done
 Kind check; give datatypes explicit monomorphic kind signatures if not the Type* -> Type default
 Support for struct access via ptrs
 Globals, global arrays

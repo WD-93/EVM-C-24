@@ -26,6 +26,7 @@ data E = EInteger Integer
        --Doesn't zero internal padding for now; coercing to a struct
        --is dangerous.
        | Coerce T E
+       -- *e becomes deref(e)
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
@@ -91,7 +92,8 @@ primTySyns = M.fromList [
   "Half" =: UInt 128, --why not?
   "Word" =: UInt 256,
   "UInt" =: ("Int" :$$ "Unsigned"),
-  "SInt" =: ("Int" :$$ "Signed")
+  "SInt" =: ("Int" :$$ "Signed"),
+  ("Pair",(["a"],Pair (TyVar "a") (TyVar "a"))) 
   ]
   where nm =: t = (nm,([],t))
 --The kind check can't be done here, you need to defer it to IR.
@@ -119,6 +121,7 @@ data Pat = PWild
          --must be a tuple (word-padded with default names)
          | PDot Pat Name
          | PHash Pat Int
+         | Deref E
   deriving (Eq,Ord,Read,Show)
 data D = Defun Name T Pat Block
   deriving (Eq,Ord,Read,Show)
