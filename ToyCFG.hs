@@ -144,6 +144,9 @@ annIRsWithLive loopLs end irs =
   where
     go end = \case
       [] -> ([],end)
+      --Here we filter out IR comments; passing them through steps which
+      --reorder or delete ops doesn't make much sense
+      IRComment _ : irs -> go end irs
       ir:irs ->
         let (irs',end') = go end irs
             (ir',end'') = annIRWithLive loopLs end' ir

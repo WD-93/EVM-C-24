@@ -393,7 +393,102 @@ Now:
  Opt choice monad for compiler, output <object with choices> so the solver can be configured. Opt problem:
  a set of such objects + a cost function. Features first, then opt...
   Don't forget to opt ptr->field*!
+ptr->field* where the field is not byte-aligned requires shifting.
 
+Byte-addressing abstraction for sload:
+load(ptr,bytes):
+ ix = ptr >> 5
+ --last byte: ptr + bytes - 1
+ optimisticLoads = ceil(bytes/32)
+ cond = bytes%32 + ptr%32 > 32 --opt to ptr&31 > k
+ if cond:
+  ws = sload(ix .. ix + optimisticLoads)
+  --then appropriate shifting
+ else:
+  ws = sload(ix .. ix + optimisticLoads - 1)
+  --appropriate shifting
+Inline assembly could let me take control of stack layout, but that's a hack... excessive control prevents
+future optimizations such as constant expansion or reordering of mloads within the SLC.
+
+Maybe supporting bit padding and alignment for struct fields was a mistake... it infests everything and makes
+interacting with byte-addressed instructions such as mload more difficult.
+TODO: generalize deref and write code to support left-shifted data. Params: bit offset, bitsize, left-padding.
+If the subfield is leftmost, add byte padding. Reuse logic from on-stack struct indexing for shifting
+multi-word values.
+TODO add compiler flags: exe vs library mode, modules available, global layout algo, scratch size.
+First: generate a single exe from source dependencies (so inlining can be applied, for example).
+Typed module objects: *memPtr = *staticData; memPtr->someImmVar = k
+ptr[] = arrExpr could be desugared to ptr[0] = arrExpr_1, ptr[1] = ...
+When an arrExpr mixes static and dynamic data, you could first do a codecopy from newly allocated static
+data. Write in reverse order to avoid clobbering.
+If a uint16 is part of the top two bytes, you have to right-shift.
+Load so you have to shr as little as possible, shl-shr to mask the top work; if the field is not byte-aligned
+you have to reconstruct (cost: O(n)).
+Consider a 34B value: you must shr the top 2B by 240, but the next 32B not at all.
+
+Perhaps there should be an IR level for symbolic optimization that is aware of bytestrings and load(ptr,len)
+but not words.
+Even loading a sub-word value is nontrivial: if you already have an appropriate offset or shift on the stack,
+you can adjust the off/shift to use it.
+mload(ptr) && mask n ~ mload(ptr+k) >> 8*k if n <= 256-8*k
+algo (ptr, leftPad, sz, rightOffset):
+ treat the field as a whole number of bytes, one partial (b bytes) and n words
+ if the partial is 32-b bytes off the start, you can just mload ptr and mask.
+ For more, you must increment ptr. If the field's a whole number of bytes or
+  there's only field+padding in the leftmost byte, you can increment more and just shr.
+ For less, you must shr; you can shl first to golf masking.
+If bmod = off % 8 /= 0, each lower word must be combined from two mloaded words:
+ lo >> bmod | next >> 256-bmod
+Let's say bmod = 7 and sz % 256 = 255...
+Use a minimal number of mloads: ceil(sz/256). Then the leftmost load must contain >= sz%256 field bits.
+If the field has less rightOffset than its padding on the stack, you must right-shift.
+Put the logic in a new module, symbolically eval to debug.
+SymE: Var, Mem sym sym --a bitrange, sym + k
+No need... I can just use the EVM to debug, either Haskell EVM sim or ganache/hardhat.
+Simpler than deref/assign: mload, mstore
+No shifting, just clobber. Multi-word values could also be supported.
+
+--Loading ignoring right-shift and masking
+--off: the byte index from the left of the first byte
+loadBytes(off,bs):
+ rem = bs % 32
+ n = bs div 32
+ w <- loadPartial(off,rem)
+ --The ptr to the first whole word
+ lo = off + rem
+ ws <- for i=0..n-1: mload(ptr+lo+32*i)
+ return w:ws
+loadPartial(off,rem):
+ rest = 32-rem
+ if off == rest: mload ptr
+ if off > rest: mload (ptr + (off-rest))
+ else: mload ptr >> 8*(rest-off)
+--With loadBytes, if sz % 256 = 255 and bmod = 7, you need to load an extra word
+deref(structSz,lp,sz,off):
+ sBs = structSz rounded 8 div 8
+ rightIx = sBs - off div 8
+ leftIx = sBs - (off + sz) div 8
+ bs = rightIx - leftIx + 1
+ ws <- loadBytes(leftIx,bs)
+ if off mod 8 == 0
+  then just mask top w
+  else shift ws right (may elim top word)
+A maskShift combinator would be useful; later, an opt rule.
+
+mkClosure(f : (a,b)->c,x : a) : Closure b c --needs to be a primitive
+repr: {closureExec : Ptr Byte -> b,f,wordpad closed}
+call(closPtr,x) = closPtr->closureExec(closPtr)
+
+Non-byte-aligned field get: if you're already right-shifting, you can left-shift to mask for only 6 gas, 3
+bytes.
+If the field is sufficiently left-padded, you needn't mask. Ex: (ptr :: MPtr (Byte,Byte))#0.
+Because deref is special-cased (*ptr.field* is optimized), it needn't be in simplePFs.
+Note for constant expansion: symbolic eval lets you simply uint8 & 0xff00, x + k1 + k2 etc.
+Types tell you which bits of a word are 0.
+mloading to place the first byte of the field at the top can be inefficient if it's padded; consider
+*(ptr :: MPtr {pad word Byte})#0. Ideally you should be able to avoid a shift.
+OTOH, if there isn't enough left-padding (as in a uint15 with 0 padding), you should shr and mask or lhs,rsh.
+Note: the constant -1 should be implemented as not 0 (saving 31 bytes for 3 gas).
 
 Roadmap:
 Memory pointers, then other regions

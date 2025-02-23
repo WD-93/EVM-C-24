@@ -50,6 +50,7 @@ prettyIR = do
       indentBlock post ++
       ["}"]
     Return _ nms -> ["return " ++ showRHS nms]
+    IRComment str -> ["--" ++ str]
 indentBlock irs = map (' ':) (irs >>= prettyIR)
 
 showLHS :: [(Name,IRT)] -> String

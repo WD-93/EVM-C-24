@@ -93,7 +93,8 @@ primTySyns = M.fromList [
   "Word" =: UInt 256,
   "UInt" =: ("Int" :$$ "Unsigned"),
   "SInt" =: ("Int" :$$ "Signed"),
-  ("Pair",(["a"],Pair (TyVar "a") (TyVar "a"))) 
+  ("Pair",(["a"],Pair (TyVar "a") (TyVar "a"))),
+  "MPtr" =: ("Ptr" :$$ "Memory")
   ]
   where nm =: t = (nm,([],t))
 --The kind check can't be done here, you need to defer it to IR.

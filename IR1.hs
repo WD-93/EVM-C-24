@@ -35,6 +35,7 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
                | Break a Int
                | Continue a Int
                | TailCall a Name [Name]
+               | IRComment String --Ignored in later stages, used for debugging
   deriving (Eq,Ord,Read,Show)
 type IR = IRP ()
 data Operator = Push StaticValue
@@ -774,11 +775,41 @@ unrollEFields = (id *** reverse) . go
           e :. field -> (id *** (Left field:)) $ go e
           e :# ix -> (id *** (Right ix:)) $ go e
           e -> (e,[])
+--Opt: convert *ptr.field* to a deref of a pointer to the field if the field
+--is byte-aligned.
 handleIndexing e = do
   --First I unroll all the nested accesses
   let (struct,nmixs) = unrollEFields e
-  (structT,structWs) <- seqE struct
-  getStructFields structT structWs nmixs
+  case struct of
+    Var "deref" :$ ptr -> do
+      (ptrT,ptrWs) <- seqE ptr
+      case ptrT of
+        --Generalized *ptr slice: the field need not be byte aligned or padded.
+        --In contrast to simple *ptr, there may be nonzero bits in the same
+        --byte as the field.
+        Ptr r a -> do
+          ixs <- indicesAndNamesToIndices nmixs a
+          (fieldT,szField,offField,lpField,_) <- fieldsInfo ixs a
+          szStruct <- numBitsT a
+          let ptrW = case ptrWs of
+                       [p] -> p
+                       _ -> error $ "Compiler error: ptr has wrong number of "
+                            ++ "words in handleIndexing: " ++ show (ptr,ptrWs)
+          comment "Dereferencing *ptr.field:"
+          resWs <- genDeref szStruct lpField szField offField ptrW
+          return (fieldT,resWs)
+          --genDerefMem structSz leftPad fieldSz off ptr
+        _ -> throwE $ GenericError $
+          "Non-pointer in *e.field*: " ++ show (ptr,ptrT)
+    _ -> do
+      (structT,structWs) <- seqE struct
+      getStructFields structT structWs nmixs
+{-
+  ixs <- indicesAndNamesToIndices fieldIxs t
+  --Return type, its size, offset in the struct, left and right-padding
+  --We don't need right-padding, so we ignore it.
+  (tRes,szRes,offRes,lpRes,_) <- fieldsInfo ixs t
+-}
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
@@ -812,6 +843,13 @@ simplePFs = M.fromList [
 --deref of a 33-byte value at ptr becomes mload(ptr+1), mload(ptr) >> 8*31
 --Generalizing: n*32 + modulus at ptr becomes mload(ptr+modulus+32*i), i <-
 --n-1 to 0, mload(ptr) >> 8*(32-modulus)
+--Calldata follows the same logic.
+--Storage deref has two cases: the byte sequence either requires an additional
+--SLOAD due to overlapping a slot boundary or not.
+--Worst-case scenario: 2-byte load, two SLOADs.
+--Code ptr deref could be implemented using scratch memory... but I need
+--array globals first.
+--A minimum of 32B would be practical.
 derefPtr :: T -> [Name] -> Seq (T,[Name])
 derefPtr (Ptr r a) [w] = do
   sz <- (`roundedUpMod` 8) <$> numBitsT a
@@ -846,6 +884,140 @@ derefMem sz ptr = do
     (partialWord,_) <- runEDSL $ shift (8*modulus - 256) $ EVar w
     return (partialWord:wholeWords)
     else return wholeWords
+--Generalized deref, can be used for fields which are neither byte-padded nor
+--byte-aligned.
+--If mask of the top word is necessary, it can be done by left-shifting before
+--right-shifting (cost: 6 gas, 3 bytes).
+--Struct size, left padding in the struct, field size and offset are all
+--in bits.
+--The first byte of the struct starts at ptr; if structSz % 8 == 0 then it
+--contains 8 struct bits, otherwise structSz % 8. It has 8 - that bits of
+--padding.
+genDeref :: Int -> Int -> Int -> Int -> Name -> Seq [Name]
+genDeref structSz leftPad fieldSz off ptr
+  | fieldSz == 0 = return []
+  | let = do
+          --First, fetch the bytes which contain any field bits
+          let --Offset from right
+              rightByteOff = off `div` 8
+              leftByteOff = (off+fieldSz-1) `div` 8
+              fieldBs = leftByteOff - rightByteOff + 1
+              structBs = (structSz `roundedUpMod` 8) `div` 8
+              --The byte index from left at which the field starts
+              offFromLeft = structBs - 1 - leftByteOff
+          (rshHead,ws) <- derefBytes offFromLeft fieldBs ptr
+          let offBits = off `mod` 8
+              w:ws' = ws
+          --If the field is byte-aligned everything is much simpler:
+          if offBits == 0
+            then do
+            --Just shift and mask the top word:
+            --It has sz % 256 relevant bits at offset 8*rshHead
+            --Right-padding isn't relevant; we're going to right-shift it
+            --to offset 0 anyway.
+            w' <- sliceWord leftPad (fieldSz `mod` 256) (8*rshHead) 0 0 w
+            return $ w':ws'
+            else do
+            --This is the tricky bit
+            --The number of unique bits in the first input word:
+            let ubits = (fieldSz + offBits) `mod` 256
+            --The output of the top word (may be [] if it's consumed by
+            --right-shift) and the bits to be or'd with the next word.
+            (top,topL) <- if ubits > offBits
+                          then do
+              w' <- sliceWord leftPad (ubits - offBits)
+                (8*rshHead + offBits) 0 0 w
+              topL <- sliceWord 0 offBits (8*rshHead) 0 (256 - offBits) w
+              return ([w'],topL)
+                          else do
+              --I'm not making use of the field's right-pad...
+              topL <- sliceWord leftPad ubits (8*rshHead) 0 (256 - offBits) w
+              return ([],topL)
+            --The bits to be shifted to the right (computed from all words
+            --but the last)
+            --That means the lowest offBits bits shifted all the way to the
+            --left (requiring only a shl).
+            ls <- (topL:) <$> mapM
+              (sliceWord 0 offBits 0 0 (256-offBits)) (init ws')
+            rs <- mapM (sliceWord 0 (256-offBits) offBits 0 0) ws'
+            --The lower output words: ls | rs
+            bot <- zipWithM (\l r -> runEDSLW $ EVar l .| EVar w) ls rs
+            return (top ++ bot)
+--A vital combinator for genDeref:
+--sliceWord lp sz off rp lsh {_,0:lp,field:sz,0:rp,_} = field << lsh,
+--implemented as efficiently as possible.
+--Note the padding lp and rp may extend beyond the bounds of the word.
+sliceWord :: Int -> Int -> Int -> Int -> Int -> Name -> Seq Name
+sliceWord lp sz off rp lsh w
+  | any (<0) [lp,sz,off,rp,lsh] ||
+    sz + off > 255
+  = error $
+    "Compiler error: badarg in sliceWord: " ++ show (lp,sz,off,rp,lsh)
+  --This isn't expected to happen, but I'll handle it anyway:
+  | sz == 0 = fst <$> runEDSL (word 0)
+  | sz == 256 = return w
+  | let = let cleanLeft = sz + lsh + lp > 255
+              cleanRight = lsh - rp <= 0
+              --cleanLeft means any garbage to the left is shifted out,
+              --analogously for cleanRight
+              offMask = word ((2^sz - 1) * 2^off) & EVar w
+          in case () of
+               --If there is no need for masking, just shift
+               _ | cleanLeft && cleanRight ->
+                   runEDSLW (shift (lsh-off) $ EVar w)
+                 --If there is no need for shifting, any masking must be
+                 --done with and.
+                 | lsh == off ->
+                   runEDSLW offMask
+                 --If only one of left or right is dirty, you can mask it by
+                 --shifting (which has the same gas cost but smaller code).
+                 --Otherwise you need to use and; when shifting left it's better
+                 --to do that first.
+                 | otherwise ->
+                   case () of
+                     _ | not (cleanLeft || cleanRight) ->
+                         runEDSLW (shift (lsh-off) offMask)
+                       | cleanLeft ->
+                         runEDSLW $ shift lsh $ shift (-off) $ EVar w
+                       --cleanRight && not cleanLeft;
+                       --Shift the field as far left as possible, then shr to
+                       --the final position
+                       | let ->
+                         let leftShift = 255 - (off + sz - 1)
+                         in runEDSLW $ shift (lsh - leftShift) $
+                            shift leftShift $ EVar w
+--Fetches bs bytes at offset off from ptr, but does not handle masking the
+--partial word.
+--Instead, reports by how many bytes the top word must be right-shifted.
+--Ex: derefBytes 0 33 ptr => (31,(mload ptr, mload (ptr+1)))
+--If rsh > 0 and bs > 32, the top word contains rsh bytes duplicated from the
+--next word.
+derefBytes :: Int -> Int -> Name -> Seq (Int,[Name])
+derefBytes off bs ptr
+  | off < 0 = error $ "Negative offset in derefBytes: " ++ show (off,bs,ptr)
+  | bs < 0 = error $ "Negative byte count in derefBytes: " ++ show (off,bs,ptr)
+  | let = do
+          let r = bs `mod` 32
+              n = bs `div` 32
+              wholeWords = [do (ptr',_) <- runEDSL $ addK (off + r + 32*i)
+                                           (EVar ptr)
+                               mload ptr'
+                           | i <- [0..n-1]
+                           ]
+          ws <- reverse <$> sequence (reverse wholeWords)
+          (rsh,p) <- loadPartial r
+          return (rsh,p ++ ws)
+            where
+              loadPartial 0 = return (0,[])
+              loadPartial r =
+                let cr = 32 - r --num 0 bytes of the partial word
+                in if cr >= off
+                   then do (ptr',_) <- runEDSL $ addK (fromIntegral (off-cr))
+                                       (EVar ptr)
+                           w <- mload ptr'
+                           return (0,[w])
+                   else do w <- mload ptr
+                           return (cr-off,[w])
 --($mem,result) = mload ($mem,addr)
 --TODO first tree shake away unused mloads, then force the next write to be
 --placed after all remaining ones.
@@ -1617,6 +1789,9 @@ instance Monad EDSL where
   (>>=) = (:>>=)
 instance MonadFail EDSL where
   fail = error
+--Having EDSL operate on (Name,IRT) was probably a mistake... TODO fix.
+runEDSLW :: Expr -> Seq Name
+runEDSLW e = fst <$> runEDSL e
 runEDSLWord :: Expr -> Seq [Name]
 runEDSLWord e = runEDSL $ do
   (v,irt) <- e
@@ -1646,8 +1821,8 @@ typedAnonVar irt = do
   return (v,irt)
 
 type Expr = EDSL EVar
-word :: Integer -> Expr
-word k = head <$> App (Push $ Const k) (\_ -> Just [tword]) []
+word :: Integral n => n -> Expr
+word k = head <$> App (Push $ Const $ fromIntegral k) (\_ -> Just [tword]) []
 tword = W 1 (UInt 256)
 --Internal coercion, coerces the given words to the words of the target C type.
 --Errors if the number of words given doesn't match the target's word size.
@@ -1690,6 +1865,9 @@ op1 opcode a = do
   [v] <- App (Opcode opcode) (\case [W{}] -> Just [tword]
                                     _ -> Nothing) [a]
   return v
+--Useful variant: op2 embedded in Seq
+wop2 :: String -> Name -> Name -> Seq Name
+wop2 op w1 w2 = fst <$> (runEDSL $ op2 op (EVar w1) (EVar w2))
 op2 :: String -> Expr -> Expr -> Expr
 op2 opcode a b = do
   [v] <- App (Opcode opcode) (\case
@@ -1731,7 +1909,7 @@ maskValue :: Int -> Expr
 maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
 --k + x
-addK :: Integer -> Expr -> Expr
+addK :: Integral n => n -> Expr -> Expr
 addK 0 e = e
 addK k e = op2 "add" e (word k)
 --I have copies all over the place... will not SSAing between SLCs make them
@@ -1775,6 +1953,9 @@ pushK t sv = do
   emitOp [(v,W 1 t)] (Push sv) []
   return v
 
+--Used to aid in debugging printed IR modules
+comment :: String -> Seq ()
+comment = emit . IRComment
 emit :: IR -> Seq ()
 emit ir = tell [ir]
 --If the lhs vars are new, binds them to their type
