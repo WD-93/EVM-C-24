@@ -1866,8 +1866,11 @@ op1 opcode a = do
                                     _ -> Nothing) [a]
   return v
 --Useful variant: op2 embedded in Seq
-wop2 :: String -> Name -> Name -> Seq Name
-wop2 op w1 w2 = fst <$> (runEDSL $ op2 op (EVar w1) (EVar w2))
+wop2 :: String -> Seq Name -> Seq Name -> Seq Name
+wop2 op e1 e2 = do
+  w1 <- e1
+  w2 <- e2
+  runEDSLW $ op2 op (EVar w1) (EVar w2)
 op2 :: String -> Expr -> Expr -> Expr
 op2 opcode a b = do
   [v] <- App (Opcode opcode) (\case

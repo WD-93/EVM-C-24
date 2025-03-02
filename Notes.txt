@@ -1,3 +1,121 @@
+On ptr->field* = v: if the struct is < a word, you must save and restore more than just the
+struct.
+
+dynsize would make more sense for a ptr-based datatype.
+Should Cons x xs allocate or be an array expr? Problem with the latter: you don't know the size needed when
+you malloc the ptr. You could leave that to the programmer...
+
+Asm would be useful for expressing static data and JTs... but optimization is tricky.
+Non-inline asm decl: 
+asm label :: T --distinguish between exported and internal labels?
+.data ...
+Stmt: vars = asm, var, k, op(args), f, &glob
+Opt applicability param? For JTs or static data it must be fixed.
+Which regions are appropriate for globals?
+Storage, memory; code works, but 
+itbl[] = {i1,i2,...} --var[] = arrExpr syntax as opposed to normal assignment
+--static sizeof for arrays distinct from sizeof the ptr would be useful, but on-stack arrays don't make sense..
+--even though you can technically handle it with a dispatch, they'd be too large.
+If sizeof only applies to globals, I could introduce a separate sizeof__globName
+global code varnm[] = {...} --static values make sense
+global memory varnm[] = {...} --values with scope () make sense, but it has a runtime overhead.
+varnm[] statically allocates the minimum memory needed; varnm[sz] is needed if it needs to support more
+
+Anonymous static data syntax: staticdata T {e1,e2,...}
+The T is necessary to choose a consistent type to softcoerce integers to.
+Idea: array expressions are implicitly parameterized by their destination pointer; use <- instead of pat[]= .
+Ex: ptrA <- filter (f,len,ptrB)
+That could be used to express in-memory datatypes, allowing variable size without unions.
+(ptr,len) = "Hello world"
+evm_RETURN (ptr,len)
+(ptr,len) = module {...} --useful for creation scripts
+Special labels: __end (points to any appended constructor arguments), memOffset (points to first byte of
+memory not occupied by globals)
+
+Opt: when you load multiple fields that fit within a word, you can share the mload.
+When copying, you can share the copy if you have enough scratch.
+
+Most urgent:
+Compiler pipeline: hardhat interaction util, import support.
+ Got a very simple pipeline done, now to support *ptr= and evm_return primop to inspect output.
+ evm_return should become a branch type, RETURN ptr len. What is live at that point? ptr,len,$mem
+Argument generation from a module's interface.
+ Export decls, decl tree shaking
+*ptr.field*, field*= for memory, storage, calldata, code
+Globals including arrays; scratch is a Ptr Memory Byte
+ Scratch size could be auto-set based on largest sha3 or codecopy
+ Pass min-scratch as a compiler flag; it's a lower bound
+ copy(pfrom,pto,n) --automatically choses appropriate *copy
+Static data: strings, arrays, modules...
+Unions
+Datatypes, case
+JTs
+Standard library
+Interpreter prototype, Merkle lib
+
+simple import: just include all decls
+Forget array exprs for now; explicitly set array contents with a copy or while loop.
+staticData exprs return a (sz,ptr); string and code objects are sugar for byte staticData in
+source mode.
+Hello world:
+(sz,ptr) = "Hello world!"
+retptr = 0 :: Ptr Memory Byte
+copy(ptr,retptr,sz)
+evm_RETURN(retptr,sz)
+
+Relatively simple array initialization without array exprs:
+(bytesz,sptr) = staticData (UInt 32) {1,2,3}
+ptr = malloc(12) //3*byte size of UInt 32
+copy(sptr,ptr,12)
+
+Was eliminating type declarations for locals a mistake?
+Cons:
+I still need to add a coercion when assigning 32 to a uint16
+Syntactic sugar for structs (x :: {a: Byte, b: Byte} = {a: 1} or {b:2,a:1} involves a runtime coercion.
+Pros:
+Structs in overloaded operations have an obvious type.
+Assignments which don't require coercion become simpler.
+
+Named static data would let you declare it outside a function and share refs... as well as declare named
+internal pointers to it. Need syntax for that.
+Would it be useful to make standalone function static data? If it has no external refs, it could be used for
+dynamic libs. That's a use case for lib-mode compilation.
+What should code objects be pointers to? A type encoding the module's interface.
+Renaming of exports could be done at the type level. link(m1,m2,...) could be a primitive.
+
+Exported decls (functions, static data) should be the roots of tree shaking. Syntax: standalone export decls.
+String/static data opt: substrings may overlap. Ex: {1,2}, {2,3} takes 3 bytes; {1,2}, {0,1,2,3} takes 4.
+Would pragmas which let you place globals at specific addresses be useful? Placing a JT at 0 so you can opt
+indexing it would make sense...
+
+ptr->field* = v:
+First get lp,sz,off,rp
+Struct size is implict in lp and rp; nothing beyond that may be changed, and lp and rp must remain 0.
+mstore8 could be used as an opt...
+Make a storeSlice combinator? Yes, spare bits to the left or right of the first/last field word don't need to
+be shared.
+The left-padding of the value matters...
+Simplest case: a byte-aligned whole-word field.
+
+global memory mptr = memOffset :: UInt 16
+malloc(n : UInt 16):
+ p = mptr
+ mptr = p + n
+ return p
+--malloc requires initial values for globals...
+
+JTs are static data for static data.
+Testing edge case that could invalidate 52-instr JT without mul/shl to prevent jumps into
+bytes near the actual JD:
+push1 04
+jump
+push1 (opcode jumpdest)
+Hex: 60 04 56 60 5b
+OK, it's confirmed that jumpdest bytes resulting from an initial scan of the code are special.
+That means data must be placed after executable bytecode, otherwise it risks confusing the scan.
+
+****
+
 The most important things to do now:
 * Fix bugs:
  Restrict main to () -> ()

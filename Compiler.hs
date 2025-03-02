@@ -29,7 +29,33 @@ import Data.Set (Set(..))
 import qualified Data.Set as S
 --For debugging:
 import Pretty
+--For file output
+import Data.Char (intToDigit)
 
+--A simple compilation function; takes a file and produces a .evm.txt
+--file containing the bytecode. Prints the error if compilation fails or if
+--there are undefined labels.
+--The bytecode produced by an EVMC module is not inherently a creation script;
+--to deploy with create rather than setcode then code object values must be
+--added to the language.
+--Constructor parameters require an end pointer.
+
+--Params: source file, dest path, output name
+--
+compile :: FilePath -> FilePath -> String -> IO ()
+compile src dest nm = do
+  str <- readFile src
+  case pipeline2Bytecode str of
+    Left err -> putStrLn $ "Compiler error: \n" ++ show err
+    Right (s,bs)
+      | s /= S.empty -> putStrLn $ "Undefined labels in program: " ++ show s
+      | let -> do
+          putStrLn $ "Compilation OK, writing to " ++ dest
+          writeFile (dest ++ "/" ++ nm) $ "0x" ++ toHexString bs
+  where toHexString bs = do
+          b <- bs
+          [intToDigit $ b `div` 16, intToDigit $ b `mod` 16]
+      
 --Now for some basic testing, using past failing cases
 testModules :: [String]
 testModules = [
@@ -41,28 +67,6 @@ testModules = [
   "module {main:()->Int Unsigned 8;main _ := return 0}",
   "module {main:Int Unsigned 8->();main x := return ()}"
               ]
-
---Hopefully no longer relevant, but keeping just in case:
-{-
---Testing to find weird bug - for function body do {y = 1; return 2}
---the opt2 doesn't remove the garbage op.
-testPrune =
-  let Right cfg2m =
-        pipeline2CFG2 $
-        "module {f : Int Unsigned 256 -> Int Unsigned 256;" ++
-        " f x := do {y = 1;return 2}}"
-      Just (start,cfg2) = M.lookup "f" cfg2m
-      Just slc2 = M.lookup start cfg2
-      (slc,v,s,rc) = slc2
-      rets = S.fromList $ let BReturn rs = slcBranch slc in rs
-      ops' = pruneDeadOps (slcOps slc) rets
-      --pruneDeadOps can remove it! But opt2Pass doesn't...
-      cfg2' = opt2Pass start cfg2
-  in (start,cfg2) --(ops',slcOps slc,cfg2' == cfg2)
---Bit of a hack to persist badly pruned module
-getBadPruning :: IO (Map Name (Label,CFG2))
-getBadPruning = read <$> readFile "badPruningCFG2M.txt"
--}
 
 printIRM :: String -> IO ()
 printIRM str =
@@ -94,6 +98,7 @@ data CompilerError = ParserError String
                    | AsmError String
                    | BytecodeError AsmError
   deriving (Eq,Ord,Read,Show)
+
 --The string set is a warning of undefined labels; none should exist
 pipeline2Bytecode :: String -> Either CompilerError (Set String, [Int])
 pipeline2Bytecode str = do

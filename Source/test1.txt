@@ -1,0 +1,11 @@
+module {
+main: () -> ();
+main _ := do {
+  x = 1;
+  y = 2;
+  if (x + y)
+   then return ()
+   else return main()
+   end
+}
+}
