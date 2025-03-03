@@ -36,6 +36,8 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
                | Continue a Int
                | TailCall a Name [Name]
                | IRComment String --Ignored in later stages, used for debugging
+               --Branching EVM instructions
+               | EVM_RETURN a Name Name Name -- $mem, ptr, len
   deriving (Eq,Ord,Read,Show)
 type IR = IRP ()
 data Operator = Push StaticValue
@@ -552,6 +554,18 @@ patternMatch p t ws =
               "You can't assign fields of unbound vars: " ++ show (nm,nmixs)
         _ -> throwE $ GenericError $
              "Bad pattern for .field* = e: " ++ show (p',nmixs)
+    --TODO improve error message
+    Deref ptr -> do
+      (pt,pws) <- seqE ptr
+      case pt of
+        Ptr r a -> do
+          let [pw] = pws
+          ws' <- softCoerce a t ws
+          case r of
+            Memory -> assignPtr pw t ws'
+            _ -> throwE $ GenericError
+                 "Other regions unsupported for ptr assignment atm"
+        _ -> throwE $ GenericError "Can't assign to non-pointers"
 unrollPFields :: Pat -> (Pat,[Either Name Int])
 unrollPFields p = let (p',nmixs) = go p
                   in (p',reverse nmixs)
@@ -686,6 +700,7 @@ seqE = \case
   --Note you can't always eval the arg first; consider a && b.
   --Primfun names may neither be assigned nor defined to, so I don't need to
   --worry about shadowing.
+    
   --Simple primfuns, no short-circuiting:
   Var pf :$ x
     | Just scheme <- M.lookup pf simplePFs -> do
@@ -830,8 +845,17 @@ simplePFs = M.fromList [
   ("|", binaryBitOp "|" "or" True),
   ("^", binaryBitOp "^" "xor" True),
   --Pointer derefence
-  ("deref",derefPtr)
-                       ]
+  ("deref",derefPtr),
+  --Branching primfuns; they can be simple because the IR is unaware of
+  --branching, it's the CFG phase that handles that.
+  --evm_return(Ptr Memory a, Int {}) : ()
+  ("evm_return",\t ws ->
+      case (t,ws) of
+        (Pair (Ptr Memory a) (Int s blen), [p,len]) -> do
+          emit $ EVM_RETURN () "$mem" p len
+          return (Struct [], [])
+        _ -> throwE $ BadArgPrimFun "evm_return" t)
+  ]
 --Pointer type, pointer word (singular) -> *ptr
 --All regions are byte-addressed starting from 0; all values stored in a
 --region are byte-padded, with their first byte starting at address p.
@@ -1029,6 +1053,51 @@ mload addr = do
   res <- newAnonVar
   emitOp [("$mem",Mem),(res,tword)] (Opcode "mload") ["$mem",addr]
   return res
+mstore :: Name -> Name -> Seq ()
+mstore addr val = do
+  emitOp [("$mem",Mem)] (Opcode "mstore") ["$mem",addr,val]
+  return ()
+--Implements *ptr = v, which is a special case of *ptr#ix* = v and much simpler
+--to implement.
+--All values in memory are byte-aligned, so a value which isn't a whole number
+--of bytes will also be byte-padded.
+--Ex implementation for ptr, {UInt 16, Word}, [w1,w2]:
+--mstore ptr (w1 << 240)
+--mstore (ptr+2) w2
+--Only when a value is < 1w will you need to save and restore.
+--Example for UInt 240, [w]:
+--saved <- mask 16 $ mload ptr
+--mstore ptr (w << 16 | saved)
+assignPtr :: Name -> T -> [Name] -> Seq ()
+assignPtr ptr t ws = do
+  sz <- numBitsT t
+  let bs = (sz `roundedUpMod` 8) `div` 8
+      bsFst = let m = bs `mod` 32
+              in if m == 0
+                 then 32
+                 else m
+      sh = 8*(32 - bsFst)
+  case () of
+    _ | bs == 0 -> return ()
+      | bs < 32 -> do
+          old <- mload ptr
+          let [w] = ws
+          new <- runEDSLW $ mask sh (EVar old)
+            .| (shift sh $ EVar w)
+          mstore ptr new
+      | let -> do
+          let w:ws' = ws
+          shifted <- runEDSLW $ shift sh $ EVar w
+          mstore ptr shifted
+          --This may write beyond the directly addressable range of 16b ptrs
+          sequence_ [
+            do ptr' <- runEDSLW $ op2 "add" (word off) (EVar ptr)
+               mstore ptr' w'
+            | (off,w') <- zip (map (+bsFst) $ map (32*) [0..]) ws'
+            ]
+    
+--Implements *ptr#ix* = v
+assignPtrFields = error "TODO"
 
 --Scheme: (a,b) -> a; combine a with b starting with the lowest words
 --If b is longer than a and a is not a whole number of words, mask the

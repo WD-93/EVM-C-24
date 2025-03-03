@@ -46,6 +46,7 @@ branchChildren = \case
   Jump l -> [l]
   Jumpi _ th el -> [th,el]
   BReturn _ -> []
+  BEVM_RETURN {} -> []
 --dfsGraph specialized to CFGS
 dfsCFG :: (Label,CFGS) -> [(Label,SLC Name)]
 dfsCFG (lab,cfgs) | lab2slc <- labelSLCMap cfgs =
@@ -64,6 +65,7 @@ annotIR = \case
   Break a _ -> a
   Continue a _ -> a
   TailCall a _ _ -> a
+  EVM_RETURN a _ _ _ -> a
 --The live of a given block
 annotBlock :: [IRP a] -> Maybe a
 annotBlock = \case
@@ -72,12 +74,6 @@ annotBlock = \case
 --The name param is so I can apply SSA
 
 type Label = Int
-{-
-data Branch v = BReturn [v]
-            | Jump Label
-            | Jumpi v Label Label
-  deriving (Eq,Ord,Read,Show)
--}
 
 type Live = Set Name
 annIRWithLive :: [(Live,Live)] -> --the stack of while start and end lives
@@ -132,6 +128,11 @@ annIRWithLive loopLs end =
         case loopLs !? ix of
           Just (start,end) -> (Continue start ix, start)
           Nothing -> error $ "Continue index OOB: " ++ show (ix,loopLs)
+      EVM_RETURN () mem ptr len ->
+        let s = S.fromList [mem,ptr,len]
+        in (EVM_RETURN s mem ptr len, s)
+      ir -> error $ "Compiler error: unsupported IR construct in annotIR "
+        ++ show ir
 
 {-
 (x:xs) !? 0 = Just x
@@ -203,6 +204,7 @@ data SLC v = SLC {slcOps :: [([(v,IRT)],Operator,[v])],
 data Branch v = Jump Label
               | Jumpi v Label Label
               | BReturn [v]
+              | BEVM_RETURN v v v
   deriving (Eq,Ord,Read,Show)
 
 type CFGM = State CFGS
@@ -273,6 +275,10 @@ cfg loopLs mll = \case
                               }
             return $ Just (loop,liveLoop)
       Nothing -> error "This won't happen!"
+  EVM_RETURN live mem ptr len : _ ->
+    genSLC live [] (BEVM_RETURN mem ptr len)
+  ir : _ -> error $ "Compiler error: unsupported IR constructor in cfg "
+            ++ show ir
 
 genIfte :: Live -> Name -> Maybe LL -> Maybe LL -> CFGM (Maybe LL)
 genIfte live v mth mel =
@@ -354,6 +360,8 @@ ssaBranch = \case
   Jumpi v th el -> Jumpi <$> ssaNm v <*> return th <*> return el
   BReturn vs -> BReturn <$> mapM ssaNm vs
   Jump l -> return $ Jump l
+  BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ssaNm mem <*> ssaNm ptr <*>
+    ssaNm len
 ssaNm :: Name -> SSA SSAName
 ssaNm nm = do
   v <- getVer nm
@@ -400,6 +408,7 @@ ecB = \case
   Jumpi v th el -> Jumpi <$> ecNm v <*> return th <*> return el
   BReturn vs -> BReturn <$> mapM ecNm vs
   Jump l -> return $ Jump l
+  BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ecNm mem <*> ecNm ptr <*> ecNm len
 ecOp :: SSAOp -> ECp [SSAOp]
 ecOp = \case
   --The t need not be the same as y's t, but as long as I haven't made a
@@ -673,6 +682,7 @@ pruneDeadOpsSLC2 (slc,v,s,rc) live =
           Jumpi v _ _ -> S.singleton v
           BReturn vs -> S.fromList vs
           Jump _ -> S.empty
+          BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
       live' = live `S.union` branchLive
   in (slc{slcOps = pruneDeadOps (slcOps slc) live'},v,s,rc)
 --TODO use elsewhere
@@ -784,6 +794,7 @@ mergeSLCs (slcA,vA,sA,rcA) (slcB,vB,sB,_) =
           Jump l -> Jump l
           Jumpi v th el -> Jumpi (f v) th el
           BReturn vs -> BReturn $ map f vs
+          BEVM_RETURN mem ptr len -> BEVM_RETURN (f mem) (f ptr) (f len)
       liveM = slcLive slcA
       vM = M.unionWith (+) vA vB
       --First rename both keys and values; note that while multiple x0, y0

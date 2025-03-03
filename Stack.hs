@@ -513,7 +513,26 @@ compileBranch ver sub self layout types branch =
                             ++ show v) vs
       let asm = compileReturn layout vsW
       return (asm,Nothing) --It will ofc not fall through to anything
-
+    --Place ptr,len TOS, then output RETURN.
+    --Since the other stack variables will be discarded on RETURN, we can
+    --simply dup ptr and len if they're not TOS
+    --Cases:
+    --ptr,len => done
+    --_,ptr,len => pop
+    --len,ptr => swap
+    --len,_ => dup ptr
+    --_ => dup len, dup ptr
+    --For now I'll just dup them; TODO optimize
+    BEVM_RETURN mem ptr len -> do
+      debugPrint "Branch: EVM RETURN"
+      let (_,w,_) = runStackOps (do l <- get
+                                    tell [Comment $ "Layout: " ++ show l]
+                                    soDupName len
+                                    l' <- get
+                                    tell [Comment $ "Layout: " ++ show l']
+                                    soDupName ptr)
+                    layout
+      return ([Comment $ "EVM RETURN " ++ show (len,ptr)] ++ w ++ [Opcode "return"], Nothing)
 --For brevity
 type L = ToyCFG.Label
 --A means of allocating new CSLCs without any additional state: since each
@@ -766,14 +785,14 @@ soSwapName nm = do
     Just i -> soSwapIndex i
 soDupIndex :: Int -> StackOps ()
 soDupIndex i = do
-  tell [Dup i]
+  tell [Dup $ i + 1]
   modify (dupF i)
 soDupName :: SSAName -> StackOps ()
 soDupName nm = do
   mi <- gets (elemIndex nm)
   case mi of
     Nothing -> error "Compiler error soDupName"
-    Just i -> soDupIndex (i+1) --DUP1 dups index 0
+    Just i -> soDupIndex i --DUP1 dups index 0
 dupF :: Show a => Int -> [a] -> [a]
 dupF i as =
   case as !? i of
@@ -837,6 +856,7 @@ useCountBranch slc ver sub = do
                      Jumpi cond _ _ -> S.singleton cond
                      BReturn vs -> S.fromList vs
                      Jump _ -> S.empty
+                     BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
   return $ M.fromSet (const 1) $ S.union usedBranch liveSSAs
 
 --TODO use earlier/deduplicate

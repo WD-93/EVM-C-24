@@ -121,6 +121,7 @@ showSLC showV (l,slc) =
       Jump l -> ["jump",show l]
       Jumpi v th el -> ["jumpi",showV v,show th,show el]
       BReturn vs -> ["return","(" ++ showRHS (map showV vs) ++ ")"]
+      BEVM_RETURN mem ptr len -> "RETURN":map showV [mem,ptr,len]
   ]
 
 --After SSA and copy elim

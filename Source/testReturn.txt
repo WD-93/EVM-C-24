@@ -1,0 +1,8 @@
+module {
+main:()->();
+main _ := do {
+ ptr = (0 :: Ptr Memory Word);
+ (*ptr) = 65535 :: Word;
+ evm_return (ptr,32)
+}
+}

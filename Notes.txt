@@ -39,6 +39,10 @@ Most urgent:
 Compiler pipeline: hardhat interaction util, import support.
  Got a very simple pipeline done, now to support *ptr= and evm_return primop to inspect output.
  evm_return should become a branch type, RETURN ptr len. What is live at that point? ptr,len,$mem
+ I now have evm_return and *ptr = e.
+ Two mysterious bugs: why OOB in dupF in testReturn, and why a pop at the start of the main function?
+ The latter isn't a bug, $ret isn't relevant if you RETURN... Fixed the former!
+ Needed for hello world: strings, copy (code->mem). sizeof would also be desirable.
 Argument generation from a module's interface.
  Export decls, decl tree shaking
 *ptr.field*, field*= for memory, storage, calldata, code

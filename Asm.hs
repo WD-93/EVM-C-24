@@ -184,9 +184,9 @@ handleAsm = \case
         emitBytes [0x5f + len]
         emitLabel len l
   Dup n ->
-    checkRange "dup" 1 16 n $ emitBytes [0x80 + n]
+    checkRange "dup" 1 16 n $ emitBytes [0x7f + n]
   Swap n ->
-    checkRange "swap" 1 16 n $ emitBytes [0x90 + n]
+    checkRange "swap" 1 16 n $ emitBytes [0x8f + n]
   Opcode str ->
     case M.lookup str mnemonics of
       Just op -> emitBytes [op]
