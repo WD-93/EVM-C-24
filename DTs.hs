@@ -66,6 +66,9 @@ pattern a :-> b = "->" :$$ a :$$ b
 --I should perhaps have separated structs and tuples after all...
 pattern Pair a b = Struct [((Word,Word),Nothing,a),
                            ((Word,Word),Nothing,b)]
+pattern Triplet a b c = Struct [((Word,Word),Nothing,a),
+                                ((Word,Word),Nothing,b),
+                                ((Word,Word),Nothing,c)]
 pattern Memory = TyCon "Memory"
 pattern Code = TyCon "Code"
 pattern Ptr r a = "Ptr" :$$ r :$$ a

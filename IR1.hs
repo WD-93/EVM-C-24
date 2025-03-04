@@ -938,7 +938,30 @@ simplePFs = M.fromList [
         (Pair (Ptr Memory a) (Int s blen), [p,len]) -> do
           emit $ EVM_RETURN () "$mem" p len
           return (Struct [], [])
-        _ -> throwE $ BadArgPrimFun "evm_return" t)
+        _ -> throwE $ BadArgPrimFun "evm_return" t),
+  --Generic copy operation, to integrate all *copy instructions except
+  --extcodecopy:
+  --m, calldata, code, returndata
+  --copy(pto,pfrom,n) copies n elements from pfrom to pto; takes into account
+  --the bytesize of *pto and *pfrom, which must be equal
+  --TODO: optimize *memptr = *ptr to copy(memptr,ptr,1)
+  ("copy", \t ws ->
+      case t of
+        Triplet (Ptr Memory a) (Ptr r a') nt
+          | a == a' -> do
+              let [pto,pfrom,nw] = ws
+              nws <- softCoerce (UInt 16) nt [nw]
+              let [n] = nws
+              bytesz <- numBytesT a
+              tot <- runEDSLW $ mulK bytesz (EVar n)
+              case r of
+                Memory ->
+                  emitOp [("$mem",Mem)] (Opcode "mcopy")
+                    ["$mem",pto,pfrom,tot]
+                Code -> emitOp [("$mem",Mem)] (Opcode "codecopy")
+                  [pto,pfrom,tot]
+                _ -> error $ "Compiler error: todo in copy " ++ show r
+              return (Struct [], []))
   ]
 --Pointer type, pointer word (singular) -> *ptr
 --All regions are byte-addressed starting from 0; all values stored in a
@@ -2068,6 +2091,14 @@ maskValue len = word $ 2 ^ len - 1
 addK :: Integral n => n -> Expr -> Expr
 addK 0 e = e
 addK k e = op2 "add" e (word k)
+
+mulK :: Integral n => n -> Expr -> Expr
+mulK k e =
+  case k of
+    0 -> word 0
+    1 -> e
+    (-1) -> op2 "sub" (word 0) e
+    _ -> op2 "mul" (word k) e
 --I have copies all over the place... will not SSAing between SLCs make them
 --less efficient?
 --Consider (x,f(),x); use fields of tuple.
@@ -2229,6 +2260,11 @@ numWordsT :: T -> Seq Int
 numWordsT t = do
   n <- numBitsT t
   return $ (n `padWith` Word) `div` 256
+--Should've written this earlier...
+numBytesT :: T -> Seq Int
+numBytesT t = do
+  n <- numBitsT t
+  return $ (n `padWith` Byte) `div` 8
 --With alignment, size calc of structs becomes more complex
 --TODO deduplicate the logic between size calc, construction and access
 numBitsT :: T -> Seq Int
