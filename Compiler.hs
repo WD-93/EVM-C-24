@@ -15,6 +15,7 @@ import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.Trans.Except
 import Control.Monad.State
+import Text.Read (readMaybe)
 --Desugaring code written in Compiler... maybe todo move
 --AST -> IR
 import IR1 hiding (Ifte,While,Return)
@@ -163,6 +164,7 @@ data DError = TySigDefunMismatch Name Name
             | DuplicatePads Padding P.Field
             | DuplicateAligns Padding P.Field
             | CoerceMixedWithOps [Name]
+            | GenericDError String
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -372,12 +374,20 @@ desugarE = do
       e1 <- r e
       opes <- desugarOpsE op os
       return $ opsToApps opPrecedenceInfo e1 opes
+    --Hack: BNFC doesn't like adding a hexadecimal number token, so I'll
+    --use hex("deadbeef") instead
+    P.App (P.Var (Ident "hex")) (P.Str str) ->
+     EInteger <$> (case readMaybe $ "0x"++str of
+                      Just n -> return n
+                      Nothing -> throwE $ GenericDError $
+                        "Couldn't read hex number in hex(...): " ++ show str)
     P.App f x -> (:$) <$> r f <*> r x
     P.Var (Ident x) -> return $ Var x
     P.Con (UIdent x) -> return $ Var x --a name's a name to the IR
     P.Dot e (Ident f) -> (:.) <$> r e <*> return f
     P.Hash e n -> (:#) <$> r e <*> return (fromInteger n)
     P.Int n -> return $ EInteger n
+    P.Str str -> return $ EString str
     P.EmptyTup -> return $ EStruct []
     P.Tup e es -> tupleE <$> ((:) <$> r e <*> mapM r es)
     P.EmptyStruct -> return $ EStruct []

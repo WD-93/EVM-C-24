@@ -15,6 +15,7 @@ import Data.String (IsString(..))
 --AST, converted from BNFC CST in desugaring stage
 type Name = String
 data E = EInteger Integer
+       | EString String
        | Var Name --includes overloaded ops
        | E :$ E
        --The second Padding is alignment
@@ -66,6 +67,7 @@ pattern a :-> b = "->" :$$ a :$$ b
 pattern Pair a b = Struct [((Word,Word),Nothing,a),
                            ((Word,Word),Nothing,b)]
 pattern Memory = TyCon "Memory"
+pattern Code = TyCon "Code"
 pattern Ptr r a = "Ptr" :$$ r :$$ a
 type Field a = ((Padding,Padding), Maybe Name, a)
 data T = TyCon Name

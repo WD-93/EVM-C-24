@@ -11,6 +11,7 @@ import Control.Monad.State
 import Control.Monad.Trans.Except
 import Control.Monad.Fail
 import Control.Arrow ((***))
+import Data.Char (ord) --for string compilation
 
 import DTs
 --The logic for assembling structs from field values, split out into another
@@ -45,7 +46,7 @@ data Operator = Push StaticValue
               | Call --args: f, args, ret
               | Reduce Name --arg: a commutative and associative opcode,
                 --used for truthy
-              | Copy --x = y => x = copy [y] 
+              | Copy --x = y => x = copy [y]
   deriving (Eq,Ord,Read,Show)
 --Ret and f are created by push staticValue
 data StaticValue = Const Integer
@@ -117,7 +118,11 @@ data SeqS = SS {
   --IR vars = v#1..n for each v in C locals, plus anonymous vars and $mem
   irLocalTypes :: Map Name IRT,
   cLocalTypes :: Map Name T,
-  anonVarCounter :: Int --makes $anonN
+  anonVarCounter :: Int, --makes $anonN
+  --Static data support
+  anonLabelCounter :: Int,
+  --prepended to each time a new anon staticData is allocated
+  anonStaticData :: [Static]
   }
   deriving (Eq,Ord,Read,Show)
 --So I can add info about the function being compiled, specifically the return
@@ -132,9 +137,17 @@ data SeqR = SR {
 --FW problem: the IR output may need additional info for placement, such as
 --whether the code is a library, exported functions and JTs
 data IRModule = IRM {
-  irDefuns :: Map Name (Arity,[IR])
+  irDefuns :: Map Name (Arity,[IR]),
+  --Static data: strings, arrays, nested modules
+  --For now, just strings
+  --(Name,Int) is a label use, Int a byte
+  --C-allocated anon label format: fname.static#n
+  --That ensures the counter needn't be shared between function compilations
+  staticData :: Map Name Static
   }
   deriving (Eq,Ord,Read,Show)
+--Not very storage-efficient for strings...
+type Static = (T,[Either (Name,Int) Int])
 --The number of argument words a function takes beyond $ret; needed for asm
 --generation.
 type Arity = Int
@@ -152,14 +165,18 @@ seqModule mod = do
                                   }
                         seqs = SS {irLocalTypes = M.empty,
                                    cLocalTypes = M.empty,
-                                   anonVarCounter = 0
+                                   anonVarCounter = 0,
+                                   anonLabelCounter = 1,
+                                   anonStaticData = []
                                   }
                     in case runSeq (seqDefun defun) seqr seqs of
                          (Left serr, _, _) -> Left serr
                          (Right arity, irs, _seqs) -> return (fnm,(arity,irs))
                  )
             fdefs
-  return $ IRM {irDefuns = M.fromList irdefs}
+  return $ IRM {irDefuns = M.fromList irdefs,
+                staticData = M.empty
+               }
 
 --First checks for cycles in the type synonyms.
 --Substitute all types and check their kinds. It's disappointing that can't
@@ -652,13 +669,31 @@ seqS = \case
 --structure like Ifte or While.
 --anonVarCounter is passed on, but the other state is not. Writer output is
 --suppressed and instead returned. Exceptions are propagated.
+--Now we must also pass on anonLabelCounter, anonStaticData
 isolate :: Seq a -> Seq (a,[IR])
 isolate m = do
   s <- get
   (a,irs) <- censor (const []) $ listen m
   s' <- get
-  put s{anonVarCounter = anonVarCounter s'}
+  put s{anonVarCounter = anonVarCounter s',
+        anonLabelCounter = anonLabelCounter s',
+        anonStaticData = anonStaticData s'
+        }
   return (a,irs)
+
+allocAnonLabel :: Seq Name
+allocAnonLabel = do
+  --Do I already have a function to get the current function's name...?
+  Defun fnm _ _ _ <- seqrFunction <$> ask
+  s <- get
+  let n = anonLabelCounter s
+      label = fnm ++ ".static#" ++ show n
+  put s{anonLabelCounter = n+1}
+  return label
+prependAnonStaticData :: Static -> Seq ()
+prependAnonStaticData static = do
+  s <- get
+  put s{anonStaticData = static : anonStaticData s}
 
 seqE :: E -> Seq (T,[Name])
 seqE = \case
@@ -667,6 +702,20 @@ seqE = \case
     let t = typeOfInteger n
     v <- pushK t (Const n)
     return (t,[v])
+  --Allocates a new label fname.static#n which will point to the string;
+  --returns (ptr :: Ptr Code Byte,len :: UInt 16)
+  --Fails if any char has a code point > 255
+  EString str ->
+    let bs = map ord str
+    in if any (>255) bs
+       then throwE $ GenericError $ "Non-UTF8 string in seqE: " ++ str
+       else do
+      sptr <- allocAnonLabel
+      prependAnonStaticData $ (UInt 8, map Right bs)
+      ptr <- pushK (Ptr Code (UInt 8)) (LabelConst sptr)
+      len <- pushK (UInt 16) ((Const $ fromIntegral $ length bs))
+      --Issue: do I need to coerce ptr and len here?
+      return (Pair (Ptr Code (UInt 8)) (UInt 16), [ptr,len])
   --For now, it's either a user function, local or undefined
   --locals can't shadow functions
   Var nm -> do

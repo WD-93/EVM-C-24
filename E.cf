@@ -6,6 +6,8 @@ comment "{-" "-}";
 token UIdent (upper (letter | digit | '_')*);
 --No need to delete = or ., reserved words will handle :=, = and .field.
 token Infix ((["!#@$%&/?+*-^|:=.><"])+);
+--token HexNumber ( "0x" (['0'-'9''A'-'F''a'-'f']+) );
+--token HexNumber ({"0x"} (["0123456789abcdefABCDEF"]+));
 
 layout "module";
 Module. M ::= "module" "{" [D] "}";
@@ -45,6 +47,8 @@ Hash. E3 ::= E3 "#" Integer;
 --For now Ill use e :: t, though thats a bit misleading: it doesnt inform
 --any overloading of e since there is none, nor does it fail if e isn't t.
 Int. E3 ::= Integer;
+--HexInt. E3 ::= Integer;
+Str. E3 ::= String;
 EmptyTup. E3 ::= "(" ")";
 Tup. E3 ::= "(" E "," [E] ")";
 separator E ",";

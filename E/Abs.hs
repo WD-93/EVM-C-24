@@ -32,6 +32,7 @@ data E
     | Dot E Ident
     | Hash E Integer
     | Int Integer
+    | Str String
     | EmptyTup
     | Tup E [E]
     | EmptyStruct

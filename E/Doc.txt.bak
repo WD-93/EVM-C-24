@@ -35,10 +35,10 @@ Infix literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``align`` | ``bit`` | ``byte`` | ``coerce``
-  | ``do`` | ``else`` | ``end`` | ``if``
-  | ``module`` | ``pad`` | ``return`` | ``then``
-  | ``type`` | ``while`` | ``word`` | 
+  | ``align`` | ``bit`` | ``byte`` | ``do``
+  | ``else`` | ``end`` | ``if`` | ``module``
+  | ``pad`` | ``return`` | ``then`` | ``type``
+  | ``while`` | ``word`` |  | 
 
 The symbols used in E are the following:
   | { | } | ; | :=
@@ -82,7 +82,6 @@ All other symbols are terminals.
   |  |  **|**  | //UIdent// 
   |  |  **|**  | //E3// ``.`` //Ident// 
   |  |  **|**  | //E3// ``#`` //Integer// 
-  |  |  **|**  | ``coerce`` ``(`` //E3// ``)`` //E3// 
   |  |  **|**  | //Integer// 
   |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 

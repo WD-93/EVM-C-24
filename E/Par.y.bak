@@ -40,20 +40,19 @@ import E.ErrM
   'align' { PT _ (TS _ 11) }
   'bit' { PT _ (TS _ 12) }
   'byte' { PT _ (TS _ 13) }
-  'coerce' { PT _ (TS _ 14) }
-  'do' { PT _ (TS _ 15) }
-  'else' { PT _ (TS _ 16) }
-  'end' { PT _ (TS _ 17) }
-  'if' { PT _ (TS _ 18) }
-  'module' { PT _ (TS _ 19) }
-  'pad' { PT _ (TS _ 20) }
-  'return' { PT _ (TS _ 21) }
-  'then' { PT _ (TS _ 22) }
-  'type' { PT _ (TS _ 23) }
-  'while' { PT _ (TS _ 24) }
-  'word' { PT _ (TS _ 25) }
-  '{' { PT _ (TS _ 26) }
-  '}' { PT _ (TS _ 27) }
+  'do' { PT _ (TS _ 14) }
+  'else' { PT _ (TS _ 15) }
+  'end' { PT _ (TS _ 16) }
+  'if' { PT _ (TS _ 17) }
+  'module' { PT _ (TS _ 18) }
+  'pad' { PT _ (TS _ 19) }
+  'return' { PT _ (TS _ 20) }
+  'then' { PT _ (TS _ 21) }
+  'type' { PT _ (TS _ 22) }
+  'while' { PT _ (TS _ 23) }
+  'word' { PT _ (TS _ 24) }
+  '{' { PT _ (TS _ 25) }
+  '}' { PT _ (TS _ 26) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -104,7 +103,6 @@ E3 : Ident { E.Abs.Var $1 }
    | UIdent { E.Abs.Con $1 }
    | E3 '.' Ident { E.Abs.Dot $1 $3 }
    | E3 '#' Integer { E.Abs.Hash $1 $3 }
-   | 'coerce' '(' E3 ')' E3 { E.Abs.Coerce $3 $5 }
    | Integer { E.Abs.Int $1 }
    | '(' ')' { E.Abs.EmptyTup }
    | '(' E ',' ListE ')' { E.Abs.Tup $2 $4 }

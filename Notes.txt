@@ -43,6 +43,35 @@ Compiler pipeline: hardhat interaction util, import support.
  Two mysterious bugs: why OOB in dupF in testReturn, and why a pop at the start of the main function?
  The latter isn't a bug, $ret isn't relevant if you RETURN... Fixed the former!
  Needed for hello world: strings, copy (code->mem). sizeof would also be desirable.
+ BNFC doesn't like Haskell-style application mixed with hexadecimals... I'll use hex("0xdeadbeef") as a
+ hack replacement.
+(ptr,sz) = "Hello world!"
+--Need to extend the IR module type to include strings. Allocate two new labels (string#n .sz and .ptr)
+for each. The CFG stage can ignore static data, but it needs to be passed into stack.
+LabelConst is always interpreted as 2B... perhaps I'll need a new constructor for larger immutable values
+later.
+State needed for static data: Map Name (T,[Int]) --type pointed to, bytes
+staticData may refer to labels as well as bytes...
+sz needn't be recorded as a label, it's implicit in the content
+staticData names evaluate to (ptr,sz)
+Strings in calldata should be {ptr,len}, not (ptr,len)
+How about anonymous functions (not closures); would they be ez? Seq emits IR, but it would need to 
+recursively generate the IR for the function (which may contain other anonymous functions) and register
+them for inclusion in the IRM.
+Only the function that mentions anonymous staticData will refer to it, so it doesn't complicate compilation
+for other functions. The type of named staticData must be stored in the C AST module; might as well eval to
+bytes at the IR stage.
+Note: anonymous labels complicate dynamic module imports, since two modules will have overlapping label
+names. I already have logic for dealing with that in Asm.
+Static data forms: "string", staticData T {v1,v2,...}, module {...}.
+Importing std libs in submodules requires pruning of unused functions.
+
+Opt: I should make use of the knowledge that memory starts = 0.
+Is mcopy cheaper than mstore for repeated writes to memory?
+
+Static data byte sharing is a nontrivial problem when a string isn't contained in another, since you must
+choose which matching string to extend. TODO write greedy shortest common superstring algorithm.
+
 Argument generation from a module's interface.
  Export decls, decl tree shaking
 *ptr.field*, field*= for memory, storage, calldata, code
@@ -53,6 +82,7 @@ Globals including arrays; scratch is a Ptr Memory Byte
 Static data: strings, arrays, modules...
 Unions
 Datatypes, case
+Kind check
 JTs
 Standard library
 Interpreter prototype, Merkle lib

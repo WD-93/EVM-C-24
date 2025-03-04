@@ -33,7 +33,7 @@ $c ($l | $d | \_)* { tok (\p s -> PT p (eitherResIdent (T_UIdent . share) s)) }
 [\! \# \@ \$ \% \& \/ \? \+ \* \- \^ \| \: \= \. \> \<]+ { tok (\p s -> PT p (eitherResIdent (T_Infix . share) s)) }
 
 $l $i*   { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
-
+\" ([$u # [\" \\ \n]] | (\\ (\" | \\ | \' | n | t)))* \"{ tok (\p s -> PT p (TL $ share $ unescapeInitTail s)) }
 
 $d+      { tok (\p s -> PT p (TI $ share s))    }
 

@@ -128,7 +128,6 @@ instance Print E where
     Con uident -> prPrec i 3 (concatD [prt 0 uident])
     Dot e_ id -> prPrec i 3 (concatD [prt 3 e_, doc (showString "."), prt 0 id])
     Hash e_ n -> prPrec i 3 (concatD [prt 3 e_, doc (showString "#"), prt 0 n])
-    Coerce e_1 e_2 -> prPrec i 3 (concatD [doc (showString "coerce"), doc (showString "("), prt 3 e_1, doc (showString ")"), prt 3 e_2])
     Int n -> prPrec i 3 (concatD [prt 0 n])
     EmptyTup -> prPrec i 3 (concatD [doc (showString "("), doc (showString ")")])
     Tup e_ es -> prPrec i 3 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])

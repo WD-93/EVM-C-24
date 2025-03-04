@@ -31,7 +31,6 @@ data E
     | Con UIdent
     | Dot E Ident
     | Hash E Integer
-    | Coerce E E
     | Int Integer
     | EmptyTup
     | Tup E [E]

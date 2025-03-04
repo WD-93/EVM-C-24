@@ -1,0 +1,9 @@
+module {
+main:()->();
+main _ := do {
+ (ptr,len) = "Hello string!";
+ rptr = (0 :: MPtr (Ptr Code Byte));
+ (*rptr) = ptr;
+ evm_return(rptr,2)
+}
+}

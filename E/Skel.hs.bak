@@ -47,7 +47,6 @@ transE x = case x of
   Con uident -> failure x
   Dot e ident -> failure x
   Hash e integer -> failure x
-  Coerce e1 e2 -> failure x
   Int integer -> failure x
   EmptyTup -> failure x
   Tup e es -> failure x
