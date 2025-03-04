@@ -5,6 +5,7 @@ import Data.List (intercalate)
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import qualified Data.Set as S
+import Data.Char (intToDigit)
 
 import DTs (Name(..),T(..),Padding(..),pattern (:->),pattern UInt, pattern SInt)
 import IR1
@@ -17,9 +18,23 @@ import qualified Asm as A
 prettyIRM :: IRModule -> [String]
 prettyIRM irm =
   let ds = M.toList $ irDefuns irm
-  in ds >>= (\(f,(arity,irs)) ->
+      stats = M.toList $ staticData irm
+  in (ds >>= (\(f,(arity,irs)) ->
                [f ++ "(arity " ++ show arity ++ ")"++ ":"] ++
-               map (' ':) (irs >>= prettyIR))
+               map (' ':) (irs >>= prettyIR))) ++
+     ["Labels:"] ++
+     (stats >>= (\(nm,(t,ei_label_bytes)) ->
+                   [nm ++ " :: " ++ showT t ++ ":"] ++
+                   [showStatic ei_label_bytes]))
+showStatic :: [Either (Name,Int) Int] -> String
+showStatic ei_label_bytes = "[" ++
+  
+  (intercalate ", " $ map (\case Left (nm,len) -> nm ++ " : " ++ show len
+                                 Right byte -> map intToDigit [byte `div` 16,
+                                                               byte `mod` 16])
+   ei_label_bytes)
+  ++ "]"
+  
 --Given a pretty for vs and a [(Name,v)], generates
 --k:
 -- pretty v
@@ -51,6 +66,8 @@ prettyIR = do
       ["}"]
     Return _ nms -> ["return " ++ showRHS nms]
     IRComment str -> ["--" ++ str]
+    EVM_RETURN _ mem ptr len -> [unwords ["evm_return",mem,ptr,len]]
+    ir -> error $ "Unsupported IR construct in prettyIR: " ++ show ir
 indentBlock irs = map (' ':) (irs >>= prettyIR)
 
 showLHS :: [(Name,IRT)] -> String

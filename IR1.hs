@@ -151,6 +151,8 @@ type Static = (T,[Either (Name,Int) Int])
 --The number of argument words a function takes beyond $ret; needed for asm
 --generation.
 type Arity = Int
+--Change now that I have strings: instead of a mapM, thread through the
+--anonLabelCounter and accumulate the staticData.
 seqModule :: Module -> Either SeqError IRModule
 seqModule mod = do
   --First, handle tysyns. After this phase they're irrelevant to output,
@@ -159,6 +161,7 @@ seqModule mod = do
   mod' <- handleTySyns mod
   let mod = mod'
   let fdefs = M.toList $ defuns mod
+  {-
   irdefs <- mapM (\(fnm,defun) ->
                     let seqr = SR {seqrModule = mod,
                                    seqrFunction = defun
@@ -174,9 +177,41 @@ seqModule mod = do
                          (Right arity, irs, _seqs) -> return (fnm,(arity,irs))
                  )
             fdefs
+-}
+  (sd,irdefs) <- handleDefuns fdefs
   return $ IRM {irDefuns = M.fromList irdefs,
-                staticData = M.empty
+                staticData = sd
                }
+    where handleDefuns :: [(Name,D)] ->
+                          Either SeqError
+                          (Map Name Static, [(Name,(Arity,[IR]))])
+          handleDefuns = go 1 M.empty
+          --anon label counter, static data, remaining defuns
+          go :: Int -> Map Name Static -> [(Name,D)] ->
+            Either SeqError (Map Name Static, [(Name,(Arity,[IR]))])
+          go alc sd = \case
+            [] -> return (sd,[])
+            (fnm,defun):rest ->
+              let seqr = SR {seqrModule = mod,
+                             seqrFunction = defun
+                            }
+                  seqs = SS {irLocalTypes = M.empty,
+                             cLocalTypes = M.empty,
+                             anonVarCounter = 0,
+                             anonLabelCounter = alc,
+                             anonStaticData = []
+                            }
+              in case runSeq (seqDefun defun) seqr seqs of
+                   (Left serr, _, _) -> Left serr
+                   (Right arity, irs, seqs') -> do
+                     let alc' = anonLabelCounter seqs'
+                     (sd',res) <- go alc'
+                                  (M.union sd $ M.fromList $ zip
+                                   (map (\n -> fnm ++ ".static#" ++ show n)
+                                    [alc..alc'])
+                                   (reverse $ anonStaticData seqs'))
+                                  rest
+                     return $ (sd',(fnm,(arity,irs)) : res)
 
 --First checks for cycles in the type synonyms.
 --Substitute all types and check their kinds. It's disappointing that can't

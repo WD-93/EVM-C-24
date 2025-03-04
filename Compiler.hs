@@ -26,6 +26,7 @@ import ToyCFG
 import Stack
 --Asm -> Bytecode
 import Asm (Asm(..),AsmError(..),assemble,toExe)
+import qualified Asm as A (Label(..))
 import Data.Set (Set(..))
 import qualified Data.Set as S
 --For debugging:
@@ -78,13 +79,13 @@ printIRM str =
 printCFG :: String -> IO ()
 printCFG str =
   case pipeline2CFG str of
-    Right cfgm -> mapM_ putStrLn $ showCFGM cfgm
+    Right (_,cfgm) -> mapM_ putStrLn $ showCFGM cfgm
     Left err -> putStrLn $ "Error: " ++ show err
 --Doesn't display the version count or substitution maps.
 printCFG2 :: String -> IO ()
 printCFG2 str =
   case pipeline2CFG2 str of
-    Right cfg2m -> mapM_ putStrLn $ showCFG2M cfg2m
+    Right (_,cfg2m) -> mapM_ putStrLn $ showCFG2M cfg2m
     Left err -> putStrLn $ "Error: " ++ show err
 printAsm str =
   case pipeline2Asm str of
@@ -108,21 +109,32 @@ pipeline2Bytecode str = do
   return $ toExe objectFile
 pipeline2Asm :: String -> Either CompilerError [Asm]
 pipeline2Asm str = do
-  cfg2m <- pipeline2CFG2 str
-  compile2asm cfg2m ? AsmError
+  (stat,cfg2m) <- pipeline2CFG2 str
+  funasm <- compile2asm cfg2m ? AsmError
+  let statasm = do
+        (label,(_t,labels_bytes)) <- M.toList stat
+        PlaceLabel (A.LNamed label) :
+          map (\case Left (lab,len) -> UseLabel len (A.LNamed lab)
+                     Right byte -> Bytes [byte])
+          labels_bytes
+  return $ funasm ++ statasm
 pipeline2CFG2 :: String ->
-                 Either CompilerError (Map Name (Arity,(Label, CFG2)))
+                 Either CompilerError
+                 (Map Name Static, Map Name (Arity,(Label, CFG2)))
 pipeline2CFG2 str = do
-  cfgm <- pipeline2CFG str
+  (stat,cfgm) <- pipeline2CFG str
   let cfg2m = M.map (\(arity,((lab,_live),cfgs)) ->
                           let cfg = labelSLCMap cfgs
                               (_,cfg') = processCFG (lab,cfg)
                           in (arity,(lab, opt2 lab cfg')))
                  cfgm
-  return cfg2m
+  return (stat,cfg2m)
 --The CFG logic doesn't care about arity, so it can be passed through the
 --CFG and CFG2 steps unchanged
-pipeline2CFG :: String -> Either CompilerError (Map Name (Arity,(LL,CFGS)))
+--It doesn't care about statid data either, so I just pass it through
+--unchanged.
+pipeline2CFG :: String -> Either CompilerError
+  (Map Name Static, Map Name (Arity,(LL,CFGS)))
 pipeline2CFG str = do
   irm <- pipeline2IR str
   let ds = M.toList $ irDefuns irm
@@ -130,7 +142,7 @@ pipeline2CFG str = do
                    case ir2cfg irs of
                      (Just ll, cfgs) -> return (f,(arity,(ll,cfgs)))
                      _ -> Left $ IllFormedCFG f irs) ds
-  return $ M.fromList fcfgs
+  return (staticData irm, M.fromList fcfgs)
   
 --Compiles all the way to structured IR
 pipeline2IR :: String -> Either CompilerError IRModule

@@ -69,8 +69,25 @@ Importing std libs in submodules requires pruning of unused functions.
 Opt: I should make use of the knowledge that memory starts = 0.
 Is mcopy cheaper than mstore for repeated writes to memory?
 
+Dynamic linking (meaning fetching bytecode from contracts and linking them at creation time) could save on the
+512/w upload cost; the savings are most significant before code Merklization.
+Using CALL you could let a data contract handle the linking to a particular offset and immutables, as well as
+copying the returndata to a particular offset.
+Compilation modes: relocatable code (no need to link base-relative labels), fixed address (base-relative labels
+are constant).
+Note you can avoid bytecode following static data being corrupted using at most 32 padding bytes (if the data
+ends with 0x7f); ideally you'd order static data to minimize padding. That would let you keep modules a single
+blob, allowing it to be copied to memory by a call.
+Solidity doesn't support dynamic linking so I shouldn't make it a priority before EVMC is feature-complete,
+let alone optimized...
+
 Static data byte sharing is a nontrivial problem when a string isn't contained in another, since you must
 choose which matching string to extend. TODO write greedy shortest common superstring algorithm.
+
+import foo.bar.baz: parse and desugar ./foo/bar/baz.evmc to Module, then union decl maps?
+Making decls order-independent would guarantee a nice property, but you also want precise control of global
+layout. Achieve that with ordering decls. Default ordering: lexicographic.
+Any vars not mentioned in the (unique per region) ordering decl are ordered afterwards, lexicographically.
 
 Argument generation from a module's interface.
  Export decls, decl tree shaking

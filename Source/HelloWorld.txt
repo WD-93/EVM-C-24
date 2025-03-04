@@ -1,0 +1,6 @@
+module {
+main:()->();
+main _ := do {
+ (ptr,len) = "Hello world!";
+ --Still missing: copy(to,from,bs)
+}}
