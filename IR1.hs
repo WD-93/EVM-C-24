@@ -604,6 +604,22 @@ patternMatch p t ws =
             IsPrimFun -> ge
             IsUnbound -> throwE $ GenericError $
               "You can't assign fields of unbound vars: " ++ show (nm,nmixs)
+        --An unoptimized version allocating a new C local as a hack
+        --ptr.field* = e becomes
+        --fauxP = ptr; fauxS = *ptr; fauxS.field* = e; *fauxP = fauxS
+        Deref ptr -> do
+          --Need two faux locals to prevent reevaluation of the ptr expr...
+          fauxS <- newAnonVar
+          fauxP <- newAnonVar
+          seqS (PVar fauxP := ptr)
+          seqS (PVar fauxS := (Var "deref" :$ Var fauxP))
+          structT <- do
+            ni <- getCNameInfo fauxS
+            case ni of
+              IsLocal t -> return t
+              _ -> error "This should never happen."
+          setStructLocal fauxS structT nmixs t ws
+          seqS (Deref (Var fauxP) := Var fauxS)
         _ -> throwE $ GenericError $
              "Bad pattern for .field* = e: " ++ show (p',nmixs)
     --TODO improve error message
@@ -625,6 +641,18 @@ unrollPFields p = let (p',nmixs) = go p
           let (p',nmixs) = go p
           in (p',Left field : nmixs)
         go p = (p,[])
+{-
+--Used in hacky, unoptimized version of *ptr.field* = e
+rollPFields :: Pat -> [Either Name Int]
+rollPFields p =
+  let r = rollPFields
+  in \case
+    [] -> p
+    f:fs ->
+      case f of
+        Left nm -> r (PDot p nm) fs
+        Right ix -> r (PHash p ix) fs
+-}
 --The word-level implementation of selecting the nth struct field of a struct
 --(represented as words on the stack).
 --T, [Name] is the struct type and its on-stack repr

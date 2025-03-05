@@ -89,6 +89,14 @@ Making decls order-independent would guarantee a nice property, but you also wan
 layout. Achieve that with ordering decls. Default ordering: lexicographic.
 Any vars not mentioned in the (unique per region) ordering decl are ordered afterwards, lexicographically.
 
+A wrapped pointer is ideal for modules and datatypes (since you don't want to support deref and set
+directly).
+data T args = Con t
+case dt of
+ Con ptr -> ... --ptr = (dt+1) :: MPtr t
+dynSizeof is simple if con args are fixed-size; for sha3 you could overload to create a non-default
+implementation for array.
+
 Argument generation from a module's interface.
  Export decls, decl tree shaking
 *ptr.field*, field*= for memory, storage, calldata, code
