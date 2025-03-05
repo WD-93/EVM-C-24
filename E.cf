@@ -24,6 +24,9 @@ TySig. D ::= Ident ":" E;
 TySyn. D ::= "type" ConArgs "=" E;
 CANil. ConArgs ::= UIdent;
 CACons. ConArgs ::= ConArgs Ident;
+Import. D ::= "import" ModuleName;
+MNil. ModuleName ::= Ident;
+MCons. ModuleName ::= Ident "." ModuleName;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";

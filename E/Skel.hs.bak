@@ -48,6 +48,7 @@ transE x = case x of
   Dot e ident -> failure x
   Hash e integer -> failure x
   Int integer -> failure x
+  Str string -> failure x
   EmptyTup -> failure x
   Tup e es -> failure x
   EmptyStruct -> failure x

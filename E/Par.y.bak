@@ -56,6 +56,7 @@ import E.ErrM
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
+L_quoted { PT _ (TL $$) }
 L_UIdent { PT _ (T_UIdent $$) }
 L_Infix { PT _ (T_Infix $$) }
 
@@ -64,6 +65,7 @@ L_Infix { PT _ (T_Infix $$) }
 
 Ident   :: { Ident }   : L_ident  { Ident $1 }
 Integer :: { Integer } : L_integ  { (read ( $1)) :: Integer }
+String  :: { String }  : L_quoted {  $1 }
 UIdent    :: { UIdent} : L_UIdent { UIdent ($1)}
 Infix    :: { Infix} : L_Infix { Infix ($1)}
 
@@ -104,6 +106,7 @@ E3 : Ident { E.Abs.Var $1 }
    | E3 '.' Ident { E.Abs.Dot $1 $3 }
    | E3 '#' Integer { E.Abs.Hash $1 $3 }
    | Integer { E.Abs.Int $1 }
+   | String { E.Abs.Str $1 }
    | '(' ')' { E.Abs.EmptyTup }
    | '(' E ',' ListE ')' { E.Abs.Tup $2 $4 }
    | '{' '}' { E.Abs.EmptyStruct }

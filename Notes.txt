@@ -95,7 +95,16 @@ data T args = Con t
 case dt of
  Con ptr -> ... --ptr = (dt+1) :: MPtr t
 dynSizeof is simple if con args are fixed-size; for sha3 you could overload to create a non-default
-implementation for array.
+implementation for array. dynSizeof can support up to 32 constructors without a jump if sizes are 8b.
+Data formats: jump address, byte, 16b, multiple of 16 (for one-word case tables).
+
+Should all datatypes be parameterized by region...?
+data r (List r a) = Nil () | Cons (a, List r a)
+
+I'll add an import decl and concatenate decls prior to the desugaring phase.
+That ensures the complexity of file IO is handled early on and doesn't need to be interleaved with any
+existing monad, but it creates an edge case: a module may end with a f : a -> b which is then completed
+in the importing module.
 
 Argument generation from a module's interface.
  Export decls, decl tree shaking

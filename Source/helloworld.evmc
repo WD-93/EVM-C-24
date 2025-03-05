@@ -1,0 +1,7 @@
+module {
+main:()->();
+main _ := do {
+ (ptr,len) = "Hello world!";
+ copy(0 :: MPtr Byte, ptr, len);
+ evm_return(0 :: MPtr Byte, len)
+}}

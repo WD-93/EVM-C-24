@@ -26,10 +26,15 @@ transD x = case x of
   Defun ident e s -> failure x
   TySig ident e -> failure x
   TySyn conargs e -> failure x
+  Import modulename -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
   CACons conargs ident -> failure x
+transModuleName :: ModuleName -> Result
+transModuleName x = case x of
+  MNil ident -> failure x
+  MCons ident modulename -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
