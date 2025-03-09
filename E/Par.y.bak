@@ -12,6 +12,7 @@ import E.ErrM
 %name pListD ListD
 %name pD D
 %name pConArgs ConArgs
+%name pModuleName ModuleName
 %name pS S
 %name pListS ListS
 %name pE E
@@ -44,15 +45,16 @@ import E.ErrM
   'else' { PT _ (TS _ 15) }
   'end' { PT _ (TS _ 16) }
   'if' { PT _ (TS _ 17) }
-  'module' { PT _ (TS _ 18) }
-  'pad' { PT _ (TS _ 19) }
-  'return' { PT _ (TS _ 20) }
-  'then' { PT _ (TS _ 21) }
-  'type' { PT _ (TS _ 22) }
-  'while' { PT _ (TS _ 23) }
-  'word' { PT _ (TS _ 24) }
-  '{' { PT _ (TS _ 25) }
-  '}' { PT _ (TS _ 26) }
+  'import' { PT _ (TS _ 18) }
+  'module' { PT _ (TS _ 19) }
+  'pad' { PT _ (TS _ 20) }
+  'return' { PT _ (TS _ 21) }
+  'then' { PT _ (TS _ 22) }
+  'type' { PT _ (TS _ 23) }
+  'while' { PT _ (TS _ 24) }
+  'word' { PT _ (TS _ 25) }
+  '{' { PT _ (TS _ 26) }
+  '}' { PT _ (TS _ 27) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -79,9 +81,13 @@ D :: { D }
 D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' E { E.Abs.TySig $1 $3 }
   | 'type' ConArgs '=' E { E.Abs.TySyn $2 $4 }
+  | 'import' ModuleName { E.Abs.Import $2 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
+ModuleName :: { ModuleName }
+ModuleName : Ident { E.Abs.MNil $1 }
+           | Ident '.' ModuleName { E.Abs.MCons $1 $3 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }

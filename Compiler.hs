@@ -298,12 +298,16 @@ data DError = TySigDefunMismatch Name Name
             | DuplicateAligns Padding P.Field
             | CoerceMixedWithOps [Name]
             | GenericDError String
+            | BitPaddingDeprecated
+            --TODO remove bit padding from syntax and compiler
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
   case runState (runExceptT $ desugarDs ds) $
   Module {defuns = M.empty,
-          tysyns = M.empty
+          tysyns = M.empty,
+          static = M.empty,
+          globals = []
          } of
     (Left derr, _) -> Left derr
     (Right (), m) -> Right m
@@ -332,6 +336,12 @@ desugarDs (P.TySig (Ident f) t :
           let def = Defun f t' p block
           insertDefun f def
           desugarDs rest
+desugarDs (P.Global pr (Ident x) pt : rest) = do
+  let r = TyCon $ show pr
+  t <- desugarT pt
+  s <- get
+  put s{globals = globals s ++ [(x,r,t)]} --I know it's quadratic...
+  desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
 
 --No decls (functions, tysyns, datatypes, globals, immutables...) may shadow
@@ -424,9 +434,11 @@ desugarField de = go Nothing Nothing
   where go mpad mal = \case
           P.AnnotPad p f
             | Just p' <- mpad -> throwE $ DuplicatePads p' $ P.AnnotPad p f
+            | P.Bit <- p -> throwE BitPaddingDeprecated
             | let -> go (toPad p) mal f
           P.AnnotAlign p f
             | Just p' <- mal -> throwE $ DuplicateAligns p' $ P.AnnotAlign p f
+            | P.Bit <- p -> throwE BitPaddingDeprecated
             | let -> go mpad (toPad p) f
           P.Named (Ident nm) e -> do
             x <- de e

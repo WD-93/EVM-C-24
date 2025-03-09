@@ -1,0 +1,18 @@
+module {
+
+--The alloc pointer; word-padded for efficiency
+--Its initial value is __memOffset, the offset of the first byte not dedicated
+--to memory globals.
+--The initial value of a global may only be static data; for memory globals
+--they can be set with a codecopy before entering main.
+global memory {pad word (Ptr Memory Byte)} allocPtr = __memOffset;
+
+--Allocate n bytes and return a pointer to it
+alloc : UInt 16 -> Ptr Memory Byte
+alloc n := do {
+ p = allocPtr#0;
+ allocPtr#0 = (p+n);
+ return p
+}
+
+}

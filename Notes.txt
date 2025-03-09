@@ -97,14 +97,70 @@ case dt of
 dynSizeof is simple if con args are fixed-size; for sha3 you could overload to create a non-default
 implementation for array. dynSizeof can support up to 32 constructors without a jump if sizes are 8b.
 Data formats: jump address, byte, 16b, multiple of 16 (for one-word case tables).
+Default implementation of cons: malloc the necessary space. Make a variant which takes a ptr and len?
+copyTo(ptr,dt) :=
+ *ptr = *(dt :: Ptr Memory Byte)
+ case dt of
+  Con1 p1 -> *((ptr + 1) :: Ptr Memory t) = *p1
+Better:
+copy(ptr,dt :: Ptr Memory Byte, dynSizeof dt)
 
 Should all datatypes be parameterized by region...?
 data r (List r a) = Nil () | Cons (a, List r a)
+Parsing graphs from calldata justifies enabling calldata datatypes... but case on potentially corrupt data
+is dangerous. I'll mask the tag before jumping into the case JT when performing a case on calldata...
+Opt for interp: in a case (before memory has been modified), assume the constructor is the same in nested
+cases on the same dt.
 
 I'll add an import decl and concatenate decls prior to the desugaring phase.
 That ensures the complexity of file IO is handled early on and doesn't need to be interleaved with any
 existing monad, but it creates an edge case: a module may end with a f : a -> b which is then completed
 in the importing module.
+
+Immediate: eliminate bid-padding of struct fields. That'll vastly simplify struct access, esp ptr->field*.
+If off == 0, partial can be obtained with just a shr.
+If the lowest byte of partial is in mload(ptr), mask (note that may be code-intensive).
+If off+m > 32, you must add to ptr to load; in that case add off and shr.
+If off+m < 31, shl (if left-padding doesn't render that unnecessary) and shr.
+get(ptr,off,blen):
+ m = blen mod 32
+ d = blen div 32
+ whole <- mload (ptr+off+32*i) for i <- 0..d-1
+ --Simplest, unoptimized approach:
+ partial <- if m /= 0
+  then [mload (ptr + off) >> (32-m)*8]
+  else []
+ return partial ++ whole
+Right-padding isn't relevant for reads.
+--If len >= 32 there's no need for read
+put(ptr,off,len,ws):
+ m = blen mod 32
+ d = blen div 32
+ if m /= 0: mstore (ptr+off) (partial << (32-m)*8
+ mstore (ptr+off+32*i) for i <- 0..d-1
+
+I'll use seqS to simplify struct softCoerce.
+softCoerce s1 s2:
+ newVars <- 
+ for (mname,ix,t) in fields of s1:
+  if mname = Just nm and s2 has .nm : t',
+   newVar = softCoerce t t' s2.nm
+  else if s2 has field ix : t':
+   newVar = softCoerce t t' s2#ix
+  else newVar = nullValue t
+ build struct from newVars
+
+Next: globals, both variable and array. The translation is simple: var becomes *label, array becomes
+label. Assignment to an array makes no sense, so disallow it. Need two NameInfo types.
+TODO: generalize *ptr and *ptr.field* logic to calldata.
+Collect global and ordering decls when desugaring; determine their layout in IR where the byte size of the
+respective types are known. Default ordering: by order in source.
+Regions: memory, storage, calldata, returndata, code, extcode. Oh, and tstorage.
+Initial values for code globals ~ staticData; disallow. Calldata globals don't make sense; disallow them.
+Initival values for storage don't make sense; if you want to set globals in a constructor, import a module
+with the same storage layout and set them there.
+If C is called as a library from another language it doesn't make sense to do anything "first" before main;
+initialize globals explicitly in main?
 
 Argument generation from a module's interface.
  Export decls, decl tree shaking

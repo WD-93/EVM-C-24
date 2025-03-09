@@ -137,7 +137,9 @@ type Program = [D]
 --Output after desugaring phase:
 data Module = Module {
   defuns :: Map Name D,
-  tysyns :: Map Name ([Name],T)
+  tysyns :: Map Name ([Name],T),
+  static :: Map Name (T,[E]), --named staticData
+  globals :: [(Name,T,T)] --the first T is a region: memory, t/storage
   }
   deriving (Eq,Ord,Read,Show)
 

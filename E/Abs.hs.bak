@@ -13,10 +13,17 @@ newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
-data D = Defun Ident E S | TySig Ident E | TySyn ConArgs E
+data D
+    = Defun Ident E S
+    | TySig Ident E
+    | TySyn ConArgs E
+    | Import ModuleName
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
+  deriving (Eq, Ord, Show, Read)
+
+data ModuleName = MNil Ident | MCons Ident ModuleName
   deriving (Eq, Ord, Show, Read)
 
 data S = SE E | If E S S | While E S | Return E | Do [S]

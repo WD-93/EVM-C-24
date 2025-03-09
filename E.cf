@@ -27,6 +27,11 @@ CACons. ConArgs ::= ConArgs Ident;
 Import. D ::= "import" ModuleName;
 MNil. ModuleName ::= Ident;
 MCons. ModuleName ::= Ident "." ModuleName;
+--Ex: memory x : UInt 16
+Global. D ::= GlobalRegion Ident ":" E;
+Memory. GlobalRegion ::= "memory";
+Storage. GlobalRegion ::= "storage";
+TStorage. GlobalRegion ::= "tstorage";
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";

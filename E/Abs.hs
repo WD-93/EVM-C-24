@@ -18,12 +18,16 @@ data D
     | TySig Ident E
     | TySyn ConArgs E
     | Import ModuleName
+    | Global GlobalRegion Ident E
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
   deriving (Eq, Ord, Show, Read)
 
 data ModuleName = MNil Ident | MCons Ident ModuleName
+  deriving (Eq, Ord, Show, Read)
+
+data GlobalRegion = Memory | Storage | TStorage
   deriving (Eq, Ord, Show, Read)
 
 data S = SE E | If E S S | While E S | Return E | Do [S]

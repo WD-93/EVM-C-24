@@ -1043,6 +1043,9 @@ derefMem sz ptr = do
     (partialWord,_) <- runEDSL $ shift (8*modulus - 256) $ EVar w
     return (partialWord:wholeWords)
     else return wholeWords
+
+--Bit-padding is now deprecated; TODO simplify ptr->field* get and put.
+    
 --Generalized deref, can be used for fields which are neither byte-padded nor
 --byte-aligned.
 --If mask of the top word is necessary, it can be done by left-shifting before
