@@ -133,6 +133,7 @@ instance Print S where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print E where
   prt i e = case e of
+    Index e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
     Assign e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "="), prt 1 e_2])
     Ops e_ infix_ os -> prPrec i 1 (concatD [prt 2 e_, prt 0 infix_, prt 0 os])
     PrefixOp infix_ e_ -> prPrec i 1 (concatD [prt 0 infix_, prt 1 e_])

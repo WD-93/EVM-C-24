@@ -27,6 +27,7 @@ transD x = case x of
   TySig ident e -> failure x
   TySyn conargs e -> failure x
   Import modulename -> failure x
+  Global globalregion ident e -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -35,6 +36,11 @@ transModuleName :: ModuleName -> Result
 transModuleName x = case x of
   MNil ident -> failure x
   MCons ident modulename -> failure x
+transGlobalRegion :: GlobalRegion -> Result
+transGlobalRegion x = case x of
+  Memory -> failure x
+  Storage -> failure x
+  TStorage -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x

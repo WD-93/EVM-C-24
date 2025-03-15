@@ -214,27 +214,29 @@ sToken p s = PT p (TS s i)
       ":=" -> 7
       ";" -> 8
       "=" -> 9
-      "_" -> 10
-      "align" -> 11
-      "bit" -> 12
-      "byte" -> 13
-      "do" -> 14
-      "else" -> 15
-      "end" -> 16
-      "if" -> 17
-      "import" -> 18
-      "memory" -> 19
-      "module" -> 20
-      "pad" -> 21
-      "return" -> 22
-      "storage" -> 23
-      "then" -> 24
-      "tstorage" -> 25
-      "type" -> 26
-      "while" -> 27
-      "word" -> 28
-      "{" -> 29
-      "}" -> 30
+      "[" -> 10
+      "]" -> 11
+      "_" -> 12
+      "align" -> 13
+      "bit" -> 14
+      "byte" -> 15
+      "do" -> 16
+      "else" -> 17
+      "end" -> 18
+      "if" -> 19
+      "import" -> 20
+      "memory" -> 21
+      "module" -> 22
+      "pad" -> 23
+      "return" -> 24
+      "storage" -> 25
+      "then" -> 26
+      "tstorage" -> 27
+      "type" -> 28
+      "while" -> 29
+      "word" -> 30
+      "{" -> 31
+      "}" -> 32
       _ -> error $ "not a reserved word: " ++ show s
 
 -- | Get the position of a token.

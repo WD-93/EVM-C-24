@@ -34,7 +34,8 @@ data S = SE E | If E S S | While E S | Return E | Do [S]
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = Assign E E
+    = Index E E
+    | Assign E E
     | Ops E Infix OS
     | PrefixOp Infix E
     | App E E

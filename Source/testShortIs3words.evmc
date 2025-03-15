@@ -1,0 +1,9 @@
+module {
+main:()->();
+main _ := do {
+     ptr = 0 :: MPtr {a : Short, b : Short, c : Short};
+     --(*ptr) = {a: hex("aaaa"), b: hex("bbbb"), c: hex("cccc")};
+     --pret = 6 :: MPtr (UInt 48);
+     x = (*ptr).b;
+}
+}

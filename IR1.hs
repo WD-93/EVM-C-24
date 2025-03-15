@@ -130,6 +130,10 @@ data SeqS = SS {
 data SeqR = SR {
   seqrModule :: Module,
   seqrFunction :: D
+  --name => (region = memory | storage | tstorage, t, offset)
+  --seqrGlobals :: Map Name (T,T,Int)
+  --I'll substitute globals, arrays and constants in a separate pass,
+  --so seqr doesn't need them.
                }
   deriving (Eq,Ord,Read,Show)
 --Top-level function: given a module, generates the IR for each function.
@@ -161,23 +165,11 @@ seqModule mod = do
   mod' <- handleTySyns mod
   let mod = mod'
   let fdefs = M.toList $ defuns mod
-  {-
-  irdefs <- mapM (\(fnm,defun) ->
-                    let seqr = SR {seqrModule = mod,
-                                   seqrFunction = defun
-                                  }
-                        seqs = SS {irLocalTypes = M.empty,
-                                   cLocalTypes = M.empty,
-                                   anonVarCounter = 0,
-                                   anonLabelCounter = 1,
-                                   anonStaticData = []
-                                  }
-                    in case runSeq (seqDefun defun) seqr seqs of
-                         (Left serr, _, _) -> Left serr
-                         (Right arity, irs, _seqs) -> return (fnm,(arity,irs))
-                 )
-            fdefs
--}
+  globalMap <- handleGlobals $ globals mod
+  --We substitute the globals and the special constant names
+  --memOffset, stoOffset and tstoOffset prior to Seq to simplify seqE
+  fdefs' <- substGlobalsInDefs globalMap fdefs
+  let fdefs = fdefs'
   (sd,irdefs) <- handleDefuns fdefs
   return $ IRM {irDefuns = M.fromList irdefs,
                 staticData = sd
@@ -212,6 +204,125 @@ seqModule mod = do
                                    (reverse $ anonStaticData seqs'))
                                   rest
                      return $ (sd',(fnm,(arity,irs)) : res)
+--TODO add flag indicating arrayness
+--Takes a list of (global name, region, type) and returns
+--memory, storage and storage offsets + a single map name => (r,t,off)
+--Oh no: I need to be in Seq to get numBytesT
+--While datatypes are always 16 bits, newtypes are not... but I just need to
+--pass a newtype map to get the necessary info for size.
+handleGlobals :: [(Name,T,T,Maybe Int)] -> Either SeqError
+  (Int,Int,Int, Map Name (T,T,Int,Maybe Int))
+handleGlobals = go M.empty $ M.fromList [(Memory,0),
+                                         (Storage,0),
+                                         (TStorage,0)]
+  where
+    go :: Map Name (T,T,Int,Maybe Int) -> Map T Int ->
+          [(Name,T,T,Maybe Int)] ->
+          Either SeqError
+          (Int,Int,Int, Map Name (T,T,Int,Maybe Int))
+    go gs offs = \case
+          [] -> let moff = offs M.! Memory
+                    soff = offs M.! Storage
+                    tsoff = offs M.! TStorage
+                in if (maximum [moff,soff,tsoff] > 65535)
+                   then Left $ GenericError $
+                        "Maximum representable offset exceeded in globals: "
+                        ++ show (moff,soff,tsoff)
+                   else return (moff,soff,tsoff,gs)
+          (nm,r,t,mlen):rest ->
+            let len = case mlen of
+                        Just len -> len
+                        Nothing -> 1
+            in case M.lookup nm gs of
+                 Nothing ->
+                   let sz = (pureSz t `roundedUpMod` 8) `div` 8
+                   in case M.lookup r offs of
+                        Just off ->
+                          go (M.insert nm (r,t,off,mlen) gs)
+                          (M.insert r (off+len*sz) offs) rest
+                        Nothing -> error $ "Compiler error: bad region " ++
+                          show r ++ " in global " ++ nm
+                 Just _ -> error $ "Compiler error: duplicate global " ++ nm ++
+                           " not caught in desugaring phase"
+--TODO replace with Generic implementation
+substGlobalsInDefs :: (Int,Int,Int, Map Name (T,T,Int,Maybe Int)) ->
+                [(Name,D)] -> Either SeqError [(Name,D)]
+substGlobalsInDefs gm = mapM (substGlobalsInDef gm)
+substGlobalsInDef gm (nm,Defun _ t pat block) = do
+  pat' <- substGlobalsInPat gm pat
+  block' <- mapM (substGlobalsInS gm) block
+  return (nm,Defun nm t pat' block')
+substGlobalsInPat gm@(moff,soff,tsoff,vm) =
+  let r = substGlobalsInPat gm
+      re = substGlobalsInE gm
+  in \case
+    PVar nm
+      | nm `elem` words "memOffset stoOffset tstoOffset" ->
+        Left $ GenericError $ "Special constant name " ++ nm ++
+        " used as pattern variable"
+      | Just (r,t,off,mlen) <- M.lookup nm vm ->
+          case mlen of
+            Just len -> Left $ GenericError $ "Array used as pat var: " ++
+                        show nm
+            Nothing -> return $ Deref (Coerce (Ptr r t) $ EInteger $
+                                      fromIntegral off)
+    PStruct mnmps ->
+      let (mnms,ps) = unzip mnmps
+      in PStruct <$> zip mnms <$> mapM r ps
+    PTup ps -> PTup <$> mapM r ps
+    PDot p nm -> flip PDot nm <$> r p
+    PHash p ix -> flip PHash ix <$> r p
+    Deref e -> Deref <$> re e
+    p -> return p
+substGlobalsInS gm =
+  let r = substGlobalsInS gm
+      re = substGlobalsInE gm
+  in \case
+    p := e -> (:=) <$> substGlobalsInPat gm p <*> re e
+    DTs.Return e -> DTs.Return <$> re e
+    DTs.Ifte e th el -> DTs.Ifte <$> re e <*> mapM r th <*> mapM r el
+    DTs.While e bl -> DTs.While <$> re e <*> mapM r bl
+substGlobalsInE :: (Int,Int,Int, Map Name (T,T,Int,Maybe Int)) -> E ->
+                   Either SeqError E
+substGlobalsInE gm@(moff,soff,tsoff,vm) =
+  let r = substGlobalsInE gm
+  in \case
+    Var "memOffset" -> return $ EInteger $ fromIntegral moff
+    Var "stoOffset" -> return $ EInteger $ fromIntegral soff
+    Var "tstoOffset" -> return $ EInteger $ fromIntegral tsoff
+    Var nm
+      | Just (r,t,off,mlen) <- M.lookup nm vm ->
+        return $
+        (if mlen == Nothing then (Var "deref" :$) else id) $
+        Coerce (Ptr r t) $ EInteger $ fromIntegral off
+    f :$ x -> (:$) <$> r f <*> r x
+    EStruct padmnmes ->
+      let padmnms = map (\(pad,mnm,_) -> (pad,mnm)) padmnmes
+          es = map (\(_,_,e) -> e) padmnmes
+      in EStruct <$> zipWith (\(pad,mnm) e -> (pad,mnm,e)) padmnms <$>
+         mapM r es
+    e :. nm -> (:. nm) <$> r e
+    e :# ix -> (:# ix) <$> r e
+    Coerce t e -> Coerce t <$> r e
+    e -> return e
+                           
+--TODO give newtypes param, then reimplement numBitsT in terms of pureSz
+pureSz :: T -> Int
+pureSz = \case
+  Int _ n -> fromInteger n
+  a :-> b -> 16
+  Ptr r a -> 16
+  Struct padnmts ->
+    let padalszs = map (\((pad,al),_,t) ->
+                            let sz = pureSz t
+                            in (pad,al,sz)) padnmts
+        (sz,structure) = B.structLayout padalszs
+    in sz
+  --Datatypes are just wrapped pointers
+  TyCon _ -> 16
+  _ :$$ _ -> 16
+  t -> error $ "Compiler error: undefd numBitsT for " ++ show t
+
 
 --First checks for cycles in the type synonyms.
 --Substitute all types and check their kinds. It's disappointing that can't
@@ -238,9 +349,29 @@ handleTySyns mod = do
   tysyns' <- substTySyns ts
   --For each defun, substitute the type signature.
   defuns' <- substDefuns tysyns' mod
+  --Substitute tysyns and globals in static data
+  static' <- substStatic tysyns' $ static mod
+  globals' <- substGlobals tysyns' $ globals mod
   --TODO add coerce and substitute in the function body
-  return mod{tysyns = tysyns', defuns = defuns'}
-
+  return mod{tysyns = tysyns',
+             defuns = defuns',
+             static = static',
+             globals = globals'
+             }
+substStatic syns nm2tes = do
+  let nmtes = M.toList nm2tes
+  M.fromList <$> mapM (\(nm,(t,es)) ->
+                         case applyTySyns syns t of
+                           Left err -> Left $
+                             GenericError $ "Tysyn application error in " ++
+                             "static data " ++ nm ++ ": " ++ show err
+                           Right t' -> return (nm,(t',es))) nmtes
+substGlobals syns nm_region_ts =
+  mapM (\(nm,r,t,mlen) ->
+          case applyTySyns syns t of
+            Left err -> Left $ GenericError $ "Tysyn error in global " ++
+                        nm ++ ": " ++ show err
+            Right t' -> return (nm,r,t',mlen)) nm_region_ts
 --What can go wrong? An underapplied syn or a kind check failure.
 --In future the kind check will need to consider user-defined types.
 --Without a kind check on data decl creation, you need to defer the check until
@@ -604,10 +735,27 @@ patternMatch p t ws =
             IsPrimFun -> ge
             IsUnbound -> throwE $ GenericError $
               "You can't assign fields of unbound vars: " ++ show (nm,nmixs)
-        --An unoptimized version allocating a new C local as a hack
-        --ptr.field* = e becomes
-        --fauxP = ptr; fauxS = *ptr; fauxS.field* = e; *fauxP = fauxS
+        --Adding proper ptr.field* = e implementation now...
+        --To use:
+        --genStore structSz leftPad fieldSz rightPad off ptr ws
         Deref ptr -> do
+          (ptrt,ptrws) <- seqE ptr
+          case ptrt of
+            Ptr r struct ->
+              let [ptrw] = ptrws in
+              --Only memory, storage and tstorage can be mutated
+              case r of
+                Memory -> do
+                  --Copied from setStructLocal
+                  ixs <- indicesAndNamesToIndices nmixs struct
+                  (fieldT,sz,off,pl,pr) <- fieldsInfo ixs struct
+                  szStruct <- numBitsT struct
+
+                  ws' <- softCoerce fieldT t ws
+                  genStore szStruct pl sz pr off ptrw ws'
+                _ -> throwE $ GenericError $ "*ptr.field* assignments "
+                  ++ "unsupported for region " ++ show r ++ " atm"
+          {-do
           --Need two faux locals to prevent reevaluation of the ptr expr...
           fauxS <- newAnonVar
           fauxP <- newAnonVar
@@ -622,6 +770,7 @@ patternMatch p t ws =
           seqS (Deref (Var fauxP) := Var fauxS)
         _ -> throwE $ GenericError $
              "Bad pattern for .field* = e: " ++ show (p',nmixs)
+-}
     --TODO improve error message
     Deref ptr -> do
       (pt,pws) <- seqE ptr
@@ -630,7 +779,7 @@ patternMatch p t ws =
           let [pw] = pws
           ws' <- softCoerce a t ws
           case r of
-            Memory -> assignPtr pw t ws'
+            Memory -> assignPtr pw a ws'
             _ -> throwE $ GenericError
                  "Other regions unsupported for ptr assignment atm"
         _ -> throwE $ GenericError "Can't assign to non-pointers"
@@ -923,6 +1072,8 @@ handleIndexing e = do
                        _ -> error $ "Compiler error: ptr has wrong number of "
                             ++ "words in handleIndexing: " ++ show (ptr,ptrWs)
           comment "Dereferencing *ptr.field:"
+          comment $ "(szStruct,lpField,szField,offField): " ++
+            show (szStruct,lpField,szField,offField)
           resWs <- genDeref szStruct lpField szField offField ptrW
           return (fieldT,resWs)
           --genDerefMem structSz leftPad fieldSz off ptr
@@ -1045,9 +1196,6 @@ derefMem sz ptr = do
     else return wholeWords
 
 --Bit-padding is now deprecated; TODO simplify ptr->field* get and put.
-    
---Generalized deref, can be used for fields which are neither byte-padded nor
---byte-aligned.
 --If mask of the top word is necessary, it can be done by left-shifting before
 --right-shifting (cost: 6 gas, 3 bytes).
 --Struct size, left padding in the struct, field size and offset are all
@@ -1055,9 +1203,59 @@ derefMem sz ptr = do
 --The first byte of the struct starts at ptr; if structSz % 8 == 0 then it
 --contains 8 struct bits, otherwise structSz % 8. It has 8 - that bits of
 --padding.
+
+--Cases where m > 0:
+--partial ends before the last byte of mload ptr: shl, shr
+--it ends at last byte: mask
+--it ends afterwards: mload (ptr+k), shr
 genDeref :: Int -> Int -> Int -> Int -> Name -> Seq [Name]
 genDeref structSz leftPad fieldSz off ptr
   | fieldSz == 0 = return []
+  | let = do
+          let structBs = (structSz `roundedUpMod` 8) `div` 8
+              fieldBs = (fieldSz `roundedUpMod` 8) `div` 8
+              offBs = off `div` 8
+              --The field's byte offset from ptr
+              leftOff = structBs - (offBs + fieldBs)
+              --The byte size of the partial word if nonzero
+              m = fieldBs `mod` 32
+              --The number of whole words
+              d = fieldBs `div` 32
+          comment $ "(structBs,fieldBs,offBs,leftOff,m,d): " ++
+            show (structBs,fieldBs,offBs,leftOff,m,d)
+          partial <- if m > 0
+                     then let lastByte = leftOff + m - 1
+                          in case () of
+                               --shl (TODO opt away if leftPad sufficient),
+                               --shr
+                               _ | lastByte < 31 -> do
+                                     comment $ "lastByte: " ++ show lastByte
+                                     comment "shl, shr"
+                                     w <- mload ptr
+                                     p <- runEDSLW $
+                                          shift (8*(m-32)) $
+                                          shift (8*leftOff) $ EVar w
+                                     return [p]
+                                 --partial word ends at last byte of mload ptr;
+                                 --use and to mask
+                                 | lastByte == 31 -> do
+                                     w <- mload ptr
+                                     p <- runEDSLW $ mask (8*m) $ EVar w
+                                     return [p]
+                                 --we need to mload off (ptr+k) anyway; load
+                                 --off ptr+leftOff and shr
+                                 | let -> do
+                                     ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+                                     w <- mload ptr
+                                     p <- runEDSLW $ shift (8*(m-32)) $ EVar w
+                                     return [p]
+                     else return []
+          wholeWords <- mapM (\offset -> do
+                                 ptr' <- runEDSLW $ addK offset $ EVar ptr
+                                 mload ptr')
+                        [32*i + leftOff + m | i <- [0..d-1]]
+          return $ partial ++ wholeWords
+{-
   | let = do
           --First, fetch the bytes which contain any field bits
           let --Offset from right
@@ -1105,6 +1303,68 @@ genDeref structSz leftPad fieldSz off ptr
             --The lower output words: ls | rs
             bot <- zipWithM (\l r -> runEDSLW $ EVar l .| EVar w) ls rs
             return (top ++ bot)
+-}
+--ptr->field* = v implementation function, now assuming byte-aligned fields
+--rightPad matters iff fieldSz < 256: then if left pad + field + right pad add
+--up to >=32 bytes you can shl and mstore.
+--If field bytes >= 32, you don't need to write back.
+--If field sz == 0, store is a noop.
+--If field byte sz = 1, use an mstore.
+genStore :: Int -> Int -> Int -> Int -> Int -> Name -> [Name] -> Seq ()
+genStore structSz leftPad fieldSz rightPad off ptr ws = do
+  let structBs = (structSz `roundedUpMod` 8) `div` 8
+      fieldBs = (fieldSz `roundedUpMod` 8) `div` 8
+      offBs = off `div` 8
+      --The field's byte offset from ptr
+      leftOff = structBs - (offBs + fieldBs)
+      --The byte size of the partial word if nonzero
+      m = fieldBs `mod` 32
+      --The number of whole words
+      d = fieldBs `div` 32
+  case () of
+    _ | fieldBs == 0 -> return ()
+      | fieldBs == 1 -> do
+          let [w] = ws
+          ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+          mstore8 ptr' w
+      | fieldBs >= 32 -> do
+          --If the field has a partial word, shl it by 8*(32-m) and
+          --mstore it to ptr+leftOff. mstore the remaining d whole words to
+          --ptr+leftOff+m.
+          --If m == 1, you can mstore8 instead of shifting.
+          wholes <- case () of
+                      _ | m == 0 -> return ws
+                        | m == 1 -> do
+                            let hd:tl = ws
+                            ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+                            mstore8 ptr' hd
+                            return tl
+                        | let -> do
+                            let hd:tl = ws
+                            ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+                            hd' <- runEDSLW $ shift (8*(32-m)) $ EVar hd
+                            mstore8 ptr' hd'
+                            return tl
+          mapM_ (\(offset,w) -> do
+                    ptr' <- runEDSLW $ addK offset $ EVar ptr
+                    mstore ptr' w) $
+            zip [32*i + leftOff + m | i <- [0..d-1]] wholes
+      --This is the trickiest bit: the field is smaller than a word, so
+      --padding matters.
+      --If left-padding bytes + field bytes >= 32, just mstore
+      --If left+field+right >= 32, shl and mstore
+      --For now just use a simple, suboptimal implementation:
+      --mstore (ptr+leftOff) (w << (8*(32-m)) |
+      --                      mload (ptr+leftOff) & mask (8*(32-m)))
+      | let -> do
+          let [w] = ws
+          ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+          old <- mload ptr'
+          new <- runEDSLW $
+            let oldSz = 8*(32-m)
+            in shift oldSz (EVar w) .| mask oldSz (EVar old)
+          mstore ptr' new
+              
 --A vital combinator for genDeref:
 --sliceWord lp sz off rp lsh {_,0:lp,field:sz,0:rp,_} = field << lsh,
 --implemented as efficiently as possible.
@@ -1194,6 +1454,10 @@ mload addr = do
 mstore :: Name -> Name -> Seq ()
 mstore addr val = do
   emitOp [("$mem",Mem)] (Opcode "mstore") ["$mem",addr,val]
+  return ()
+mstore8 :: Name -> Name -> Seq ()
+mstore8 addr val = do
+  emitOp [("$mem",Mem)] (Opcode "mstore8") ["$mem",addr,val]
   return ()
 --Implements *ptr = v, which is a special case of *ptr#ix* = v and much simpler
 --to implement.

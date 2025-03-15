@@ -1,0 +1,10 @@
+module {
+main:()->();
+main _ := do {
+     ptr = 0 :: MPtr {a: Short, b: UInt 64, c: Byte};
+     (*ptr).a = hex("aabb");
+     (*ptr).b = hex("1122334455667788");
+     (*ptr).c = hex("99");
+     evm_return(ptr,11)
+}
+}

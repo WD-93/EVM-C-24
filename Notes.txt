@@ -138,6 +138,12 @@ put(ptr,off,len,ws):
  d = blen div 32
  if m /= 0: mstore (ptr+off) (partial << (32-m)*8
  mstore (ptr+off+32*i) for i <- 0..d-1
+Unify genDeref and derefMem. derefPtr should simply call genDeref
+Params: left-padding, ptr, off, len
+Now that all fields are at least byte-aligned and padded, &(ptr->field*) will be a valid pointer.
+ptr->field* = p2->field2* should compile to a copy.
+
+TODO get rid of EDSL, use Seq directly for op2
 
 I'll use seqS to simplify struct softCoerce.
 softCoerce s1 s2:
@@ -150,9 +156,24 @@ softCoerce s1 s2:
   else newVar = nullValue t
  build struct from newVars
 
+OK, now I have memory struct ptr read and write. TODO optimize, unify and simplify the code.
+Merge handling of var, var.field, var#ix in patternMatch and seqE.
+
 Next: globals, both variable and array. The translation is simple: var becomes *label, array becomes
 label. Assignment to an array makes no sense, so disallow it. Need two NameInfo types.
+ Step 1: apply tysyns to globals, divide by region (memory, storage, tstorage)
+ Compute byte size of each type, allocate space from 0.
+ What info do I need to compute byte size? Type synonyms have already been erased, so it's just datatypes
+ (which aren't supported yet). If all datatypes are boxed, they'll have a fixed size...
+ Modulo the kind check, that means I can make a pure sizeof function.
+ datatypes being boxed justifies a separate newtype construct.
+ Newtypes don't need case, just use Con x = nt to extract the internal value.
+ Add special name __memOffset :: Ptr Memory Byte, pointing to the first free byte of memory
+ Add global region,type,addr to seqR alongside __memOffset value.
+ Subst gv for Deref &gv in patterns, "deref" :$ &gv in exprs.
 TODO: generalize *ptr and *ptr.field* logic to calldata.
+TODO: disallow duplicate names among functions, staticData, globals. Add a constant name type for
+__memOffset et al?
 Collect global and ordering decls when desugaring; determine their layout in IR where the byte size of the
 respective types are known. Default ordering: by order in source.
 Regions: memory, storage, calldata, returndata, code, extcode. Oh, and tstorage.

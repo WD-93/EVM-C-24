@@ -41,6 +41,7 @@ layout "do";
 Do. S ::= "do" "{" [S] "}";
 separator S ";";
 
+Index. E ::= E3 "[" E "]";
 Assign. E ::= E3 "=" E1;
 Ops. E1 ::= E2 Infix OS;
 PrefixOp. E1 ::= Infix E1;

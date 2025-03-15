@@ -300,6 +300,8 @@ data DError = TySigDefunMismatch Name Name
             | GenericDError String
             | BitPaddingDeprecated
             --TODO remove bit padding from syntax and compiler
+            | NegativeLengthArray Name Integer
+            | TooLongArray Name Integer
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -338,9 +340,18 @@ desugarDs (P.TySig (Ident f) t :
           desugarDs rest
 desugarDs (P.Global pr (Ident x) pt : rest) = do
   let r = TyCon $ show pr
-  t <- desugarT pt
+  (t,mlen) <- case pt of
+                P.Index pt' (P.Int len)
+                  | len >= 65535 -> throwE $ TooLongArray x len
+                  | len >= 0 -> do
+                      t <- desugarT pt'
+                      return (t,Just $ fromInteger len)
+                  | let -> throwE $ NegativeLengthArray x len
+                _ -> do
+                  t <- desugarT pt
+                  return (t,Nothing)
   s <- get
-  put s{globals = globals s ++ [(x,r,t)]} --I know it's quadratic...
+  put s{globals = globals s ++ [(x,r,t,mlen)]} --I know it's quadratic...
   desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
 
@@ -460,6 +471,8 @@ desugarP :: P.E -> De Pat
 desugarP = do
   let r = desugarP
   \case
+    P.Index ptr ix -> desugarP $ (P.PrefixOp (Infix "*") $
+                                  P.Ops ptr (Infix "+") (OSNil ix))
     --Assign makes no sense
     --FW ops: !! ~ _[_]
     --FW prefix op: *_, -_
@@ -498,6 +511,10 @@ desugarE :: P.E -> De E
 desugarE = do
   let r = desugarE
   \case
+    --For now I always desugar a[b] to *(a + b) because that simplifies
+    --ptr[ix].field* = e in IR1
+    P.Index ptr ix -> desugarE (P.PrefixOp (Infix "*") $
+                               P.Ops ptr (Infix "+") (OSNil ix))
     --Assign is not an expr, but should it be...?
     --Pro: that's what C does; it gives you neat puns
     --Con: it's not a higher-level description of an existing EVM pattern, but

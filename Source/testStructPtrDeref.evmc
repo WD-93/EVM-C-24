@@ -1,0 +1,16 @@
+module {
+main:()->();
+main _ := do {
+     ptr = 0 :: MPtr {a : Short, b : Short, c : Short};
+     (*ptr) = {a: hex("aaaa"), b: hex("bbbb"), c: hex("cccc")};
+     pret = 6 :: MPtr (UInt 48);
+     (*pret) = (*ptr).c; --hex("112233445566");
+     {-
+     pret = 6 :: MPtr {a : Short, b : Short, c : Short};
+     (*pret).a = (*ptr).a;
+     (*pret).b = (*ptr).b;
+     (*pret).c = (*ptr).c;
+     -}
+     evm_return(ptr,12);
+}
+}

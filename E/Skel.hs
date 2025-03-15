@@ -50,6 +50,7 @@ transS x = case x of
   Do ss -> failure x
 transE :: E -> Result
 transE x = case x of
+  Index e1 e2 -> failure x
   Assign e1 e2 -> failure x
   Ops e infix_ os -> failure x
   PrefixOp infix_ e -> failure x

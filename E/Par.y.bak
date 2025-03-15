@@ -13,6 +13,7 @@ import E.ErrM
 %name pD D
 %name pConArgs ConArgs
 %name pModuleName ModuleName
+%name pGlobalRegion GlobalRegion
 %name pS S
 %name pListS ListS
 %name pE E
@@ -46,15 +47,18 @@ import E.ErrM
   'end' { PT _ (TS _ 16) }
   'if' { PT _ (TS _ 17) }
   'import' { PT _ (TS _ 18) }
-  'module' { PT _ (TS _ 19) }
-  'pad' { PT _ (TS _ 20) }
-  'return' { PT _ (TS _ 21) }
-  'then' { PT _ (TS _ 22) }
-  'type' { PT _ (TS _ 23) }
-  'while' { PT _ (TS _ 24) }
-  'word' { PT _ (TS _ 25) }
-  '{' { PT _ (TS _ 26) }
-  '}' { PT _ (TS _ 27) }
+  'memory' { PT _ (TS _ 19) }
+  'module' { PT _ (TS _ 20) }
+  'pad' { PT _ (TS _ 21) }
+  'return' { PT _ (TS _ 22) }
+  'storage' { PT _ (TS _ 23) }
+  'then' { PT _ (TS _ 24) }
+  'tstorage' { PT _ (TS _ 25) }
+  'type' { PT _ (TS _ 26) }
+  'while' { PT _ (TS _ 27) }
+  'word' { PT _ (TS _ 28) }
+  '{' { PT _ (TS _ 29) }
+  '}' { PT _ (TS _ 30) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -82,12 +86,17 @@ D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' E { E.Abs.TySig $1 $3 }
   | 'type' ConArgs '=' E { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
+  | GlobalRegion Ident ':' E { E.Abs.Global $1 $2 $4 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
 ModuleName :: { ModuleName }
 ModuleName : Ident { E.Abs.MNil $1 }
            | Ident '.' ModuleName { E.Abs.MCons $1 $3 }
+GlobalRegion :: { GlobalRegion }
+GlobalRegion : 'memory' { E.Abs.Memory }
+             | 'storage' { E.Abs.Storage }
+             | 'tstorage' { E.Abs.TStorage }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }

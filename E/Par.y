@@ -38,27 +38,29 @@ import E.ErrM
   ':=' { PT _ (TS _ 7) }
   ';' { PT _ (TS _ 8) }
   '=' { PT _ (TS _ 9) }
-  '_' { PT _ (TS _ 10) }
-  'align' { PT _ (TS _ 11) }
-  'bit' { PT _ (TS _ 12) }
-  'byte' { PT _ (TS _ 13) }
-  'do' { PT _ (TS _ 14) }
-  'else' { PT _ (TS _ 15) }
-  'end' { PT _ (TS _ 16) }
-  'if' { PT _ (TS _ 17) }
-  'import' { PT _ (TS _ 18) }
-  'memory' { PT _ (TS _ 19) }
-  'module' { PT _ (TS _ 20) }
-  'pad' { PT _ (TS _ 21) }
-  'return' { PT _ (TS _ 22) }
-  'storage' { PT _ (TS _ 23) }
-  'then' { PT _ (TS _ 24) }
-  'tstorage' { PT _ (TS _ 25) }
-  'type' { PT _ (TS _ 26) }
-  'while' { PT _ (TS _ 27) }
-  'word' { PT _ (TS _ 28) }
-  '{' { PT _ (TS _ 29) }
-  '}' { PT _ (TS _ 30) }
+  '[' { PT _ (TS _ 10) }
+  ']' { PT _ (TS _ 11) }
+  '_' { PT _ (TS _ 12) }
+  'align' { PT _ (TS _ 13) }
+  'bit' { PT _ (TS _ 14) }
+  'byte' { PT _ (TS _ 15) }
+  'do' { PT _ (TS _ 16) }
+  'else' { PT _ (TS _ 17) }
+  'end' { PT _ (TS _ 18) }
+  'if' { PT _ (TS _ 19) }
+  'import' { PT _ (TS _ 20) }
+  'memory' { PT _ (TS _ 21) }
+  'module' { PT _ (TS _ 22) }
+  'pad' { PT _ (TS _ 23) }
+  'return' { PT _ (TS _ 24) }
+  'storage' { PT _ (TS _ 25) }
+  'then' { PT _ (TS _ 26) }
+  'tstorage' { PT _ (TS _ 27) }
+  'type' { PT _ (TS _ 28) }
+  'while' { PT _ (TS _ 29) }
+  'word' { PT _ (TS _ 30) }
+  '{' { PT _ (TS _ 31) }
+  '}' { PT _ (TS _ 32) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -108,7 +110,9 @@ ListS : {- empty -} { [] }
       | S { (:[]) $1 }
       | S ';' ListS { (:) $1 $3 }
 E :: { E }
-E : E3 '=' E1 { E.Abs.Assign $1 $3 } | E1 { $1 }
+E : E3 '[' E ']' { E.Abs.Index $1 $3 }
+  | E3 '=' E1 { E.Abs.Assign $1 $3 }
+  | E1 { $1 }
 E1 :: { E }
 E1 : E2 Infix OS { E.Abs.Ops $1 $2 $3 }
    | Infix E1 { E.Abs.PrefixOp $1 $2 }

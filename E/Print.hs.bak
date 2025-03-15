@@ -101,6 +101,7 @@ instance Print D where
     TySig id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
     TySyn conargs e_ -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 e_])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
+    Global globalregion id e_ -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -113,6 +114,12 @@ instance Print ModuleName where
   prt i e = case e of
     MNil id -> prPrec i 0 (concatD [prt 0 id])
     MCons id modulename -> prPrec i 0 (concatD [prt 0 id, doc (showString "."), prt 0 modulename])
+
+instance Print GlobalRegion where
+  prt i e = case e of
+    Memory -> prPrec i 0 (concatD [doc (showString "memory")])
+    Storage -> prPrec i 0 (concatD [doc (showString "storage")])
+    TStorage -> prPrec i 0 (concatD [doc (showString "tstorage")])
 
 instance Print S where
   prt i e = case e of

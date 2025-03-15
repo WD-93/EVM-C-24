@@ -4,11 +4,5 @@ main _ := do {
  ptr = 0 :: MPtr {foo: Byte, bar: UInt 64};
  (*ptr).foo = hex("aa");
  (*ptr).bar = hex("abcdef1234567890");
- {-
- struct = {} :: {foo: Byte, bar: UInt 64};
- struct.foo = hex("aa");
- struct.bar = hex("abcdef1234567890");
- (*ptr) = struct;
- -}
  evm_return(ptr,33)
 }}

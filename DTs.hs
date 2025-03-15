@@ -70,6 +70,10 @@ pattern Triplet a b c = Struct [((Word,Word),Nothing,a),
                                 ((Word,Word),Nothing,b),
                                 ((Word,Word),Nothing,c)]
 pattern Memory = TyCon "Memory"
+pattern Storage = TyCon "Storage"
+pattern TStorage = TyCon "TStorage"
+pattern Calldata = TyCon "Calldata"
+pattern Returndata = TyCon "Returndata"
 pattern Code = TyCon "Code"
 pattern Ptr r a = "Ptr" :$$ r :$$ a
 type Field a = ((Padding,Padding), Maybe Name, a)
@@ -85,7 +89,7 @@ primTyCons = S.fromList $
   words $
   "Type Region Signedness Nat " ++ --the kinds, except ->
   "Signed Unsigned " ++ --signedness
-  "Memory Storage Calldata Returndata Code " ++ --region
+  "Memory Storage TStorage Calldata Returndata Code " ++ --region
   "Int Ptr -> " --the primitive types
 primTySyns :: Map Name ([Name],T)
 primTySyns = M.fromList [
@@ -139,7 +143,10 @@ data Module = Module {
   defuns :: Map Name D,
   tysyns :: Map Name ([Name],T),
   static :: Map Name (T,[E]), --named staticData
-  globals :: [(Name,T,T)] --the first T is a region: memory, t/storage
+  --the first T is a region: memory, t/storage
+  --If the global is an array, the Maybe Int = Just arrayLen
+  --Arrays of dynamic or indeterminate length are disallowed
+  globals :: [(Name,T,T,Maybe Int)]
   }
   deriving (Eq,Ord,Read,Show)
 
