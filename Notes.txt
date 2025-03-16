@@ -1,3 +1,11 @@
+&pat lets me express
+case xs of
+ Cons &(x,xs') -> ...
+But what if I want pointers to x and xs? Maybe add &&p, which returns a pointer when the pattern it's in
+is &p. Also useful: @.
+
+TODO QOL feature: a pretty show instance for code and types.
+
 On ptr->field* = v: if the struct is < a word, you must save and restore more than just the
 struct.
 

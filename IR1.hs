@@ -778,8 +778,14 @@ patternMatch p t ws =
         Ptr r a -> do
           let [pw] = pws
           ws' <- softCoerce a t ws
+          let imm r = throwE $ GenericError $ "Can't write to a pointer to " ++
+                "an immutable region: " ++ show (ptr,r)
           case r of
             Memory -> assignPtr pw a ws'
+            --TODO storage, tstorage
+            Calldata -> imm r
+            Code -> imm r
+            Returndata -> imm r
             _ -> throwE $ GenericError
                  "Other regions unsupported for ptr assignment atm"
         _ -> throwE $ GenericError "Can't assign to non-pointers"
@@ -1074,7 +1080,7 @@ handleIndexing e = do
           comment "Dereferencing *ptr.field:"
           comment $ "(szStruct,lpField,szField,offField): " ++
             show (szStruct,lpField,szField,offField)
-          resWs <- genDeref szStruct lpField szField offField ptrW
+          resWs <- genDeref r szStruct lpField szField offField ptrW
           return (fieldT,resWs)
           --genDerefMem structSz leftPad fieldSz off ptr
         _ -> throwE $ GenericError $
@@ -1114,7 +1120,7 @@ simplePFs = M.fromList [
   --evm_return(Ptr Memory a, Int {}) : ()
   ("evm_return",\t ws ->
       case (t,ws) of
-        (Pair (Ptr Memory a) (Int s blen), [p,len]) -> do
+        (Pair (Ptr Memory a) (UInt blen), [p,len]) -> do
           emit $ EVM_RETURN () "$mem" p len
           return (Struct [], [])
         _ -> throwE $ BadArgPrimFun "evm_return" t),
@@ -1164,13 +1170,19 @@ derefPtr :: T -> [Name] -> Seq (T,[Name])
 derefPtr (Ptr r a) [w] = do
   sz <- (`roundedUpMod` 8) <$> numBitsT a
   ws <- case r of
-          Memory -> derefMem sz w
+          Memory -> derefMem mload sz w
+          Calldata -> derefMem calldataload sz w
+          Storage -> error"Compiler error: derefPtr storage not supported yet"
+          TStorage -> error"Compiler error: derefPtr tstorage not supported yet"
+          _ -> throwE $ GenericError $ "Region does not support deref: " ++
+               show r
   ws' <- coerceValue a ws
   return (a,ws')
 derefPtr t ws = throwE $ GenericError $ "Badarg to *_ : " ++ show (t,ws)
+--TODO give more appropriate name since it's now also used for calldata
 --sz is the byte size of the (byte-padded) value
-derefMem :: Int -> Name -> Seq [Name]
-derefMem sz ptr = do
+derefMem :: (Name -> Seq Name) -> Int -> Name -> Seq [Name]
+derefMem load sz ptr = do
   let nbytes = sz `div` 8
       modulus = nbytes `mod` 32
       remwords = nbytes `div` 32
@@ -1185,12 +1197,12 @@ derefMem sz ptr = do
                 (sequence $
                  reverse [do (ptr',_) <- runEDSL $ addK (fromIntegral n)
                                          (EVar ptr)
-                             mload ptr'
+                             load ptr'
                          | n <- map (+ modulus) [0,32..32*(remwords-1)]
                          ])
   if modulus > 0
     then do
-    w <- mload ptr
+    w <- load ptr
     (partialWord,_) <- runEDSL $ shift (8*modulus - 256) $ EVar w
     return (partialWord:wholeWords)
     else return wholeWords
@@ -1208,53 +1220,62 @@ derefMem sz ptr = do
 --partial ends before the last byte of mload ptr: shl, shr
 --it ends at last byte: mask
 --it ends afterwards: mload (ptr+k), shr
-genDeref :: Int -> Int -> Int -> Int -> Name -> Seq [Name]
-genDeref structSz leftPad fieldSz off ptr
+--I'd actually ignored region entirely in ptr->field*; I need to disallow
+--derefs to code and returndata (which don't support loading to the stack
+--without a memory side effect). TODO merge with derefPtr, support storage
+--and tstorage access.
+genDeref :: T -> Int -> Int -> Int -> Int -> Name -> Seq [Name]
+genDeref r structSz leftPad fieldSz off ptr
+  | r `elem` [Code,Returndata] =
+    throwE $ GenericError $ "Non-loadable region in genDeref: " ++ show r
   | fieldSz == 0 = return []
-  | let = do
-          let structBs = (structSz `roundedUpMod` 8) `div` 8
-              fieldBs = (fieldSz `roundedUpMod` 8) `div` 8
-              offBs = off `div` 8
-              --The field's byte offset from ptr
-              leftOff = structBs - (offBs + fieldBs)
-              --The byte size of the partial word if nonzero
-              m = fieldBs `mod` 32
-              --The number of whole words
-              d = fieldBs `div` 32
-          comment $ "(structBs,fieldBs,offBs,leftOff,m,d): " ++
-            show (structBs,fieldBs,offBs,leftOff,m,d)
-          partial <- if m > 0
-                     then let lastByte = leftOff + m - 1
-                          in case () of
-                               --shl (TODO opt away if leftPad sufficient),
-                               --shr
-                               _ | lastByte < 31 -> do
-                                     comment $ "lastByte: " ++ show lastByte
-                                     comment "shl, shr"
-                                     w <- mload ptr
-                                     p <- runEDSLW $
-                                          shift (8*(m-32)) $
-                                          shift (8*leftOff) $ EVar w
-                                     return [p]
-                                 --partial word ends at last byte of mload ptr;
-                                 --use and to mask
-                                 | lastByte == 31 -> do
-                                     w <- mload ptr
-                                     p <- runEDSLW $ mask (8*m) $ EVar w
-                                     return [p]
-                                 --we need to mload off (ptr+k) anyway; load
-                                 --off ptr+leftOff and shr
-                                 | let -> do
-                                     ptr' <- runEDSLW $ addK leftOff $ EVar ptr
-                                     w <- mload ptr
-                                     p <- runEDSLW $ shift (8*(m-32)) $ EVar w
-                                     return [p]
-                     else return []
-          wholeWords <- mapM (\offset -> do
-                                 ptr' <- runEDSLW $ addK offset $ EVar ptr
-                                 mload ptr')
-                        [32*i + leftOff + m | i <- [0..d-1]]
-          return $ partial ++ wholeWords
+  --The byte-addressed regions
+  | r `elem` [Memory,Calldata] = do
+      let structBs = (structSz `roundedUpMod` 8) `div` 8
+          fieldBs = (fieldSz `roundedUpMod` 8) `div` 8
+          offBs = off `div` 8
+          --The field's byte offset from ptr
+          leftOff = structBs - (offBs + fieldBs)
+          --The byte size of the partial word if nonzero
+          m = fieldBs `mod` 32
+          --The number of whole words
+          d = fieldBs `div` 32
+          load = if r == Memory then mload else calldataload
+      comment $ "(structBs,fieldBs,offBs,leftOff,m,d): " ++
+        show (structBs,fieldBs,offBs,leftOff,m,d)
+      partial <- if m > 0
+                 then let lastByte = leftOff + m - 1
+                      in case () of
+                           --shl (TODO opt away if leftPad sufficient),
+                           --shr
+                           _ | lastByte < 31 -> do
+                                 comment $ "lastByte: " ++ show lastByte
+                                 comment "shl, shr"
+                                 w <- load ptr
+                                 p <- runEDSLW $
+                                      shift (8*(m-32)) $
+                                      shift (8*leftOff) $ EVar w
+                                 return [p]
+                             --partial word ends at last byte of mload ptr;
+                             --use and to mask
+                             | lastByte == 31 -> do
+                                 w <- load ptr
+                                 p <- runEDSLW $ mask (8*m) $ EVar w
+                                 return [p]
+                             --we need to mload off (ptr+k) anyway; load
+                             --off ptr+leftOff and shr
+                             | let -> do
+                                 ptr' <- runEDSLW $ addK leftOff $ EVar ptr
+                                 w <- load ptr
+                                 p <- runEDSLW $ shift (8*(m-32)) $ EVar w
+                                 return [p]
+                 else return []
+      wholeWords <- mapM (\offset -> do
+                             ptr' <- runEDSLW $ addK offset $ EVar ptr
+                             load ptr')
+                    [32*i + leftOff + m | i <- [0..d-1]]
+      return $ partial ++ wholeWords
+  | r `elem` [Storage,TStorage] = error "TODO support genDeref (sto/tso)"
 {-
   | let = do
           --First, fetch the bytes which contain any field bits
@@ -1459,6 +1480,12 @@ mstore8 :: Name -> Name -> Seq ()
 mstore8 addr val = do
   emitOp [("$mem",Mem)] (Opcode "mstore8") ["$mem",addr,val]
   return ()
+calldataload :: Name -> Seq Name
+calldataload addr = do
+  res <- newAnonVar
+  emitOp [(res,tword)] (Opcode "calldataload") [addr]
+  return res
+  
 --Implements *ptr = v, which is a special case of *ptr#ix* = v and much simpler
 --to implement.
 --All values in memory are byte-aligned, so a value which isn't a whole number

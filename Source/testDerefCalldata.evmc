@@ -1,0 +1,12 @@
+module {
+memory x : Word;
+memory y : UInt 32;
+main:()->();
+main _ := do {
+     cptr = 0 :: Ptr Calldata Word;
+     x = *cptr;
+     csptr = 0 :: Ptr Calldata {foo: UInt 32};
+     y = (*csptr).foo;
+     evm_return(0 :: Ptr Memory Byte,36)
+}
+}

@@ -86,6 +86,7 @@ loadModule modname = do
                             P.Import mname ->
                               loadModule $ moduleName mname
                             d -> return [d]) ds
+      _ -> error $ "getModule failed: " ++ show (paths,modname,meim)
 --Returns Nothing if there is no module there, returns Just (Left (path,err)) if
 --there is but there's a syntax error in the module at path.
 getModule :: [FilePath] -> [String] ->
