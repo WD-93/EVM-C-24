@@ -21,7 +21,7 @@ $i = [$l $d _ ']          -- identifier character
 $u = [\0-\255]          -- universal: any character
 
 @rsyms =    -- symbols and non-identifier-like reserved words
-   \{ | \} | \; | \: \= | \: | \= | \. | \( | \) | \[ | \] | \# | \, | \_
+   \{ | \} | \; | \: \= | \: | \= | \. | \| | \( | \) | \= \> | \[ | \] | \# | \, | \_
 
 :-
 "--" [.]* ; -- Toss single line comments
@@ -104,7 +104,7 @@ eitherResIdent tv s = treeFind resWords
                               | s == a = t
 
 resWords :: BTree
-resWords = b "else" 17 (b "=" 9 (b "." 5 (b ")" 3 (b "(" 2 (b "#" 1 N N) N) (b "," 4 N N)) (b ":=" 7 (b ":" 6 N N) (b ";" 8 N N))) (b "align" 13 (b "]" 11 (b "[" 10 N N) (b "_" 12 N N)) (b "byte" 15 (b "bit" 14 N N) (b "do" 16 N N)))) (b "storage" 25 (b "memory" 21 (b "if" 19 (b "end" 18 N N) (b "import" 20 N N)) (b "pad" 23 (b "module" 22 N N) (b "return" 24 N N))) (b "while" 29 (b "tstorage" 27 (b "then" 26 N N) (b "type" 28 N N)) (b "{" 31 (b "word" 30 N N) (b "}" 32 N N))))
+resWords = b "do" 19 (b "=>" 10 (b "." 5 (b ")" 3 (b "(" 2 (b "#" 1 N N) N) (b "," 4 N N)) (b ";" 8 (b ":=" 7 (b ":" 6 N N) N) (b "=" 9 N N))) (b "bit" 15 (b "_" 13 (b "]" 12 (b "[" 11 N N) N) (b "align" 14 N N)) (b "case" 17 (b "byte" 16 N N) (b "data" 18 N N)))) (b "storage" 29 (b "memory" 24 (b "if" 22 (b "end" 21 (b "else" 20 N N) N) (b "import" 23 N N)) (b "pad" 27 (b "of" 26 (b "module" 25 N N) N) (b "return" 28 N N))) (b "word" 34 (b "type" 32 (b "tstorage" 31 (b "then" 30 N N) N) (b "while" 33 N N)) (b "|" 36 (b "{" 35 N N) (b "}" 37 N N))))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 

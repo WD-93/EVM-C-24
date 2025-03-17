@@ -14,7 +14,7 @@ topLayout :: Bool
 topLayout = False
 
 layoutWords, layoutStopWords :: [String]
-layoutWords     = ["module","do"]
+layoutWords     = ["module","do","of"]
 layoutStopWords = []
 
 -- layout separators
@@ -209,32 +209,39 @@ sToken p s = PT p (TS s i)
       "(" -> 2
       ")" -> 3
       "," -> 4
-      "." -> 5
-      ":" -> 6
-      ":=" -> 7
-      ";" -> 8
-      "=" -> 9
-      "_" -> 10
-      "align" -> 11
-      "bit" -> 12
-      "byte" -> 13
-      "do" -> 14
-      "else" -> 15
-      "end" -> 16
-      "if" -> 17
-      "import" -> 18
-      "memory" -> 19
-      "module" -> 20
-      "pad" -> 21
-      "return" -> 22
-      "storage" -> 23
-      "then" -> 24
-      "tstorage" -> 25
-      "type" -> 26
-      "while" -> 27
-      "word" -> 28
-      "{" -> 29
-      "}" -> 30
+      "->" -> 5
+      "." -> 6
+      ":" -> 7
+      ":=" -> 8
+      ";" -> 9
+      "=" -> 10
+      "[" -> 11
+      "]" -> 12
+      "_" -> 13
+      "align" -> 14
+      "bit" -> 15
+      "byte" -> 16
+      "case" -> 17
+      "data" -> 18
+      "do" -> 19
+      "else" -> 20
+      "end" -> 21
+      "if" -> 22
+      "import" -> 23
+      "memory" -> 24
+      "module" -> 25
+      "of" -> 26
+      "pad" -> 27
+      "return" -> 28
+      "storage" -> 29
+      "then" -> 30
+      "tstorage" -> 31
+      "type" -> 32
+      "while" -> 33
+      "word" -> 34
+      "{" -> 35
+      "|" -> 36
+      "}" -> 37
       _ -> error $ "not a reserved word: " ++ show s
 
 -- | Get the position of a token.

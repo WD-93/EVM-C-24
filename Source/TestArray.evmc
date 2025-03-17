@@ -1,0 +1,14 @@
+module {
+memory arr : Byte[32];
+main:()->();
+--Takes a 4-char string and reverses it
+main _ := do {
+     c = 0 :: Ptr Calldata {a: Byte, b: Byte, c: Byte, d: Byte};
+     s = *c;
+     (arr[0]) = s.d;
+     (arr[1]) = s.c;
+     (arr[2]) = s.b;
+     (arr[3]) = s.a;
+     evm_return(arr,4)
+}
+}

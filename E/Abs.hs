@@ -19,18 +19,29 @@ data D
     | TySyn ConArgs E
     | Import ModuleName
     | Global GlobalRegion Ident E
+    | Data ConLHS ConRHS
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
   deriving (Eq, Ord, Show, Read)
 
-data ModuleName = MNil Ident | MCons Ident ModuleName
+data ModuleName = MNil UIdent | MCons UIdent ModuleName
   deriving (Eq, Ord, Show, Read)
 
 data GlobalRegion = Memory | Storage | TStorage
   deriving (Eq, Ord, Show, Read)
 
-data S = SE E | If E S S | While E S | Return E | Do [S]
+data ConLHS = CLNil UIdent | CLCons ConLHS Ident
+  deriving (Eq, Ord, Show, Read)
+
+data ConRHS = CRNil E | CRCons E ConRHS
+  deriving (Eq, Ord, Show, Read)
+
+data S
+    = SE E | If E S S | While E S | Return E | Do [S] | Case E [CASE]
+  deriving (Eq, Ord, Show, Read)
+
+data CASE = C E S
   deriving (Eq, Ord, Show, Read)
 
 data E

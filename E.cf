@@ -25,13 +25,18 @@ TySyn. D ::= "type" ConArgs "=" E;
 CANil. ConArgs ::= UIdent;
 CACons. ConArgs ::= ConArgs Ident;
 Import. D ::= "import" ModuleName;
-MNil. ModuleName ::= Ident;
-MCons. ModuleName ::= Ident "." ModuleName;
+MNil. ModuleName ::= UIdent;
+MCons. ModuleName ::= UIdent "." ModuleName;
 --Ex: memory x : UInt 16
 Global. D ::= GlobalRegion Ident ":" E;
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
+Data. D ::= "data" ConLHS "=" ConRHS;
+CLNil. ConLHS ::= UIdent;
+CLCons. ConLHS ::= ConLHS Ident;
+CRNil. ConRHS ::= E;
+CRCons. ConRHS ::= E "|" ConRHS;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
@@ -40,6 +45,11 @@ Return. S ::= "return" E;
 layout "do";
 Do. S ::= "do" "{" [S] "}";
 separator S ";";
+layout "of";
+Case. S ::= "case" E "of" "{" [CASE] "}";
+separator CASE ";";
+--TODO add pattern type?
+C. CASE ::= E2 "=>" S;
 
 Index. E ::= E3 "[" E "]";
 Assign. E ::= E3 "=" E1;

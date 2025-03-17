@@ -40,17 +40,18 @@ Infix literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``align`` | ``bit`` | ``byte`` | ``do``
-  | ``else`` | ``end`` | ``if`` | ``import``
-  | ``memory`` | ``module`` | ``pad`` | ``return``
-  | ``storage`` | ``then`` | ``tstorage`` | ``type``
-  | ``while`` | ``word`` |  | 
+  | ``align`` | ``bit`` | ``byte`` | ``case``
+  | ``data`` | ``do`` | ``else`` | ``end``
+  | ``if`` | ``import`` | ``memory`` | ``module``
+  | ``of`` | ``pad`` | ``return`` | ``storage``
+  | ``then`` | ``tstorage`` | ``type`` | ``while``
+  | ``word`` |  |  | 
 
 The symbols used in E are the following:
   | { | } | ; | :=
-  | : | = | . | (
-  | ) | [ | ] | #
-  | , | _ |  | 
+  | : | = | . | |
+  | ( | ) | => | [
+  | ] | # | , | _
 
 ===Comments===
 Single-line comments begin with --.Multiple-line comments are  enclosed with {- and -}.
@@ -70,21 +71,31 @@ All other symbols are terminals.
   |  |  **|**  | ``type`` //ConArgs// ``=`` //E// 
   |  |  **|**  | ``import`` //ModuleName// 
   |  |  **|**  | //GlobalRegion// //Ident// ``:`` //E// 
+  |  |  **|**  | ``data`` //ConLHS// ``=`` //ConRHS// 
   | //ConArgs// | -> | //UIdent// 
   |  |  **|**  | //ConArgs// //Ident// 
-  | //ModuleName// | -> | //Ident// 
-  |  |  **|**  | //Ident// ``.`` //ModuleName// 
+  | //ModuleName// | -> | //UIdent// 
+  |  |  **|**  | //UIdent// ``.`` //ModuleName// 
   | //GlobalRegion// | -> | ``memory`` 
   |  |  **|**  | ``storage`` 
   |  |  **|**  | ``tstorage`` 
+  | //ConLHS// | -> | //UIdent// 
+  |  |  **|**  | //ConLHS// //Ident// 
+  | //ConRHS// | -> | //E// 
+  |  |  **|**  | //E// ``|`` //ConRHS// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
   |  |  **|**  | ``return`` //E// 
   |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
+  |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
+  | //[CASE]// | -> | **eps**
+  |  |  **|**  | //CASE// 
+  |  |  **|**  | //CASE// ``;`` //[CASE]// 
+  | //CASE// | -> | //E2// ``=>`` //S// 
   | //E// | -> | //E3// ``[`` //E// ``]`` 
   |  |  **|**  | //E3// ``=`` //E1// 
   |  |  **|**  | //E1// 

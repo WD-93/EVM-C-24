@@ -6,6 +6,65 @@ is &p. Also useful: @.
 
 TODO QOL feature: a pretty show instance for code and types.
 
+Implementing data now... since Nil has no runtime reference to a, require it take a type parameter with @?
+No, the alloc pointer passed to it gives you the info you need.
+Form: data Con vars = Con t | ...
+Without inbuilt malloc, I need some other way to specify where to alloc new constructors...
+Con arg (p :: Ptr r Byte) =>
+ *p = {tag_Con,arg};
+ p += size of con;
+--If the tag is a uint8 that could perhaps be optimized by writing arg to *(p+1), then using mstore8...
+--but that's a question for later opts.
+Since v is a variable rather than an alloc function the overhead should be low... you could even cache the
+alloc pointer on the stack. If you overflow check it needs to be done afterwards...
+The datatype needs to record its region... that could be implemented with a custom bijection for each, but
+simply making it the first parameter is easiest.
+data Bool r = False | True
+b = True allocPtr
+case b of
+ False -> ...
+Allow constructors to have no argument; then you avoid binding a pointer.
+data List r a = Nil | Cons (a,List r a)
+type MList a = List Memory a
+Lists become a mouthful... [a,b,c] syntax could take a single var parameter, but note alloc may also be done
+in the elements.
+Avoiding the masking on pointer addition would save 6 gas... that could be done with an annot which marks
+a variable as unmasked, but that's dangerous.
+Functions which alloc constructors could take and return an alloc ptr or use a global; if they cache the
+global they must be careful to flush it when calling other allocating functions.
+
+Today:
+data decl --no kind check for now, but check args are determined by params.
+ Default kind: Region -> Type*
+Add tag_Con to constant substitution
+Con arg ptrv
+case dt :: TyCon r params of
+ Con0 -> stmt0
+ Con1 pat -> stmt1
+ ...
+=>
+tag <- *dt >> 248
+switch tag [(tag_Con0,stmt0),
+            (tag_Con1,do new var p = dt+1 :: Ptr r (arg of Con1); ...)]
+Give each switch case its own scope? Yes, they need to be a block (not a stmt) to scope the ptr. Add the
+block implicitly, don't require the user to supply it.
+Custom values for tags, esp function ptrs? Con a tag: (s, Ptr r a) -> b allows a dispatch function s -> b on 
+the datatype to be implemented efficiently. That requires preprocessing user-submitted bytecode, so can it
+for now. Also use only 1B tags for now. Allow switch only on values 0..n; use 2^n cases and mask the tag to
+catch malformed user-submitted datatypes. For a small number of cases (<=16), 
+jump $ ptrs >> (tag << 3) && mask 16
+would let you avoid an additional jump. Cost: 29. But an iset will have more...
+Evenly spaced cont SLCs would be nice, but would complicate SLC placement - don't do that for now.
+Pointer addition
+Storage get and set (bptr,len) abstraction. Padding may also be relevant.
+ get(bptr,1):
+  m = bptr & 31
+  d = bptr >> 5
+  byte m (sload d)
+Word-padded globals? gv => *(k :: Ptr r {pad word t})#0
+
+When "allocating" datatypes to calldata, pass c in place of the ptr?
+
 On ptr->field* = v: if the struct is < a word, you must save and restore more than just the
 struct.
 

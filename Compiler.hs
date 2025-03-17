@@ -106,8 +106,8 @@ getModule paths modname = go paths
         fp = moduleName2Path modname ++ ".evmc"
 moduleName :: P.ModuleName -> [String]
 moduleName = \case
-  P.MNil (Ident nm) -> [nm]
-  P.MCons (Ident nm) rest -> nm : moduleName rest
+  P.MNil (UIdent nm) -> [nm]
+  P.MCons (UIdent nm) rest -> nm : moduleName rest
 moduleName2Path :: [String] -> FilePath
 moduleName2Path = \case
   [nm] -> nm

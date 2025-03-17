@@ -1107,12 +1107,6 @@ simplePFs = M.fromList [
       case (t,ws) of
         (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
           pfMathOp "add" t1 t2 (w1,w2)
-        --ptr_a + n => ptr + sizeof(a) * n
-        (Pair (Ptr r a) (Int s len), [wptr,wn]) -> do
-          sz <- numBytesT a
-          off <- wop2 "mul" (wword sz) (return wn)
-          ptr' <- wmask 16 $ wop2 "add" (return off) (return wptr)
-          return (Ptr r a, [ptr'])
         _ -> throwE $ BadArgPrimFun "+" t),
   --Recall: mul/smul, div/sdiv need special treatment
   --Binary bitwise ops
@@ -2325,9 +2319,6 @@ typedAnonVar irt = do
   return (v,irt)
 
 type Expr = EDSL EVar
---TODO transition to just using Seq directly...
-wword :: Integral n => n -> Seq Name
-wword k = runEDSLW $ word k
 word :: Integral n => n -> Expr
 word k = head <$> App (Push $ Const $ fromIntegral k) (\_ -> Just [tword]) []
 tword = W 1 (UInt 256)
@@ -2409,12 +2400,6 @@ signextend = op2 "signextend"
 --Synonym for lowestBits:
 mask :: Int -> Expr -> Expr
 mask = lowestBits
-wmask :: Int -> Seq Name -> Seq Name
-wmask 0 _ = wword 0
-wmask 256 e = e
-wmask len e = do
-  w <- e
-  runEDSLW $ maskValue len & EVar w
 lowestBits :: Int -> Expr -> Expr
 --Opt: if len = 0, just return 0 (but don't discard potential side effects in
 --e)

@@ -102,6 +102,7 @@ instance Print D where
     TySyn conargs e_ -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 e_])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion id e_ -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 e_])
+    Data conlhs conrhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), prt 0 conrhs])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -112,14 +113,24 @@ instance Print ConArgs where
 
 instance Print ModuleName where
   prt i e = case e of
-    MNil id -> prPrec i 0 (concatD [prt 0 id])
-    MCons id modulename -> prPrec i 0 (concatD [prt 0 id, doc (showString "."), prt 0 modulename])
+    MNil uident -> prPrec i 0 (concatD [prt 0 uident])
+    MCons uident modulename -> prPrec i 0 (concatD [prt 0 uident, doc (showString "."), prt 0 modulename])
 
 instance Print GlobalRegion where
   prt i e = case e of
     Memory -> prPrec i 0 (concatD [doc (showString "memory")])
     Storage -> prPrec i 0 (concatD [doc (showString "storage")])
     TStorage -> prPrec i 0 (concatD [doc (showString "tstorage")])
+
+instance Print ConLHS where
+  prt i e = case e of
+    CLNil uident -> prPrec i 0 (concatD [prt 0 uident])
+    CLCons conlhs id -> prPrec i 0 (concatD [prt 0 conlhs, prt 0 id])
+
+instance Print ConRHS where
+  prt i e = case e of
+    CRNil e_ -> prPrec i 0 (concatD [prt 0 e_])
+    CRCons e_ conrhs -> prPrec i 0 (concatD [prt 0 e_, doc (showString "|"), prt 0 conrhs])
 
 instance Print S where
   prt i e = case e of
@@ -128,11 +139,19 @@ instance Print S where
     While e_ s -> prPrec i 0 (concatD [doc (showString "while"), doc (showString "("), prt 0 e_, doc (showString ")"), prt 0 s])
     Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
     Do ss -> prPrec i 0 (concatD [doc (showString "do"), doc (showString "{"), prt 0 ss, doc (showString "}")])
+    Case e_ cases -> prPrec i 0 (concatD [doc (showString "case"), prt 0 e_, doc (showString "of"), doc (showString "{"), prt 0 cases, doc (showString "}")])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
+instance Print CASE where
+  prt i e = case e of
+    C e_ s -> prPrec i 0 (concatD [prt 2 e_, doc (showString "->"), prt 0 s])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print E where
   prt i e = case e of
+    Index e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
     Assign e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "="), prt 1 e_2])
     Ops e_ infix_ os -> prPrec i 1 (concatD [prt 2 e_, prt 0 infix_, prt 0 os])
     PrefixOp infix_ e_ -> prPrec i 1 (concatD [prt 0 infix_, prt 1 e_])

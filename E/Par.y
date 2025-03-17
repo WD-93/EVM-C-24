@@ -14,8 +14,12 @@ import E.ErrM
 %name pConArgs ConArgs
 %name pModuleName ModuleName
 %name pGlobalRegion GlobalRegion
+%name pConLHS ConLHS
+%name pConRHS ConRHS
 %name pS S
 %name pListS ListS
+%name pListCASE ListCASE
+%name pCASE CASE
 %name pE E
 %name pE1 E1
 %name pE2 E2
@@ -38,29 +42,34 @@ import E.ErrM
   ':=' { PT _ (TS _ 7) }
   ';' { PT _ (TS _ 8) }
   '=' { PT _ (TS _ 9) }
-  '[' { PT _ (TS _ 10) }
-  ']' { PT _ (TS _ 11) }
-  '_' { PT _ (TS _ 12) }
-  'align' { PT _ (TS _ 13) }
-  'bit' { PT _ (TS _ 14) }
-  'byte' { PT _ (TS _ 15) }
-  'do' { PT _ (TS _ 16) }
-  'else' { PT _ (TS _ 17) }
-  'end' { PT _ (TS _ 18) }
-  'if' { PT _ (TS _ 19) }
-  'import' { PT _ (TS _ 20) }
-  'memory' { PT _ (TS _ 21) }
-  'module' { PT _ (TS _ 22) }
-  'pad' { PT _ (TS _ 23) }
-  'return' { PT _ (TS _ 24) }
-  'storage' { PT _ (TS _ 25) }
-  'then' { PT _ (TS _ 26) }
-  'tstorage' { PT _ (TS _ 27) }
-  'type' { PT _ (TS _ 28) }
-  'while' { PT _ (TS _ 29) }
-  'word' { PT _ (TS _ 30) }
-  '{' { PT _ (TS _ 31) }
-  '}' { PT _ (TS _ 32) }
+  '=>' { PT _ (TS _ 10) }
+  '[' { PT _ (TS _ 11) }
+  ']' { PT _ (TS _ 12) }
+  '_' { PT _ (TS _ 13) }
+  'align' { PT _ (TS _ 14) }
+  'bit' { PT _ (TS _ 15) }
+  'byte' { PT _ (TS _ 16) }
+  'case' { PT _ (TS _ 17) }
+  'data' { PT _ (TS _ 18) }
+  'do' { PT _ (TS _ 19) }
+  'else' { PT _ (TS _ 20) }
+  'end' { PT _ (TS _ 21) }
+  'if' { PT _ (TS _ 22) }
+  'import' { PT _ (TS _ 23) }
+  'memory' { PT _ (TS _ 24) }
+  'module' { PT _ (TS _ 25) }
+  'of' { PT _ (TS _ 26) }
+  'pad' { PT _ (TS _ 27) }
+  'return' { PT _ (TS _ 28) }
+  'storage' { PT _ (TS _ 29) }
+  'then' { PT _ (TS _ 30) }
+  'tstorage' { PT _ (TS _ 31) }
+  'type' { PT _ (TS _ 32) }
+  'while' { PT _ (TS _ 33) }
+  'word' { PT _ (TS _ 34) }
+  '{' { PT _ (TS _ 35) }
+  '|' { PT _ (TS _ 36) }
+  '}' { PT _ (TS _ 37) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -89,26 +98,39 @@ D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | 'type' ConArgs '=' E { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion Ident ':' E { E.Abs.Global $1 $2 $4 }
+  | 'data' ConLHS '=' ConRHS { E.Abs.Data $2 $4 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
 ModuleName :: { ModuleName }
-ModuleName : Ident { E.Abs.MNil $1 }
-           | Ident '.' ModuleName { E.Abs.MCons $1 $3 }
+ModuleName : UIdent { E.Abs.MNil $1 }
+           | UIdent '.' ModuleName { E.Abs.MCons $1 $3 }
 GlobalRegion :: { GlobalRegion }
 GlobalRegion : 'memory' { E.Abs.Memory }
              | 'storage' { E.Abs.Storage }
              | 'tstorage' { E.Abs.TStorage }
+ConLHS :: { ConLHS }
+ConLHS : UIdent { E.Abs.CLNil $1 }
+       | ConLHS Ident { E.Abs.CLCons $1 $2 }
+ConRHS :: { ConRHS }
+ConRHS : E { E.Abs.CRNil $1 } | E '|' ConRHS { E.Abs.CRCons $1 $3 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }
   | 'while' '(' E ')' S { E.Abs.While $3 $5 }
   | 'return' E { E.Abs.Return $2 }
   | 'do' '{' ListS '}' { E.Abs.Do $3 }
+  | 'case' E 'of' '{' ListCASE '}' { E.Abs.Case $2 $5 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
       | S ';' ListS { (:) $1 $3 }
+ListCASE :: { [CASE] }
+ListCASE : {- empty -} { [] }
+         | CASE { (:[]) $1 }
+         | CASE ';' ListCASE { (:) $1 $3 }
+CASE :: { CASE }
+CASE : E2 '=>' S { E.Abs.C $1 $3 }
 E :: { E }
 E : E3 '[' E ']' { E.Abs.Index $1 $3 }
   | E3 '=' E1 { E.Abs.Assign $1 $3 }
