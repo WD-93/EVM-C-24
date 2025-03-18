@@ -14,8 +14,9 @@ import E.ErrM
 %name pConArgs ConArgs
 %name pModuleName ModuleName
 %name pGlobalRegion GlobalRegion
+%name pListDataCon ListDataCon
 %name pConLHS ConLHS
-%name pConRHS ConRHS
+%name pDataCon DataCon
 %name pS S
 %name pListS ListS
 %name pListCASE ListCASE
@@ -68,8 +69,7 @@ import E.ErrM
   'while' { PT _ (TS _ 33) }
   'word' { PT _ (TS _ 34) }
   '{' { PT _ (TS _ 35) }
-  '|' { PT _ (TS _ 36) }
-  '}' { PT _ (TS _ 37) }
+  '}' { PT _ (TS _ 36) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -98,7 +98,7 @@ D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | 'type' ConArgs '=' E { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion Ident ':' E { E.Abs.Global $1 $2 $4 }
-  | 'data' ConLHS '=' ConRHS { E.Abs.Data $2 $4 }
+  | 'data' ConLHS '=' '{' ListDataCon '}' { E.Abs.Data $2 $5 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
@@ -109,11 +109,15 @@ GlobalRegion :: { GlobalRegion }
 GlobalRegion : 'memory' { E.Abs.Memory }
              | 'storage' { E.Abs.Storage }
              | 'tstorage' { E.Abs.TStorage }
+ListDataCon :: { [DataCon] }
+ListDataCon : {- empty -} { [] }
+            | DataCon { (:[]) $1 }
+            | DataCon ';' ListDataCon { (:) $1 $3 }
 ConLHS :: { ConLHS }
-ConLHS : UIdent { E.Abs.CLNil $1 }
+ConLHS : UIdent Ident { E.Abs.CLNil $1 $2 }
        | ConLHS Ident { E.Abs.CLCons $1 $2 }
-ConRHS :: { ConRHS }
-ConRHS : E { E.Abs.CRNil $1 } | E '|' ConRHS { E.Abs.CRCons $1 $3 }
+DataCon :: { DataCon }
+DataCon : UIdent E3 { E.Abs.DC $1 $2 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }

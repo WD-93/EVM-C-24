@@ -102,7 +102,7 @@ instance Print D where
     TySyn conargs e_ -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 e_])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion id e_ -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 e_])
-    Data conlhs conrhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), prt 0 conrhs])
+    Data conlhs datacons -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), doc (showString "{"), prt 0 datacons, doc (showString "}")])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -127,11 +127,13 @@ instance Print ConLHS where
     CLNil uident -> prPrec i 0 (concatD [prt 0 uident])
     CLCons conlhs id -> prPrec i 0 (concatD [prt 0 conlhs, prt 0 id])
 
-instance Print ConRHS where
+instance Print DataCon where
   prt i e = case e of
-    CRNil e_ -> prPrec i 0 (concatD [prt 0 e_])
-    CRCons e_ conrhs -> prPrec i 0 (concatD [prt 0 e_, doc (showString "|"), prt 0 conrhs])
-
+    DC0 uident -> prPrec i 0 (concatD [prt 0 uident])
+    DC1 uident e_ -> prPrec i 0 (concatD [prt 0 uident, prt 3 e_])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print S where
   prt i e = case e of
     SE e_ -> prPrec i 0 (concatD [prt 0 e_])
@@ -145,7 +147,7 @@ instance Print S where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print CASE where
   prt i e = case e of
-    C e_ s -> prPrec i 0 (concatD [prt 2 e_, doc (showString "->"), prt 0 s])
+    C e_ s -> prPrec i 0 (concatD [prt 2 e_, doc (showString "=>"), prt 0 s])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])

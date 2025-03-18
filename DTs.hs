@@ -7,6 +7,7 @@ import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Except (Except(..),runExcept,throwError) --for unification
 import Data.String (IsString(..))
 --TODO split into DTs etc files
 --TODO add BNFC syntax to repo
@@ -27,7 +28,11 @@ data E = EInteger Integer
        --Doesn't zero internal padding for now; coercing to a struct
        --is dangerous.
        | Coerce T E
-       -- *e becomes deref(e)
+       -- *e becomes deref(e), so it doesn't need a dedicated constructor
+       --Constructor application is substantially different from function
+       --application and takes a pattern as its second argument...
+       --I'll therefore add a new construct rather than reusing :$
+       | Con Name E Pat
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
@@ -49,6 +54,11 @@ tupleE :: [E] -> E
 tupleE = EStruct . tupleF
 tupleF :: [e] -> [Field e]
 tupleF = map (\x -> ((Word,Word),Nothing,x))
+--The byte-padded equivalent of tupleF; structE [a,b,c] => {a,b,c}
+structF :: [e] -> [Field e]
+structF = map (\x -> (((Byte,Byte),Nothing,x)))
+structE = EStruct . structF
+structT = Struct . structF
 --Design change: generic structure rather than one constructor per type
 instance IsString T where
   fromString = TyCon
@@ -83,6 +93,53 @@ data T = TyCon Name
        | TyNat Integer --for bitlens, array lens etc
        | Struct [Field T]
   deriving (Eq,Ord,Read,Show)
+--Unification is pretty fundamental, so might as well put it in here
+--Left (mnm,t1,t2) => subtypes t1 and t2 failed to unify
+--mnm = Just nm => unification was with nm, bound to t1
+--Right m => a map from tyvar name to a T (of any kind)
+--Precondition: only tpat contains tyvars; t is a monomorphic type
+--To avoid confusion with full Hindley-Milner style unification, I'll call it
+--bindT instead of unify.
+bindT :: T -> T -> Either (Maybe Name,T,T) (Map Name T)
+bindT tpat t = snd <$> runExcept (runStateT (bindTM tpat t) M.empty)
+type Unify = StateT (Map Name T) (Except (Maybe Name,T,T))
+--ExceptT (Maybe Name,T,T) (State (Map Name T))
+bindTM :: T -> T -> Unify ()
+bindTM tpat t = do
+  let err = throwError (Nothing,tpat,t)
+  case (tpat,t) of
+    (TyVar nm, _) -> do
+      s <- get
+      case M.lookup nm s of
+        Just t' ->
+          if t == t'
+          then return ()
+          else throwError (Just nm,t,t')
+        Nothing -> put (M.insert nm t s)
+    (tf :$$ tx, tf' :$$ tx') -> do
+      bindTM tf tf'
+      bindTM tx tx'
+    (Struct padnmts, Struct padnmts')
+      | length padnmts /= length padnmts' -> err
+      | let -> mapM_ (\((pad,mnm,t),(pad',mnm',t')) ->
+                        if (pad,mnm) /= (pad',mnm')
+                        then err
+                        else bindTM t t') $ zip padnmts padnmts'
+    _ -> if tpat == t
+         then return ()
+         else err
+--Note this instantiation may leave free vars!
+--Turns out I don't need it for alloc, but might be useful later.
+instT :: Map Name T -> T -> T
+instT m = go
+  where go = \case
+          TyVar nm
+            | Just t <- M.lookup nm m -> t
+            | let -> TyVar nm
+          tf :$$ tx -> go tf :$$ go tx
+          Struct padnmts -> Struct $ map (\(pad,nm,t) -> (pad,nm,go t)) padnmts
+          t -> t
+
 --Including kinds
 primTyCons :: Set Name
 primTyCons = S.fromList $
@@ -146,7 +203,20 @@ data Module = Module {
   --the first T is a region: memory, t/storage
   --If the global is an array, the Maybe Int = Just arrayLen
   --Arrays of dynamic or indeterminate length are disallowed
-  globals :: [(Name,T,T,Maybe Int)]
+  globals :: [(Name,T,T,Maybe Int)],
+  --Used when compiling case
+  datatypes :: Map Name --TyCon
+               ([Name], --params (the first is region)
+                [(Name, T)] --constructor; they all have exactly one param
+               ),
+  --Used when compiling allocation
+  --Return type pattern is split into tycon, region param, rest to
+  --make zero-param datatypes nonrepresentable and to simplify allocation
+  constructors :: Map Name (Int,    --tag value
+                            T,      --lhs type pattern
+                            Name,   --tycon
+                            Name,   --first param
+                            [Name]) --remaining params
   }
   deriving (Eq,Ord,Read,Show)
 

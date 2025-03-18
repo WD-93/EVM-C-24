@@ -1,0 +1,19 @@
+module {
+data D r = {
+     C0 Byte;
+     C1 Short;
+     C2 (D r)
+     };
+main:()->();
+main _ := do {
+     --The alloc pointer:
+     a = 0 :: MPtr Byte;
+     --Now we do some allocation
+     dt1 = C0 255 a;
+     dt2 = C1 (hex("cafe")) a;
+     C2 dt1 a;
+     C2 dt2 a;
+     --And finally we return the result
+     evm_return(0 :: MPtr Byte, 32)
+}
+}

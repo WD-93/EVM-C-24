@@ -11,7 +11,8 @@ import Control.Monad.State
 import Control.Monad.Trans.Except
 import Control.Monad.Fail
 import Control.Arrow ((***))
-import Data.Char (ord) --for string compilation
+import Data.Char (ord,isUpper) --for string compilation
+--isUpper is for checking a var is a constructor
 
 import DTs
 --The logic for assembling structs from field values, split out into another
@@ -165,25 +166,30 @@ seqModule mod = do
   mod' <- handleTySyns mod
   let mod = mod'
   let fdefs = M.toList $ defuns mod
+  checkDatatypesValidity $ datatypes mod
   globalMap <- handleGlobals $ globals mod
   --We substitute the globals and the special constant names
   --memOffset, stoOffset and tstoOffset prior to Seq to simplify seqE
+  --TODO add tag_Con_TyCon constants as well; only one is needed even for
+  --parameterized datatypes.
   fdefs' <- substGlobalsInDefs globalMap fdefs
   let fdefs = fdefs'
-  (sd,irdefs) <- handleDefuns fdefs
+  (sd,irdefs) <- handleDefuns mod fdefs
   return $ IRM {irDefuns = M.fromList irdefs,
                 staticData = sd
                }
-    where handleDefuns :: [(Name,D)] ->
+    where handleDefuns :: Module -> [(Name,D)] ->
                           Either SeqError
                           (Map Name Static, [(Name,(Arity,[IR]))])
-          handleDefuns = go 1 M.empty
+          handleDefuns mod = go mod 1 M.empty
           --anon label counter, static data, remaining defuns
-          go :: Int -> Map Name Static -> [(Name,D)] ->
+          go :: Module -> Int -> Map Name Static -> [(Name,D)] ->
             Either SeqError (Map Name Static, [(Name,(Arity,[IR]))])
-          go alc sd = \case
+          go mod alc sd = \case
             [] -> return (sd,[])
             (fnm,defun):rest ->
+              --Caught bug: tysyn substitution in constructors was being lost
+              --because let mod = mod' isn't visible here
               let seqr = SR {seqrModule = mod,
                              seqrFunction = defun
                             }
@@ -197,15 +203,74 @@ seqModule mod = do
                    (Left serr, _, _) -> Left serr
                    (Right arity, irs, seqs') -> do
                      let alc' = anonLabelCounter seqs'
-                     (sd',res) <- go alc'
+                     (sd',res) <- go mod alc'
                                   (M.union sd $ M.fromList $ zip
                                    (map (\n -> fnm ++ ".static#" ++ show n)
                                     [alc..alc'])
                                    (reverse $ anonStaticData seqs'))
                                   rest
                      return $ (sd',(fnm,(arity,irs)) : res)
---TODO add flag indicating arrayness
---Takes a list of (global name, region, type) and returns
+
+--Checks the following conditions:
+--1) Each datatype must have at least one param: the region.
+--2) Datatypes may not have duplicate params.
+--3) Datatypes may not contain duplicate constructor names.
+--4) A constructor's argument must be determined by the datatype params.
+--5) Given the constructor's argument is monomorphic, only the first param
+--(i.e. the region param) may be free.
+checkDatatypesValidity :: Map Name ([Name],[(Name,T)]) ->
+                          Either SeqError ()
+checkDatatypesValidity nm2dt = do
+  let nmdts = M.toList nm2dt
+  mapM_ (\(tycon,(params,constructors)) -> do
+            vars <- checkParams tycon params
+            --This won't fail because we now know params is nonempty
+            let r = head params
+            go tycon vars r S.empty constructors) nmdts
+    where checkParams = gop S.empty
+          gop s tycon []
+            | s == S.empty =
+              Left $ GenericError $
+              "Datatype " ++ tycon ++ " has no params, but " ++
+              "it must have at least one: the region"
+            | let = return s
+          gop s tycon (param:params)
+            | S.member param s =
+              Left $ GenericError $
+              "Duplicate type parameter in datatype " ++ tycon ++ ": " ++ param
+            | let = gop (S.insert param s) tycon params
+          go :: Name -> Set Name -> Name -> Set Name -> [(Name,T)] ->
+                Either SeqError ()
+          go tycon params r cons = \case
+            [] -> return () --0-constructor datatypes are OK
+            (con,t):rest
+              | S.member con cons ->
+                Left $ GenericError $
+                "Duplicate constructor in datatype " ++ tycon ++ ": " ++ con
+              | let ->
+                let free = freeTyVars t
+                in case () of
+                     --4) Params must fix argument
+                     _ | params `S.isProperSubsetOf` free ->
+                         Left $ GenericError $
+                         "Free tyvars in constructor " ++ con ++ " of datatype "
+                         ++ tycon ++ ": " ++ show (S.difference free params)
+                       --5) Argument + region must fix params
+                       | (S.insert r free) `S.isProperSubsetOf` params ->
+                         Left $ GenericError $
+                         "Argument + region don't fix params in constructor "++
+                         con ++ " of datatype " ++ tycon
+                       | let ->  go tycon params r (S.insert con cons) rest
+
+--TODO replace with generic implementation, move somewhere appropriate.
+freeTyVars :: T -> Set Name
+freeTyVars = go
+  where go = \case
+          TyVar nm -> S.singleton nm
+          tf :$$ tx -> S.union (go tf) (go tx)
+          Struct padnmts -> S.unions $ map (\(_,_,t) -> go t) padnmts
+          _ -> S.empty
+--Takes a list of (global name, region, type, maybe arrlen) and returns
 --memory, storage and storage offsets + a single map name => (r,t,off)
 --Oh no: I need to be in Seq to get numBytesT
 --While datatypes are always 16 bits, newtypes are not... but I just need to
@@ -304,6 +369,7 @@ substGlobalsInE gm@(moff,soff,tsoff,vm) =
     e :. nm -> (:. nm) <$> r e
     e :# ix -> (:# ix) <$> r e
     Coerce t e -> Coerce t <$> r e
+    Con con arg alloc -> Con con <$> r arg <*> substGlobalsInPat gm alloc
     e -> return e
                            
 --TODO give newtypes param, then reimplement numBitsT in terms of pureSz
@@ -332,6 +398,7 @@ pureSz = \case
 --the type decl itself, I can check whether the tysyn RHS contains type
 --constructors that aren't in scope.
 --For now, that only includes the primitive tycons.
+--Now I also need to subst tysyns in datatypes.
 handleTySyns :: Module -> Either SeqError Module
 handleTySyns mod = do
   --We must first add the primitive tysyns to prevent out of scope errors for
@@ -352,12 +419,43 @@ handleTySyns mod = do
   --Substitute tysyns and globals in static data
   static' <- substStatic tysyns' $ static mod
   globals' <- substGlobals tysyns' $ globals mod
+  datatypes' <- substDatatypes tysyns' $ datatypes mod
+  constructors' <- substConstructors tysyns' $ constructors mod
   --TODO add coerce and substitute in the function body
   return mod{tysyns = tysyns',
              defuns = defuns',
              static = static',
-             globals = globals'
+             globals = globals',
+             datatypes = datatypes',
+             constructors = constructors'
              }
+substConstructors :: Syns -> Map Name (Int,T,Name,Name,[Name]) ->
+                     Either SeqError (Map Name (Int,T,Name,Name,[Name]))
+substConstructors syns con2info = do
+  let coninfos = M.toList con2info
+  M.fromList <$> mapM (\(con,(tag,arg,tycon,r,params)) ->
+                         case applyTySyns syns arg of
+                           Left err ->
+                             Left $ GenericError $
+                             "Tysyn application error in constructor " ++ con
+                             ++ ": " ++ show err
+                           Right arg' -> return (con,(tag,arg',tycon,r,params)))
+    coninfos
+substDatatypes :: Syns -> Map Name ([Name],[(Name,T)]) ->
+                  Either SeqError (Map Name ([Name],[(Name,T)]))
+substDatatypes syns tycon2ds = do
+  let tyconds = M.toList tycon2ds
+      --Putting it here because otherwise it's indented too far to the right...
+      innerLoop tycon (constructor,t) =
+            case applyTySyns syns t of
+              Left err -> Left $ GenericError $
+                          "Tysyn application error in constructor " ++
+                          constructor ++ " in datatype " ++ tycon ++ ": " ++
+                          show err
+              Right t' -> return (constructor, t')
+  M.fromList <$> mapM (\(tycon,(params,cons)) -> do
+                          cons' <- mapM (innerLoop tycon) cons
+                          return (tycon,(params,cons'))) tyconds
 substStatic syns nm2tes = do
   let nmtes = M.toList nm2tes
   M.fromList <$> mapM (\(nm,(t,es)) ->
@@ -421,6 +519,8 @@ substTySynE syns =
         Left err -> Left $ GenericError $ "TySyn subst in coerce failed: "
           ++ show (t,e,err)
         Right t' -> Coerce t' <$> r e
+    Con con arg alloc ->
+      Con con <$> r arg <*> substTySynPat syns alloc
     e -> return e
 substTySynPat :: Syns -> Pat -> Either SeqError Pat
 substTySynPat syns =
@@ -1050,7 +1150,101 @@ seqE = \case
                                  fst <$> (runEDSL $ coerce irt (EVar w))) $
                          zip [W n targetT | n <- [1..]] (maskedLeftmost:rest)
             return (targetT,retypedWs)
-          
+  --Implementation (Con (arg :: argT) (allocPtr :: Ptr r Byte)):
+  --Each constructor has type arg -> TyCon params, where arg and params may
+  --contain free vars.
+  --actualParams <- subst params given (argT,r) =:= (arg,firstParam)
+  --rett = TyCon actualParams
+  --retPtr <- copy allocPtr :: rett
+  -- *(allocPtr :: Ptr r {Byte,argT}) = {tag_Con,arg}
+  --allocPtr += <1 + sizeof arg>
+  --return (rett,retPtr)
+  Con con arg allocPtrPat -> do
+    ptrE <- pat2e con allocPtrPat
+    --To both check the pointer has an appropriate type and use it, we must
+    --save it to a faux C var
+    fauxPtr <- newAnonVar
+    seqS (PVar fauxPtr := ptrE)
+    ni <- getCNameInfo fauxPtr
+    let IsLocal ptrT = ni
+    case ptrT of
+      Ptr r (UInt 8)
+        | not $ r `elem` [Memory,Storage,TStorage] ->
+          throwE $ GenericError $
+          "Alloc ptr for " ++ con ++ " points into an immutable region " ++
+          show r
+        | let -> do
+            --Get the constructors tag byte, (polymorphic) arg type and
+            --return type. The return type is split into tycon, region
+            --parameter and the remaining params to make 0-arity tycons
+            --non-representable and ease unification of the region param with
+            --r.
+            --Note unification is local; the type system is not Hindley-Milner.
+            (tagCon,conArgT,tycon,rt,remParams) <- getConInfo con
+            let tagConE = EInteger $ fromIntegral tagCon
+            --Because I don't separate type inference from compilation, I
+            --need to save {tag,arg} to a new faux C var before I can check
+            --the arg is actually a valid argument.
+            faux <- newAnonVar
+            seqS (PVar faux := structE [tagConE,arg])
+            --Now we retrieve the arg's type...
+            ni <- getCNameInfo faux
+            let IsLocal structT@(Struct [_,(_,_,argT)]) = ni
+            case bindT (Pair conArgT $ TyVar rt) (Pair argT r) of
+              Left err -> throwE $ GenericError $
+                "Bind failure in " ++ con ++ " allocation: " ++ show err
+              Right v2t -> do
+                --Instantiate the datatype
+                --Note we check arg and alloc pointer contain enough info to
+                --determine the datatype's params once per datatype; we don't
+                --need to do so here.
+                let datatype = foldr (flip (:$$)) (TyCon tycon) $
+                               map (v2t M.!) $ rt:remParams
+                --Now we write the struct to the pointer:
+                --(*(fauxPtr :: Ptr r structT)) = faux
+                seqS (Deref (Coerce (Ptr r structT) $ Var fauxPtr) :=
+                      Var faux)
+                --We bump allocPtr by sizeof structT:
+                --This works becuase fauxPtr is a byte ptr
+                sz <- numBytesT structT
+                seqS (allocPtrPat := (Var "+" :$
+                                      tupleE [Var fauxPtr,
+                                              EInteger $ fromIntegral sz
+                                             ]))
+                --fauxPtr now holds the original ptr to return coerced to
+                --datatype:
+                seqE (Coerce datatype $ Var fauxPtr)
+      _ -> throwE $ GenericError $
+        "Alloc ptr for " ++ con ++ " must be a byte ptr, but instead it's "
+        ++ show ptrT
+      
+--pat2e pat returns e if the given pattern unambiguously corresponds to
+--the expression e.
+--Example: foo.bar is an unambigous pattern as long as foo is bound.
+--Note type errors may be thrown when you try to evaluate the expression;
+--for example, foo may not have the field bar.
+--It's in Seq to check if locals are bound and to immediately throw an
+--error if it encounters an unbound one.
+pat2e :: Name -> Pat -> Seq E
+pat2e con = go
+  where
+    go :: Pat -> Seq E
+    go = \case
+      PVar nm -> do
+        ni <- getCNameInfo nm
+        case ni of
+          IsLocal t -> return $ Var nm
+          _ -> throwE $ GenericError $
+               con ++ ": Bad name info for var " ++ nm ++ " in pat2e: " ++
+               show ni
+      PTup ps -> tupleE <$> mapM go ps
+      PDot p field -> (:. field) <$> go p
+      PHash p ix -> (:# ix) <$> go p
+      Deref e -> return $ Var "deref" :$ e
+      p -> throwE $ GenericError $
+           con ++ ": Pattern does not unambigously correspond to an expr: "
+           ++ show p
+                           
 unrollEFields :: E -> (E,[Either Name Int])
 unrollEFields = (id *** reverse) . go
   where go = \case
@@ -2566,17 +2760,17 @@ data NameInfo = IsFunction T
               | IsTySyn --ditto
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
-primFunSet = M.keysSet simplePFs {-S.fromList $ concat $ map words [
-  --Ptr primops
-  "deref",
-  --Mathops
-  "+ * - / negate %",
-  --Logops (with short-circuiting)
-  "&& || !",
-  --Bitops
-  "& | ~ ^"
-  --TODO: EVM ops
-  ]-}
+primFunSet = M.keysSet simplePFs
+
+--Given a constructor name, returns its (tag,argT,tycon,fst param,rest)
+--Fails if there's no such constructor
+getConInfo :: Name -> Seq (Int,T,Name,Name,[Name])
+getConInfo nm = do
+  cons <- constructors <$> seqrModule <$> ask
+  case M.lookup nm cons of
+    Nothing -> throwE $ GenericError $
+               "No such constructor: " ++ nm
+    Just x -> return x
 
 getCNameInfo :: Name -> Seq NameInfo
 getCNameInfo nm
@@ -2615,6 +2809,9 @@ numBitsT = \case
                        return (pad,al,sz)) padnmts
     let (sz,structure) = B.structLayout padalszs
     return sz
+  --Currently the only other use of :$$ is datatypes, which are just wrapped
+  --pointers. That will change once I add Proxy a
+  _ :$$ _ -> return 16
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 

@@ -303,6 +303,8 @@ data DError = TySigDefunMismatch Name Name
             --TODO remove bit padding from syntax and compiler
             | NegativeLengthArray Name Integer
             | TooLongArray Name Integer
+            | StandaloneConstructorName String
+            | DuplicateConstructors Name
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -310,7 +312,9 @@ desugar (P.Module ds) =
   Module {defuns = M.empty,
           tysyns = M.empty,
           static = M.empty,
-          globals = []
+          globals = [],
+          datatypes = M.empty,
+          constructors = M.empty
          } of
     (Left derr, _) -> Left derr
     (Right (), m) -> Right m
@@ -340,6 +344,7 @@ desugarDs (P.TySig (Ident f) t :
           insertDefun f def
           desugarDs rest
 desugarDs (P.Global pr (Ident x) pt : rest) = do
+  checkForDuplicates x
   let r = TyCon $ show pr
   (t,mlen) <- case pt of
                 P.Index pt' (P.Int len)
@@ -354,10 +359,62 @@ desugarDs (P.Global pr (Ident x) pt : rest) = do
   s <- get
   put s{globals = globals s ++ [(x,r,t,mlen)]} --I know it's quadratic...
   desugarDs rest
+desugarDs (P.Data lhs rhs : rest) = do
+  --Duplicate params, duplicate constructors and free tyvars in arg types to
+  --be caught in IR1
+  --It's also not necessary to check params don't shadow non-type names;
+  --they live in different namespaces.
+  let (tycon,params) = desugarConLHS lhs
+  conmts <- desugarConRHS (tycon,params) rhs
+  checkForDuplicates tycon
+  --We don't actually need to prevent collisions between constructors in
+  --different datatypes, or between constructors and tysyns!
+  --That's because the alloc ptr var gives you all the type info you need
+  --on construction,
+  --and e gives you a monomorphic type in case e of {...}.
+  s <- get
+  put s{datatypes = M.insert tycon (params,conmts) $ datatypes s}
+  desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
 
+--This can't fail, so there's no need to make it a monad
+desugarConLHS :: P.ConLHS -> (Name,[Name])
+desugarConLHS = go
+  where go = \case
+          P.CLNil (UIdent tycon) (Ident rparam) -> (tycon,[rparam])
+          P.CLCons conlhs (Ident param) ->
+            let (tycon,params) = go conlhs
+            in (tycon,params++[param]) --I know it's quadratic...
+--This can fail because I use E for the constructors; todo make the BNFC
+--syntax more restrictive so I don't need a bunch of unnecessary parentheses
+--to get it to parse right...
+--Now takes (tycon,params) in order to add each con to constructors with its
+--type.
+--TODO change to (Name,Name,[Name]) to reflect the fact that the param list
+--will always be nonempty.
+--Problem: I'm determining the tags in the desugaring phase!
+--Maybe I should instead refer to a scheme for determining them, to be
+--resolved in IR.
+desugarConRHS :: (Name,[Name]) -> [P.DataCon] -> De [(Name,T)]
+desugarConRHS (tycon,r:params) cons =
+  mapM (\(tag,(P.DC (UIdent con) parg)) -> do
+           arg <- desugarT parg
+           addConstructor con (tag,arg,tycon,r,params)
+           return (con,arg)
+       ) $ zip [0..] cons
+--Adds the info of a new constructor to the constructors map; throws an error
+--if there's a duplicate. Constructors do not conflict with tysyns or tycons.
+addConstructor :: Name -> (Int, T, Name, Name, [Name]) -> De ()
+addConstructor con info = do
+  mod <- get
+  let cons = constructors mod
+  if M.member con cons
+    then throwE $ DuplicateConstructors con
+    else put mod{constructors = M.insert con info cons}
 --No decls (functions, tysyns, datatypes, globals, immutables...) may shadow
 --each other.
+--TODO add primfuns.
+--Potential opt: split check for lowercase names and constructors
 checkForDuplicates :: Name -> De ()
 checkForDuplicates nm = do
   m <- get
@@ -365,6 +422,7 @@ checkForDuplicates nm = do
   if S.member nm $ S.unions $
     [M.keysSet $ defuns m,
      M.keysSet $ tysyns m,
+     M.keysSet $ datatypes m,
      primTyCons]
     then throwE $ DuplicateDeclsForName nm
     else return ()
@@ -537,6 +595,11 @@ desugarE = do
       e1 <- r e
       opes <- desugarOpsE op os
       return $ opsToApps opPrecedenceInfo e1 opes
+    --1-arity constructor allocation, the only type allowed.
+    P.App (P.App (P.Con (UIdent con)) parg) ppat -> do
+      arg <- desugarE parg
+      p <- desugarP ppat
+      return $ Con con arg p
     --Hack: BNFC doesn't like adding a hexadecimal number token, so I'll
     --use hex("deadbeef") instead
     P.App (P.Var (Ident "hex")) (P.Str str) ->
@@ -546,7 +609,8 @@ desugarE = do
                         "Couldn't read hex number in hex(...): " ++ show str)
     P.App f x -> (:$) <$> r f <*> r x
     P.Var (Ident x) -> return $ Var x
-    P.Con (UIdent x) -> return $ Var x --a name's a name to the IR
+    P.Con (UIdent x) -> throwE $ StandaloneConstructorName x
+       --return $ Var x --a name's a name to the IR
     P.Dot e (Ident f) -> (:.) <$> r e <*> return f
     P.Hash e n -> (:#) <$> r e <*> return (fromInteger n)
     P.Int n -> return $ EInteger n

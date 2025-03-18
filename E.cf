@@ -32,11 +32,14 @@ Global. D ::= GlobalRegion Ident ":" E;
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
-Data. D ::= "data" ConLHS "=" ConRHS;
-CLNil. ConLHS ::= UIdent;
+layout "=";
+Data. D ::= "data" ConLHS "=" "{" [DataCon] "}";
+separator DataCon ";";
+--0-parameter datatypes are now a syntax error
+CLNil. ConLHS ::= UIdent Ident;
 CLCons. ConLHS ::= ConLHS Ident;
-CRNil. ConRHS ::= E;
-CRCons. ConRHS ::= E "|" ConRHS;
+--0-parameter constructors are now a syntax error
+DC. DataCon ::= UIdent E3;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";

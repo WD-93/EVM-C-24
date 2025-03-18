@@ -55,6 +55,10 @@ catch malformed user-submitted datatypes. For a small number of cases (<=16),
 jump $ ptrs >> (tag << 3) && mask 16
 would let you avoid an additional jump. Cost: 29. But an iset will have more...
 Evenly spaced cont SLCs would be nice, but would complicate SLC placement - don't do that for now.
+For now I should just focus on getting the desired functionality to compile (with a constant overhead).
+For datatypes with fewer than 16 constructors, making the tags multiples of 16 would make sense. But only if
+the datatype is trusted... otherwise an attacker might create a malformed jump address.
+I could do that only for case on calldata datatypes...
 Pointer addition
 Storage get and set (bptr,len) abstraction. Padding may also be relevant.
  get(bptr,1):
@@ -63,7 +67,51 @@ Storage get and set (bptr,len) abstraction. Padding may also be relevant.
   byte m (sload d)
 Word-padded globals? gv => *(k :: Ptr r {pad word t})#0
 
-When "allocating" datatypes to calldata, pass c in place of the ptr?
+Oh no... using | in data would reserve the or bit op... I'll just use {;} for now, though later I could
+change data to use a single E for the rhs.
+Since Con arg allocPtr takes a Pat in its second argument, I need a new E construct for it; that makes sense,
+since it's not actually a function call. For now I'll just use :$ and only allow passing a variable as the
+alloc pointer.
+That doesn't work since global substitution will substitute away the var... and allocating to a global is too
+attractive to disallow.
+I need to make a Con construct and a helper function for getting the type of a pattern if its type is not
+ambiguous.
+_, unbound --ambiguous
+bound --unambiguous
+pstruct --ambiguous since padding isn't specified
+ptup --unambiguous iff arguments are
+pdot,phash --unambiguous if subpat is, may raise a type error
+deref --ditto
+pat2e would give me both type and value... alt: I could do the conversion in the other direction.
+But Con arg ptr is substantially different from a call, so it's misleading to use (:$)... it also complicates
+$ processing. Note that since I use P.E for types, I still need P.Con in the BNFC syntax.
+What about Con p = e? Don't support for now, but it could be implemented using case or a tag check;
+failure triggers a revert.
+I don't need newtypes, type Prime = {unPrime: Word} works just as well.
+Oh no: the alloc ptr can't hint the con type; MPtr (MList a) is a pointer to the boxed list, not to the
+unboxed in-memory repr. To share an alloc ptr across multiple datatypes, it needs to be a byte ptr.
+OK, I'll make all constructors 1-arity and require there be a bijection between the arg type and the params +
+alloc ptr type. I then need to pass a 0-size (() :: Proxy a) to Nil and Nothing.
+That also means constructors from different datatypes should not collide.
+Once I add a kind check and give each tycon a monomorphic kind, I'll also need Proxy variants for region,
+Nat etc.
+Note the bijection is partial: Cons {int,funList} ptr should fail.
+
+TODO extend substTysynE, substGlobalsInE, ppr to handle Con.
+Changes: 
+Tags should be tag_Con, not tag_Con_TyCon because they collide with constructors in other types.
+Need a global map constructors :: Map Name (tagValue,argType,retType)
+
+data Bool r = {False (); True ()}
+The () or proxy param for 0-argument constructors is a drag, but given the overhead of datatypes relative to
+unboxed types and the importance of saving gas most datatypes will have arguments; it won't be used for Bool, 
+that's for sure.
+TODO fix datatypes to make 0-param datatypes non-representable
+
+When "allocating" datatypes to calldata, pass c in place of the ptr? I could just omit it, it's implicit.
+But Nil needs a hint of what type it is!
+Passing the type would be too verbose... I could add type lets to the static data syntax so I just need a
+single char.
 
 On ptr->field* = v: if the struct is < a word, you must save and restore more than just the
 struct.
