@@ -305,6 +305,7 @@ data DError = TySigDefunMismatch Name Name
             | TooLongArray Name Integer
             | StandaloneConstructorName String
             | DuplicateConstructors Name
+            | BadPatternInCase P.E
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -565,7 +566,19 @@ desugarS = \case
   P.Do [s] -> desugarS s
   --TODO allow standalone do blocks and do expressions
   P.Do ss -> throwE $ BadDoInDesugarS ss
-
+  P.Case pe pcases -> do
+    e <- desugarE pe
+    cases <- mapM desugarCase pcases
+    return $ Case e cases
+--TODO allow _, x patterns in case
+desugarCase :: P.CASE -> De (Name,Pat,S)
+desugarCase (P.C pe ps) =
+  case pe of
+    P.App (P.Con (UIdent con)) ppat -> do
+      pat <- desugarP ppat
+      s <- desugarS ps
+      return (con,pat,s)
+    _ -> throwE $ BadPatternInCase pe
 desugarE :: P.E -> De E
 desugarE = do
   let r = desugarE

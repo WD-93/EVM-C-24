@@ -40,6 +40,18 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
                | IRComment String --Ignored in later stages, used for debugging
                --Branching EVM instructions
                | EVM_RETURN a Name Name Name -- $mem, ptr, len
+               --For case:
+               --switch tag numTags cases
+               --Only cases for tags in the range 0..numTags-1 are acceptable.
+               --If the tag (a 1-byte value) has no matching case, revert with
+               --no message.
+               --Naive compilation: if numTags is not a power of two, and it
+               --by its bitlen and add revert cases directly to the jump table.
+               --If it is 2^n < 256, add an if tag > 2^n then revert() first.
+               --If numTags == 256, simply make a 256-elem table.
+               --Note switch is a bit of a misleading name; it doesn't do
+               --fallthrough like C switch
+               | Switch a Name Int (Map Int [IRP a])
   deriving (Eq,Ord,Read,Show)
 type IR = IRP ()
 data Operator = Push StaticValue
@@ -217,12 +229,19 @@ seqModule mod = do
 --3) Datatypes may not contain duplicate constructor names.
 --4) A constructor's argument must be determined by the datatype params.
 --5) Given the constructor's argument is monomorphic, only the first param
---(i.e. the region param) may be free.
+--   (i.e. the region param) may be free.
+--6) Since all datatypes have 1B tags (for now), they may have at most 256
+--   constructors.
 checkDatatypesValidity :: Map Name ([Name],[(Name,T)]) ->
                           Either SeqError ()
 checkDatatypesValidity nm2dt = do
   let nmdts = M.toList nm2dt
   mapM_ (\(tycon,(params,constructors)) -> do
+            if length constructors > 256
+              then Left $ GenericError $
+              "Datatype "++tycon++" has too many constructors: " ++
+              show (length constructors)
+              else return ()
             vars <- checkParams tycon params
             --This won't fail because we now know params is nonempty
             let r = head params
@@ -347,6 +366,10 @@ substGlobalsInS gm =
     DTs.Return e -> DTs.Return <$> re e
     DTs.Ifte e th el -> DTs.Ifte <$> re e <*> mapM r th <*> mapM r el
     DTs.While e bl -> DTs.While <$> re e <*> mapM r bl
+    Case e cases -> Case <$> re e <*> mapM (\(con,p,s) -> do
+                                              p' <- substGlobalsInPat gm p
+                                              s' <- r s
+                                              return (con,p',s')) cases
 substGlobalsInE :: (Int,Int,Int, Map Name (T,T,Int,Maybe Int)) -> E ->
                    Either SeqError E
 substGlobalsInE gm@(moff,soff,tsoff,vm) =
@@ -502,6 +525,10 @@ substTySynS syns =
     DTs.Return e -> DTs.Return <$> re e
     DTs.Ifte b th el -> DTs.Ifte <$> re b <*> mapM r th <*> mapM r el
     DTs.While e body -> DTs.While <$> re e <*> mapM r body
+    Case e cases -> Case <$> re e <*> mapM (\(con,p,s) -> do
+                                               p' <- rp p
+                                               s' <- r s
+                                               return (con,p',s')) cases
 substTySynE :: Syns -> E -> Either SeqError E
 substTySynE syns =
   let r = substTySynE syns
@@ -977,6 +1004,114 @@ seqS = \case
     (v,pre) <- isolate $ truthyE e
     post <- seqBlock body
     emit $ IR1.While () pre v post
+  --Case implementation:
+  --case e of {Con1 p -> s; ...}
+  --v = eval e : TyCon r .. restParams
+  --tag <- *(v :: Ptr r Byte) & mask (bitlen of #constructors)
+  --switch tag {case 0x00: p = do {(v+1 :: Ptr r argOfCon1); s}
+  --            ... a case for every constructor + invalid tags not caught by
+  --                the mask}
+  --FW: for types with many constructors and where only a few densely packed
+  --ones are considered,
+  --do 1-2 bounds checks first.
+  --If only a single one is considered, use an ifte instead.
+  Case e cases -> do
+    --TODO turn my faux + get type trick into a combinator
+    faux <- newAnonVar
+    seqS (PVar faux := e)
+    ni <- getCNameInfo faux
+    let IsLocal datatype = ni
+    --For now, only support case on datatypes; throw an error on any other type.
+    --Get tycon, region and remaining params
+    (tycon,r,params) <- parseDatatype e datatype
+    --Compute the arg ptr:
+    --Because seqBlock operates on [S], not IR, we need to expose the
+    --ptr to the C scope:
+    fauxPtr <- newAnonVar
+    seqS (PVar fauxPtr := (Var "+" :$ tupleE [EInteger 1,
+                                              Coerce (UInt 16) $ Var faux
+                                             ]))
+    --Get the (constructor,argPat) list of the datatype
+    (dtParams,dtCons) <- getDatatypeInfo tycon
+    --This'll error is a datatype value has somehow been created with the wrong
+    --number of params
+    if length (r:params) /= length dtParams
+      then error $ "Compiler error: something has gone very wrong"
+      else return ()
+    --Instantiate the argPats to get argTypes
+    let instantiation = M.fromList $ zip dtParams (r:params)
+        dtConsInst = map (id *** instT instantiation) dtCons
+    --Now we can create a map con => t and con => tag
+    let con2argType = M.fromList dtConsInst
+        con2tag = M.fromList $ zip (map fst dtConsInst) [0..]
+        numTags = length dtConsInst
+    --We convert the case list to a map Int => (Pat,S)
+    --Duplicate constructor mentions are a compiler error for now.
+    tag2PatTS <- buildTagMap tycon con2argType con2tag cases
+    --Create the blocks for each case: tag,(pat,argType,s)
+    --becomes (tag,do {pat = fauxPtr :: Ptr r argType; s})
+    let tagPatTS = M.toList tag2PatTS
+    tag2IR <- M.fromList <$> mapM (\(tag,(pat,arg,s)) -> do
+                                      ir <- seqBlock [
+                                        pat := Coerce (Ptr r arg) (Var fauxPtr),
+                                        s]
+                                      return (tag,ir)) tagPatTS
+    --Finally, fetch the tag and switch on it
+    --tag <- eval *(faux :: Ptr r Byte)
+    (_,tagws) <- seqE $ Var "deref" :$ Coerce (Ptr r (UInt 8)) (Var faux)
+    let [tag] = tagws
+    emit $ Switch () tag numTags tag2IR
+--The tycon tag is for error reporting
+--con => arg type, con => tag, [(con,pat,s)] -> Int => (pat,arg type,s)
+--Con cases which aren't in the datatype are an error;
+--Duplicate cases for a con are an error.
+buildTagMap :: Name ->
+               Map Name T -> Map Name Int -> [(Name,Pat,S)] ->
+               Seq (Map Int (Pat,T,S))
+buildTagMap tycon con2t con2tag = go M.empty
+  where
+    go :: Map Int (Pat,T,S) -> [(Name,Pat,S)] -> Seq (Map Int (Pat,T,S))
+    go m = \case
+          [] -> return m
+          (con,pat,s):cases ->
+            case M.lookup con con2tag of
+              Just tag
+                | M.member tag m ->
+                  throwE $ GenericError $
+                  "Duplicate constructor in case: " ++ con
+                --This is guaranteed to work; TODO change to a single map
+                | let argT = con2t M.! con ->
+                  go (M.insert tag (pat,argT,s) m) cases
+              Nothing ->
+                throwE $ GenericError $
+                unwords["Error in case:",
+                        "Constructor",con,"does not exist in datatype",tycon]
+                  
+--tycon -> nonempty list of params, constructors
+--throws an error if no such datatype
+--TODO change nonempty list to Name,[Name]
+getDatatypeInfo :: Name -> Seq ([Name],[(Name,T)])
+getDatatypeInfo tycon = do
+  minfo <- M.lookup tycon <$> datatypes <$> seqrModule <$> ask
+  case minfo of
+    Just info -> return info
+    Nothing -> throwE $ GenericError $ "No such datatype in case: " ++ tycon
+--The E is for error reporting
+parseDatatype :: E -> T -> Seq (Name,T,[T])
+parseDatatype e t =
+  case go t of
+    Just info -> return info
+    Nothing -> throwE $ GenericError $
+               "Non-datatype in case on expression " ++ show (e,t)
+  where go = \case
+          TyCon con :$$ t
+            | not (con `elem` primTyCons) -> return (con,t,[])
+          tf :$$ tx -> do
+            (con,r,ps) <- go tf
+            return (con,r,ps++[tx])
+          _ -> Nothing
+          
+    
 --You need to know the *word* vars returned to use them;
 --if $mem is involved it remains the same.
 --Also returns the type (which only depends on global info, locals and

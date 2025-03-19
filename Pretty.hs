@@ -67,6 +67,12 @@ prettyIR = do
     Return _ nms -> ["return " ++ showRHS nms]
     IRComment str -> ["--" ++ str]
     EVM_RETURN _ mem ptr len -> [unwords ["evm_return",mem,ptr,len]]
+    Switch _ tag numTags tag2block ->
+      let tagblocks = M.toList tag2block
+      in [unwords ["switch",tag,"(numTags "++show numTags++")","{"]] ++
+         (do (tag,block) <- tagblocks
+             [show tag ++ ":"] ++ indentBlock block) ++
+         ["}"]
     ir -> error $ "Unsupported IR construct in prettyIR: " ++ show ir
 indentBlock irs = map (' ':) (irs >>= prettyIR)
 

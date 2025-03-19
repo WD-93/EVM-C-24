@@ -1,0 +1,14 @@
+module{
+data B r = {
+     F ();
+     T ()
+     };
+main:()->Byte;
+main _ := do {
+     b = 0 :: B Memory;
+     case b of {
+     	  F _ => return 0;
+	  T _ => return 1
+	  }
+}
+}

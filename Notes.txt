@@ -1,3 +1,25 @@
+Observations from compiling
+"module{data E r= {E Byte};main:()->();main _:=do{p = 0::MPtr Byte;E 255 p;evm_return(0::MPtr Byte,2)}}"
+Struct computation:
+push1 255
+push0 0
+push1 8
+shl
+or
+--I could really use constant expansion... that would save 80% of the gas cost there.
+30-byte masks risk using up the 24k code byte limit... since mask is in Seq I can pass a terseness parameter.
+Opt: when allocating multiple contiguous values, assemble into a large struct on the stack first.
+Alt: if they're mostly constant, use codecopy instead.
+
+If a datatype has 256 constructors, "simply make a 256-elem JT"... that's 5% of a contract's code size
+budget. So only have one case for the iset...
+It may be necessary to do manual datatype management to get the cost of dealing with objects in a HL
+interpreter down far enough.
+A tagless design might be worth exploring: to handle a DT, fetch a function off the ptr to it and call.
+
+Datatype alloc now done; case will be more complex since supporting JTs requires changes from the IR down to
+Stack. I'll use a simple 2-jump JT for now, a la MultiCall.
+
 &pat lets me express
 case xs of
  Cons &(x,xs') -> ...

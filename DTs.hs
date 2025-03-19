@@ -130,6 +130,7 @@ bindTM tpat t = do
          else err
 --Note this instantiation may leave free vars!
 --Turns out I don't need it for alloc, but might be useful later.
+--Yup, useful for case.
 instT :: Map Name T -> T -> T
 instT m = go
   where go = \case
@@ -179,6 +180,7 @@ data S = Pat := E
        | Return E
        | Ifte E Block Block
        | While E Block
+       | Case E [(Name,Pat,S)]
   deriving (Eq,Ord,Read,Show)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
