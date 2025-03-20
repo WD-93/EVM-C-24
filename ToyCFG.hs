@@ -47,6 +47,7 @@ branchChildren = \case
   Jumpi _ th el -> [th,el]
   BReturn _ -> []
   BEVM_RETURN {} -> []
+  BSwitch _ _ tag2ls -> M.elems tag2ls
 --dfsGraph specialized to CFGS
 dfsCFG :: (Label,CFGS) -> [(Label,SLC Name)]
 dfsCFG (lab,cfgs) | lab2slc <- labelSLCMap cfgs =
@@ -131,8 +132,23 @@ annIRWithLive loopLs end =
       EVM_RETURN () mem ptr len ->
         let s = S.fromList [mem,ptr,len]
         in (EVM_RETURN s mem ptr len, s)
+      --Live: tag, combined lives of every block, which must also be annotated
+      Switch () tag numTags tag2block ->
+        let tagblocks = M.toList tag2block
+            tagblockends = map (id *** rs) tagblocks
+            tag2block' = M.fromList $ map (id *** fst) tagblockends
+            ends = map (snd . snd) tagblockends
+            s = S.insert tag $ S.unions ends
+        in (Switch s tag numTags tag2block', s)
       ir -> error $ "Compiler error: unsupported IR construct in annotIR "
         ++ show ir
+{-
+Ifte () v th el ->
+        let (th',end1) = rs th
+            (el',end2) = rs el
+            s = S.insert v $ end1 `S.union` end2
+        in (Ifte s v th' el',s)
+-}
 
 {-
 (x:xs) !? 0 = Just x
@@ -205,6 +221,7 @@ data Branch v = Jump Label
               | Jumpi v Label Label
               | BReturn [v]
               | BEVM_RETURN v v v
+              | BSwitch v Int (Map Int Label)
   deriving (Eq,Ord,Read,Show)
 
 type CFGM = State CFGS
@@ -277,14 +294,30 @@ cfg loopLs mll = \case
       Nothing -> error "This won't happen!"
   EVM_RETURN live mem ptr len : _ ->
     genSLC live [] (BEVM_RETURN mem ptr len)
+  Switch live tag numTags tag2block : irs -> do
+    --Each case continues to end
+    end <- cfg loopLs mll irs
+    let tagblocks = M.toList tag2block
+    tagconts <- mapM (\(tag,block) -> do
+                         cont <- cfg loopLs end block
+                         return (tag,cont)) tagblocks
+    genSwitch live tag numTags tagconts
   ir : _ -> error $ "Compiler error: unsupported IR constructor in cfg "
             ++ show ir
 
+--I've forgotten why I'm passing a Maybe LL but I'll just follow the logic
+--in genIfte...
+genSwitch :: Live -> Name -> Int -> [(Int,Maybe LL)] -> CFGM (Maybe LL)
+genSwitch live tag numTags tagconts =
+  if any ((==Nothing).snd) tagconts
+  then return Nothing
+  else do let tagLs = map (\(tag,Just (lab,_)) -> (tag,lab)) tagconts
+          genSLC live [] (BSwitch tag numTags $ M.fromList tagLs)
 genIfte :: Live -> Name -> Maybe LL -> Maybe LL -> CFGM (Maybe LL)
 genIfte live v mth mel =
   case (mth,mel) of
     (Just (t,_), Just (e,_)) -> do
-      l <- newLabel
+      --l <- newLabel --I'm presuming this was just a bug...
       genSLC live [] (Jumpi v t e)
     _ -> return Nothing
 genSLC :: Live -> [([(Name,IRT)],Operator,[Name])] -> Branch Name ->
@@ -362,6 +395,9 @@ ssaBranch = \case
   Jump l -> return $ Jump l
   BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ssaNm mem <*> ssaNm ptr <*>
     ssaNm len
+  BSwitch tag numTags tag2lab -> do
+    tag' <- ssaNm tag
+    return $ BSwitch tag' numTags tag2lab
 ssaNm :: Name -> SSA SSAName
 ssaNm nm = do
   v <- getVer nm
@@ -409,6 +445,9 @@ ecB = \case
   BReturn vs -> BReturn <$> mapM ecNm vs
   Jump l -> return $ Jump l
   BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ecNm mem <*> ecNm ptr <*> ecNm len
+  BSwitch tag numTags tag2lab -> do
+    tag' <- ecNm tag
+    return $ BSwitch tag' numTags tag2lab
 ecOp :: SSAOp -> ECp [SSAOp]
 ecOp = \case
   --The t need not be the same as y's t, but as long as I haven't made a
@@ -683,6 +722,7 @@ pruneDeadOpsSLC2 (slc,v,s,rc) live =
           BReturn vs -> S.fromList vs
           Jump _ -> S.empty
           BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
+          BSwitch tag _ _ -> S.singleton tag
       live' = live `S.union` branchLive
   in (slc{slcOps = pruneDeadOps (slcOps slc) live'},v,s,rc)
 --TODO use elsewhere
@@ -795,6 +835,7 @@ mergeSLCs (slcA,vA,sA,rcA) (slcB,vB,sB,_) =
           Jumpi v th el -> Jumpi (f v) th el
           BReturn vs -> BReturn $ map f vs
           BEVM_RETURN mem ptr len -> BEVM_RETURN (f mem) (f ptr) (f len)
+          BSwitch tag numTags tag2lab -> BSwitch (f tag) numTags tag2lab
       liveM = slcLive slcA
       vM = M.unionWith (+) vA vB
       --First rename both keys and values; note that while multiple x0, y0

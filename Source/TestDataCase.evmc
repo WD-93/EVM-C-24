@@ -1,14 +1,16 @@
 module{
+memory retw : Word;
 data B r = {
      F ();
      T ()
      };
-main:()->Byte;
+main:()->();
 main _ := do {
      b = 0 :: B Memory;
      case b of {
-     	  F _ => return 0;
-	  T _ => return 1
-	  }
+     	  F _ => retw = hex("dead");
+	  T _ => retw = hex("beef")
+	  };
+     evm_return(28 :: MPtr Byte,4)
 }
 }

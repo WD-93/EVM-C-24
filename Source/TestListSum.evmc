@@ -1,0 +1,29 @@
+module {
+memory retw : Word;
+data List r a = {
+     Nil (MPtr a); --I'm using ptr as a nonzero-overhead proxy...
+     Cons {a, List r a}
+     };
+main:()->();
+main _ := do {
+     a = 32 :: MPtr Byte;
+     --We alloc [1,2,3]
+     xs = Nil (0 :: MPtr Byte) a;
+     xs = Cons {3,xs} a;
+     xs = Cons {2,xs} a;
+     xs = Cons {1,xs} a;
+     retw = sumf(xs);
+     evm_return(31 :: Ptr Byte,1)
+};
+sumf : List Memory Byte -> Word;
+sumf xs := return sumf1(0,xs);
+sumf1 : (Word, List Memory Byte) -> Word;
+sumf1 (accum,xs) :=
+ case xs of {
+  Nil _ => return accum;
+  Cons p => do {
+   xxs = *p;
+   return sumf1(xxs#0 + accum, xxs#1)
+   }
+ }
+}

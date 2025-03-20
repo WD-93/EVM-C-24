@@ -159,7 +159,8 @@ def2asm f (arity,(entrypoint,cfg)) =
                     compileLabel entrypoint) (f,entrypoint,cfg) $
        StackS {staxCompiledSLCs = M.empty,
                staxLayouts = M.empty,
-               staxFallenThroughTo = S.empty
+               staxFallenThroughTo = S.empty,
+               staxLabelCtr = -1
               } of
     (Left err, _) -> Left err
     (Right (), stax) -> Right $ collectIntoAsm $ collectIntoLists $
@@ -173,7 +174,10 @@ data StackS = StackS {
   staxLayouts :: Map ToyCFG.Label [Name],
   --Tracks whether one can still fall through to a SLC; if in the set, one
   --cannot.
-  staxFallenThroughTo :: Set ToyCFG.Label
+  staxFallenThroughTo :: Set ToyCFG.Label,
+  --Necessary because case must be able to allocate >1 new SLCs, breaking my
+  --old hack.
+  staxLabelCtr :: Int
   }
      deriving (Eq,Ord,Read,Show)
 type Stack = ExceptT String
@@ -532,7 +536,137 @@ compileBranch ver sub self layout types branch =
                                     tell [Comment $ "Layout: " ++ show l']
                                     soDupName ptr)
                     layout
-      return ([Comment $ "EVM RETURN " ++ show (len,ptr)] ++ w ++ [Opcode "return"], Nothing)
+      return ([Comment $ "EVM RETURN " ++ show (len,ptr)] ++ w ++
+              [Opcode "return"], Nothing)
+    --Do I really need to harden against arbitrary tags? If I just treat them
+    --as some valid tag... that's fine for calldata.
+    --TODO opt: for switches with a narrow range of valid tags (lo,hi)
+    --relative to the datatype size:
+    --jumpi revertLabel (tag < lo | tag > hi)
+    --Simple trick to deduplicate: add revertLabel :: Maybe Label to state,
+    --getRevertLabel :: m Label
+    --jump (<jt - lo> + tag*5)
+    --Naive compilation:
+    --swap tag to top
+    --tag &= mask (bitlen numTags)
+    --jump (JT + 5*tag)
+    --JT of size 2^bitlen:
+    --missing case: jumpdest,0,0,revert,stop
+    --valid case: jumpdest,push2 label,jump
+    --Note if a switch case is empty (break or continue), label must be
+    --an intermediary that does stack cleanup (removing dead vars, reordering
+    --if the layout is already determined and setting it otherwise)
+    --Make a new SLC for *every* case, adjusting to the maybe target.
+    --In the optimistic case it'll fall through.
+    --TODO investigate potential opt: shared cleanup before the dispatch to
+    --shrink the per-case adjustment code.
+    --TODO: an algorithm for shared adjustment given a pdistr of branches.
+    BSwitch tag numTags tag2lab
+      | numTags == 0 || tag2lab == M.empty ->
+        return ([Comment $ "switch with no valid cases, automatic revert"]++
+                revert00,Nothing)
+      --If the datatype only has one constructor, might as well just jump/fall
+      --through to the only case... that makes sense for recursive types.
+      --TODO allow 0b tags
+      --No need to fall through here, but also no need for a large JT
+      --case e of {Con p => stmt} compiles to:
+      --jumpi successLabel (tag == targetTag)
+      --revert 0 0
+      -- | M.size tag2lab == 1 -> error "todo ifte bswitch"
+      | let -> do
+          let log2 1 = 0
+              log2 n = 1 + log2 (n `div` 2)
+              bitlen = log2 numTags
+              jtLen = 2 ^ bitlen
+          --jump (jt + (tag & mask bitlen) * 5)
+          --JT:
+          -- ...
+          --Simple approach for now: dup the tag, leave layout unchanged
+          let (_,dupTag,_) = runStackOps (soDupName tag) layout
+          jtLabel <- mkJTLabel self
+          jt <- mkJT ver sub self layout jtLen tag2lab
+          return ([Comment $ "case start: "] ++
+                  [Comment $ "(numTags,jtLen): " ++ show (numTags,jtLen)] ++
+                  [Comment $ "Tag map: " ++ show tag2lab] ++
+                  dupTag ++
+                  [Asm.Push 1 (fromIntegral $ jtLen - 1), Opcode "and",
+                   Asm.Push 1 5, Opcode "mul",
+                   PushLabel 2 jtLabel, Opcode "add",
+                   Opcode "jump"] ++
+                  jt, Nothing)
+          --mkJT ver sub self layout jtLen tag2lab
+--compileBranch ver sub self layout types branch =
+--Returns a JT :: [Asm] given the necessary info
+--Huh, potential opt: the last JT elem can forgo a jump and fall through
+--instead. If you add the tag*5 to the JT, that would only work for the
+--last constructor of a datatype with 2^n constructors.
+--But if you used SUB instead of ADD and placed the JT label at the start of
+--the last JT element, the first constructor's case could fall through.
+--For now, always jump.
+--The JT has jtLen elements, computed earlier (jtLen is the smallest power of
+--2 which is >= numTags)
+--Note if I swap the tag I may need to pass a modified layout
+mkJT :: Map Name Int
+     -> Map SSAName SSAName
+     -> L
+     -> [SSAName]
+     -> Int
+     -> Map Int L
+     -> Stack [Asm]
+mkJT ver sub self layout jtLen tag2lab = do
+  jtElems <- mapM mkJTElem [0..jtLen-1]
+  jtLabel <- mkJTLabel self
+  return $ PlaceLabel jtLabel : concat jtElems
+    where mkJTElem :: L -> Stack [Asm]
+          mkJTElem caseTag
+            | Just lab <- M.lookup caseTag tag2lab = do
+                --Before we jump to the actual case code, we need to adjust to
+                --its layout;
+                --in the optimistic case this just falls through
+                adjustAsm <- adjustToMaybeTarget ver sub layout lab
+                adjustLabel <- createNewSLC self --awooga
+                  ([Comment $ "case " ++ show caseTag ++ ":"] ++
+                   adjustAsm) lab
+                presentCase adjustLabel
+            | let = return missingCase
+mkJTLabel self = do
+  aself <- labelToLabel self
+  let LNamed str = aself
+  return $ LNamed $ str ++ ".JT"
+{-
+adjustThen <- adjustToMaybeTarget ver sub layout th
+      adjThenLabel <- createNewSLC self
+        ((Comment $ "Layout: " ++ show layout) : adjustThen) th
+      adjThenAsmLabel <- labelToLabel adjThenLabel
+      adjustElse <- adjustToMaybeTarget ver sub layout el
+      (contToElse,mft) <- tryFallthrough self el
+      let (_,dupCond,_) = runStackOps (soDupName cond) layout
+      return (dupCond ++
+              [PushLabel 2 adjThenAsmLabel, Opcode "jumpi"] ++
+              adjustElse ++
+              contToElse
+             ,mft)
+-}
+
+--revert(0,0), used for failing cases
+revert00 :: [Asm]
+revert00 = [Opcode "push0",Opcode "push0",Opcode "revert"]
+--A 5B JT element, jumped to when a case e of {...} encounters a tag it has
+--no case for (either a constructor or an invalid tag for the type)
+missingCase :: [Asm]
+missingCase = [Opcode "jumpdest"] ++
+              revert00 ++
+              [Opcode "stop"] --this is just padding
+--A 5B JT element, jumped to when the tag matches a constructor for which there
+--is a case. Needs to be in Stack because we must get the A.Label from the
+--Int CFG label.
+presentCase :: L -> Stack [Asm]
+presentCase lab = do
+  alab <- labelToLabel lab
+  return [Opcode "jumpdest",
+          PushLabel 2 alab,
+          Opcode "jump"]
+        
 --For brevity
 type L = ToyCFG.Label
 --A means of allocating new CSLCs without any additional state: since each
@@ -541,9 +675,22 @@ type L = ToyCFG.Label
 --Then both the then and else branch may fall through... though when the
 --then branch is a superset of the else branch, it's preferable to adjust to
 --it and jumpi directly.
+--Case breaks that assumption since it may jump to up to 256 newly created
+--adjustment SLCs!
+--I'll use from only for backward compatibility and debugPrint and add a
+--label alloc feature to Stack (starting from -1).
+--Hopefully this is the only place I allocate new labels...
+allocNewLabel :: Stack L
+allocNewLabel = do
+  s <- get
+  let lab = staxLabelCtr s
+  --Note we're counting downward because positive labels are already used
+  --by the SLCs created in the CFG stage!
+  put s{staxLabelCtr = lab - 1}
+  return lab
 createNewSLC :: L -> [Asm] -> L -> Stack L
 createNewSLC from adjustmentAsm to = do
-  let newLabel = -(from+1)
+  newLabel <- allocNewLabel -- = -(from+1)
   asmLabel <- labelToLabel newLabel
   debugPrint $ "Creating new label " ++ show (from,newLabel,to)
   (branchAsm,mfallthrough) <- tryFallthrough newLabel to
@@ -857,6 +1004,7 @@ useCountBranch slc ver sub = do
                      BReturn vs -> S.fromList vs
                      Jump _ -> S.empty
                      BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
+                     BSwitch tag _ _ -> S.singleton tag
   return $ M.fromSet (const 1) $ S.union usedBranch liveSSAs
 
 --TODO use earlier/deduplicate

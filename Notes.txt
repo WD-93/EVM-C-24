@@ -1,3 +1,20 @@
+What do once I've got case done?
+Full support for primfuns
+Static data, necessary for arrays and also useful for calldata argument generation
+Std lib: Solidity ABI support, hashmaps.
+ Hashmaps would benefit from primitive support... and perhaps newtypes to allow parameterization of user
+ types. The monomorphic type system doesn't play well with polymorphic user types...
+ indexHash(HM k v, k, scratch : Ptr Memory Byte) : StorageSlot v --a primfun
+ *_ and *_= support for StorageSlot, a 256b value...
+A simple interpreter contract to demo the language
+Showing how to provide existing functionality and improved performance (with creature comforts Yul doesn't
+provide) could be a strong argument.
+Benchmarks, tests, opts
+An FFI *to* EVMC from Sol or Yul (requires knowing details of their asm format and linking/plugins)
+It might also be nice to mix Ecomp-style DSL codegen with an EVMC FFI.
+Inline assembly for performance-critical areas and to allow custom prologues.
+A noreturn annotation for functions, so call in EVMC and inline assembly can avoid pushing a return address.
+
 Observations from compiling
 "module{data E r= {E Byte};main:()->();main _:=do{p = 0::MPtr Byte;E 255 p;evm_return(0::MPtr Byte,2)}}"
 Struct computation:
