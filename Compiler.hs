@@ -565,7 +565,8 @@ desugarS = \case
   P.Return e -> Return <$> desugarE e
   P.Do [s] -> desugarS s
   --TODO allow standalone do blocks and do expressions
-  P.Do ss -> throwE $ BadDoInDesugarS ss
+  P.Do ss -> Block <$> desugarBlock (P.Do ss)
+    --throwE $ BadDoInDesugarS ss
   P.Case pe pcases -> do
     e <- desugarE pe
     cases <- mapM desugarCase pcases

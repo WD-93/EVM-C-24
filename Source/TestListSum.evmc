@@ -13,7 +13,7 @@ main _ := do {
      xs = Cons {2,xs} a;
      xs = Cons {1,xs} a;
      retw = sumf(xs);
-     evm_return(31 :: Ptr Byte,1)
+     evm_return(31 :: MPtr Byte,1)
 };
 sumf : List Memory Byte -> Word;
 sumf xs := return sumf1(0,xs);

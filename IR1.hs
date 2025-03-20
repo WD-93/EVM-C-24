@@ -370,6 +370,7 @@ substGlobalsInS gm =
                                               p' <- substGlobalsInPat gm p
                                               s' <- r s
                                               return (con,p',s')) cases
+    Block ss -> Block <$> mapM r ss
 substGlobalsInE :: (Int,Int,Int, Map Name (T,T,Int,Maybe Int)) -> E ->
                    Either SeqError E
 substGlobalsInE gm@(moff,soff,tsoff,vm) =
@@ -529,6 +530,7 @@ substTySynS syns =
                                                p' <- rp p
                                                s' <- r s
                                                return (con,p',s')) cases
+    Block ss -> Block <$> mapM r ss
 substTySynE :: Syns -> E -> Either SeqError E
 substTySynE syns =
   let r = substTySynE syns
@@ -1061,6 +1063,10 @@ seqS = \case
     (_,tagws) <- seqE $ Var "deref" :$ Coerce (Ptr r (UInt 8)) (Var faux)
     let [tag] = tagws
     emit $ Switch () tag numTags tag2IR
+  Block ss -> do
+    --This may not have the desired scope isolation properties...
+    ir <- seqBlock ss
+    mapM_ emit ir
 --The tycon tag is for error reporting
 --con => arg type, con => tag, [(con,pat,s)] -> Int => (pat,arg type,s)
 --Con cases which aren't in the datatype are an error;
@@ -1327,13 +1333,15 @@ seqE = \case
             let IsLocal structT@(Struct [_,(_,_,argT)]) = ni
             case bindT (Pair conArgT $ TyVar rt) (Pair argT r) of
               Left err -> throwE $ GenericError $
-                "Bind failure in " ++ con ++ " allocation: " ++ show err
+                "Bind failure in " ++ con ++ " allocation: " ++ show
+                --err
+                (conArgT,argT,rt,r)
               Right v2t -> do
                 --Instantiate the datatype
                 --Note we check arg and alloc pointer contain enough info to
                 --determine the datatype's params once per datatype; we don't
                 --need to do so here.
-                let datatype = foldr (flip (:$$)) (TyCon tycon) $
+                let datatype = foldl (:$$) (TyCon tycon) $
                                map (v2t M.!) $ rt:remParams
                 --Now we write the struct to the pointer:
                 --(*(fauxPtr :: Ptr r structT)) = faux
@@ -1348,6 +1356,7 @@ seqE = \case
                                              ]))
                 --fauxPtr now holds the original ptr to return coerced to
                 --datatype:
+                --error $ "Datatype of first alloc: " ++ show datatype
                 seqE (Coerce datatype $ Var fauxPtr)
       _ -> throwE $ GenericError $
         "Alloc ptr for " ++ con ++ " must be a byte ptr, but instead it's "

@@ -181,6 +181,7 @@ data S = Pat := E
        | Ifte E Block Block
        | While E Block
        | Case E [(Name,Pat,S)]
+       | Block Block --Standalone do, scopes locals
   deriving (Eq,Ord,Read,Show)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
