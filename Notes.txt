@@ -14,6 +14,39 @@ An FFI *to* EVMC from Sol or Yul (requires knowing details of their asm format a
 It might also be nice to mix Ecomp-style DSL codegen with an EVMC FFI.
 Inline assembly for performance-critical areas and to allow custom prologues.
 A noreturn annotation for functions, so call in EVMC and inline assembly can avoid pushing a return address.
+sol_method("methodSignature"): UInt 32
+
+To fix: whatever's causing the "layout wasn't set before compiling label N" error.
+It works for 1,2,4 but not 3,5... that suggests it's #cases /= 2^n that triggers the problem. Yup, it fails
+for 6, 7 and works for 8...
+Interesting... it works for 2 cases and 3 constructors, but not 3/3. But it does work for 2/4, 3/4.
+4/5 works, but not 5/5. 6/6 fails, 1/6 succeeds. 1,2,3,4 succeed, 5/6 fails.
+Smallest failing example: 3/3.
+Fixed: it was a bug in log2 causing too small jump tables.
+Mathops, shr, shl
+
+
+Principled opt passes: a function ~ stage -> stage (modulo exec count, pass count etc).
+Type inference and tagging of the C AST for local optimization.
+A bytestring-aware symbolic eval stage (perhaps in C itself) before the word-aware IR.
+In particular, *p is compiled to reads of separate words, so its reads are order-independent.
+Complex anti-aliasing rules are perhaps not appropriate for EVMC itself, which exposes *k = e... anti-alias
+annotations could be provided by a higher-level language.
+More opts at the IR stage?
+Informative error messages: isolate errors so I can report several at a time (ex: type errors in separate
+functions). Track hierarchy of context (is there a standard monad for that?).
+Pass down source location to lower stages.
+Critical opts: constant expansion, merging of identical SLCs.
+Principled opt: recompute live.
+
+Now that I've got case working I can write nontrivial programs to expose missing features in the compiler.
+Worth trying: different interpreter designs. case is nice, but manual dispatch into a function array might
+be more efficient... need static arrays (containing functions) for that.
+Also worth trying: Merkle storage as used in a virtual smart contract-hosting interpreter.
+Interpreters need tail calls to be efficient... TODO add.
+Will istate.pc += k, return dispatch(istate) compile to efficient code? The istate fields are
+live, so they'll be dup'd when used. The new istate.pc should be swapped back to the correct location and the
+old value popped, so yes.
 
 Observations from compiling
 "module{data E r= {E Byte};main:()->();main _:=do{p = 0::MPtr Byte;E 255 p;evm_return(0::MPtr Byte,2)}}"

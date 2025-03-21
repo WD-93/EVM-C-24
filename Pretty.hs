@@ -145,6 +145,8 @@ showSLC showV (l,slc) =
       Jumpi v th el -> ["jumpi",showV v,show th,show el]
       BReturn vs -> ["return","(" ++ showRHS (map showV vs) ++ ")"]
       BEVM_RETURN mem ptr len -> "RETURN":map showV [mem,ptr,len]
+      BSwitch tag numTags tag2lab -> ["switch",showV tag,show numTags,
+                                      show tag2lab]
   ]
 
 --After SSA and copy elim

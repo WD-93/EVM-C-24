@@ -1,0 +1,18 @@
+module {
+data D r = {
+ A();B();C()--;D();E();F()--;G();H()
+ };
+main:()->();
+main _ := do {
+ case 0 :: D Calldata of {
+  A _ => do {} 
+  ;B _ => do {} 
+  ;C _ => do {} {-  
+  ;D _ => do {} 
+  ;E _ => do {} 
+  ;F _ => do {} 
+  ;G _ => do {} 
+  ;H _ => do {} -}
+ }
+}
+}

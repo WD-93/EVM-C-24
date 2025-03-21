@@ -59,9 +59,13 @@ compile libpaths cwd modname = do
            fun2Bytecode asm
        )
     of
-    Left err -> do
-      putStrLn $ "Compiler error:"
-      print err
+    Left err
+      | AsmError str <- err -> do
+          putStrLn "Asm error:"
+          putStrLn str
+      | let -> do
+          putStrLn $ "Compiler error:"
+          print err
     Right (undefinedLabels,bytecode)
       | undefinedLabels == S.empty -> do
           putStrLn $ "Compilation successful, writing to " ++ cwd

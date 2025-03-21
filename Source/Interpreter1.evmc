@@ -1,0 +1,28 @@
+--The first nontrivial program: a simple interpreter using case. 
+module {
+memory retw : Word;
+data Instr r = {
+ LoadK Byte;
+ Add Byte;
+ --Mul Byte;
+ --Sub Byte;
+ Return ()
+ };
+main:()->();
+main _ := do {
+ 
+ pc = 0 :: Ptr Calldata Byte;
+ accum = 0 :: Word;
+ while (1) do {
+  case pc :: Instr Calldata of {
+   LoadK bp => do {accum = *bp; pc = pc + 2};
+   Add bp => do {accum = ((*bp) + accum); pc = pc + 2};
+   --Mul bp => (accum = bp * accum);
+   Return _ => do {
+    retw = accum;
+    evm_return(0 :: MPtr Byte, 32)
+    }
+  }
+  }
+ }
+}

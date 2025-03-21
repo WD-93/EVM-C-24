@@ -21,6 +21,7 @@ import qualified IR1 (Operator(Opcode)) --Opcode conflicts with Asm
 import IR1 hiding (Operator(Opcode))
 import ToyCFG
 import Asm
+import Pretty --for debug messages
 
 --Putting this in a monad should make it easier to predict when it will print
 --despite laziness.
@@ -209,7 +210,9 @@ compileLabel lab =
       --Get layout, which is guaranteed to have been set earlier
       mlayout <- stackGetLayout lab
       if mlayout == Nothing
-        then throwE $ "Layout wasn't set before compiling label " ++ show lab
+        then throwE $
+             unlines$["Layout wasn't set before compiling label " ++ show lab]
+                     ++ showSLC2 (lab,(slc,vers,subst,rc))
         else return ()
       let Just layout = mlayout
       debugPrint $ "Compiling label " ++ show lab
@@ -574,8 +577,10 @@ compileBranch ver sub self layout types branch =
       --revert 0 0
       -- | M.size tag2lab == 1 -> error "todo ifte bswitch"
       | let -> do
-          let log2 1 = 0
-              log2 n = 1 + log2 (n `div` 2)
+          --Ofc, my log2 was buggy - log2 3 == 1!
+          let log2 = log2' 1
+              log2' n m | n >= m = 0
+                        | let = 1 + log2' (2*n) m
               bitlen = log2 numTags
               jtLen = 2 ^ bitlen
           --jump (jt + (tag & mask bitlen) * 5)
@@ -616,6 +621,14 @@ mkJT :: Map Name Int
 mkJT ver sub self layout jtLen tag2lab = do
   jtElems <- mapM mkJTElem [0..jtLen-1]
   jtLabel <- mkJTLabel self
+  {-
+  debugPrint $ "jtLen: " ++ show jtLen
+  mapM (\(tag,lab) -> do
+          s <- get
+          let hasLayout = M.member lab (staxLayouts s)
+          debugPrint $ "(tag,lab,has layout): " ++ show (tag,lab,hasLayout)
+       ) $ M.toList tag2lab
+  -}
   return $ PlaceLabel jtLabel : concat jtElems
     where mkJTElem :: L -> Stack [Asm]
           mkJTElem caseTag
@@ -627,8 +640,9 @@ mkJT ver sub self layout jtLen tag2lab = do
                 adjustLabel <- createNewSLC self --awooga
                   ([Comment $ "case " ++ show caseTag ++ ":"] ++
                    adjustAsm) lab
-                presentCase adjustLabel
-            | let = return missingCase
+                asm <- presentCase adjustLabel
+                return $ Comment ("Entry " ++ show caseTag) : asm
+            | let = return $ Comment ("Entry " ++ show caseTag) : missingCase
 mkJTLabel self = do
   aself <- labelToLabel self
   let LNamed str = aself
