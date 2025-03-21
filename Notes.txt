@@ -1,3 +1,40 @@
+How much room for improvement is there in my interpreter?
+Add Byte: 198 gas.
+32 of that is unavoidable upload cost, so exec is 166.
+Hand-rolled, without load caching opt:
+dispatch:
+mload pc --6
+shr 248 --6 --note I could apply byte 0 instead to save a code byte here
+mul 5 --8
+add JT --6
+jump --8
+instr:
+jumpdest --1
+swap pc to top --3
+1 + pc --9
+mload --3
+byte 1 --6
+mload accum, add --9
+mstore accum --6
+--assuming pc is TOS:
+add 2 --6
+--That adds up to 77 (109 with upload), so not bad for a v0 compiler. There's plenty of low-hanging fruit to
+pick when optimizing.
+Load caching opt: when loading the tag, you get the first 31B of the arg on the stack. If you were just going
+to deref the bound ptr (and the arg is small enough), fetch the arg from the same word.
+In this case that saves ~12 gas.
+Key opts from MultiCall: PC TOS, a 256-elem JT, load caching, inline dispatch tail calls.
+With load caching it becomes:
+dispatch:
+w = mload pc --6
+jump (JT + byte 0 w * 5) --31
+instr:
+jumpdest --1
+byte 1 --6, pops w
+mload accum, add, mstore accum --15
+--For a total of 59 (91 with upload). OK, so it's 2.8x off optimal.
+
+
 What do once I've got case done?
 Full support for primfuns
 Static data, necessary for arrays and also useful for calldata argument generation

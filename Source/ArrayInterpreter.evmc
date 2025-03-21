@@ -1,0 +1,41 @@
+module {
+--Pulling out all the stops to make the interpreter faster.
+--TODO implement tail calls, static arrays, unsafeCoerce...
+--TODO put [ix] and v = e at different levels in the syntax.
+type S = (
+ Word,
+ PC
+ );
+type PC = Ptr Calldata Byte;
+type Instr = S -> ();
+memory jt : Instr[3];
+main:()->();
+main _ := do {
+ (*jt) = iload;
+ (jt[1]) = iadd;
+ (jt[2]) = ireturn;
+ return dispatch(0,0::PC)
+ };
+dispatch:Instr;
+dispatch(a,pc) := do {
+ b = (*pc);
+ instr = (jt[b]);
+ return instr(a,pc+1)
+};
+iload:Instr;
+iload(a,pc) := do {
+ b = (*pc);
+ return dispatch(b,pc+1)
+};
+iadd:Instr;
+iadd(a,pc) := do {
+ b = (*pc);
+ return dispatch(a+b,pc+1)
+};
+ireturn:Instr;
+ireturn(a,pc) := do {
+ p = 0 :: MPtr Word;
+ (*p) = a;
+ evm_return(p,32)
+}
+}
