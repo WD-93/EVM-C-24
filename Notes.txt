@@ -1,3 +1,164 @@
+My promotion logic for mathops differs from C in that if one argument is signed, the result is signed...
+should I change that?
+Add .* and ->*?
+TODO define precedence for operators.
+Storage and tstorage pointers: need to add $sto and $tsto to function calls + a Sto and TSto type to IRT.
+Byte ptr abstraction:
+deref(0,ptr): return []
+deref(1,ptr): --can't overlap a word
+ cell = ptr >> 5
+ shift = 256 - (ptr & 31) * 8
+ load cell >> shift
+deref(n,ptr):
+ wordLen = n `roundedUpMod` 32 div 32
+ modulus = n `mod` 32
+ wordOffset = ptr & 31
+ firstCell = ptr >> 5
+ if modulus + wordOffset > 32
+ then: --a word overlap; need to load an additional word
+  ws <- load firstCell .. firstCell + wordLen
+ else:
+  ws <- load firstCell .. firstCell + wordLen - 1
+ shr and stitch together --challenge: the shift value is dynamic!
+  
+
+What now?
+Primfuns:
+-, <<, >>
+a - b :=
+ if b is signed and len < 256, signextend it
+ mask result by len of a
+n << m := mask
+unsafeCoerce (:!) --allows cheaper PC increment: use a Word for PC and coerce it to Instr r.
+Storage ptr get and set.
+Opts: replace var consumption and production for mem with a "mutates" [Name] parameter in ops.
+Mem, Sto, TSto etc state types can only have one instance live with a given name; all ops using that
+instance must be scheduled before the op that consumes it.
+External contracts should also be part of state; staticcall doesn't mutate that.
+Next opt: constant expansion.
+
+Array-based dispatch is actually slower (210 for add). But is that fundamental or just tied to opts?
+Hand-rolled:
+jump (mload (mload pc >> 248) >> 240) --29, not counting the jumpdest at the start of the function.
+vs
+jump (k + (mload pc >> 248)) --26, not counting the additional 12 for indirection in the JT.
+You can reduce the cost of the latter by 6 by placing the JT in the first bytes; the prologue at byte 0 then
+just jumps into the true prologue (using 4 bytes, consuming an instruction slot).
+If there are few instructions, you could just place their header SLCs there (assuming they don't need to
+fall through to SLCs with jumpdests that should not be dispatched to because they have security-relevant
+preconditions). You could even go further, making dispatch:
+jump (mload pc & 0xmask), where you find a search for a code layout and mask s.t. arb & mload mask can only
+evaluate to the addresses of instructions and other permissible jumpdests.
+21-gas dispatch (including jumpdest) is worth compiler dev to support.
+0 is reachable by all isets (masks), but by using disjoint sets of bits in different isets (total 15), you
+could ensure they're otherwise disjoint.
+If the contract is programmed so any combination of SLCs is a valid run, mask could be 0xffff...
+Data/compute acceleration contracts don't need any security! Any contract which has no state doesn't.
+When do you need it? When the contract has state that needs to obey invariants; when programs from multiple
+users can interact (as in a batcher).
+Note that having 16b opcodes adds 16 gas to the dispatch cost from upload... but if instructions are executed
+repeatedly that could be amortized. Library bytecode in a Turing-complete interpreter could share that cost
+without loops...
+
+Cheapest dispatch (instrs in first 256): jump (byte 0 (mload pc))
+Alternative scheme: cached bytecode, instrs located in first 256.
+dispatch(wordPC,bytecode,bytePC):
+ jump (byte bytePC bytecode)
+Every 32B of actual instructions, you need a switchWord instruction (which could be located at 0)
+Wait... does byte >=32 w return 0 or wrap around? If it wraps that could be used for loops.
+
+Cheaper case, works for datatypes with <=16 constructors, assuming 0 is an invalid jumpdest:
+make JT a one-word constant of concatenated jump addresses, dispatch(tag):
+jump (JT >> (tag<<4) && 0xffff) --30 including jumpdest
+Computation of the ptr to the arg can be deferred to the cases (some of which will not require it).
+The pattern match then becomes: &{_,&&argpat} = (dt :: Ptr r {Byte,argType}).
+The ptr increment from selecting arg can then be merged with the increment from selecting fields in arg.
+Actually, I only need 15b for jump addresses (though usually storing them byte-aligned in structs makes sense).
+That means I have room for 17 cases.
+
+Opt: consider while(1) case pc :: Instr Memory of {I1 args => ...; ...}
+The jumpi could be simplified to a jump using symbolic eval. But even if the condition is more complex, it
+could be worth evaluating it at the end of each case branch. As it stands now, all but one of the cases will
+jump to the loop end, which performs the cond.
+While loop opts todo: unrolling, specialization.
+Current implem:
+while(cond){
+ body
+} =>
+if(cond) do body while(cond)
+Cost: one branch per iteration.
+Cond-sharing (one extra jumpdest per iter):
+loop:
+body
+check:
+c = cond
+jumpi loop cond
+In reality the body may split into many branches (as noted above), making this simplified view deceptive.
+What is the principle which allows splitting of cond calculation to each branch?
+Contract C1 ~ C2 iff it has the same exported static data and its code is observationally equivalent (ignoring
+gas cost). Means of observation: calls to and from, not extcodecopy.
+Instruction trace equivalence (excluding jumps) implies behavioral equivalence.
+Specific rule applied: L1: (A, jump L2), L2: (B,branch) ~ L1: (A++B,branch), L2: (B,branch).
+Performance for L1 will be improved; the cost is in code size, modulo GC of L2.
+When is it attractive? When B is short; that's why I already apply it when B = []. Search at random for opts?
+
+TODO memory opts: use symbolic eval to find dataflow, convert to mcopy.
+Coalesce reads and writes. Exploit memory being 0 at the start to reduce writeback.
+A hierarchy of memory spaces: k is any, ptr disjoint from ptr' and >= &(ptr->field).
+Eval symbolically to find effect of SLC, search for shortest path to that effect.
+TODO: retain global information as long as possible (CFG or asm), allowing flexible layout.
+You can shave a few bytes off the code by replacing push2s of labels with push1 or even push0.
+Place the most frequently mentioned labels in the first 256 bytes...
+While labels (corresponding to SLC nodes and functions) are not manipulated in idiomatic code, there's a chance
+they'll coincidentally correspond to a constant on the stack so they can be dup'd.
+Problem: there's a cyclical dependency (code layout <-> which labels can be push1/0) and the information
+required to take opt decisions may be lost in later stages. The problem is my one-way pipeline architecure;
+I need a principled approach to fix it.
+Compilation is an optimization problem: given a Source, find a Dest with equivalent behavior and minimal cost.
+At each stage, I can apply behavior-preserving rewrites. When a rewrite is a strict improvement, it should
+always be applied... though you may continue searching from the node where context hasn't been obfuscated.
+Heuristic cost can be used to guide the search.
+Perhaps I should separate SLC placement from stack instruction generation... then PushLabel should not take
+a byte size parameter.
+Symbolic eval suggests an additional stage where slices and effect on disjoint spaces are made explicit,
+but implementation in terms of ops is not defined. Ex desirable outcome: if a uint16 c = a + b is shifted to
+the top 16 bits of a struct you needn't mask it first; if you add or mul several you need only mask once.
+With a normalized representation of cyclical graphs I could determine equivalence for the purpose of code
+sharing.
+The longer the period I can record effect information across, the more internal state I can prune.
+Ex: stack caching of globals, eliminating overwritten writes and those which have no effect on return/call
+results.
+EVMC currently has no language-level memory management, so it can't reason about object allocation...
+a compiler framework where higher-level stages can provide assumptions/invariants might be able to solve that.
+The rules need to be in a format where search for applicable cases is cheap. With a trie or similar search
+cost could be shared. A rule DSL:
+do params <- search for pattern --shared
+   require pred params          --flexible, but opaque to the monad interpreter
+   rule statement
+Given the exponential complexity of opt search, separating the problem could provide huge savings that can be
+translated into more search within the timeout period. Opt at multiple stages could coexist on a per-function
+basis if you view IR, CFG etc as representations of a behavior.
+The ideal compiler in terms of the expressive power of its optimizations is an interactive theorem prover...
+but in practice actually finding the possible opts is more important.
+Nonetheless, a compiler with a formal model of program behavior that could accept proofs of equivalence of
+optimized programs from plugins would be interesting... it could enable crypto-powered bounties for opts and
+allow monetization of optimization via proprietary optimizers.
+Passing specs would be important; if they're weaker than the provided source that can be taken advantage of.
+Multi-contract optimization could provide further savings.
+Low-hanging fruit first...
+
+Ontology:
+SA, choices -> SB
+rewrite : S -> S
+selectFunction : fid -> rewrite function -> rewrite module
+Constraints, cost.
+Ex constraint: given a stack layout for SLC S, all inbound branches must have the same layout (modulo value
+equivalence).
+Equivalence is weaker than equality; a function value that's never called might as well be 0.
+Provide no guarantees for function bitpatterns.
+Symbols could include function, global and staticData pointers, allowing inlining to be subsumed under
+symbolic eval.
+
 How much room for improvement is there in my interpreter?
 Add Byte: 198 gas.
 32 of that is unavoidable upload cost, so exec is 166.

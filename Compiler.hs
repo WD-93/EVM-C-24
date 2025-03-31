@@ -641,6 +641,8 @@ desugarE = do
     P.PrefixOp (Infix nm) e
       | "*" <- nm ->
        (Var "deref" :$) <$> desugarE e
+      | let -> (Var nm :$) <$> desugarE e
+    x -> error $ "Missing case in desugarE: " ++ show x
 
 desugarOpsE op = \case
   OSNil e -> do

@@ -1,0 +1,33 @@
+module {
+memory ret : UInt 16;
+main:()->();
+main _ := do {
+ test((!0) == 1);
+ test(2 != 1);
+ test((15 % 8) == 7);
+ test((hex("f0") & hex("0f")) == 0);
+ test(((16 :: Word) * 16) == 256);
+ test(1);
+ test(((0 :: MPtr (UInt 32)) + 4) == 16);
+ test((hex("dead") - hex("ad")) == hex("de00"));
+ test((1024 / 32) == 32);
+ --test(((-10)/5) == (-2)); --this one fails!
+ x = (-10) :: Int Signed 8; --246
+ x = (x / 10);              --24...
+ ret = x;
+ evm_return(0 :: MPtr Byte, 2);
+ --test((((-10) :: Int Signed 8)/5) == (-2));
+ test((-11) == 245);
+ ret = hex("eeee"); --a shriek of joy
+ evm_return(0 :: MPtr Byte, 2)
+};
+test:Byte->();
+test b :=
+ if b
+ then return ()
+ else do {
+ ret = hex("bad");
+ evm_return(0 :: MPtr Byte, 2)
+ }
+ end
+}

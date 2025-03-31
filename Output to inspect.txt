@@ -1,0 +1,131 @@
+; Begin prologue
+push2 $exitCall
+push2 main
+jump
+$exitCall:
+jumpdest
+stop
+; End prologue
+main:
+main.label78:
+; Layout: ["$ret"]
+jumpdest
+push0 0
+push0 0
+push1 1
+dup1
+push2 main.label-1
+jumpi
+pop
+pop
+pop
+main.label1:
+; Layout: ["$ret"]
+jumpdest
+jump
+main.label-1:
+jumpdest
+; Layout: [(1,"$anon6"),(1,"$anon3"),(1,"$anon0"),(0,"$ret")]
+pop
+main.label67:
+; Layout: ["accum#1","pc#1","$ret"]
+jumpdest
+push1 1
+dup3
+dup2
+add
+dup4
+calldataload
+push1 248
+shr
+; case start:
+; (numTags,jtLen): (3,2)
+; Tag map: fromList [(0,21),(1,46)]
+dup1
+push1 1
+and
+push1 5
+mul
+push2 main.label67.JT
+add
+jump
+main.label67.JT:
+jumpdest
+push2 main.label-2
+jump
+jumpdest
+push2 main.label-3
+jump
+main.label-2:
+jumpdest
+; case 0:
+pop
+swap1
+pop
+swap1
+pop
+main.label21:
+; Layout: ["$anon12#1","pc#1","$ret"]
+jumpdest
+calldataload
+push1 248
+shr
+push1 2
+push1 1
+mul
+swap2
+swap1
+swap2
+add
+push2 65535
+and
+main.label70:
+; Layout: ["pc#1","accum#1","$ret"]
+jumpdest
+push1 1
+dup1
+push2 main.label-4
+jumpi
+pop
+pop
+pop
+push2 main.label1
+jump
+main.label-3:
+jumpdest
+; case 1:
+pop
+swap1
+pop
+main.label46:
+; Layout: ["$anon12#1","accum#1","pc#1","$ret"]
+jumpdest
+push1 1
+swap2
+swap1
+swap2
+mul
+add
+push2 65535
+and
+calldataload
+push1 248
+shr
+push1 2
+push1 1
+mul
+swap2
+swap1
+swap2
+add
+push2 65535
+and
+push2 main.label70
+jump
+main.label-4:
+jumpdest
+; Layout: [(1,"$anon6"),(0,"pc#1"),(0,"accum#1"),(0,"$ret")]
+pop
+swap1
+push2 main.label67
+jump

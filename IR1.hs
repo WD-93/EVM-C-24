@@ -1452,11 +1452,136 @@ simplePFs = M.fromList [
           ptr' <- wmask 16 $ wop2 "add" (return off) (return wptr)
           return (Ptr r a, [ptr'])
         _ -> throwE $ BadArgPrimFun "+" t),
-  --Recall: mul/smul, div/sdiv need special treatment
+  --Unary - OTOH is *not* vestigial
+  ("-",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int{}) t2@(Int{}), [w1,w2]) ->
+          pfMathOp "sub" t1 t2 (w1,w2)
+        (Pair (Ptr r a) (Int s len), [wptr,wn]) -> do
+          sz <- numBytesT a
+          off <- wop2 "mul" (wword sz) (return wn)
+          ptr' <- wmask 16 $ wop2 "sub" (return wptr) (return off)
+          return (Ptr r a, [ptr'])
+        --Note negation does not change the result type to signed;
+        --(-1) should be 255 :: Byte
+        (Int s len, [w]) -> do
+          w' <- wmask (fromInteger len) $
+                wop2 "sub" (wword 0) (return w)
+          return (Int s len, [w'])
+        --Note this error may also be thrown if the argument is of the right
+        --type but has the wrong number of words...
+        _ -> throwE $ BadArgPrimFun "-" t),
+  --I special-case unary * (deref) in desugar so I don't need to handle it
+  --here... perhaps a mistake.
+  ("*",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int{}) t2@(Int{}), [w1,w2]) ->
+          pfMathOp "mul" t1 t2 (w1,w2)
+        _ -> throwE $ BadArgPrimFun "*" t),
+  --Use sdiv if numerator is signed
+  --w2 is softCoerced to a Word, so it may be signextended
+  ("/",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int s len) t2@(Int{}), [w1,w2]) -> do
+          --w1 also needs to be signextended!
+          w1's <- softCoerce (UInt 256) t1 [w1]
+          let [w1'] = w1's
+          w2's <- softCoerce (UInt 256) t2 [w2]
+          let [w2'] = w2's
+          dividend <- wmask (fromInteger len) $
+                      wop2 (if s == "Signed"
+                            then "sdiv"
+                            else "div") (return w1') (return w2')
+          return (t1,[dividend])
+        _ -> throwE $ BadArgPrimFun "/" t),
+  --Use smod if numerator is signed; may also signextend w2
+  ("%",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int s len) t2@(Int{}), [w1,w2]) -> do
+          w2's <- softCoerce (UInt 256) t2 [w2]
+          let [w2'] = w2's
+          modulus <- wmask (fromInteger len) $
+                     wop2 (if s == "Signed"
+                           then "smod"
+                           else "mod") (return w1) (return w2')
+          return (t1,[modulus])
+        _ -> throwE $ BadArgPrimFun "%" t),
+  --Shift preserves the type of the first argument;
+  --you might think 1 << 8 == 256, but in fact it's 0.
+  --The shift value is treated as a word but not signextended;
+  --(1 :: Word) << (-1) == 2 ** 255
+  ("<<",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int _ len) t2@(Int{}), [w1,w2]) -> do
+          res <- wmask (fromInteger len) $ wop2 "shl" (return w1) (return w2)
+          return (t1,[res])
+        _ -> throwE $ BadArgPrimFun "<<" t),
+  (">>",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int _ len) t2@(Int{}), [w1,w2]) -> do
+          res <- wmask (fromInteger len) $ wop2 "shr" (return w1) (return w2)
+          return (t1,[res])
+        _ -> throwE $ BadArgPrimFun ">>" t),
   --Binary bitwise ops
   ("&", binaryBitOp "&" "and" False),
   ("|", binaryBitOp "|" "or" True),
   ("^", binaryBitOp "^" "xor" True),
+  --Bitwise NOT, only applicable to ints (unlike !)
+  ("~",\t ws ->
+      case (t,ws) of
+        (Int s len, [w]) -> do
+          w' <- wmask (fromInteger len) $ wop1 "not" (return w)
+          return (Int s len, [w'])
+        _ -> throwE $ BadArgPrimFun "~" t),
+  --Relational operators
+  --All relations return a uint8
+  --Deviation from C: == is supported for any two types and compares the
+  --bitpattern; pad the shorter type with 0 words.
+  --If a has more words than b, check they're all 0 using iszero (w1 | w2 ...);
+  --and that with the result.
+  --For the shared words as bs, as[1] eq bs[1] & ... 
+  --I can use Reduce here, allowing better codegen in future.
+  ("==", primEq "=="),
+  ("!=",\t ws -> do
+      (_,ress) <- primEq "!=" t ws
+      let [res] = ress
+      res' <- wop1 "iszero" $ return res
+      return (UInt 8, [res'])),
+  --Todo opt: gt(a,b) and lt(b,a) are interchangeable
+  --Applicable only to any pair of Int types and to pointers of equal type.
+  --When comparing ints, softCoerce both to Word (i.e. signextend if
+  --necessary), then apply sgt if either argument is signed.
+  (">",\t ws -> do
+      comp <- primCompare ">" "gt" "sgt" t ws
+      return (UInt 8, [comp])
+  ),
+  ("<",\t ws -> do
+      comp <- primCompare "<" "lt" "slt" t ws
+      return (UInt 8, [comp])
+  ),
+  --(>=) lacks primitive support, so it must be implemented using or eq.
+  (">=",\t ws ->
+      case ws of
+        [w1,w2] -> do
+          comp <- primCompare ">=" "gt" "sgt" t ws
+          eq <- wop2 "eq" (return w1) (return w2)
+          res <- wop2 "or" (return eq) (return comp)
+          return (UInt 8, [res])
+        _ -> throwE $ BadArgPrimFun ">=" t),
+  ("<=",\t ws ->
+      case ws of
+        [w1,w2] -> do
+          comp <- primCompare "<=" "lt" "slt" t ws
+          eq <- wop2 "eq" (return w1) (return w2)
+          res <- wop2 "or" (return eq) (return comp)
+          return (UInt 8, [res])
+        _ -> throwE $ BadArgPrimFun "<=" t),
+  --Logical not, applicable to any type; equals iszero truthy
+  --Always returns a uint8
+  --Unintuitive behavior: a ! b desugars to !(a,b)
+  ("!",\_ ws -> do
+      bool <- wop1 "iszero" $ wreduce "or" ws
+      return (UInt 8, [bool])),
   --Pointer derefence
   ("deref",derefPtr),
   --Branching primfuns; they can be simple because the IR is unaware of
@@ -1492,6 +1617,62 @@ simplePFs = M.fromList [
                 _ -> error $ "Compiler error: todo in copy " ++ show r
               return (Struct [], []))
   ]
+
+--The primfun is for error reporting since this is also used in !=
+primEq :: Name -> T -> [Name] -> Seq (T,[Name])
+primEq primfun t ws =
+  case t of
+    Pair t1 t2 -> do
+      n1 <- numWordsT t1
+      let ws1 = take n1 ws
+          ws2 = drop n1 ws
+          n2 = length ws2
+          as = if (n1 > n2)
+               then drop (n1-n2) ws1
+               else ws1
+          bs = if (n2 > n1)
+               then drop (n2-n1) ws2
+               else ws2
+          excess = case () of
+                     _ | n1 > n2 -> take (n1-n2) ws1
+                       | n2 > n2 -> take (n2-n1) ws2
+                       | let -> []
+      --Compare shared words
+      bools <- zipWithM (\a b -> wop2 "eq" (return a) (return b))
+               as bs
+      bool <- wreduce "and" bools
+      if null excess
+        then return (UInt 8, [bool])
+        else do
+        cond <- wop1 "iszero" $ wreduce "or" excess
+        ret <- wop2 "and" (return cond) (return bool)
+        return (UInt 8, [ret])
+    _ -> throwE $ BadArgPrimFun primfun t
+
+--Supports only comparison of any two int types and of pointers of equal type.
+--Deviation from C: my positive integer literals are unsigned by default;
+--to ensure (1 > (-1)) has the expected result, signed comparison is used if
+--either argument is signed.
+primCompare :: Name ->   --The operator primCompare is being used to implement
+               String -> --Unsigned comparison opcode
+               String -> --Signed comparison opcode
+               T ->      --Type of argument to operator (should be a pair)
+               [Name] -> --The value of the argument (should be 2 words)
+               Seq Name  --The result, a single uint8
+primCompare primfun comp compSigned t ws =
+  case (t,ws) of
+    (Pair t1@(Int s1 _) t2@(Int s2 _),[w1,w2]) -> do
+        w1's <- softCoerce (UInt 256) t1 [w1]
+        let [w1'] = w1's
+        w2's <- softCoerce (UInt 256) t2 [w2]
+        let [w2'] = w2's
+        wop2 (if "Signed" `elem` [s1,s2]
+              then compSigned
+              else comp) (return w1') (return w2')
+    (Pair p1@(Ptr{}) p2@(Ptr{}), [pw1,pw2])
+      | p1 == p2 -> wop2 comp (return pw1) (return pw2)
+    _ -> throwE $ BadArgPrimFun primfun t
+    
 --Pointer type, pointer word (singular) -> *ptr
 --All regions are byte-addressed starting from 0; all values stored in a
 --region are byte-padded, with their first byte starting at address p.
@@ -1983,7 +2164,9 @@ for nth field = name, t in target:
 Note result.field = source.field also involves soft coercion
 -}
 softCoerce :: T -> T -> [Name] -> Seq [Name]
---When lengthening to a signed int, signextend
+--When lengthening *from* a signed int to any int, signextend
+--Caught bug: (-1 :: SInt 8) should of course still be -1 when coerced to
+--a Word.
 --When shortening any int, mask
 --TODO: when it would shorten code sufficiently, replace mask with shl,shr
 softCoerce target source ws
@@ -1993,7 +2176,7 @@ softCoerce target source ws
     [w] <- ws =
       case () of
         _ | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
-          | len1 > len2, s1 == "Signed" ->
+          | len1 > len2, s2 == "Signed" ->
             runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
           | let -> runEDSLWord $ coerce (W 1 target) (EVar w)
   --Adding general tuple coercion
@@ -2015,6 +2198,19 @@ unTupleT = \case
             (t:) <$> go padmnmts
           _ -> Nothing
 
+--Unsafe coercion of values in EVMC;
+--drops words if #words of the target type is lower,
+--pads with zero words if it's higher.
+--Does not do any masking, so 256 :! Byte will have an invalid bitpattern.
+evmcUnsafeCoerce :: T -> [Name] -> Seq [Name]
+evmcUnsafeCoerce t ws = do
+  n <- numWordsT t
+  let len = length ws
+  if len >= n
+    then return $ drop (len-n) ws
+    else do
+    z <- wword 0
+    return $ replicate (n-len) z ++ ws
 --Scheme: for each field in target, softCoerce source field and then coerce
 --to tuple words.
 --I'll add a restriction for now: require the lenghts are equal.
@@ -2705,11 +2901,20 @@ shift n e
   | n == 0 = e
   | n < 0 = shr (word $ fromIntegral $ negate n) e
 
+wreduce :: String -> [Name] -> Seq Name
+wreduce opcode ws = do
+  v <- newAnonVar
+  emitOp [(v,tword)] (Reduce opcode) ws
+  return v
 op1 :: String -> Expr -> Expr
 op1 opcode a = do
   [v] <- App (Opcode opcode) (\case [W{}] -> Just [tword]
                                     _ -> Nothing) [a]
   return v
+wop1 :: String -> Seq Name -> Seq Name
+wop1 opcode a = do
+  w <- a
+  runEDSLW $ op1 opcode (EVar w)
 --Useful variant: op2 embedded in Seq
 wop2 :: String -> Seq Name -> Seq Name -> Seq Name
 wop2 op e1 e2 = do

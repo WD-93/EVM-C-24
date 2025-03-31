@@ -1,0 +1,36 @@
+{-
+Unit testing the various primfuns defined atm:
+!
+!=
+%
+&
+*
++
+-
+/
+<
+<<
+<=
+==
+>
+>=
+>>
+^
+copy
+deref
+evm_return
+|
+~
+-}
+module {
+memory a : Byte;
+memory b : Byte;
+memory c : Byte;
+main:()->();
+main _ := do {
+     a = (! 0);
+     b = (1 != 2);
+     c = (15 % 8);
+     evm_return (0 :: MPtr Byte, 3)
+}
+}
