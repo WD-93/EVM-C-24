@@ -1,0 +1,8 @@
+module {
+memory ret : Byte;
+main:()->();
+main _ := do {
+     ret = (-10 :: SInt 8) / 5;
+     evm_return(0 :: MPtr Byte,1)
+}
+}

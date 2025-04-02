@@ -1488,6 +1488,9 @@ simplePFs = M.fromList [
           let [w1'] = w1's
           w2's <- softCoerce (UInt 256) t2 [w2]
           let [w2'] = w2's
+          comment (if s == "Signed"
+                    then "Should be sdiv"
+                    else "Should be div")
           dividend <- wmask (fromInteger len) $
                       wop2 (if s == "Signed"
                             then "sdiv"
@@ -2167,6 +2170,8 @@ softCoerce :: T -> T -> [Name] -> Seq [Name]
 --When lengthening *from* a signed int to any int, signextend
 --Caught bug: (-1 :: SInt 8) should of course still be -1 when coerced to
 --a Word.
+--Signextend takes the little-endian byte index of the byte with the sign bit...
+--that means only an int(8*x) can be signextended.
 --When shortening any int, mask
 --TODO: when it would shorten code sufficiently, replace mask with shl,shr
 softCoerce target source ws
@@ -2175,9 +2180,26 @@ softCoerce target source ws
     Int s2 len2 <- source,
     [w] <- ws =
       case () of
-        _ | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
+        --Special case for 0 needed to avoid breaking signextend
+        --Should int0 even be an acceptable type..?
+        _ | len1 == 0 -> return [] --int0s have a zero-word repr
+          | len2 == 0 -> do
+              z <- wword 0
+              return [z]
+          | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
           | len1 > len2, s2 == "Signed" ->
-            runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
+            --What happens if you extend from an int8 to an int15?
+            --If the int8 is negative, the sign bit in the int15 will still be
+            --1.
+            if (len2 `mod` 8) /= 0
+            then throwE $ GenericError $
+                 "Signed ints which aren't a whole number of bytes can't be "
+                 ++ "signextended: " ++ show (target,source,ws)
+            else do
+              let byteIx = (len2 `div` 8) - 1
+              --signextend always extends to 256b, so we must mask as well.
+              w' <- wmask len1 $ wop2 "signextend" (wword byteIx) (return w)
+              return [w']
           | let -> runEDSLWord $ coerce (W 1 target) (EVar w)
   --Adding general tuple coercion
   --Goal: {2,3} can be coerced to {foo: Word, bar: Word}
@@ -2952,7 +2974,7 @@ signextend = op2 "signextend"
 --Synonym for lowestBits:
 mask :: Int -> Expr -> Expr
 mask = lowestBits
-wmask :: Int -> Seq Name -> Seq Name
+wmask :: Integral n => n -> Seq Name -> Seq Name
 wmask 0 _ = wword 0
 wmask 256 e = e
 wmask len e = do
@@ -2964,7 +2986,7 @@ lowestBits :: Int -> Expr -> Expr
 lowestBits 0 e = e >> word 0
 lowestBits 256 e = e
 lowestBits len e = maskValue len & e
-maskValue :: Int -> Expr
+maskValue :: Integral n => n -> Expr
 maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
 --k + x

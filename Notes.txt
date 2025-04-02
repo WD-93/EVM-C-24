@@ -1,3 +1,8 @@
+First: figure out why signed division is failing.
+I'd made the wrong guess about signextend's behavior... signextend(b,x) extends a (b+1)-bit signed number to
+32B. Ofc, to extend to a particular length from a given length it would need 3 arguments, not 2...
+That means I also need to mask when extending from int32 to int64, for example.
+
 My promotion logic for mathops differs from C in that if one argument is signed, the result is signed...
 should I change that?
 Add .* and ->*?
@@ -14,13 +19,34 @@ deref(n,ptr):
  modulus = n `mod` 32
  wordOffset = ptr & 31
  firstCell = ptr >> 5
- if modulus + wordOffset > 32
+ if wordOffset > 32 - modulus --the rhs is a constant; grouping constants in inequalities is an impt opt
  then: --a word overlap; need to load an additional word
   ws <- load firstCell .. firstCell + wordLen
  else:
   ws <- load firstCell .. firstCell + wordLen - 1
- shr and stitch together --challenge: the shift value is dynamic!
+ shr and stitch together to wordLen words --challenge: the shift value is dynamic!
   
+
+I need a more rigorous approach to stack scheduling across CFGs... reread treegraphs
+Simplified problem:
+instrs = dup, swap, k, op/n --extension: some ops are commutative
+You start with vars on the stack with given expr values (constant, x, op/n es); your goal is a given layout
+constraint at each leaf node. Aggregate trees into single ops?
+Extension: op mutates v (a state variable, not a word).
+Naive compilation gives you a heuristic to search by.
+If you'll always need an e and the inputs are on the stack w 0 swap cost, emit the op.
+Branching complicates that: you need an e with a given probability.
+Start and goal type: {mem etc, stack, pc} | revert | return | invalid
+Revert and return have (ptr,len,mem) constraints.
+Memoization could be useful... as well as search from the back. Search backwards and forwards guided by
+heuristic costs?
+Only varying layout simplifies matters, but you could also vary symbolic content: if you have x,y, you have
+a choice of whether to keep x+y or recompute it later.
+x + (x*x) where x is last-use is a tree with a dependency on x... the most efficient code for it swaps x to
+top first. (x*x) + x is more efficient since otherwise (x*x) must dup.
+Any tree which consumes 0/1 words TOS and produces 0/1 can be merged into a single op.
+Trees which produce 0 don't interfere with the stack, but read/write ordering barriers mean they can't
+always be scheduled.
 
 What now?
 Primfuns:
