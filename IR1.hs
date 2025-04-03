@@ -974,6 +974,7 @@ seqBlock irs = snd <$> isolate (mapM seqS irs)
 --For now, no tail call support
 seqS :: S -> Seq ()
 seqS = \case
+  --TODO opt: *pMem = *p2 => copy
   p := e -> do
     (t,ws) <- seqE e
     patternMatch p t ws
@@ -1426,12 +1427,141 @@ handleIndexing e = do
     _ -> do
       (structT,structWs) <- seqE struct
       getStructFields structT structWs nmixs
+
+--Read len bytes from byte index ptr of storage or tstorage
+--Parameterized by load operation (sload or tload)
+--Does not consider potential left or right-padding atm
+derefSto :: (Name -> Seq Name) -> Int -> Name -> Seq [Name]
+derefSto load len ptr = do
+  --Optimization means these ops will be pruned if not used
+  slot <- wop2 "shr" (wword 5) (return ptr)
+  off <- wop2 "and" (wword 31) (return ptr)
+  case len of
+    0 -> return []
+    --A 1-byte value can't overlap a word
+    1 -> do
+      --v = load (ptr >> 5)
+      v <- load slot
+      --res = v >> (248-8*(ptr&31))
+      res <- wop2 "shr" (wop2 "sub"
+                         (wword 248)
+                         (wop2 "mul" (wword 8) (return off)))
+             (return v)
+      return [res]
+    --Another simple case: instead of checking the bound, we branch on the
+    --byte offset ptr%32 directly.
+    --if !off:
+    -- x = load slot
+    --else:
+    -- x1 = load slot
+    -- x2 = load (slot+1)
+    -- x = x1 << 8*off | x2 >> 8*off
+    --return x
+    32 -> do
+      --Better to use isolate than seqBlock here...
+      --Oh no: need to return words from an ifte. Might need to use seqBlock
+      --after all... no, I can use emitOp to bind the result to x in both
+      --cases.
+      x <- newAnonVar
+      (_,irElse) <- isolate $ do
+        v <- load slot
+        copyTo tword x v
+      (_,irThen) <- isolate $ do
+        x1 <- load slot
+        --Note no overflowing done here
+        slotplusone <- wop2 "add" (wword 1) (return slot)
+        x2 <- load slotplusone
+        off8 <- wop2 "shl" (wword 3) (return off)
+        x' <- wop2 "or"
+          (wop2 "shl" (return off8) (return x1))
+          (wop2 "shr" (return off8) (return x2))
+        copyTo tword x x'
+      emit (IR1.Ifte () off irThen irElse)
+      return [x]
+    n -> do
+      let numWords = (n `roundedUpMod` 32) `div` 32
+          modulus = n `mod` 32
+      --Two cases: if ptr%32 + modulus > 32 then the value is spread over
+      --numWords + 1 slots, otherwise numWords.
+      --The condition is equivalent to 32 - modulus < off
+      let bound = 32 - modulus
+      cond <- wop2 "lt" (wword bound) (return off)
+      --Need to allocate numWords IR vars
+      result <- replicateM numWords newAnonVar
+      (_,irElse) <- isolate $ do
+        --Load slot, slot+1 .. slot+numWords-1
+        shiftedRes <- sequence [
+          do slot' <- waddK i (return slot)
+             load slot'
+          | i <- [0..numWords-1]]
+        --Shift value: 256 - 8*(off + modulus)
+        --That can be simplified to (256-8*modulus) - 8*off,
+        --where the lhs is a constant
+        --TODO don't multiply by 8, leave that to reconstruct
+        shiftVal <- wop2 "sub" (wword $ 256 - 8*modulus) $
+                    wop2 "shl" (wword 3) (return off)
+        res <- reconstruct n shiftVal shiftedRes
+        zipWithM (copyTo tword) result res
+      error "todo derefSto"
+--Given an n-byte value embedded in a given list of words and a dynamic
+--leftshift, reconstruct the value. Doesn't make use of padding, so the
+--top word may be masked.
+--Assumes each word contains the value, i.e. a minimal number of words have
+--been passed.
+--TODO deduplicate reconstruction logic in mem deref.
 {-
-  ixs <- indicesAndNamesToIndices fieldIxs t
-  --Return type, its size, offset in the struct, left and right-padding
-  --We don't need right-padding, so we ignore it.
-  (tRes,szRes,offRes,lpRes,_) <- fieldsInfo ixs t
+Algo for length ws == wordLen:
+for w from init (reverse ws):
+ w >>= shiftVal
+ w |= (next w << shiftVal)
+top w = head ws >>= shiftVal
+
+If length ws == wordLen + 1, the top word of the output must be reconstructed
+from two words before masking it.
+Example: w1@{...,b1}w2@{b2,...} --a 2-byte value shifted left by 31 bytes.
+Result: (w1 << 8 | w2 >> 248) & 0xffff
+The mask is static and w2's shift is just shiftVal... but what about w1's shift
+in the general case?
+The number of "spillover bytes" in the top word is byte shift + length mod 32.
 -}
+reconstruct :: Int -> Name -> [Name] -> Seq [Name]
+reconstruct len shiftVal ws
+  | not $ lenws  `elem` [wordLen,wordLen+1] =
+    error $ "Compiler error: bad number of input words to reconstruct: "
+    ++ show (len,shiftVal,ws)
+  | let = do
+          let go = if lenws == wordLen
+                   then go1
+                   else go2
+              hd:tl = ws
+          reverse <$> go hd tl
+          where
+            --Reconstruction for length ws == wordLen
+            go1 w [] =
+              (:[]) <$> (wmask (8*modulus) $ wop2 "shr" (return shiftVal)
+                         ((return w)))
+            go1 w (wnext:ws) = do
+              w' <- wop2 "or" (wop2 "shr" (return shiftVal) (return w))
+                (wop2 "shl" (return shiftVal) (return wnext))
+              ws' <- go1 wnext ws
+              return (w':ws')
+            --Reconstruction for length ws == wordLen + 1
+            --Since the shift value is dynamic, masking the top word before the
+            --or (which would lead to a smaller mask) would require dynamically
+            --computing the mask.
+            go2 w [wlast] =
+              (:[]) <$> (wmask (8*modulus) $ wop2 "or"
+                         (wop2 "shl" (return shiftVal) (return wlast))
+                         (wop2 "shr" (return shiftVal) (return w)))
+            go2 w (wnext:ws) = do
+              w' <- wop2 "or" (wop2 "shr" (return shiftVal) (return w))
+                (wop2 "shl" (return shiftVal) (return wnext))
+              ws' <- go2 wnext ws
+              return (w':ws')
+            wsLen = length ws
+            wordLen = (len `roundedUpMod` 32) `div` 32
+            modulus = len `mod` 32
+            lenws = length ws
 
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
@@ -2155,6 +2285,13 @@ assign x ws = do
       sequence_ [emitOp [(x ++ "#" ++ show n, W n t)] Copy [w]
                 | (n,w) <- zip [1..] ws]
     _ -> throwE $ BadFirstRHSInAssign x mt ws
+--x = y at the IR level; I need this to return words from expressions
+--containing iftes.
+--Also need to pass the IRT of x in case x has already been assigned.
+copyTo :: IRT -> Name -> Name -> Seq ()
+copyTo irt x y = do
+  emitOp [(x,irt)] Copy [y]
+  return ()
 
 --target type, source type, words of source value
 --Supported coercion: any int -> int, any struct -> struct
@@ -2912,6 +3049,11 @@ shl = op2 "shl"
 shr = op2 "shr"
 (&) = op2 "and"
 (.|) = op2 "or"
+
+wshift :: Int -> Seq Name -> Seq Name
+wshift n e = do
+  v <- e
+  runEDSLW $ shift n (EVar v)
 --Utility function: shift n shifts an EVar n bits left (or right if n is
 --negative)
 --If n > 256 or < -256, returns 0
@@ -2989,6 +3131,11 @@ lowestBits len e = maskValue len & e
 maskValue :: Integral n => n -> Expr
 maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
+
+waddK :: Integral n => n -> Seq Name -> Seq Name
+waddK k e = do
+  w <- e
+  runEDSLW $ addK k (EVar w)
 --k + x
 addK :: Integral n => n -> Expr -> Expr
 addK 0 e = e

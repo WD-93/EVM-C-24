@@ -1,7 +1,19 @@
+Code cleanup and restructuring plan:
+Each stage in a separate folder.
+Each monad and its primitive API in a separate module; derived API divided further.
+Modules for the major parts of compilation: pointers, case etc. Break out huge cases into combinators.
+Datatypes and shared functionality moved lower, the latter deduplicated.
+Elimination of redundant combinators for monads.
+
 First: figure out why signed division is failing.
 I'd made the wrong guess about signextend's behavior... signextend(b,x) extends a (b+1)-bit signed number to
 32B. Ofc, to extend to a particular length from a given length it would need 3 arguments, not 2...
 That means I also need to mask when extending from int32 to int64, for example.
+
+Now to implement t/storage load. Next: op mutates var, loads consume var and don't produce, barrier-based
+scheduling.
+Reconstruction of a bytestring shifted into words: the rsh/lsh value and mask is the same either way, the
+difference is whether the final word is or'd from one or two words.
 
 My promotion logic for mathops differs from C in that if one argument is signed, the result is signed...
 should I change that?
