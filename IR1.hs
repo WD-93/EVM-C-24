@@ -810,7 +810,7 @@ seqDefun (Defun f ft pat body) =
       --Todo deduplicate so I don't accidentally miss adding new virtual state
       --params (storage etc) when I modify return in seqS.
       zws <- askReturnType >>= nullValue
-      emit $ IR1.Return () $ ["$mem","$ret"] ++ zws
+      emit $ IR1.Return () $ (words "$mem $sto $tsto $ext $ret") ++ zws
 
       return arity
     _ -> throwE $ BadFunctionType f ft
@@ -1005,7 +1005,7 @@ seqS = \case
     t <- askReturnType
     (t',ws) <- seqE e
     cws <- softCoerce t t' ws
-    emit $ IR1.Return () $ ["$mem","$ret"] ++ cws
+    emit $ IR1.Return () $ words "$mem $sto $tsto $ext $ret" ++ cws
   --Applies truthy to e, returning one word
   --Complication: what are the scope rules for the e in ifte? The same as
   --the block it's contained in... meaning an assignment in e will carry over
