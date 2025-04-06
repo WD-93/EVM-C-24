@@ -232,9 +232,13 @@ compileLabel lab =
           (_,opAsm,sos) = runSelectOps (mapM_ selectOps $ dfsR2L $ slcOps slc) $
                           SOS {sosUsesRemaining = uc,
                                sosLayout = map ((,)0) layout,
-                               --Hack: they're all uint256[1] except for $mem 
+                               --Hack: they're all uint256[1] except for $mem
+                               --Extending the hack... todo unhack it
                                sosVarTypes = M.fromSet
                               (\case (_,"$mem") -> Mem
+                                     (_,"$sto") -> Sto
+                                     (_,"$tsto") -> TSto
+                                     (_,"$ext") -> Ext
                                      _ -> tword
                               ) $ S.map ((,)0) $ slcLive slc
                               ,
@@ -469,8 +473,10 @@ compileBranch ver sub self layout types branch =
       --Ideally I'd be able to modify the live of th,el to have no cleanup
 
       --Get live stack vars for both branches
-      lth <- S.delete "$mem" <$> liveVars th
-      lel <- S.delete "$mem" <$> liveVars el
+      lth <- flip S.difference (S.fromList $ words "$mem $sto $tsto $ext")
+             <$> liveVars th
+      lel <- flip S.difference (S.fromList $ words "$mem $sto $tsto $ext")
+             <$> liveVars el
       --Get layout for both branches
       --Note if they have no layout they're fallthroughable
       mlth <- stackGetLayout th
@@ -492,7 +498,7 @@ compileBranch ver sub self layout types branch =
       adjThenAsmLabel <- labelToLabel adjThenLabel
       adjustElse <- adjustToMaybeTarget ver sub layout el
       (contToElse,mft) <- tryFallthrough self el
-      let (_,dupCond,_) = runStackOps (soDupName cond) layout
+      let (_,dupCond,_) = runStackOps (soDupName' "499" cond) layout
       return (dupCond ++
               [PushLabel 2 adjThenAsmLabel, Opcode "jumpi"] ++
               adjustElse ++
@@ -534,10 +540,10 @@ compileBranch ver sub self layout types branch =
       debugPrint "Branch: EVM RETURN"
       let (_,w,_) = runStackOps (do l <- get
                                     tell [Comment $ "Layout: " ++ show l]
-                                    soDupName len
+                                    soDupName' "return(len)" len
                                     l' <- get
                                     tell [Comment $ "Layout: " ++ show l']
-                                    soDupName ptr)
+                                    soDupName' "return(ptr)" ptr)
                     layout
       return ([Comment $ "EVM RETURN " ++ show (len,ptr)] ++ w ++
               [Opcode "return"], Nothing)
@@ -724,7 +730,8 @@ adjustToMaybeTarget :: Map Name Int -> Map SSAName SSAName ->
                        [SSAName] -> L ->
                        Stack [Asm]
 adjustToMaybeTarget ver sub layout lab = do
-  live <- S.delete "$mem" <$> liveVars lab
+  live <- flip S.difference (S.fromList $ words "$mem $sto $tsto $ext")
+          <$> liveVars lab
   mtarget <- stackGetLayout lab
   let (adjustmentOps,mbNewLayout) =
         case mtarget of
@@ -806,17 +813,19 @@ adjustToFlexible ver sub live = do
   let bag = count $ map (name2SSAName ver sub) $ S.toList live
       notGarb = M.keysSet bag
   garbageCollect notGarb
+  debugPrint $ "A2F bag: " ++ show bag
   --Now we have only live SSA vars in any order, and a bag of vars we want the
   --stack to sum to. First deduct the live vars from the bag, then for each
   --(var,n >= 0) remaining in the bag, duplicate var n times
   --Note n should not be < 0 if we start with a layout without duplicate vars
   vs <- get
   let bagRem = M.unionWith (+) bag $ M.map negate $ count vs
+  debugPrint $ "A2F bagRem: " ++ show bagRem
   mapM_ (\case (var,n)
                  --No point trying to repair here; something must've gone wrong
                  --earlier to violate the precondition.
                  | n < 0 -> error "Oh dear, something went terribly wrong!"
-                 | let -> replicateM n $ soDupName var) $ M.toList bagRem
+                 | let -> replicateM n $ soDupName' "a2f" var) $ M.toList bagRem
     where count vs = M.unionsWith (+) $ map (flip M.singleton 1) vs
 --While true:
 --If there's garbage TOS, pop it
@@ -888,7 +897,7 @@ adjustToTarget' notGarbage targetLen suffixVars i = \case
     len <- gets length
     if i >= len
       --Just dup the rest
-      then mapM_ soDupName (v:vs)
+      then mapM_ (soDupName' "adjustToTarget'") (v:vs)
       else do
       --The top word is not garbage, nor does it occur in suffix
       --One might think it would be efficient to swap it to its correct
@@ -902,7 +911,7 @@ adjustToTarget' notGarbage targetLen suffixVars i = \case
         --If v is in suffixVars, dup it
         --Otherwise, swap it to top.
         if S.member v suffixVars
-          then soDupName v
+          then soDupName' "S.member v suffixVars" v
           else soSwapName v
         --Then swap v to correct pos.
         soSwapBOS i
@@ -948,11 +957,15 @@ soDupIndex :: Int -> StackOps ()
 soDupIndex i = do
   tell [Dup $ i + 1]
   modify (dupF i)
-soDupName :: SSAName -> StackOps ()
-soDupName nm = do
+--Temporarily adding a blame param so I can see where $sto is being dup'd
+soDupName = soDupName' "<unknown>"
+soDupName' :: String -> SSAName -> StackOps ()
+soDupName' blame nm = do
   mi <- gets (elemIndex nm)
   case mi of
-    Nothing -> error "Compiler error soDupName"
+    Nothing -> error $
+      "Compiler error in soDupName: dup of nonexistent var "
+               ++ show nm ++ "; blame " ++ blame
     Just i -> soDupIndex i --DUP1 dups index 0
 dupF :: Show a => Int -> [a] -> [a]
 dupF i as =
@@ -1074,11 +1087,12 @@ selectOps (lhs,op,rhs) = do
   popTOS
   --Take only stack vars from lhs and rhs; virtual vars such as Mem have no
   --runtime impact.
-  let onlyWords vts = do
+  let onlyWords vts = filter (not . isVirtual . snd) vts
+        {-do
         (var,t) <- vts
         case t of
           W {} -> [(var,t)]
-          _ -> []
+          _ -> []-}
       lhsW = onlyWords lhs
   rhsW <- map fst <$> onlyWords <$> mapM (\v -> do
                                              t <- varType v
@@ -1087,6 +1101,7 @@ selectOps (lhs,op,rhs) = do
   (prefix,suffix) <- splitRHS rhsW
   swapToTop suffix
   --Dup the rest
+  debugPrint $ "Duping prefix in selectops: " ++ show prefix
   dupToTop prefix
   --Emit the Operator compiled to asm, removing the args from stack and
   --pushing the lhs with the given types.

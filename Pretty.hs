@@ -81,6 +81,9 @@ showLHS = intercalate ", " . map showNMT
 showNMT (nm,irt) = nm ++ " : " ++ showIRT irt
 showIRT = \case
   Mem -> "Mem"
+  Sto -> "Sto"
+  TSto -> "TSto"
+  Ext -> "Ext"
   W n t -> showT t ++ "#" ++ show n
 showT = do
   let r = showT

@@ -1,9 +1,95 @@
+That bug in Stack due to adding $sto was hard to find... maybe need a more principled approach to ensuring
+virtual vars aren't considered to be on the stack, there are several places where $mem was filtered...
+Note RETURN should include $sto, but revert and invalid should not.
+As I suspected, testStorageWrite's compilation dropped the sstore because RETURN doesn't include $sto.
+
+Storage pointer assignment: I'll ignore padding for now and just consider (ptr,len)
+TODO deduplicate genStore and assignPtr
+I'm still missing non-anonymous staticData...
+Code objects require the code go through every stage... do so during desugaring? That would avoid the need to
+reshuffle dependencies since Compiler is already at the apex.
+I'll do that for now... code objects simply desugar to bytestrings.
+Static datatypes could use the same logic as datatypes in calldata.
+Since datatypes are boxed, the staticData could be e.g. a List a Code, without needing to go through a pointer.
+
+TODO special-case _ | len mod 32 == 0 for derefSto, not 32.
+Optimization could let me merge the multiple of 32 and the default case... or could I? The 32n case partially
+overlaps with 0 or 2 slots, 32n+i overlaps with 1 or 2.
+With symbolic optimization that identifies noops (1*,0+,0|,~0&,shr/shl 0 etc) I could get rid of waddK and
+the manual opts in mask.
+Constant expansion would also be very useful for reading and writing to storage globals.
+Symbolic eval that's aware of padding would be very valuable...
+On storage and memory writes: an alternative to ptr+1,+2,... would be to have a 1 on the stack and mutate
+the pointer variable. That could shrink the code.
+
 Code cleanup and restructuring plan:
 Each stage in a separate folder.
 Each monad and its primitive API in a separate module; derived API divided further.
 Modules for the major parts of compilation: pointers, case etc. Break out huge cases into combinators.
+seqE is the worst offender...
 Datatypes and shared functionality moved lower, the latter deduplicated.
 Elimination of redundant combinators for monads.
+Eliminate the EDSL monad, it's not worth the overhead; just use Seq directly.
+Potential refactor: Oleg's alt to monad transformers, allowing one to guarantee only IR is being emitted
+while allowing instruction-emitting code to be run in the more general monad.
+Search for todos, resolve.
+Split out, define: combinators for generating EVM instrs.
+An IR template parser would make the codegen code much more readable... ex:
+instTemplate "a = (b+c) & d" (...instantiation)
+
+A better but more complex parser... need to get rid of parens around -x, *x etc.
+Restrict infix operators to the provided primfuns. f * x => multiplication, not f (*x)
+Separate parsers for patterns, types and exprs. arr[ix] = e :: t should parse to (arr[ix]) = (e :: t)
+
+The missing var bug was because while I allocated new vars to which to assign the result of the two ifte
+cases in derefSto, I did not give them an IR type.
+Solution: either assign 0 :: T to them or make a ws <- newEmptyCVar t. I need to pass the t because Seq
+tracks IR types...
+I could assign a placeholder type in derefSto (which shouldn't know about t) and then coerce it in derefPtr.
+Remember to revert the failure silencing...
+
+Next: min-31 pointers that point to the start of the value if it was word-padded? It massively simplifies
+memory load and store at the cost of constraining pointers a little. It also saves a lot of gas... no need to
+stich or reconstruct values.
+load(ptr):
+ n = numwords typeof *ptr
+ ws <- mload ptr + 32*i for i <- 0..n-1
+ mask first word (8*numbytes mod 32)
+store(ptr,ws):
+ n = numwords typeof *ptr
+ if len mod 32 == 0:
+  mstore ptr+32*i ws[i] for i <- 0..n-1
+ else:
+  old = mload ptr & ~mask (8*len mod 32)
+  mstore ptr (old | ws[0])
+  mstore ptr+32*i ws[i] for i <- 1..n-1
+That doesn't exploit padding.
+Padding is already restricted to an integer number of bytes. If I allowed a configurable number between fields,
+I could preserve padding info when pointing into a struct.
+Note min-31 pointers still leave sload and sstore a pain. Might as well allow 0 pointers for storage.
+No need to special-case bytes, & 0xff has the same code size as shr 248.
+
+Any contiguous mask can be computed from an existing ~0 in 9 gas.
+
+A C -> C optimization stage could simplify C -> IR codegen; make the opts explicit rather than interleaving
+them with the codegen itself. Better opts later could allow clearer code to be generated at no runtime cost.
+(*ptr).field => *((ptr + k) :: Ptr r fieldType)
+Repeated application plus const grouping yields the final result; use generic programming to simplify into a
+"repeatedly" combinator.
+I'll need to track mem hierarchy in future: ptr > &(ptr->field)
+Note **ptr ~ *k without more rigorous tracking.
+Should the pointer type include the range you can read/write...?
+
+To test whether my newly added state vars break anything (unlikely, Stack just ignores state vars and CFG
+has no concept of which vars are on stack), it would help to expose the EVM instructions as primfuns.
+Rather than add that to the compiler (further complicating it and cramping the user's namespace), it might
+be better to define them using inline assembly in a std lib file.
+Need: arity info, whether they branch.
+Future hierarchical state segmentation may require handling side-effecting instructions specially.
+Branching instructions also each need their own branch type.
+revert differs from return in that it does not contain $sto, $tsto or $ext.
+Always pass state vars to ops such as call; separate observation from modification, allow passing {}.
+Manual effect hinting would be nice...
 
 First: figure out why signed division is failing.
 I'd made the wrong guess about signextend's behavior... signextend(b,x) extends a (b+1)-bit signed number to

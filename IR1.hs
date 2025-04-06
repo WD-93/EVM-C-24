@@ -22,10 +22,21 @@ import qualified BuildStruct as B
 --The first stage of compilation from AST: word-level ops with structured
 --patterns.
 --Function call is treated as an op.
-data IRT = Mem --has no runtime repr
+--Standard arg order for Call: $mem,$sto,$tsto,$ext,args,$ret
+data IRT = Mem  --has no runtime repr
+         | Sto  --represents the storage state
+         | TSto --ditto for tstorage
+         | Ext  --represents the state of external contracts
          | W Int T --nth word of C-level t; 1-indexed
          --Renamed from Word to avoid clash with Padding
   deriving (Eq,Ord,Read,Show)
+--Returns true if the IRT has no runtime repr because it represents state;
+--to be used in later stages.
+isVirtual :: IRT -> Bool
+isVirtual = \case
+  W{} -> False
+  _ -> True
+
 --Name mangling: nth word of local x becomes x#n
 --From ToyCFG: IR is tagged with () or Live annots.
 --It does not need a var type param because SSA is done on CFG's.
@@ -56,7 +67,7 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
 type IR = IRP ()
 data Operator = Push StaticValue
               | Opcode String
-              | Call --args: f, args, ret
+              | Call --args: mem,sto,tsto,ext,f,args,ret
               | Reduce Name --arg: a commutative and associative opcode,
                 --used for truthy
               | Copy --x = y => x = copy [y]
@@ -912,6 +923,12 @@ patternMatch p t ws =
           case r of
             Memory -> assignPtr pw a ws'
             --TODO storage, tstorage
+            Storage -> do
+              len <- numBytesT a
+              assignSto sload sstore len pw ws'
+            TStorage ->  do
+              len <- numBytesT a
+              assignSto tload tstore len pw ws'
             Calldata -> imm r
             Code -> imm r
             Returndata -> imm r
@@ -1234,7 +1251,7 @@ seqE = \case
         --word output.
         --Stack layout before jump: wf,args,ret.
         --Note: the IR does not include the ret argument!
-        emitOp (("$mem",Mem):zip retws retts) Call ("$mem":wf:args)
+        emitOp (callOutState ++ zip retws retts) Call (callInState ++ (wf:args))
         return (b,retws)
       _ -> throwE $ ApplicationToNonFunction f tf
   --The fields are concatenated, with the field values emitted in reverse
@@ -1362,6 +1379,11 @@ seqE = \case
       _ -> throwE $ GenericError $
         "Alloc ptr for " ++ con ++ " must be a byte ptr, but instead it's "
         ++ show ptrT
+
+--The state variables a call takes
+callInState = words "$mem $sto $tsto $ext"
+--and returns, associated with their IRTs:
+callOutState = zip callInState [Mem,Sto,TSto,Ext]
       
 --pat2e pat returns e if the given pattern unambiguously corresponds to
 --the expression e.
@@ -1440,6 +1462,7 @@ derefSto load len ptr = do
     0 -> return []
     --A 1-byte value can't overlap a word
     1 -> do
+      error "mumu"
       --v = load (ptr >> 5)
       v <- load slot
       --res = v >> (248-8*(ptr&31))
@@ -1457,12 +1480,14 @@ derefSto load len ptr = do
     -- x2 = load (slot+1)
     -- x = x1 << 8*off | x2 >> 8*off
     --return x
+    --TODO: generalize to any multiple of 32
     32 -> do
       --Better to use isolate than seqBlock here...
       --Oh no: need to return words from an ifte. Might need to use seqBlock
       --after all... no, I can use emitOp to bind the result to x in both
       --cases.
       x <- newAnonVar
+      putIRVarType x tword
       (_,irElse) <- isolate $ do
         v <- load slot
         copyTo tword x v
@@ -1488,21 +1513,25 @@ derefSto load len ptr = do
       cond <- wop2 "lt" (wword bound) (return off)
       --Need to allocate numWords IR vars
       result <- replicateM numWords newAnonVar
-      (_,irElse) <- isolate $ do
-        --Load slot, slot+1 .. slot+numWords-1
-        shiftedRes <- sequence [
-          do slot' <- waddK i (return slot)
-             load slot'
-          | i <- [0..numWords-1]]
-        --Shift value: 256 - 8*(off + modulus)
-        --That can be simplified to (256-8*modulus) - 8*off,
-        --where the lhs is a constant
-        --TODO don't multiply by 8, leave that to reconstruct
-        shiftVal <- wop2 "sub" (wword $ 256 - 8*modulus) $
-                    wop2 "shl" (wword 3) (return off)
-        res <- reconstruct n shiftVal shiftedRes
-        zipWithM (copyTo tword) result res
-      error "todo derefSto"
+      mapM_ (`putIRVarType` tword) result
+      let caseN ixbound = (snd <$>) $ isolate $ do
+            --Load slot, slot+1 .. slot+numWords-1
+            shiftedRes <- sequence [
+              do slot' <- waddK i (return slot)
+                 load slot'
+              | i <- [0..ixbound]]
+            --Shift value: 256 - 8*(off + modulus)
+            --That can be simplified to (256-8*modulus) - 8*off,
+            --where the lhs is a constant
+            shiftVal <- wop2 "sub" (wword $ 256 - 8*modulus) $
+                        wop2 "shl" (wword 3) (return off)
+            res <- reconstruct n shiftVal shiftedRes
+            zipWithM (copyTo tword) result res
+      irElse <- caseN (numWords-1)
+      irThen <- caseN numWords
+      emit $ IR1.Ifte () cond irThen irElse
+      return result
+ 
 --Given an n-byte value embedded in a given list of words and a dynamic
 --leftshift, reconstruct the value. Doesn't make use of padding, so the
 --top word may be masked.
@@ -1562,7 +1591,106 @@ reconstruct len shiftVal ws
             wordLen = (len `roundedUpMod` 32) `div` 32
             modulus = len `mod` 32
             lenws = length ws
-
+            
+--Now we do the opposite: deconstruct a value and store it.
+--Pointer assignment for storage and tstorage.
+--We ignore padding for now.
+--That could later be used to avoid writes: consider a {pad word Byte} stored
+--across a word boundary. Since you have a pointer of that type, you may
+--assume the padding bytes are already 0 and so don't need to modify the lower
+--word.
+--If len is a multiple of 32, the cond which determines overlap is just off.
+--In that case two words are partially overlapped; the rest are whole.
+--If len > 0 is not a multiple of 32, it will partially overlap 1 or 2 slots.
+assignSto ::
+  (Name -> Seq Name) ->       --load instruction, used to save unwritten bytes
+  (Name -> Name -> Seq ()) -> --store instruction
+  Int ->                      --byte length of value to write
+  Name ->                     --the pointer to write to
+  [Name] ->                   --the value's words
+  Seq ()
+assignSto load store len ptr ws = do
+  slot <- wop2 "shr" (wword 5) (return ptr)
+  off <- wop2 "and" (wword 31) (return ptr)
+  case len of
+    0 -> return ()
+    --Simple case, can never overlap two words
+    1 -> do
+      --leftshift = 248 - 8*off
+      --zeromask = ~(0xff << leftshift)
+      --w' = w << leftshift
+      --new = w' | (old & zeromask)
+      let [w] = ws
+      old <- load slot
+      --The number of bits to shift the byte and zeroing mask by
+      leftshift <- wop2 "sub" (wword 248) (wop2 "shl" (wword 3) (return off))
+      w' <- wop2 "shl" (return leftshift) (return w)
+      zeromask <- wop1 "not" $ wop2 "shl" (return leftshift) (wword 0xff)
+      new <- wop2 "or" (return w') (wop2 "and" (return zeromask) (return old))
+      store slot new
+    --Instead of an lt to detect overlap, we use off as the cond
+    --Thankfully there's no need to return any values from the ifte branches...
+    _ | (len `mod` 32) == 0 -> do
+      --Simple case: no overlap
+      (_,irElse) <- isolate $ sequence_ [
+        do slot' <- waddK i (return slot)
+           store slot' w
+        | (i,w) <- zip [0..] ws
+        ]
+      (_,irThen) <- isolate $ do
+        --We must shift the ws into |ws|+1 words, left-shifting them by
+        --32-off bytes.
+        --That means the first word of the output is right-shifted by off bytes.
+        --The first word of the shifted result must be or'd with the top off
+        --bytes of sload(slot)
+        --The last word must be or'd with the bottom 32-off bytes of
+        --sload(slot+|ws|)
+        --Note the mask of the first is the complement of the mask of the last.
+        rightshift <- wop2 "shl" (wword 3) $ return off
+        leftshift <- wop2 "sub" (wword 32) $ return rightshift
+        ws' <- deconstruct32 leftshift rightshift ws
+        --ws' has at least two elements, so this'll work
+        let fst = head ws' --the top partial word
+            middle = tail $ init ws'
+            lst = last ws' --the bottom partial word
+        fstMask <- wop2 "shl" (return leftshift) (wop1 "not" $ wword 0)
+        lstMask <- wop1 "not" (return fstMask)
+        --Update fst
+        old <- wop2 "and" (return fstMask) (load slot)
+        store slot <$> wop2 "or" (return fst) (return old)
+        --Update middle
+        sequence_ [
+          do slot' <- waddK i (return slot)
+             store slot' w
+          | (i,w) <- zip [1..] middle
+          ]
+        --Update lst
+        slot' <- waddK (length ws) (return slot)
+        old <- wop2 "and" (return lstMask) (load slot')
+        store slot' <$> (wop2 "or" (return lst) $ return old)
+      emit $ IR1.Ifte () off irThen irElse
+    _ -> do
+      error "TODO"
+--Shifts ws (containing a value that's a whole number of words, so there are
+--no irrelevant bits) left by leftshift, a multiple of 8 <= 248.
+--It takes leftshift and rightshift as arguments to avoid recomputation.
+--out[0] = ws[0] >> rightshift
+--out[i] = ws[i-1] << leftshift | ws[i] >> rightshift
+--out[|ws]] = ws[|ws|-1] << leftshift
+--Precondition: |ws| > 0
+deconstruct32 :: Name -> Name -> [Name] -> Seq [Name]
+deconstruct32 leftshift rightshift ws@(hd:tl) = do
+  out <- wop2 "shr" (return rightshift) $ return hd
+  outs <- go ws tl
+  return $ out:outs
+    where
+      go :: [Name] -> [Name] -> Seq [Name]
+      go (w:ws) (w':ws') = do
+        out <- wop2 "or" (wop2 "shl" (return leftshift) (return w)) $
+               wop2 "shr" (return rightshift) (return w')
+        outs <- go ws ws'
+        return $ out:outs
+      go [w] [] = (:[]) <$> wop2 "shl" (return leftshift) (return w)
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
 --Badargs should lead to a Seq exception.
@@ -1830,8 +1958,8 @@ derefPtr (Ptr r a) [w] = do
   ws <- case r of
           Memory -> derefMem mload sz w
           Calldata -> derefMem calldataload sz w
-          Storage -> error"Compiler error: derefPtr storage not supported yet"
-          TStorage -> error"Compiler error: derefPtr tstorage not supported yet"
+          Storage -> derefSto sload (sz`div`8) w
+          TStorage -> derefSto tload (sz`div`8) w
           _ -> throwE $ GenericError $ "Region does not support deref: " ++
                show r
   ws' <- coerceValue a ws
@@ -2119,6 +2247,27 @@ derefBytes off bs ptr
                            return (0,[w])
                    else do w <- mload ptr
                            return (cr-off,[w])
+
+--TODO deduplicate
+sload :: Name -> Seq Name
+sload addr = do
+  res <- newAnonVar
+  emitOp [("$sto",Sto),(res,tword)] (Opcode "sload") ["$sto",addr]
+  return res
+sstore :: Name -> Name -> Seq ()
+sstore addr val = do
+  emitOp [("$sto",Sto)] (Opcode "sstore") ["$sto",addr,val]
+  return ()
+tload :: Name -> Seq Name
+tload addr = do
+  res <- newAnonVar
+  emitOp [("$tsto",TSto),(res,tword)] (Opcode "tload") ["$tsto",addr]
+  return res
+tstore :: Name -> Name -> Seq ()
+tstore addr val = do
+  emitOp [("$tsto",TSto)] (Opcode "tstore") ["$tsto",addr,val]
+  return ()
+
 --($mem,result) = mload ($mem,addr)
 --TODO first tree shake away unused mloads, then force the next write to be
 --placed after all remaining ones.
@@ -2182,9 +2331,6 @@ assignPtr ptr t ws = do
                mstore ptr' w'
             | (off,w') <- zip (map (+bsFst) $ map (32*) [0..]) ws'
             ]
-    
---Implements *ptr#ix* = v
-assignPtrFields = error "TODO"
 
 --Scheme: (a,b) -> a; combine a with b starting with the lowest words
 --If b is longer than a and a is not a whole number of words, mask the
@@ -2998,7 +3144,9 @@ runEDSL = \case
   EVar nm -> do
     mt <- M.lookup nm <$> gets irLocalTypes
     case mt of
-      Nothing -> throwE $ Couldn'tLookupVarTypeInEDSL nm
+      Nothing ->
+        --return (nm,W 1 "Bad")
+        throwE $ Couldn'tLookupVarTypeInEDSL nm
       Just t -> return (nm,t)
   App op ty arges -> do
     es <- mapM runEDSL arges

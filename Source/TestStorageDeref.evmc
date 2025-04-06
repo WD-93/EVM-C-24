@@ -1,0 +1,9 @@
+module {
+memory ret : UInt 32;
+storage x : UInt 32;
+main:()->();
+main _ := do {
+     ret = x;
+     evm_return(0 :: MPtr Byte,4)
+}
+}

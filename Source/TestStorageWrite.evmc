@@ -1,0 +1,18 @@
+module {
+memory ret : Word;
+storage x : Word;
+main:()->();
+main _ := do {
+     set = *(0 :: Ptr Calldata Byte);
+     if set
+     then do {
+     	  new = *(1 :: Ptr Calldata Word);
+	  x = new
+	  }
+     else do {
+     	  ret = x;
+	  evm_return(0 :: MPtr Byte, 32)
+	  }
+     end
+}
+}
