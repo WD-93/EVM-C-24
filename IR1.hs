@@ -50,7 +50,8 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
                | TailCall a Name [Name]
                | IRComment String --Ignored in later stages, used for debugging
                --Branching EVM instructions
-               | EVM_RETURN a Name Name Name -- $mem, ptr, len
+               | EVM_RETURN a Name Name Name Name Name Name
+               -- $mem, $sto, $tsto, $ext, ptr, len
                --For case:
                --switch tag numTags cases
                --Only cases for tags in the range 0..numTags-1 are acceptable.
@@ -1851,7 +1852,7 @@ simplePFs = M.fromList [
   ("evm_return",\t ws ->
       case (t,ws) of
         (Pair (Ptr Memory a) (UInt blen), [p,len]) -> do
-          emit $ EVM_RETURN () "$mem" p len
+          emit $ EVM_RETURN () "$mem" "$sto" "$tsto" "$ext" p len
           return (Struct [], [])
         _ -> throwE $ BadArgPrimFun "evm_return" t),
   --Generic copy operation, to integrate all *copy instructions except

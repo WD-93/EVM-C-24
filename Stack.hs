@@ -536,7 +536,7 @@ compileBranch ver sub self layout types branch =
     --len,_ => dup ptr
     --_ => dup len, dup ptr
     --For now I'll just dup them; TODO optimize
-    BEVM_RETURN mem ptr len -> do
+    BEVM_RETURN mem sto tsto ext ptr len -> do
       debugPrint "Branch: EVM RETURN"
       let (_,w,_) = runStackOps (do l <- get
                                     tell [Comment $ "Layout: " ++ show l]
@@ -1030,7 +1030,8 @@ useCountBranch slc ver sub = do
                      Jumpi cond _ _ -> S.singleton cond
                      BReturn vs -> S.fromList vs
                      Jump _ -> S.empty
-                     BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
+                     BEVM_RETURN mem sto tsto ext ptr len ->
+                       S.fromList [mem,sto,tsto,ext,ptr,len]
                      BSwitch tag _ _ -> S.singleton tag
   return $ M.fromSet (const 1) $ S.union usedBranch liveSSAs
 

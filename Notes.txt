@@ -2,7 +2,7 @@ That bug in Stack due to adding $sto was hard to find... maybe need a more princ
 virtual vars aren't considered to be on the stack, there are several places where $mem was filtered...
 Note RETURN should include $sto, but revert and invalid should not.
 As I suspected, testStorageWrite's compilation dropped the sstore because RETURN doesn't include $sto.
-0, 1 and 32n-byte writes not work... it just seemed like it wasn't working because I used call instead of
+0, 1 and 32n-byte writes now work... it just seemed like it wasn't working because I used call instead of
 sendTransaction.
 
 Storage pointer assignment: I'll ignore padding for now and just consider (ptr,len)
@@ -13,6 +13,16 @@ reshuffle dependencies since Compiler is already at the apex.
 I'll do that for now... code objects simply desugar to bytestrings.
 Static datatypes could use the same logic as datatypes in calldata.
 Since datatypes are boxed, the staticData could be e.g. a List a Code, without needing to go through a pointer.
+
+Nested field transformation that accounts for padding: allow n bytes of padding before and after fields;
+(*ptr : {...,pad n, field: t, pad m, ...}).field => (*(ptr + k :: Ptr r {pad n, t, pad m}))#0
+
+Alloc: pass a pattern and an expr? ptr, ptr-base would let you alloc objects to memory off ptr starting from
+base for passing object graphs in CALL and create.
+with (pat,e) {block}, e @ (pat,e)
+A builtin $allocP pattern and $allocE expr.
+Allocating functions which take and return the alloc context? Wouldn't work since you can't pass $allocE
+unless it's a function of eval($allocP).
 
 TODO special-case _ | len mod 32 == 0 for derefSto, not 32.
 Optimization could let me merge the multiple of 32 and the default case... or could I? The 32n case partially

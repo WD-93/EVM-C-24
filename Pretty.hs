@@ -66,7 +66,8 @@ prettyIR = do
       ["}"]
     Return _ nms -> ["return " ++ showRHS nms]
     IRComment str -> ["--" ++ str]
-    EVM_RETURN _ mem ptr len -> [unwords ["evm_return",mem,ptr,len]]
+    EVM_RETURN _ mem sto tsto ext ptr len ->
+      [unwords ["evm_return",mem,sto,tsto,ext,ptr,len]]
     Switch _ tag numTags tag2block ->
       let tagblocks = M.toList tag2block
       in [unwords ["switch",tag,"(numTags "++show numTags++")","{"]] ++
@@ -147,7 +148,8 @@ showSLC showV (l,slc) =
       Jump l -> ["jump",show l]
       Jumpi v th el -> ["jumpi",showV v,show th,show el]
       BReturn vs -> ["return","(" ++ showRHS (map showV vs) ++ ")"]
-      BEVM_RETURN mem ptr len -> "RETURN":map showV [mem,ptr,len]
+      BEVM_RETURN mem sto tsto ext ptr len ->
+        "RETURN":map showV [mem,sto,tsto,ext,ptr,len]
       BSwitch tag numTags tag2lab -> ["switch",showV tag,show numTags,
                                       show tag2lab]
   ]

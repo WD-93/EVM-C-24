@@ -66,7 +66,7 @@ annotIR = \case
   Break a _ -> a
   Continue a _ -> a
   TailCall a _ _ -> a
-  EVM_RETURN a _ _ _ -> a
+  EVM_RETURN a _ _ _ _ _ _ -> a
 --The live of a given block
 annotBlock :: [IRP a] -> Maybe a
 annotBlock = \case
@@ -129,9 +129,9 @@ annIRWithLive loopLs end =
         case loopLs !? ix of
           Just (start,end) -> (Continue start ix, start)
           Nothing -> error $ "Continue index OOB: " ++ show (ix,loopLs)
-      EVM_RETURN () mem ptr len ->
-        let s = S.fromList [mem,ptr,len]
-        in (EVM_RETURN s mem ptr len, s)
+      EVM_RETURN () mem sto tsto ext ptr len ->
+        let s = S.fromList [mem,sto,tsto,ext,ptr,len]
+        in (EVM_RETURN s mem sto tsto ext ptr len, s)
       --Live: tag, combined lives of every block, which must also be annotated
       Switch () tag numTags tag2block ->
         let tagblocks = M.toList tag2block
@@ -220,7 +220,7 @@ data SLC v = SLC {slcOps :: [([(v,IRT)],Operator,[v])],
 data Branch v = Jump Label
               | Jumpi v Label Label
               | BReturn [v]
-              | BEVM_RETURN v v v
+              | BEVM_RETURN v v v v v v -- $mem $sto $tsto $ext ptr len
               | BSwitch v Int (Map Int Label)
   deriving (Eq,Ord,Read,Show)
 
@@ -292,8 +292,8 @@ cfg loopLs mll = \case
                               }
             return $ Just (loop,liveLoop)
       Nothing -> error "This won't happen!"
-  EVM_RETURN live mem ptr len : _ ->
-    genSLC live [] (BEVM_RETURN mem ptr len)
+  EVM_RETURN live mem sto tsto ext ptr len : _ ->
+    genSLC live [] (BEVM_RETURN mem sto tsto ext ptr len)
   Switch live tag numTags tag2block : irs -> do
     --Each case continues to end
     end <- cfg loopLs mll irs
@@ -393,8 +393,9 @@ ssaBranch = \case
   Jumpi v th el -> Jumpi <$> ssaNm v <*> return th <*> return el
   BReturn vs -> BReturn <$> mapM ssaNm vs
   Jump l -> return $ Jump l
-  BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ssaNm mem <*> ssaNm ptr <*>
-    ssaNm len
+  BEVM_RETURN mem sto tsto ext ptr len ->
+    BEVM_RETURN <$> ssaNm mem <*> ssaNm sto <*> ssaNm tsto <*> ssaNm ext
+    <*> ssaNm ptr <*> ssaNm len
   BSwitch tag numTags tag2lab -> do
     tag' <- ssaNm tag
     return $ BSwitch tag' numTags tag2lab
@@ -444,7 +445,9 @@ ecB = \case
   Jumpi v th el -> Jumpi <$> ecNm v <*> return th <*> return el
   BReturn vs -> BReturn <$> mapM ecNm vs
   Jump l -> return $ Jump l
-  BEVM_RETURN mem ptr len -> BEVM_RETURN <$> ecNm mem <*> ecNm ptr <*> ecNm len
+  BEVM_RETURN mem sto tsto ext ptr len ->
+    BEVM_RETURN <$> ecNm mem <*> ecNm sto <*> ecNm tsto <*> ecNm ext
+    <*> ecNm ptr <*> ecNm len
   BSwitch tag numTags tag2lab -> do
     tag' <- ecNm tag
     return $ BSwitch tag' numTags tag2lab
@@ -721,7 +724,8 @@ pruneDeadOpsSLC2 (slc,v,s,rc) live =
           Jumpi v _ _ -> S.singleton v
           BReturn vs -> S.fromList vs
           Jump _ -> S.empty
-          BEVM_RETURN mem ptr len -> S.fromList [mem,ptr,len]
+          BEVM_RETURN mem sto tsto ext ptr len ->
+            S.fromList [mem,sto,tsto,ext,ptr,len]
           BSwitch tag _ _ -> S.singleton tag
       live' = live `S.union` branchLive
   in (slc{slcOps = pruneDeadOps (slcOps slc) live'},v,s,rc)
@@ -834,7 +838,8 @@ mergeSLCs (slcA,vA,sA,rcA) (slcB,vB,sB,_) =
           Jump l -> Jump l
           Jumpi v th el -> Jumpi (f v) th el
           BReturn vs -> BReturn $ map f vs
-          BEVM_RETURN mem ptr len -> BEVM_RETURN (f mem) (f ptr) (f len)
+          BEVM_RETURN mem sto tsto ext ptr len ->
+            BEVM_RETURN (f mem) (f sto) (f tsto) (f ext) (f ptr) (f len)
           BSwitch tag numTags tag2lab -> BSwitch (f tag) numTags tag2lab
       liveM = slcLive slcA
       vM = M.unionWith (+) vA vB
