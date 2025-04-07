@@ -1,0 +1,7 @@
+module {
+storage s : {c: UInt 232};
+main:()->();
+main _ := do {
+     (s.c) = hex("deadbeef")
+     }
+}

@@ -5,6 +5,35 @@ As I suspected, testStorageWrite's compilation dropped the sstore because RETURN
 0, 1 and 32n-byte writes now work... it just seemed like it wasn't working because I used call instead of
 sendTransaction.
 
+Wat, TestStorageStruct is missing sstores? Byte write works correctly... as expected, its logic is different.
+Ah, I goofed and used store slot <$> e when e >>= store slot is appropriate; the former returns a store
+action rather than performing it.
+Note for future reference when debugging: setcode does not modify storage.
+TestStorageStruct2's behavior is correct: a uint232 should indeed be shifted left by 3 bytes when written to
+0.
+Thank God for debugReturn... the word to be or'd with the old is unexpectedly 0! What could be going on?
+ws is 0xbabad00 as expected; ws' is 0x00!
+TODO: structured return/revert messages that util can interpret.
+spare = 29, off = 3... so rightshift is 0 and leftshift is 256!
+SetB 0x7890 fails... it writes it to << 24! And doesn't modify any other bits...
+Reversing leftshift and rightshift was the wrong approach... instead apply & 255 to leftshift.
+
+main _ := main() has an inefficient compilation...
+push main
+push ret
+swap1
+jump
+That's because I don't split push ret out into a separate op.
+Really call should be a branch with a given label continuation. Splitting the CFG into more SLCs weakens my
+SLC-local opts, but I should extend them to be CFG-global...
+Consider
+if cond then f() else g() end;
+cont
+Since a jump is mandatory if the call isn't inlined, I can avoid falling through.
+I should really only emit a jumpdest when some SLC jumps to this SLC. I can track jumpedTo :: Set L and
+do the check when combining the graph into a single block of asm.
+Note to allow static libraries I need to return a pair of text and data, not a single blob.
+
 Storage pointer assignment: I'll ignore padding for now and just consider (ptr,len)
 TODO deduplicate genStore and assignPtr
 I'm still missing non-anonymous staticData...

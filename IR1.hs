@@ -883,19 +883,28 @@ patternMatch p t ws =
           (ptrt,ptrws) <- seqE ptr
           case ptrt of
             Ptr r struct ->
-              let [ptrw] = ptrws in
-              --Only memory, storage and tstorage can be mutated
-              case r of
-                Memory -> do
-                  --Copied from setStructLocal
+              let [ptrw] = ptrws in do
+                --Copied from setStructLocal
                   ixs <- indicesAndNamesToIndices nmixs struct
                   (fieldT,sz,off,pl,pr) <- fieldsInfo ixs struct
                   szStruct <- numBitsT struct
-
                   ws' <- softCoerce fieldT t ws
-                  genStore szStruct pl sz pr off ptrw ws'
-                _ -> throwE $ GenericError $ "*ptr.field* assignments "
-                  ++ "unsupported for region " ++ show r ++ " atm"
+                  --Only memory, storage and tstorage can be mutated
+                  case r of
+                    Memory ->
+                      genStore szStruct pl sz pr off ptrw ws'
+                    _ | r `elem` [Storage,TStorage] -> do
+                      let len = (sz `roundedUpMod` 8) `div` 8
+                          structLen = (szStruct `roundedUpMod` 8) `div` 8
+                          offbs = off `div` 8
+                      --offbs is byte offset from the right
+                      --We need to add structLen - len - offbs to the pointer
+                      ptrw' <- waddK (structLen - len - offbs) $ return ptrw
+                      (if r == Storage
+                       then assignSto sload sstore
+                       else assignSto tload tstore) len ptrw' ws'
+                    _ -> throwE $ GenericError $ "*ptr.field* assignments "
+                      ++ "unsupported for region " ++ show r ++ " atm"
           {-do
           --Need two faux locals to prevent reevaluation of the ptr expr...
           fauxS <- newAnonVar
@@ -1611,7 +1620,9 @@ assignSto ::
   [Name] ->                   --the value's words
   Seq ()
 assignSto load store len ptr ws = do
+  comment "Slot:"
   slot <- wop2 "shr" (wword 5) (return ptr)
+  comment "Offset:"
   off <- wop2 "and" (wword 31) (return ptr)
   case len of
     0 -> return ()
@@ -1632,46 +1643,163 @@ assignSto load store len ptr ws = do
     --Instead of an lt to detect overlap, we use off as the cond
     --Thankfully there's no need to return any values from the ifte branches...
     _ | (len `mod` 32) == 0 -> do
-      --Simple case: no overlap
-      (_,irElse) <- isolate $ sequence_ [
-        do slot' <- waddK i (return slot)
-           store slot' w
-        | (i,w) <- zip [0..] ws
-        ]
+          --Simple case: no overlap
+          (_,irElse) <- isolate $ sequence_ [
+            do slot' <- waddK i (return slot)
+               store slot' w
+            | (i,w) <- zip [0..] ws
+            ]
+          (_,irThen) <- isolate $ do
+            --We must shift the ws into |ws|+1 words, left-shifting them by
+            --32-off bytes.
+            --That means the first word of the output is right-shifted by off
+            --bytes.
+            --The first word of the shifted result must be or'd with the top off
+            --bytes of sload(slot)
+            --The last word must be or'd with the bottom 32-off bytes of
+            --sload(slot+|ws|)
+            --Note the mask of the first is the complement of the mask of the
+            --last.
+            rightshift <- wop2 "shl" (wword 3) $ return off
+            leftshift <- wop2 "sub" (wword 256) $ return rightshift
+            ws' <- deconstruct32 leftshift rightshift ws
+            --ws' has at least two elements, so this'll work
+            let fst = head ws' --the top partial word
+                middle = tail $ init ws'
+                lst = last ws' --the bottom partial word
+            fstMask <- wop2 "shl" (return leftshift) (wop1 "not" $ wword 0)
+            lstMask <- wop1 "not" (return fstMask)
+            --Update fst
+            old <- wop2 "and" (return fstMask) (load slot)
+            store slot <$> wop2 "or" (return fst) (return old)
+            --Update middle
+            sequence_ [
+              do slot' <- waddK i (return slot)
+                 store slot' w
+              | (i,w) <- zip [1..] middle
+              ]
+            --Update lst
+            slot' <- waddK (length ws) (return slot)
+            old <- wop2 "and" (return lstMask) (load slot')
+            store slot' <$> (wop2 "or" (return lst) $ return old)
+          emit $ IR1.Ifte () off irThen irElse
+    _ -> do
+      --If len mod 32 + off > 32 then the value is stored across |ws|+1
+      --words; otherwise it's stored across |ws| words.
+      --In the former case we can use deconstruct32 to get the shifted value.
+      let spare = len `mod` 32
+          bound = 32 - spare
+      cond <- wop2 "lt" (wword bound) (return off)
+      (_,irElse) <- isolate $ do
+        comment "No spillover in *storagePtr = v:non32"
+        --debugReturn $ wword 0xdeadbeef
+        --the value is stored across |ws| words
+        --TODO check: should leftshift and rightshift be the same as in irThen?
+        rightshift <- wop2 "shl" (wword 3) $
+                      wop2 "and" (wword 31) $
+                      wop2 "add" (wword spare) $ return off
+        leftshift <- wop2 "and" (wword 255) $
+                     wop2 "sub" (wword 256) (return rightshift)
+        ws' <- deconstructNon32 leftshift rightshift ws
+        --debugReturns $ [wword $ length ws] ++ map return ws ++ [wword 0xbbcc]
+        --  ++ map return ws'
+        --There are two scenarios: either ws' = [w], which is both the first
+        --and last word, or it consists of fst:(8*spare+leftshift bits),
+        --n whole middle words and lst: relevant << leftshift
+        case ws' of
+          [w] -> do
+            comment "Writing single word"
+            mask <- wop1 "not" $
+                    wop2 "shl" (return leftshift) $ wword (2 ^ (8*spare) - 1)
+            new <- (wop2 "or" (wop2 "and" (return mask) (load slot))
+                     (return w))
+            --debugReturns [return new, return mask, return w]
+            store slot new
+            --comment "If there's not a *store before this I'll be confused"
+          fst:rest -> do
+            --debugReturn $ wword 0xbead00bee
+            comment "Writing multiple words"
+            let middle = init rest
+                lst = last rest
+            not0 <- wop1 "not" (wword 0)
+            --8*spare + leftshift bits of fst are relevant
+            fstMask <- wop2 "shl" (wop2 "add" (wword $ 8*spare)
+                                   (return leftshift))
+                       (return not0)
+            --lstMask is unchanged vs other cases
+            lstMask <- wop2 "shr" (return rightshift) (return not0)
+            comment "Writing:"
+            --Modify first word
+            (wop2 "or" (wop2 "and" (return fstMask) (load slot)))
+              (return fst) >>= store slot
+            --Store middle words
+            sequence_ [
+              do slot' <- waddK i (return slot)
+                 store slot' w
+              | (i,w) <- zip [1..] middle
+              ]
+            --Modify last word
+            slot' <- waddK (length ws) (return slot)
+            new <- wop2 "or"
+                   (wop2 "and" (return lstMask) (load slot'))
+                   (return lst)
+            store slot' new
       (_,irThen) <- isolate $ do
-        --We must shift the ws into |ws|+1 words, left-shifting them by
-        --32-off bytes.
-        --That means the first word of the output is right-shifted by off bytes.
-        --The first word of the shifted result must be or'd with the top off
-        --bytes of sload(slot)
-        --The last word must be or'd with the bottom 32-off bytes of
-        --sload(slot+|ws|)
-        --Note the mask of the first is the complement of the mask of the last.
-        rightshift <- wop2 "shl" (wword 3) $ return off
-        leftshift <- wop2 "sub" (wword 32) $ return rightshift
+        comment $ "Spillover in *storagePtr=v:non32"
+        --the value is stored across |ws|+1 words
+        --Consider a 16b value at offset 17; one byte would spill over into
+        --the next word, so the leftshift,rightshift would be 31, 1.
+        --Generally, rightshift is 8*((spare + off) mod 32);
+        --leftshift is 8*(32-that).
+        rightshift <- wop2 "shl" (wword 3) $
+                      wop2 "and" (wword 31) $
+                      wop2 "add" (wword spare) $ return off
+        leftshift <- wop2 "sub" (wword 256) (return rightshift)
         ws' <- deconstruct32 leftshift rightshift ws
-        --ws' has at least two elements, so this'll work
-        let fst = head ws' --the top partial word
-            middle = tail $ init ws'
-            lst = last ws' --the bottom partial word
-        fstMask <- wop2 "shl" (return leftshift) (wop1 "not" $ wword 0)
-        lstMask <- wop1 "not" (return fstMask)
-        --Update fst
+        --Only spare of the bytes of the first word are relevant, but that's
+        --decreased by rightshift
+        not0 <- wop1 "not" $ wword 0
+        fstMask <- wop2 "shl" (wop2 "sub" (wword $ 8*spare)
+                               (return rightshift)) (return not0)
+        --The mask for the last word is unchanged vs len = 32n.
+        --Common subexpression elimination would be nice here...
+        lstMask <- wop2 "shr" (return rightshift) (return not0)
+        let fst = head ws'
+            middle = init $ tail ws'
+            lst = last ws'
+        comment "Writing:"
+        --Modify first word
         old <- wop2 "and" (return fstMask) (load slot)
-        store slot <$> wop2 "or" (return fst) (return old)
-        --Update middle
+        wop2 "or" (return fst) (return old) >>= store slot
+        --Store middle words
         sequence_ [
           do slot' <- waddK i (return slot)
              store slot' w
           | (i,w) <- zip [1..] middle
           ]
-        --Update lst
+        --Modify last word
         slot' <- waddK (length ws) (return slot)
         old <- wop2 "and" (return lstMask) (load slot')
-        store slot' <$> (wop2 "or" (return lst) $ return old)
-      emit $ IR1.Ifte () off irThen irElse
-    _ -> do
-      error "TODO"
+        wop2 "or" (return lst) (return old) >>= store slot'
+      emit $ IR1.Ifte () cond irThen irElse
+
+--EVM code to return a given expr, useful when staring at the output fails
+debugReturns :: [Seq Name] -> Seq ()
+debugReturns es = do
+  comment "A debug return, you probably shouldn't have this in your output"
+  ws <- sequence es
+  sequence_ [
+    do ix <- wword $ i * 32
+       mstore ix w
+    | (i,w) <- zip [0..] ws
+    ]
+  z <- wword 0
+  bytelen <- wword $ 32 * length es
+  emitOp callOutState (Opcode "return") $ callInState ++ [z,bytelen]
+  return ()
+debugReturn :: Seq Name -> Seq ()
+debugReturn e = debugReturns [e]
+      
 --Shifts ws (containing a value that's a whole number of words, so there are
 --no irrelevant bits) left by leftshift, a multiple of 8 <= 248.
 --It takes leftshift and rightshift as arguments to avoid recomputation.
@@ -1692,6 +1820,23 @@ deconstruct32 leftshift rightshift ws@(hd:tl) = do
         outs <- go ws ws'
         return $ out:outs
       go [w] [] = (:[]) <$> wop2 "shl" (return leftshift) (return w)
+--For left-shifting a value where the top word doesn't spill over into a new
+--word.
+--The init of ws is left-shifted and or'd with the tail;
+--the last element is just left-shifted.
+deconstructNon32 :: Name -> Name -> [Name] -> Seq [Name]
+deconstructNon32 leftshift rightshift ws =
+  case ws of
+    [w] -> (:[]) <$> wop2 "shl" (return leftshift) (return w)
+    hd:tl -> do
+      let lefts = init ws
+          lst = last ws --equivalent to last tl...
+      lefts' <- mapM (wop2 "shl" (return leftshift)) $ map return lefts
+      rights <- mapM (wop2 "shr" (return rightshift)) $ map return tl
+      prefix <- zipWithM (wop2 "or") (map return lefts') (map return rights)
+      lst' <- wop2 "shl" (return leftshift) (return lst)
+      return $ prefix ++ [lst']
+      
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
 --Badargs should lead to a Seq exception.

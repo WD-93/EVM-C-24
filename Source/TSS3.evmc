@@ -1,0 +1,10 @@
+module {
+memory ret : Word;
+storage s : {a: Byte, b: Short, c: UInt 232};
+main:()->();
+main _ := do {
+     (s.c) = hex("babad00");
+     ret = hex("eeee");
+     evm_return(0::MPtr Byte,32)
+     }
+}

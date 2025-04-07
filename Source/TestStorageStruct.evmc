@@ -1,0 +1,23 @@
+module {
+memory ret : Word;
+storage s : {a: Byte, b: Short, c: UInt 232};
+data Method r = {
+     SetA Byte;
+     SetB Short;
+     SetC (UInt 232);
+     GetStruct ()
+};
+main:()->();
+main _ := do {
+     p = 0 :: Method Calldata;
+     case p of {
+     	  SetA pB => ((s.a) = (*pB));
+	  SetB pS => ((s.b) = (*pS));
+	  SetC pU => ((s.c) = (*pU));
+	  GetStruct _ => do {
+	  	    ret = (s :: Word);
+		    evm_return(0::MPtr Byte,32)
+		    }
+     }
+}
+}
