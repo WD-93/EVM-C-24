@@ -191,6 +191,7 @@ seqModule mod = do
   let mod = mod'
   let fdefs = M.toList $ defuns mod
   checkDatatypesValidity $ datatypes mod
+  kindCheckMod mod
   globalMap <- handleGlobals $ globals mod
   --We substitute the globals and the special constant names
   --memOffset, stoOffset and tstoOffset prior to Seq to simplify seqE
@@ -198,6 +199,14 @@ seqModule mod = do
   --parameterized datatypes.
   fdefs' <- substGlobalsInDefs globalMap fdefs
   let fdefs = fdefs'
+  --We now require main exists (so executable mode is mandatory...)
+  --and that it has type ()->().
+  case lookup "main" fdefs of
+    Nothing -> Left $ GenericError "Missing main in seqModule"
+    Just (Defun _ t _ _) ->
+      if t == (Struct[] :-> Struct[])
+      then return ()
+      else Left $ GenericError $ "Ill-typed main in seqModule: " ++ show t
   (sd,irdefs) <- handleDefuns mod fdefs
   return $ IRM {irDefuns = M.fromList irdefs,
                 staticData = sd
@@ -235,6 +244,206 @@ seqModule mod = do
                                   rest
                      return $ (sd',(fnm,(arity,irs)) : res)
 
+--Checks there are no kind errors in defuns, globals, datatypes or
+--coercions.
+--Ignores staticData for now (there is no standalone staticData)
+--If kind errors are produced in handleGlobals or strings, this doesn't catch
+--them.
+kindCheckMod :: Module -> Either SeqError ()
+kindCheckMod mod = do
+  let userDTs = kindUserDTs $ datatypes mod
+  kindCheckDefuns userDTs $ defuns mod
+  kindCheckGlobals userDTs $ globals mod
+  kindCheckDatatypes userDTs $ datatypes mod
+
+--For each f : t; f pat := ss, checks t :: * and that pat and s are
+--well-kinded.
+--Pats may contain *(expr), so they must be kind-checked as well...
+kindCheckDefuns :: Map Name T -> Map Name D -> Either SeqError ()
+kindCheckDefuns udts dm = do
+  let ds = M.toList dm
+  mapM_ (\(fnm,Defun _ t p ss) -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then Left $ GenericError $ unwords [
+              "Kind error: the type signature of function",fnm,
+              "is of non-value kind",show k
+              ]
+              else return ()
+            kcPat udts p
+            mapM_ (kcS udts) ss) ds
+--Note we only need to look for ill-kinded types, the rest will be caught
+--as a type error later.
+kcPat :: Map Name T -> Pat -> Either SeqError ()
+kcPat udts = go
+  where go = \case
+          PStruct mnmps -> mapM_ (go . snd) mnmps
+          PTup ps -> mapM_ go ps
+          PDot p _ -> go p
+          PHash p _ -> go p
+          Deref e -> kcE udts e
+          _ -> return ()
+kcS :: Map Name T -> S -> Either SeqError ()
+kcS udts = go
+  where go = \case
+          p := e -> rp p >> re e
+          DTs.Return e -> re e
+          DTs.Ifte e th el -> re e >> mapM_ go th >> mapM_ go el
+          DTs.While e bl -> re e >> mapM_ go bl
+          Case e nmpatss -> re e >>
+            mapM_ (\(_nm,pat,s) -> rp pat >> go s) nmpatss
+          Block bl -> mapM_ go bl
+        rp = kcPat udts
+        re = kcE udts
+--Note there is no expression which has a kind type, so we don't need to look
+--at expr types. That's fortunate - there's no standalone means of doing so
+--yet.
+kcE :: Map Name T -> E -> Either SeqError ()
+kcE udts = go
+  where go = \case
+          f :$ x -> go f >> go x
+          --Here we catch duplicate fields in struct expressions
+          EStruct fields -> do
+            let nms = do
+                  (_,mnm,_) <- fields
+                  case mnm of
+                    Nothing -> []
+                    Just nm -> [nm]
+            if length nms > length (S.toList $ S.fromList nms)
+              then err [
+              "Kind error: struct expression ",show (EStruct fields),
+              "has duplicate fields and thus an invalid type"
+              ]
+              else return ()
+            mapM_ (\(_,_,e) -> go e) fields
+          e :. _ -> go e
+          e :# _ -> go e
+          Coerce t e -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then err ["Attempted coercion to non-value kind",show k,
+                        "in",show (Coerce t e)]
+              else return ()
+            go e
+          Con con arg allocPtr -> go arg >> kcPat udts allocPtr
+          _ -> return ()
+        err = Left . GenericError . unwords
+--Checks that for each region x : t, t :: *
+--Region does not need to be checked since the syntax restricts it to
+--memory, storage, tstorage
+kindCheckGlobals :: Map Name T -> [(Name,T,T,Maybe Int)] -> Either SeqError ()
+kindCheckGlobals udts globs =
+  mapM_ (\(nm,_r,t,_mlen) -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then Left $ GenericError $ "Kind error: global " ++ nm ++
+                   " is of non-value type " ++ show k
+              else return ()) globs
+--For each data Con params r = {Con t; ...},
+--assumes params :: * and r :: Region, then checks each t :: *
+kindCheckDatatypes :: Map Name T -> Map Name ([Name],[(Name,T)]) ->
+  Either SeqError ()
+kindCheckDatatypes udts dtm = do
+  let dts = M.toList dtm
+  mapM_ (\(tycon,(params,cons)) -> do
+            let tvm = kindDTVars params
+            mapM (\(con,arg) -> do
+                     t <- kindOf udts tvm arg
+                     if t /= Type 0
+                       then Left $ GenericError $ unwords [
+                       "Kind error: the argument to constructor",con,
+                       "in datatype",tycon,"is of non-value kind",show t
+                       ]
+                       else return ()) cons
+        ) dts
+--Get the kind map for user-defined datatypes from the datatype defs
+kindUserDTs :: Map Name ([Name],[(Name,T)]) -> Map Name T
+kindUserDTs = M.map (\(nms,_) -> go (length nms))
+  where
+    --Note the list will always be nonempty, so 1 is the base case
+    go 1 = "Region" :-> Type 0
+    go n = Type 0 :-> go (n-1)
+--All but the last are Type 0; the last is Region
+kindDTVars :: [Name] -> Map Name T
+kindDTVars vs = M.fromList $ zip (reverse vs) ("Region":repeat (Type 0))
+--Given a mapping from tycon to monomorphic kind and a type, returns its kind
+--or a SeqError if it's ill-kinded.
+--Uses a stack of universes.
+{-
+(->) :: Type n -> Type m -> Type (max n m)
+Type :: (n : Nat) -> Type (n+1)
+Region, Signedness, Nat :: Type 1 --kind
+Signed, Unsigned :: Signedness
+Memory, Storage, TStorage, Calldata, Returndata, Code :: Region
+Int :: Signedness -> Nat -> Type 0
+Ptr :: Region -> Type 0 -> Type 0
+{...} :: Type 0, all fields must be Type 0
+User-provided datatype (arity n): (n-1 Type 0) -> Region -> Type 0
+Essential property: there is no t s.t. :k t == t
+-}
+kindOf :: (Map Name T) -> (Map Name T) -> T -> Either SeqError T
+kindOf userDTs tyvars = go
+  where go = \case
+          --(->) and Type are kind-polymorphic;
+          --when not fully applied, give them default types * -> * -> *
+          --and * -> Type 1 respectively.
+          a :-> b -> do
+            ka <- go a
+            kb <- go b
+            case (ka,kb) of
+              (Type n, Type m) -> return $ Type $ max n m
+              _ -> err $ "Badarg to -> " ++ show (ka,kb)
+          "->" -> return $ Type 0 :-> (Type 0 :-> Type 0)
+          Type n -> return $ Type (n+1)
+          "Type" -> return $ Type 0 :-> Type 1
+          TyCon c
+            | c `elem` words "Region Signedness Nat" -> return $ Type 1
+            | c `elem` words "Signed Unsigned" -> return "Signedness"
+            | c `elem` words
+              "Memory Storage TStorage Calldata Returndata Code" ->
+              return "Region"
+            | c <- "Int" -> return $ "Signedness" :-> ("Nat" :-> Type 0)
+            | c <- "Ptr" -> return $ "Region" :-> (Type 0 :-> Type 0)
+            | let ->
+              case M.lookup c userDTs of
+                Nothing -> err $ "TyCon " ++ c ++ " not in scope"
+                Just k -> return k
+          TyNat n -> return "Nat"
+          --A struct with duplicate names is a kind error
+          --All fields of a struct must be *
+          Struct fields -> do
+            let nms = do
+                  (_,mnm,_) <- fields
+                  case mnm of
+                    Nothing -> []
+                    Just nm -> [nm]
+            if length nms > length (S.toList $ S.fromList nms)
+              then err $ "duplicate fields in Struct " ++
+                   show fields
+              else return ()
+            sequence_ [
+              do k <- go t
+                 if k /= Type 0
+                   then err $ "field " ++ show i ++ "of struct "
+                        ++ show fields ++ " is not a value type"
+                   else return ()
+              | (i,(_,_,t)) <- zip [1..] fields
+              ]
+            return $ Type 0
+          TyVar nm ->
+            case M.lookup nm tyvars of
+              Nothing -> err $ "TyVar " ++ nm ++ " not in scope"
+              Just k -> return k
+          tf :$$ tx -> do
+            kf <- go tf
+            kx <- go tx
+            case kf of
+              a :-> b
+                | a == kx -> return b
+              _ -> err $ "Bad type application " ++ show (tf,kf,tx,kx)
+        err = Left . GenericError . ("Kind error: " ++)
+            
+          
 --Checks the following conditions:
 --1) Each datatype must have at least one param: the region.
 --2) Datatypes may not have duplicate params.

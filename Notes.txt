@@ -1,6 +1,14 @@
 Fixes before extension: standalone do should scope, kind check, main type check.
 do {s} was converted to s. It's related to ifte and while taking blocks of statements, not single statements
 (a design error).
+Very simple kind system: apply check after tySyn application, give each
+datatype the kind Type* -> Region -> Type. FW: User-provided kind signatures, state ($mem etc) kinds.
+To ensure (3 :: Nat) (an easy mistake to make) is a kind error, we use a stack of universes Type n :: Type n+1.
+Type 0 is the kind of values. Desirable property: :k t is never t.
+Where can kind errors (that wouldn't be caught as type errors) occur?
+Not in global regions, the syntax doesn't allow passing a non-region.
+In global types, function type signatures, constructor argument types, static data, coerce.
+I'll just write another traversal... it doesn't fit in substTySyns.
 
 Unintuitive behavior: 0 < 256 will return false. You need to save 0 to a uint16 var first...
 

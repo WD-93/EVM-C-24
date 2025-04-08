@@ -69,6 +69,7 @@ instance Num T where
   (*) = undefined
   abs = undefined
   signum = undefined
+pattern Type n = TyCon "Type" :$$ TyNat n
 pattern SInt n = Int "Signed" n
 pattern UInt n = Int "Unsigned" n
 pattern Int s n = "Int" :$$ s :$$ TyNat n
