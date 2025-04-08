@@ -402,8 +402,8 @@ kindOf userDTs tyvars = go
             | c `elem` words
               "Memory Storage TStorage Calldata Returndata Code" ->
               return "Region"
-            | c <- "Int" -> return $ "Signedness" :-> ("Nat" :-> Type 0)
-            | c <- "Ptr" -> return $ "Region" :-> (Type 0 :-> Type 0)
+            | c == "Int" -> return $ "Signedness" :-> ("Nat" :-> Type 0)
+            | c == "Ptr" -> return $ "Region" :-> (Type 0 :-> Type 0)
             | let ->
               case M.lookup c userDTs of
                 Nothing -> err $ "TyCon " ++ c ++ " not in scope"
@@ -2223,14 +2223,25 @@ simplePFs = M.fromList [
               let [n] = nws
               bytesz <- numBytesT a
               tot <- runEDSLW $ mulK bytesz (EVar n)
+              let f op = emitOp [("$mem",Mem)] (Opcode op)
+                         ["$mem",pto,pfrom,tot]
               case r of
-                Memory ->
-                  emitOp [("$mem",Mem)] (Opcode "mcopy")
-                    ["$mem",pto,pfrom,tot]
-                Code -> emitOp [("$mem",Mem)] (Opcode "codecopy")
-                  [pto,pfrom,tot]
+                Memory -> f "mcopy"
+                Code -> f "codecopy"
+                Calldata -> f "calldatacopy"
+                --Since returndata is mutable, I should also add a $rd
+                --state variable... $ext is not sufficient since
+                --staticcall shouldn't mutate it.
                 _ -> error $ "Compiler error: todo in copy " ++ show r
-              return (Struct [], []))
+              return (Struct [], [])),
+    --(MPtr a, Int{}) -> Word
+    ("sha3",\t ws ->
+        case t of
+          Pair (Ptr Memory a) (Int{}) -> do
+            let [ptr,len] = ws
+            h <- newAnonVar
+            emitOp [(h,tword)] (Opcode "sha3") ["$mem",ptr,len]
+            return (UInt 256, [h]))
   ]
 
 --The primfun is for error reporting since this is also used in !=

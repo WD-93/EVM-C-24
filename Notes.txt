@@ -1,3 +1,23 @@
+OK, testing simple Merkle store contract...
+First setStorageAt to sha3(0:32B,0:32B),
+then pass {0:20B,1:20B,1:8b,
+ {1:8b, --meaning we update the right child
+  0:20B
+ }}
+That should result in the storage[0] being updated to sha3(0:32B,1:32B).
+Woot, it works!
+
+sha3 unexpectedly returned sha3(0::Word,0::Word) when called with a nonzero argument... it's presumably
+because I didn't include $mem as an input and so it got reordered before the stores. Yes, the output shows
+that happened.
+OK, sha3 works now... sha3 is at ethers.keccak256 in my version of hardhat.
+
+Ah, an issue: if I make pointers min-31, I'll need to deduct 31 in copy... at least from mptrs and
+calldataptrs.
+
+staticData nm t [e1,e2,...]
+To store heterogenous data, use a struct expression.
+
 Fixes before extension: standalone do should scope, kind check, main type check.
 do {s} was converted to s. It's related to ifte and while taking blocks of statements, not single statements
 (a design error).

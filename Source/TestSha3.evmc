@@ -1,0 +1,13 @@
+module {
+memory x : Word;
+memory y : Word;
+main:()->();
+main _ := do {
+     pc = 0 :: Ptr Calldata Word;
+     x = (pc[0]);
+     y = (pc[1]);
+     pm = 0 :: MPtr Byte;
+     x = sha3(pm,64);
+     evm_return(pm,32)
+}
+}

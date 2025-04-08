@@ -1,54 +1,46 @@
 --A very simple Merkle store: supports put on a path
-{-
-Helpers:
-(success,h') = updateLeft(h,right,old,new)
-ditto for right
-
-Algo:
-parse Left right | Right left | Update (old,new) off the calldata
-Fuse the hash computation of the proof root and the new one; if the proof root
-matches the old one, update it to the new one.
--}
 module {
-storage root : Word;
+type H = UInt 160;
+storage root : Word; --actually a H
 memory left : Word;
 memory right : Word;
-data Instr r = {
-     Left Word;
-     Right Word;
-     End ()
-};
+type Instr = {right:Byte,sibling:H};
+{-
+Behavior:
+Given {old:H,new:H,len:Byte,path:Instr[len]},
+tests if old hashed with path == root.
+If so it updates 
+-}
 main:()->();
 main _ := do {
- old = *(0 :: Ptr Calldata Word);
- new = *(32 :: Ptr Calldata Word);
- p = 64 :: Ptr Calldata Byte;
- while (1)
-  case p :: Instr Calldata of {
-       Left pright => do {
-        left = old;
-	right = (*pright);
-	old = sha3(0::MPtr Byte, 64);
-	left = new;
-	new = sha3(0::MPtr Byte, 64);
-	p = (p + 33)
-       };
-       Right pleft => do {
-        left = old;
-	right = (*pright);
-	old = sha3(0::MPtr Byte, 64);
-	left = new;
-	new = sha3(0::MPtr Byte, 64);
-	p = (p + 33)
-       };
-       End _ => do {
-        if root == old
-	then root = new
-	else do {}
-	end;
-	left = root;
-	evm_return(0::MPtr Byte,32)
-       }
-  }
+ old = *(0 :: Ptr Calldata H);
+ new = *(20 :: Ptr Calldata H);
+ len = *(40 :: Ptr Calldata Byte);
+ if hashWithPath(len,old) == root
+ then root = hashWithPath(len,new)
+ else evm_return(0::MPtr (),0) --todo add revert...
+ end;
+ left = root; --redundant sload
+ evm_return(0::MPtr(),32)
+ };
+hash:(Word,Word)->Word;
+hash(a,b):= do {
+ left = a;
+ right = b;
+ return sha3(0 :: MPtr (), 64)
+};
+hashWithPath:(Byte,Word) -> Word;
+hashWithPath(len,h) := do {
+ p = 41 :: Ptr Calldata Instr;
+ bound = p + len;
+ while (p < bound) do {
+  instr = (*p);
+  if instr.right --the sibling is the left hash
+  then h = hash(instr.sibling,h)
+  else h = hash(h,instr.sibling)
+  end;
+  p = p + 1
+ };
+ return h
 }
 }
