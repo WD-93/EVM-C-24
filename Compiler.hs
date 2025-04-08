@@ -555,7 +555,7 @@ desugarP = do
     P.PrefixOp (Infix "*") e -> Deref <$> desugarE e
     e -> throwE $ BadEInPat e
 
---DTs.S currently has no concept of standalone do blocks...
+--DTs.S now has a concept of standalone do blocks...
 desugarBlock :: P.S -> De [S]
 desugarBlock =
   \case P.Do ss -> mapM desugarS ss
@@ -567,8 +567,6 @@ desugarS = \case
   P.If e th el -> Ifte <$> desugarE e <*> desugarBlock th <*> desugarBlock el
   P.While e body -> While <$> desugarE e <*> desugarBlock body
   P.Return e -> Return <$> desugarE e
-  P.Do [s] -> desugarS s
-  --TODO allow standalone do blocks and do expressions
   P.Do ss -> Block <$> desugarBlock (P.Do ss)
     --throwE $ BadDoInDesugarS ss
   P.Case pe pcases -> do

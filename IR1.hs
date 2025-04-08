@@ -1092,7 +1092,6 @@ seqS = \case
     let [tag] = tagws
     emit $ Switch () tag numTags tag2IR
   Block ss -> do
-    --This may not have the desired scope isolation properties...
     ir <- seqBlock ss
     mapM_ emit ir
 --The tycon tag is for error reporting

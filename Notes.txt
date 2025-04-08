@@ -1,3 +1,14 @@
+Fixes before extension: standalone do should scope, kind check, main type check.
+do {s} was converted to s. It's related to ifte and while taking blocks of statements, not single statements
+(a design error).
+
+Unintuitive behavior: 0 < 256 will return false. You need to save 0 to a uint16 var first...
+
+OK, *storagePtr.field* = e now works... what next?
+I don't strictly need staticData for an interpreter if I'm using case instead... do need it for create, though.
+Try implementing Merkle storage and see what I'm missing. sha3, obviously...
+&global would be very convenient...
+
 That bug in Stack due to adding $sto was hard to find... maybe need a more principled approach to ensuring
 virtual vars aren't considered to be on the stack, there are several places where $mem was filtered...
 Note RETURN should include $sto, but revert and invalid should not.

@@ -1,0 +1,54 @@
+--A very simple Merkle store: supports put on a path
+{-
+Helpers:
+(success,h') = updateLeft(h,right,old,new)
+ditto for right
+
+Algo:
+parse Left right | Right left | Update (old,new) off the calldata
+Fuse the hash computation of the proof root and the new one; if the proof root
+matches the old one, update it to the new one.
+-}
+module {
+storage root : Word;
+memory left : Word;
+memory right : Word;
+data Instr r = {
+     Left Word;
+     Right Word;
+     End ()
+};
+main:()->();
+main _ := do {
+ old = *(0 :: Ptr Calldata Word);
+ new = *(32 :: Ptr Calldata Word);
+ p = 64 :: Ptr Calldata Byte;
+ while (1)
+  case p :: Instr Calldata of {
+       Left pright => do {
+        left = old;
+	right = (*pright);
+	old = sha3(0::MPtr Byte, 64);
+	left = new;
+	new = sha3(0::MPtr Byte, 64);
+	p = (p + 33)
+       };
+       Right pleft => do {
+        left = old;
+	right = (*pright);
+	old = sha3(0::MPtr Byte, 64);
+	left = new;
+	new = sha3(0::MPtr Byte, 64);
+	p = (p + 33)
+       };
+       End _ => do {
+        if root == old
+	then root = new
+	else do {}
+	end;
+	left = root;
+	evm_return(0::MPtr Byte,32)
+       }
+  }
+}
+}
