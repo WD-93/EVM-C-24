@@ -1419,6 +1419,9 @@ seqE = \case
       IsFunction t -> do
         v <- pushK t (LabelConst nm)
         return (t,[v])
+      IsPrimFun ->
+        throwE $ GenericError $ "Primfun " ++ nm ++
+        " may not occur as a standalone expression (may change later)"
       IsLocal t -> do
         --The number of words is determined by t... but it won't be a pure fun
         --once user-defined types are supported.
@@ -1444,7 +1447,37 @@ seqE = \case
   --Note you can't always eval the arg first; consider a && b.
   --Primfun names may neither be assigned nor defined to, so I don't need to
   --worry about shadowing.
-    
+
+  --The short-circuited primfuns:
+  --Because it short-circuits I can't recursively seqE; I must require
+  --the argument is syntactically a pair.
+  --Because &&() is a syntax error I should really catch it in desugar...
+  --But I'll do it here for now.
+  --Type: a -> b -> Byte, a && b returns 1 if both are truthy and 0 otherwise.
+  Var "&&" :$ pair ->
+    case pair of
+      EStruct [((Word,Word),Nothing,a),
+               ((Word,Word),Nothing,b)] -> do
+        comment "&& start"
+        --I'll use the faux C var trick again
+        ret <- newAnonVar
+        seqS $ PVar ret := EInteger 0 --Needed to declare ret
+        seqS $ DTs.Ifte a [PVar ret := (Var "truthy" :$ b)] []
+        return (UInt 8, [ret ++ "#1"])
+      _ -> throwE $ GenericError $
+           "Syntax error: the argument to && must be a syntactic tuple (a,b)"
+  --TODO deduplicate...
+  Var "||" :$ pair ->
+    case pair of
+      EStruct [((Word,Word),Nothing,a),
+               ((Word,Word),Nothing,b)] -> do
+        comment "|| start"
+        ret <- newAnonVar
+        seqS $ PVar ret := EInteger 1
+        seqS $ DTs.Ifte a [] [PVar ret := (Var "truthy" :$ b)]
+        return (UInt 8, [ret ++ "#1"])
+      _ -> throwE $ GenericError $
+           "Syntax error: the argument to || must be a syntactic tuple (a,b)"
   --Simple primfuns, no short-circuiting:
   Var pf :$ x
     | Just scheme <- M.lookup pf simplePFs -> do
@@ -2196,6 +2229,10 @@ simplePFs = M.fromList [
   --Unintuitive behavior: a ! b desugars to !(a,b)
   ("!",\_ ws -> do
       bool <- wop1 "iszero" $ wreduce "or" ws
+      return (UInt 8, [bool])),
+  --The inverse of !_, truthy
+  ("truthy",\_ ws -> do
+      bool <- wop1 "iszero" $ wop1 "iszero" $ wreduce "or" ws
       return (UInt 8, [bool])),
   --Pointer derefence
   ("deref",derefPtr),
@@ -3791,7 +3828,7 @@ data NameInfo = IsFunction T
               | IsTySyn --ditto
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
-primFunSet = M.keysSet simplePFs
+primFunSet = M.keysSet simplePFs `S.union` S.fromList ["&&","||"]
 
 --Given a constructor name, returns its (tag,argT,tycon,fst param,rest)
 --Fails if there's no such constructor

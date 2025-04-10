@@ -1,8 +1,10 @@
 Interpretation:
 dispatch(S) :=
 case S.pc :: Instr Memory of
- I1 p1 => do {<instr body>; return dispatch(S) or exit}
+ I1 p1 => do {<instr body>; S.pc += k; return dispatch(S) or exit}
 Alt: use a while(1) loop, add break to syntax (it's already in the AST)
+
+TODO remove unnecessary dups from jumpi's asm compilation...
 
 What do I need to generate efficient code?
 Tail calls: return (f . g . h) x => TailCall (callInState ++ h:xwords ++ [g,f])
@@ -14,6 +16,32 @@ Note: I don't need a new branch type for tail calls, just place h first!
 Constant expansion of branch conds, jumpi => jump.
 Free mload of datatype arguments with tag load.
 op modifies $var instead of $var = op($var) in every instr that interacts with $var.
+Inlining the straight-line dispatch component: turn calls into a return branch(?), collect SLCs into a global
+graph (in CFG stage?).
+Returns with a constant first stack argument can be converted to a jump (layout is already fixed). But note
+the caller's target layout includes arguments! Need jump with var renaming and arguments for static calls, or
+a StaticCall branch.
+From there you can merge SLCs as before. Identical switches should have a shared JT.
+If an SLC has a fixed layout but doesn't use a suffix of its vars (e.g. because it doesn't return so it
+ignores $ret), you only need to pass the prefix.
+When you call, you pass a $ret address... but if the previous rule means you don't need to, then your
+f.return#n label should be pruned. Include SLCs which are 1) referenced by a branch, *or* 2) referenced in an
+SLC body!
+Break out $anon = f.return#n into a separate op, add label: to IR. Then I need to move the return label alloc
+there... good, it'll be cleaner that way - I'll have a single return counter per function.
+isolate (used for blocks) needs to preserve that counter.
+What happens in
+while(cond) do {
+ ...;
+ g()
+}
+? The f.return label should be empty... when you eliminate an SLC, replace any mention of its label with the
+new one? Consider
+if cond then ...;f() else ...;f() end; cont
+Both calls return to cont, but the two if-branches may have different layouts... f() can't handle that, so
+the empty return SLCs may become stack shuffling and thus can't be eliminated.
+More complex layout constraints: a return address has layout returnVal++L.
+Defer all but the simplest opts... the PoC is more important.
 
 Looking at code output:
 * Return (1+2+3) isn't masking! return (1 + (2 + 256)) is... but only at the final
