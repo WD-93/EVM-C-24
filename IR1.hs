@@ -2766,7 +2766,7 @@ pfMathOp opcode int1@(Int{}) int2@(Int{}) (w1,w2) = do
   w <- if len < 256
        then fst <$> (runEDSL $ mask (fromInteger len) $ EVar v)
        else return v
-  return (tres,[v])
+  return (tres,[w])
 
 truthyE :: E -> Seq Name
 truthyE e = do

@@ -1,3 +1,41 @@
+Interpretation:
+dispatch(S) :=
+case S.pc :: Instr Memory of
+ I1 p1 => do {<instr body>; return dispatch(S) or exit}
+Alt: use a while(1) loop, add break to syntax (it's already in the AST)
+
+What do I need to generate efficient code?
+Tail calls: return (f . g . h) x => TailCall (callInState ++ h:xwords ++ [g,f])
+Problem: I mix primfuns and user function application in the syntax... ideally I'd have a separate pass which
+distinguished them.
+FW: (fs ... (+k) ... hs) x --could still be efficient to compile to a nested call, by converting (+k) to a
+function. I'd need opt search rather than deterministic compilation.
+Note: I don't need a new branch type for tail calls, just place h first!
+Constant expansion of branch conds, jumpi => jump.
+Free mload of datatype arguments with tag load.
+op modifies $var instead of $var = op($var) in every instr that interacts with $var.
+
+Looking at code output:
+* Return (1+2+3) isn't masking! return (1 + (2 + 256)) is... but only at the final
+coerce. WAT, IR1 is generating the and but it's eaten between CFG and CFG2!
+IC, pruning isn't the problem... + is returning the intermediate result, not the masked one. The problem was
+in pfMathOp; fixed.
+* (1,2,3) does a lot of swapping... it was coincidence return (1,2) was optimal.
+32 >> 5 emits the pushes in the right order... the problem must be DFS-R2L.
+* Why does >> mask? TODO fix.
+
+TODO opt flags so I can see the compiler's "intention"
+
+Need sload, sstore to avoid costly ifte and shifting of byte abstraction.
+TODO fix: allow k + ptr...
+Next: tail calls, nested call optimization. The former is essential for interpreter performance and to
+avoid blowing up the stack.
+SLC-level constant expansion would be trivial.
+
+Inter-function optimization: every jump is a tail call... though the layout is flexible for intra-function
+jumps. Identical or equivalent (modulo known constraints) SLCs could be shared; that's probably useful for the
+last word shuffling before a return. If a SLC would need to jump, might as well replace it with a call...
+
 OK, testing simple Merkle store contract...
 First setStorageAt to sha3(0:32B,0:32B),
 then pass {0:20B,1:20B,1:8b,
@@ -6,6 +44,8 @@ then pass {0:20B,1:20B,1:8b,
  }}
 That should result in the storage[0] being updated to sha3(0:32B,1:32B).
 Woot, it works!
+
+Next: contract blobs so I can actually run constructor code and initialize storage.
 
 sha3 unexpectedly returned sha3(0::Word,0::Word) when called with a nonzero argument... it's presumably
 because I didn't include $mem as an input and so it got reordered before the stores. Yes, the output shows
