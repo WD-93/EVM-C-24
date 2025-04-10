@@ -2134,7 +2134,7 @@ simplePFs = M.fromList [
   (">>",\t ws ->
       case (t,ws) of
         (Pair t1@(Int _ len) t2@(Int{}), [w1,w2]) -> do
-          res <- wmask (fromInteger len) $ wop2 "shr" (return w1) (return w2)
+          res <- wop2 "shr" (return w1) (return w2)
           return (t1,[res])
         _ -> throwE $ BadArgPrimFun ">>" t),
   --Binary bitwise ops

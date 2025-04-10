@@ -21,10 +21,12 @@ coerce. WAT, IR1 is generating the and but it's eaten between CFG and CFG2!
 IC, pruning isn't the problem... + is returning the intermediate result, not the masked one. The problem was
 in pfMathOp; fixed.
 * (1,2,3) does a lot of swapping... it was coincidence return (1,2) was optimal.
-32 >> 5 emits the pushes in the right order... the problem must be DFS-R2L.
+32 >> 5 emits the pushes in the right order... the problem must be DFS-R2L. Indeed, if(1,2,3) produces
+3 2 1 or or.
 * Why does >> mask? TODO fix.
 
-TODO opt flags so I can see the compiler's "intention"
+TODO opt flags so I can see the compiler's "intention". Otherwise constant expansion, tree shaking etc will
+make output harder to analyze.
 
 Need sload, sstore to avoid costly ifte and shifting of byte abstraction.
 TODO fix: allow k + ptr...
