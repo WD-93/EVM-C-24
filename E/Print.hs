@@ -103,6 +103,7 @@ instance Print D where
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion id e_ -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 e_])
     Data conlhs datacons -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), doc (showString "{"), prt 0 datacons, doc (showString "}")])
+    Enum uident enumcons -> prPrec i 0 (concatD [doc (showString "enum"), prt 0 uident, doc (showString "{"), prt 0 enumcons, doc (showString "}")])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -133,6 +134,12 @@ instance Print DataCon where
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
+instance Print EnumCon where
+  prt i e = case e of
+    EC id -> prPrec i 0 (concatD [prt 0 id])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print S where
   prt i e = case e of
     SE e_ -> prPrec i 0 (concatD [prt 0 e_])

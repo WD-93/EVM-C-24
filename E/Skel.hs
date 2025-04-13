@@ -29,6 +29,7 @@ transD x = case x of
   Import modulename -> failure x
   Global globalregion ident e -> failure x
   Data conlhs datacons -> failure x
+  Enum uident enumcons -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -49,6 +50,9 @@ transConLHS x = case x of
 transDataCon :: DataCon -> Result
 transDataCon x = case x of
   DC uident e -> failure x
+transEnumCon :: EnumCon -> Result
+transEnumCon x = case x of
+  EC ident -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x

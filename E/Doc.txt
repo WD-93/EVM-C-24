@@ -42,16 +42,16 @@ The set of reserved words is the set of terminals appearing in the grammar. Thos
 The reserved words used in E are the following:
   | ``align`` | ``bit`` | ``byte`` | ``case``
   | ``data`` | ``do`` | ``else`` | ``end``
-  | ``if`` | ``import`` | ``memory`` | ``module``
-  | ``of`` | ``pad`` | ``return`` | ``storage``
-  | ``then`` | ``tstorage`` | ``type`` | ``while``
-  | ``word`` |  |  | 
+  | ``enum`` | ``if`` | ``import`` | ``memory``
+  | ``module`` | ``of`` | ``pad`` | ``return``
+  | ``storage`` | ``then`` | ``tstorage`` | ``type``
+  | ``while`` | ``word`` |  | 
 
 The symbols used in E are the following:
   | { | } | ; | :=
-  | : | = | . | (
-  | ) | => | [ | ]
-  | # | , | _ | 
+  | : | = | . | ,
+  | ( | ) | => | [
+  | ] | # | _ | 
 
 ===Comments===
 Single-line comments begin with --.Multiple-line comments are  enclosed with {- and -}.
@@ -72,6 +72,7 @@ All other symbols are terminals.
   |  |  **|**  | ``import`` //ModuleName// 
   |  |  **|**  | //GlobalRegion// //Ident// ``:`` //E// 
   |  |  **|**  | ``data`` //ConLHS// ``=`` ``{`` //[DataCon]// ``}`` 
+  |  |  **|**  | ``enum`` //UIdent// ``{`` //[EnumCon]// ``}`` 
   | //ConArgs// | -> | //UIdent// 
   |  |  **|**  | //ConArgs// //Ident// 
   | //ModuleName// | -> | //UIdent// 
@@ -85,6 +86,10 @@ All other symbols are terminals.
   | //ConLHS// | -> | //UIdent// //Ident// 
   |  |  **|**  | //ConLHS// //Ident// 
   | //DataCon// | -> | //UIdent// //E3// 
+  | //[EnumCon]// | -> | **eps**
+  |  |  **|**  | //EnumCon// 
+  |  |  **|**  | //EnumCon// ``,`` //[EnumCon]// 
+  | //EnumCon// | -> | //Ident// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 

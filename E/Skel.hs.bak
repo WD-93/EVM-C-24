@@ -44,12 +44,11 @@ transGlobalRegion x = case x of
   TStorage -> failure x
 transConLHS :: ConLHS -> Result
 transConLHS x = case x of
-  CLNil uident -> failure x
+  CLNil uident ident -> failure x
   CLCons conlhs ident -> failure x
 transDataCon :: DataCon -> Result
 transDataCon x = case x of
-  DC0 uident -> failure x
-  DC1 uident e -> failure x
+  DC uident e -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x

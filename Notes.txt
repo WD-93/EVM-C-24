@@ -1,3 +1,11 @@
+Missing feature: enums. Each data decl could implicitly declare an 8b enum type: tag_Con.
+Simplest: only support 8b enums. Use lowercase names.
+Extension: optional constant values rather than 0..n-1.
+Making them 16b would let me avoid looking at anything but type structure to get sizeof, since datatypes are
+already always 16b on the stack. Enums with function values would let me restrict an API to a limited set of
+functions.
+newtype would require fixing pure sizeof.
+
 Interpretation:
 dispatch(S) :=
 case S.pc :: Instr Memory of
@@ -43,6 +51,16 @@ the empty return SLCs may become stack shuffling and thus can't be eliminated.
 More complex layout constraints: a return address has layout returnVal++L.
 Defer all but the simplest opts... the PoC is more important.
 
+Opt idea: deferred assignment.
+In a && b:
+{r = 0
+ if a
+ then r = truthy(b)
+ else do {};
+ r
+}, r needn't actually be on the stack before the if because its value is statically known in each branch.
+That eliminates the need to pop it in the true branch. I'll apply that manually for now.
+
 Looking at code output:
 * Return (1+2+3) isn't masking! return (1 + (2 + 256)) is... but only at the final
 coerce. WAT, IR1 is generating the and but it's eaten between CFG and CFG2!
@@ -51,6 +69,8 @@ in pfMathOp; fixed.
 * (1,2,3) does a lot of swapping... it was coincidence return (1,2) was optimal.
 32 >> 5 emits the pushes in the right order... the problem must be DFS-R2L. Indeed, if(1,2,3) produces
 3 2 1 or or.
+DFS-R2L isn't buggy, it's just not powerful enough... in some SLCs (returns, jumps to SLCs with multiple
+sources) I know the target layout, but I don't use that information.
 * Why does >> mask? TODO fix.
 
 TODO opt flags so I can see the compiler's "intention". Otherwise constant expansion, tree shaking etc will

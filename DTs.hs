@@ -220,7 +220,9 @@ data Module = Module {
                             T,      --lhs type pattern
                             Name,   --tycon
                             Name,   --first param
-                            [Name]) --remaining params
+                            [Name]),--remaining params
+  enums :: Map Name [Name],
+  enumValues :: Map Name (Name,Int)
   }
   deriving (Eq,Ord,Read,Show)
 

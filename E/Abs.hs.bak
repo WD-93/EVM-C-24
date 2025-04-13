@@ -31,10 +31,10 @@ data ModuleName = MNil UIdent | MCons UIdent ModuleName
 data GlobalRegion = Memory | Storage | TStorage
   deriving (Eq, Ord, Show, Read)
 
-data ConLHS = CLNil UIdent | CLCons ConLHS Ident
+data ConLHS = CLNil UIdent Ident | CLCons ConLHS Ident
   deriving (Eq, Ord, Show, Read)
 
-data DataCon = DC0 UIdent | DC1 UIdent E
+data DataCon = DC UIdent E
   deriving (Eq, Ord, Show, Read)
 
 data S

@@ -251,7 +251,8 @@ seqModule mod = do
 --them.
 kindCheckMod :: Module -> Either SeqError ()
 kindCheckMod mod = do
-  let userDTs = kindUserDTs $ datatypes mod
+  let userDTs = M.union (M.fromSet (const $ Type 0) $ M.keysSet $ enums mod) $
+                kindUserDTs $ datatypes mod
   kindCheckDefuns userDTs $ defuns mod
   kindCheckGlobals userDTs $ globals mod
   kindCheckDatatypes userDTs $ datatypes mod
@@ -1435,6 +1436,9 @@ seqE = \case
                        | i <- [1..n]]
         return (t,ws)
       IsUnbound -> throwE $ UnboundVar nm
+      IsEnumName (tycon,n) -> do
+        w <- wword n
+        return (TyCon tycon,[w])
       _ -> error $ "Compiler error: unexpected ni in seqE (Var) " ++ show(ni,nm)
   --Two cases: f is a primfun or an ordinary expr.
   --For now, primfuns can only be fully applied, making them akin to syntactic
@@ -1461,8 +1465,9 @@ seqE = \case
         comment "&& start"
         --I'll use the faux C var trick again
         ret <- newAnonVar
-        seqS $ PVar ret := EInteger 0 --Needed to declare ret
-        seqS $ DTs.Ifte a [PVar ret := (Var "truthy" :$ b)] []
+        seqS $ PVar ret := EInteger 0 --Needed to declare ret; will be pruned
+        seqS $ DTs.Ifte a [PVar ret := (Var "truthy" :$ b)]
+          [PVar ret := EInteger 0]
         return (UInt 8, [ret ++ "#1"])
       _ -> throwE $ GenericError $
            "Syntax error: the argument to && must be a syntactic tuple (a,b)"
@@ -1473,8 +1478,9 @@ seqE = \case
                ((Word,Word),Nothing,b)] -> do
         comment "|| start"
         ret <- newAnonVar
-        seqS $ PVar ret := EInteger 1
-        seqS $ DTs.Ifte a [] [PVar ret := (Var "truthy" :$ b)]
+        seqS $ PVar ret := EInteger 0 --will be pruned
+        seqS $ DTs.Ifte a [PVar ret := EInteger 1]
+          [PVar ret := (Var "truthy" :$ b)]
         return (UInt 8, [ret ++ "#1"])
       _ -> throwE $ GenericError $
            "Syntax error: the argument to || must be a syntactic tuple (a,b)"
@@ -3826,6 +3832,7 @@ data NameInfo = IsFunction T
               --New name types: TyCon and TySyn
               | IsPrimTyCon --no kind info for now
               | IsTySyn --ditto
+              | IsEnumName (Name,Int)
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
 primFunSet = M.keysSet simplePFs `S.union` S.fromList ["&&","||"]
@@ -3845,13 +3852,16 @@ getCNameInfo nm
   | S.member nm primFunSet = return IsPrimFun
   | let = do
           mod <- askModule
-          case M.lookup nm $ defuns mod of
-            Just (Defun _ t _ _) -> return $ IsFunction t
-            _ -> do
-              lts <- gets cLocalTypes
-              case M.lookup nm lts of
-                Just t -> return $ IsLocal t
-                _ -> return IsUnbound
+          case () of
+            _ | Just (Defun _ t _ _) <- M.lookup nm $ defuns mod ->
+                return $ IsFunction t
+              | Just nmix <- M.lookup nm $ enumValues mod ->
+                return $ IsEnumName nmix
+              | let -> do
+                  lts <- gets cLocalTypes
+                  case M.lookup nm lts of
+                    Just t -> return $ IsLocal t
+                    _ -> return IsUnbound
 
 --TODO deduplicate
 --This'll become dependent on mod once user-defined types are introduced
@@ -3880,6 +3890,8 @@ numBitsT = \case
   --Currently the only other use of :$$ is datatypes, which are just wrapped
   --pointers. That will change once I add Proxy a
   _ :$$ _ -> return 16
+  --Only enums are unapplied tycons for now
+  TyCon _ -> return 16
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 

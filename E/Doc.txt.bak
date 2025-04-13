@@ -82,10 +82,9 @@ All other symbols are terminals.
   | //[DataCon]// | -> | **eps**
   |  |  **|**  | //DataCon// 
   |  |  **|**  | //DataCon// ``;`` //[DataCon]// 
-  | //ConLHS// | -> | //UIdent// 
+  | //ConLHS// | -> | //UIdent// //Ident// 
   |  |  **|**  | //ConLHS// //Ident// 
-  | //DataCon// | -> | //UIdent// 
-  |  |  **|**  | //UIdent// //E3// 
+  | //DataCon// | -> | //UIdent// //E3// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 

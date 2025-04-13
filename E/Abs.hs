@@ -20,6 +20,7 @@ data D
     | Import ModuleName
     | Global GlobalRegion Ident E
     | Data ConLHS [DataCon]
+    | Enum UIdent [EnumCon]
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -35,6 +36,9 @@ data ConLHS = CLNil UIdent Ident | CLCons ConLHS Ident
   deriving (Eq, Ord, Show, Read)
 
 data DataCon = DC UIdent E
+  deriving (Eq, Ord, Show, Read)
+
+data EnumCon = EC Ident
   deriving (Eq, Ord, Show, Read)
 
 data S

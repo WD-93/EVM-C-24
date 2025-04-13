@@ -16,6 +16,7 @@ import qualified Data.Map as M
 import Control.Monad.Trans.Except
 import Control.Monad.State
 import Text.Read (readMaybe)
+import Data.List (sort)
 --Desugaring code written in Compiler... maybe todo move
 --AST -> IR
 import IR1 hiding (Ifte,While,Return)
@@ -310,6 +311,10 @@ data DError = TySigDefunMismatch Name Name
             | StandaloneConstructorName String
             | DuplicateConstructors Name
             | BadPatternInCase P.E
+            | MoreThan65535EnumNamesInOneEnum
+            -- ^A helpful message on the off chance whoever triggers it isn't
+            --fuzzing for vulns
+            | DuplicateEnumName Name Name
   deriving (Eq,Ord,Read,Show)
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -319,7 +324,9 @@ desugar (P.Module ds) =
           static = M.empty,
           globals = [],
           datatypes = M.empty,
-          constructors = M.empty
+          constructors = M.empty,
+          enums = M.empty,
+          enumValues = M.empty
          } of
     (Left derr, _) -> Left derr
     (Right (), m) -> Right m
@@ -380,7 +387,40 @@ desugarDs (P.Data lhs rhs : rest) = do
   s <- get
   put s{datatypes = M.insert tycon (params,conmts) $ datatypes s}
   desugarDs rest
+--Enums are currently 16b by default and have values 0..|ecs|-1.
+--Ways enum can fail:
+--tycon or member collision with existing value;
+--duplicate member names;
+-- >65535 constructors
+desugarDs ((P.Enum (UIdent tycon) ecs):rest) = do
+  let nms = map (\(P.EC (Ident nm)) -> nm) ecs
+  if length nms > 65535
+    then throwE MoreThan65535EnumNamesInOneEnum
+    else return ()
+  case filter ((>1) . snd) $ count nms of
+    (nm,_):_ -> throwE $ DuplicateEnumName tycon nm
+    _ -> return ()
+  checkForDuplicates tycon
+  mapM_ checkForDuplicates nms
+  s <- get
+  put s{enums = M.insert tycon nms $ enums s,
+        enumValues = M.union (M.fromList [(nm,(tycon,i))
+                                         | (nm,i) <- zip nms [0..]])
+                     $ enumValues s
+       }
+  desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
+
+count :: Ord a => [a] -> [(a,Int)]
+count as =
+  case sort as of
+    [] -> []
+    a:as' -> go a 1 as'
+      where go a n = \case
+              [] -> [(a,n)]
+              a':as
+                | a == a' -> go a (n+1) as
+                | let -> (a,n) : go a' 1 as
 
 --This can't fail, so there's no need to make it a monad
 desugarConLHS :: P.ConLHS -> (Name,[Name])
@@ -428,6 +468,8 @@ checkForDuplicates nm = do
     [M.keysSet $ defuns m,
      M.keysSet $ tysyns m,
      M.keysSet $ datatypes m,
+     M.keysSet $ enums m,
+     M.keysSet $ enumValues m,
      primTyCons]
     then throwE $ DuplicateDeclsForName nm
     else return ()

@@ -11,7 +11,8 @@ import Control.Monad.State
 import Control.Monad.Trans.Except
 import Control.Monad.Fail
 import Control.Arrow ((***))
-import Data.Char (ord) --for string compilation
+import Data.Char (ord,isUpper) --for string compilation
+--isUpper is for checking a var is a constructor
 
 import DTs
 --The logic for assembling structs from field values, split out into another
@@ -21,10 +22,21 @@ import qualified BuildStruct as B
 --The first stage of compilation from AST: word-level ops with structured
 --patterns.
 --Function call is treated as an op.
-data IRT = Mem --has no runtime repr
+--Standard arg order for Call: $mem,$sto,$tsto,$ext,args,$ret
+data IRT = Mem  --has no runtime repr
+         | Sto  --represents the storage state
+         | TSto --ditto for tstorage
+         | Ext  --represents the state of external contracts
          | W Int T --nth word of C-level t; 1-indexed
          --Renamed from Word to avoid clash with Padding
   deriving (Eq,Ord,Read,Show)
+--Returns true if the IRT has no runtime repr because it represents state;
+--to be used in later stages.
+isVirtual :: IRT -> Bool
+isVirtual = \case
+  W{} -> False
+  _ -> True
+
 --Name mangling: nth word of local x becomes x#n
 --From ToyCFG: IR is tagged with () or Live annots.
 --It does not need a var type param because SSA is done on CFG's.
@@ -38,12 +50,25 @@ data IRP a = Op a [(Name,IRT)] Operator [Name]
                | TailCall a Name [Name]
                | IRComment String --Ignored in later stages, used for debugging
                --Branching EVM instructions
-               | EVM_RETURN a Name Name Name -- $mem, ptr, len
+               | EVM_RETURN a Name Name Name Name Name Name
+               -- $mem, $sto, $tsto, $ext, ptr, len
+               --For case:
+               --switch tag numTags cases
+               --Only cases for tags in the range 0..numTags-1 are acceptable.
+               --If the tag (a 1-byte value) has no matching case, revert with
+               --no message.
+               --Naive compilation: if numTags is not a power of two, and it
+               --by its bitlen and add revert cases directly to the jump table.
+               --If it is 2^n < 256, add an if tag > 2^n then revert() first.
+               --If numTags == 256, simply make a 256-elem table.
+               --Note switch is a bit of a misleading name; it doesn't do
+               --fallthrough like C switch
+               | Switch a Name Int (Map Int [IRP a])
   deriving (Eq,Ord,Read,Show)
 type IR = IRP ()
 data Operator = Push StaticValue
               | Opcode String
-              | Call --args: f, args, ret
+              | Call --args: mem,sto,tsto,ext,f,args,ret
               | Reduce Name --arg: a commutative and associative opcode,
                 --used for truthy
               | Copy --x = y => x = copy [y]
@@ -165,25 +190,39 @@ seqModule mod = do
   mod' <- handleTySyns mod
   let mod = mod'
   let fdefs = M.toList $ defuns mod
+  checkDatatypesValidity $ datatypes mod
+  kindCheckMod mod
   globalMap <- handleGlobals $ globals mod
   --We substitute the globals and the special constant names
   --memOffset, stoOffset and tstoOffset prior to Seq to simplify seqE
+  --TODO add tag_Con_TyCon constants as well; only one is needed even for
+  --parameterized datatypes.
   fdefs' <- substGlobalsInDefs globalMap fdefs
   let fdefs = fdefs'
-  (sd,irdefs) <- handleDefuns fdefs
+  --We now require main exists (so executable mode is mandatory...)
+  --and that it has type ()->().
+  case lookup "main" fdefs of
+    Nothing -> Left $ GenericError "Missing main in seqModule"
+    Just (Defun _ t _ _) ->
+      if t == (Struct[] :-> Struct[])
+      then return ()
+      else Left $ GenericError $ "Ill-typed main in seqModule: " ++ show t
+  (sd,irdefs) <- handleDefuns mod fdefs
   return $ IRM {irDefuns = M.fromList irdefs,
                 staticData = sd
                }
-    where handleDefuns :: [(Name,D)] ->
+    where handleDefuns :: Module -> [(Name,D)] ->
                           Either SeqError
                           (Map Name Static, [(Name,(Arity,[IR]))])
-          handleDefuns = go 1 M.empty
+          handleDefuns mod = go mod 1 M.empty
           --anon label counter, static data, remaining defuns
-          go :: Int -> Map Name Static -> [(Name,D)] ->
+          go :: Module -> Int -> Map Name Static -> [(Name,D)] ->
             Either SeqError (Map Name Static, [(Name,(Arity,[IR]))])
-          go alc sd = \case
+          go mod alc sd = \case
             [] -> return (sd,[])
             (fnm,defun):rest ->
+              --Caught bug: tysyn substitution in constructors was being lost
+              --because let mod = mod' isn't visible here
               let seqr = SR {seqrModule = mod,
                              seqrFunction = defun
                             }
@@ -197,15 +236,281 @@ seqModule mod = do
                    (Left serr, _, _) -> Left serr
                    (Right arity, irs, seqs') -> do
                      let alc' = anonLabelCounter seqs'
-                     (sd',res) <- go alc'
+                     (sd',res) <- go mod alc'
                                   (M.union sd $ M.fromList $ zip
                                    (map (\n -> fnm ++ ".static#" ++ show n)
                                     [alc..alc'])
                                    (reverse $ anonStaticData seqs'))
                                   rest
                      return $ (sd',(fnm,(arity,irs)) : res)
---TODO add flag indicating arrayness
---Takes a list of (global name, region, type) and returns
+
+--Checks there are no kind errors in defuns, globals, datatypes or
+--coercions.
+--Ignores staticData for now (there is no standalone staticData)
+--If kind errors are produced in handleGlobals or strings, this doesn't catch
+--them.
+kindCheckMod :: Module -> Either SeqError ()
+kindCheckMod mod = do
+  let userDTs = kindUserDTs $ datatypes mod
+  kindCheckDefuns userDTs $ defuns mod
+  kindCheckGlobals userDTs $ globals mod
+  kindCheckDatatypes userDTs $ datatypes mod
+
+--For each f : t; f pat := ss, checks t :: * and that pat and s are
+--well-kinded.
+--Pats may contain *(expr), so they must be kind-checked as well...
+kindCheckDefuns :: Map Name T -> Map Name D -> Either SeqError ()
+kindCheckDefuns udts dm = do
+  let ds = M.toList dm
+  mapM_ (\(fnm,Defun _ t p ss) -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then Left $ GenericError $ unwords [
+              "Kind error: the type signature of function",fnm,
+              "is of non-value kind",show k
+              ]
+              else return ()
+            kcPat udts p
+            mapM_ (kcS udts) ss) ds
+--Note we only need to look for ill-kinded types, the rest will be caught
+--as a type error later.
+kcPat :: Map Name T -> Pat -> Either SeqError ()
+kcPat udts = go
+  where go = \case
+          PStruct mnmps -> mapM_ (go . snd) mnmps
+          PTup ps -> mapM_ go ps
+          PDot p _ -> go p
+          PHash p _ -> go p
+          Deref e -> kcE udts e
+          _ -> return ()
+kcS :: Map Name T -> S -> Either SeqError ()
+kcS udts = go
+  where go = \case
+          p := e -> rp p >> re e
+          DTs.Return e -> re e
+          DTs.Ifte e th el -> re e >> mapM_ go th >> mapM_ go el
+          DTs.While e bl -> re e >> mapM_ go bl
+          Case e nmpatss -> re e >>
+            mapM_ (\(_nm,pat,s) -> rp pat >> go s) nmpatss
+          Block bl -> mapM_ go bl
+        rp = kcPat udts
+        re = kcE udts
+--Note there is no expression which has a kind type, so we don't need to look
+--at expr types. That's fortunate - there's no standalone means of doing so
+--yet.
+kcE :: Map Name T -> E -> Either SeqError ()
+kcE udts = go
+  where go = \case
+          f :$ x -> go f >> go x
+          --Here we catch duplicate fields in struct expressions
+          EStruct fields -> do
+            let nms = do
+                  (_,mnm,_) <- fields
+                  case mnm of
+                    Nothing -> []
+                    Just nm -> [nm]
+            if length nms > length (S.toList $ S.fromList nms)
+              then err [
+              "Kind error: struct expression ",show (EStruct fields),
+              "has duplicate fields and thus an invalid type"
+              ]
+              else return ()
+            mapM_ (\(_,_,e) -> go e) fields
+          e :. _ -> go e
+          e :# _ -> go e
+          Coerce t e -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then err ["Attempted coercion to non-value kind",show k,
+                        "in",show (Coerce t e)]
+              else return ()
+            go e
+          Con con arg allocPtr -> go arg >> kcPat udts allocPtr
+          _ -> return ()
+        err = Left . GenericError . unwords
+--Checks that for each region x : t, t :: *
+--Region does not need to be checked since the syntax restricts it to
+--memory, storage, tstorage
+kindCheckGlobals :: Map Name T -> [(Name,T,T,Maybe Int)] -> Either SeqError ()
+kindCheckGlobals udts globs =
+  mapM_ (\(nm,_r,t,_mlen) -> do
+            k <- kindOf udts M.empty t
+            if k /= Type 0
+              then Left $ GenericError $ "Kind error: global " ++ nm ++
+                   " is of non-value type " ++ show k
+              else return ()) globs
+--For each data Con params r = {Con t; ...},
+--assumes params :: * and r :: Region, then checks each t :: *
+kindCheckDatatypes :: Map Name T -> Map Name ([Name],[(Name,T)]) ->
+  Either SeqError ()
+kindCheckDatatypes udts dtm = do
+  let dts = M.toList dtm
+  mapM_ (\(tycon,(params,cons)) -> do
+            let tvm = kindDTVars params
+            mapM (\(con,arg) -> do
+                     t <- kindOf udts tvm arg
+                     if t /= Type 0
+                       then Left $ GenericError $ unwords [
+                       "Kind error: the argument to constructor",con,
+                       "in datatype",tycon,"is of non-value kind",show t
+                       ]
+                       else return ()) cons
+        ) dts
+--Get the kind map for user-defined datatypes from the datatype defs
+kindUserDTs :: Map Name ([Name],[(Name,T)]) -> Map Name T
+kindUserDTs = M.map (\(nms,_) -> go (length nms))
+  where
+    --Note the list will always be nonempty, so 1 is the base case
+    go 1 = "Region" :-> Type 0
+    go n = Type 0 :-> go (n-1)
+--All but the last are Type 0; the last is Region
+kindDTVars :: [Name] -> Map Name T
+kindDTVars vs = M.fromList $ zip (reverse vs) ("Region":repeat (Type 0))
+--Given a mapping from tycon to monomorphic kind and a type, returns its kind
+--or a SeqError if it's ill-kinded.
+--Uses a stack of universes.
+{-
+(->) :: Type n -> Type m -> Type (max n m)
+Type :: (n : Nat) -> Type (n+1)
+Region, Signedness, Nat :: Type 1 --kind
+Signed, Unsigned :: Signedness
+Memory, Storage, TStorage, Calldata, Returndata, Code :: Region
+Int :: Signedness -> Nat -> Type 0
+Ptr :: Region -> Type 0 -> Type 0
+{...} :: Type 0, all fields must be Type 0
+User-provided datatype (arity n): (n-1 Type 0) -> Region -> Type 0
+Essential property: there is no t s.t. :k t == t
+-}
+kindOf :: (Map Name T) -> (Map Name T) -> T -> Either SeqError T
+kindOf userDTs tyvars = go
+  where go = \case
+          --(->) and Type are kind-polymorphic;
+          --when not fully applied, give them default types * -> * -> *
+          --and * -> Type 1 respectively.
+          a :-> b -> do
+            ka <- go a
+            kb <- go b
+            case (ka,kb) of
+              (Type n, Type m) -> return $ Type $ max n m
+              _ -> err $ "Badarg to -> " ++ show (ka,kb)
+          "->" -> return $ Type 0 :-> (Type 0 :-> Type 0)
+          Type n -> return $ Type (n+1)
+          "Type" -> return $ Type 0 :-> Type 1
+          TyCon c
+            | c `elem` words "Region Signedness Nat" -> return $ Type 1
+            | c `elem` words "Signed Unsigned" -> return "Signedness"
+            | c `elem` words
+              "Memory Storage TStorage Calldata Returndata Code" ->
+              return "Region"
+            | c == "Int" -> return $ "Signedness" :-> ("Nat" :-> Type 0)
+            | c == "Ptr" -> return $ "Region" :-> (Type 0 :-> Type 0)
+            | let ->
+              case M.lookup c userDTs of
+                Nothing -> err $ "TyCon " ++ c ++ " not in scope"
+                Just k -> return k
+          TyNat n -> return "Nat"
+          --A struct with duplicate names is a kind error
+          --All fields of a struct must be *
+          Struct fields -> do
+            let nms = do
+                  (_,mnm,_) <- fields
+                  case mnm of
+                    Nothing -> []
+                    Just nm -> [nm]
+            if length nms > length (S.toList $ S.fromList nms)
+              then err $ "duplicate fields in Struct " ++
+                   show fields
+              else return ()
+            sequence_ [
+              do k <- go t
+                 if k /= Type 0
+                   then err $ "field " ++ show i ++ "of struct "
+                        ++ show fields ++ " is not a value type"
+                   else return ()
+              | (i,(_,_,t)) <- zip [1..] fields
+              ]
+            return $ Type 0
+          TyVar nm ->
+            case M.lookup nm tyvars of
+              Nothing -> err $ "TyVar " ++ nm ++ " not in scope"
+              Just k -> return k
+          tf :$$ tx -> do
+            kf <- go tf
+            kx <- go tx
+            case kf of
+              a :-> b
+                | a == kx -> return b
+              _ -> err $ "Bad type application " ++ show (tf,kf,tx,kx)
+        err = Left . GenericError . ("Kind error: " ++)
+            
+          
+--Checks the following conditions:
+--1) Each datatype must have at least one param: the region.
+--2) Datatypes may not have duplicate params.
+--3) Datatypes may not contain duplicate constructor names.
+--4) A constructor's argument must be determined by the datatype params.
+--5) Given the constructor's argument is monomorphic, only the first param
+--   (i.e. the region param) may be free.
+--6) Since all datatypes have 1B tags (for now), they may have at most 256
+--   constructors.
+checkDatatypesValidity :: Map Name ([Name],[(Name,T)]) ->
+                          Either SeqError ()
+checkDatatypesValidity nm2dt = do
+  let nmdts = M.toList nm2dt
+  mapM_ (\(tycon,(params,constructors)) -> do
+            if length constructors > 256
+              then Left $ GenericError $
+              "Datatype "++tycon++" has too many constructors: " ++
+              show (length constructors)
+              else return ()
+            vars <- checkParams tycon params
+            --This won't fail because we now know params is nonempty
+            let r = head params
+            go tycon vars r S.empty constructors) nmdts
+    where checkParams = gop S.empty
+          gop s tycon []
+            | s == S.empty =
+              Left $ GenericError $
+              "Datatype " ++ tycon ++ " has no params, but " ++
+              "it must have at least one: the region"
+            | let = return s
+          gop s tycon (param:params)
+            | S.member param s =
+              Left $ GenericError $
+              "Duplicate type parameter in datatype " ++ tycon ++ ": " ++ param
+            | let = gop (S.insert param s) tycon params
+          go :: Name -> Set Name -> Name -> Set Name -> [(Name,T)] ->
+                Either SeqError ()
+          go tycon params r cons = \case
+            [] -> return () --0-constructor datatypes are OK
+            (con,t):rest
+              | S.member con cons ->
+                Left $ GenericError $
+                "Duplicate constructor in datatype " ++ tycon ++ ": " ++ con
+              | let ->
+                let free = freeTyVars t
+                in case () of
+                     --4) Params must fix argument
+                     _ | params `S.isProperSubsetOf` free ->
+                         Left $ GenericError $
+                         "Free tyvars in constructor " ++ con ++ " of datatype "
+                         ++ tycon ++ ": " ++ show (S.difference free params)
+                       --5) Argument + region must fix params
+                       | (S.insert r free) `S.isProperSubsetOf` params ->
+                         Left $ GenericError $
+                         "Argument + region don't fix params in constructor "++
+                         con ++ " of datatype " ++ tycon
+                       | let ->  go tycon params r (S.insert con cons) rest
+
+--TODO replace with generic implementation, move somewhere appropriate.
+freeTyVars :: T -> Set Name
+freeTyVars = go
+  where go = \case
+          TyVar nm -> S.singleton nm
+          tf :$$ tx -> S.union (go tf) (go tx)
+          Struct padnmts -> S.unions $ map (\(_,_,t) -> go t) padnmts
+          _ -> S.empty
+--Takes a list of (global name, region, type, maybe arrlen) and returns
 --memory, storage and storage offsets + a single map name => (r,t,off)
 --Oh no: I need to be in Seq to get numBytesT
 --While datatypes are always 16 bits, newtypes are not... but I just need to
@@ -282,6 +587,11 @@ substGlobalsInS gm =
     DTs.Return e -> DTs.Return <$> re e
     DTs.Ifte e th el -> DTs.Ifte <$> re e <*> mapM r th <*> mapM r el
     DTs.While e bl -> DTs.While <$> re e <*> mapM r bl
+    Case e cases -> Case <$> re e <*> mapM (\(con,p,s) -> do
+                                              p' <- substGlobalsInPat gm p
+                                              s' <- r s
+                                              return (con,p',s')) cases
+    Block ss -> Block <$> mapM r ss
 substGlobalsInE :: (Int,Int,Int, Map Name (T,T,Int,Maybe Int)) -> E ->
                    Either SeqError E
 substGlobalsInE gm@(moff,soff,tsoff,vm) =
@@ -304,6 +614,7 @@ substGlobalsInE gm@(moff,soff,tsoff,vm) =
     e :. nm -> (:. nm) <$> r e
     e :# ix -> (:# ix) <$> r e
     Coerce t e -> Coerce t <$> r e
+    Con con arg alloc -> Con con <$> r arg <*> substGlobalsInPat gm alloc
     e -> return e
                            
 --TODO give newtypes param, then reimplement numBitsT in terms of pureSz
@@ -332,6 +643,7 @@ pureSz = \case
 --the type decl itself, I can check whether the tysyn RHS contains type
 --constructors that aren't in scope.
 --For now, that only includes the primitive tycons.
+--Now I also need to subst tysyns in datatypes.
 handleTySyns :: Module -> Either SeqError Module
 handleTySyns mod = do
   --We must first add the primitive tysyns to prevent out of scope errors for
@@ -352,12 +664,43 @@ handleTySyns mod = do
   --Substitute tysyns and globals in static data
   static' <- substStatic tysyns' $ static mod
   globals' <- substGlobals tysyns' $ globals mod
+  datatypes' <- substDatatypes tysyns' $ datatypes mod
+  constructors' <- substConstructors tysyns' $ constructors mod
   --TODO add coerce and substitute in the function body
   return mod{tysyns = tysyns',
              defuns = defuns',
              static = static',
-             globals = globals'
+             globals = globals',
+             datatypes = datatypes',
+             constructors = constructors'
              }
+substConstructors :: Syns -> Map Name (Int,T,Name,Name,[Name]) ->
+                     Either SeqError (Map Name (Int,T,Name,Name,[Name]))
+substConstructors syns con2info = do
+  let coninfos = M.toList con2info
+  M.fromList <$> mapM (\(con,(tag,arg,tycon,r,params)) ->
+                         case applyTySyns syns arg of
+                           Left err ->
+                             Left $ GenericError $
+                             "Tysyn application error in constructor " ++ con
+                             ++ ": " ++ show err
+                           Right arg' -> return (con,(tag,arg',tycon,r,params)))
+    coninfos
+substDatatypes :: Syns -> Map Name ([Name],[(Name,T)]) ->
+                  Either SeqError (Map Name ([Name],[(Name,T)]))
+substDatatypes syns tycon2ds = do
+  let tyconds = M.toList tycon2ds
+      --Putting it here because otherwise it's indented too far to the right...
+      innerLoop tycon (constructor,t) =
+            case applyTySyns syns t of
+              Left err -> Left $ GenericError $
+                          "Tysyn application error in constructor " ++
+                          constructor ++ " in datatype " ++ tycon ++ ": " ++
+                          show err
+              Right t' -> return (constructor, t')
+  M.fromList <$> mapM (\(tycon,(params,cons)) -> do
+                          cons' <- mapM (innerLoop tycon) cons
+                          return (tycon,(params,cons'))) tyconds
 substStatic syns nm2tes = do
   let nmtes = M.toList nm2tes
   M.fromList <$> mapM (\(nm,(t,es)) ->
@@ -404,6 +747,11 @@ substTySynS syns =
     DTs.Return e -> DTs.Return <$> re e
     DTs.Ifte b th el -> DTs.Ifte <$> re b <*> mapM r th <*> mapM r el
     DTs.While e body -> DTs.While <$> re e <*> mapM r body
+    Case e cases -> Case <$> re e <*> mapM (\(con,p,s) -> do
+                                               p' <- rp p
+                                               s' <- r s
+                                               return (con,p',s')) cases
+    Block ss -> Block <$> mapM r ss
 substTySynE :: Syns -> E -> Either SeqError E
 substTySynE syns =
   let r = substTySynE syns
@@ -421,6 +769,8 @@ substTySynE syns =
         Left err -> Left $ GenericError $ "TySyn subst in coerce failed: "
           ++ show (t,e,err)
         Right t' -> Coerce t' <$> r e
+    Con con arg alloc ->
+      Con con <$> r arg <*> substTySynPat syns alloc
     e -> return e
 substTySynPat :: Syns -> Pat -> Either SeqError Pat
 substTySynPat syns =
@@ -670,7 +1020,7 @@ seqDefun (Defun f ft pat body) =
       --Todo deduplicate so I don't accidentally miss adding new virtual state
       --params (storage etc) when I modify return in seqS.
       zws <- askReturnType >>= nullValue
-      emit $ IR1.Return () $ ["$mem","$ret"] ++ zws
+      emit $ IR1.Return () $ (words "$mem $sto $tsto $ext $ret") ++ zws
 
       return arity
     _ -> throwE $ BadFunctionType f ft
@@ -742,19 +1092,28 @@ patternMatch p t ws =
           (ptrt,ptrws) <- seqE ptr
           case ptrt of
             Ptr r struct ->
-              let [ptrw] = ptrws in
-              --Only memory, storage and tstorage can be mutated
-              case r of
-                Memory -> do
-                  --Copied from setStructLocal
+              let [ptrw] = ptrws in do
+                --Copied from setStructLocal
                   ixs <- indicesAndNamesToIndices nmixs struct
                   (fieldT,sz,off,pl,pr) <- fieldsInfo ixs struct
                   szStruct <- numBitsT struct
-
                   ws' <- softCoerce fieldT t ws
-                  genStore szStruct pl sz pr off ptrw ws'
-                _ -> throwE $ GenericError $ "*ptr.field* assignments "
-                  ++ "unsupported for region " ++ show r ++ " atm"
+                  --Only memory, storage and tstorage can be mutated
+                  case r of
+                    Memory ->
+                      genStore szStruct pl sz pr off ptrw ws'
+                    _ | r `elem` [Storage,TStorage] -> do
+                      let len = (sz `roundedUpMod` 8) `div` 8
+                          structLen = (szStruct `roundedUpMod` 8) `div` 8
+                          offbs = off `div` 8
+                      --offbs is byte offset from the right
+                      --We need to add structLen - len - offbs to the pointer
+                      ptrw' <- waddK (structLen - len - offbs) $ return ptrw
+                      (if r == Storage
+                       then assignSto sload sstore
+                       else assignSto tload tstore) len ptrw' ws'
+                    _ -> throwE $ GenericError $ "*ptr.field* assignments "
+                      ++ "unsupported for region " ++ show r ++ " atm"
           {-do
           --Need two faux locals to prevent reevaluation of the ptr expr...
           fauxS <- newAnonVar
@@ -783,6 +1142,12 @@ patternMatch p t ws =
           case r of
             Memory -> assignPtr pw a ws'
             --TODO storage, tstorage
+            Storage -> do
+              len <- numBytesT a
+              assignSto sload sstore len pw ws'
+            TStorage ->  do
+              len <- numBytesT a
+              assignSto tload tstore len pw ws'
             Calldata -> imm r
             Code -> imm r
             Returndata -> imm r
@@ -845,6 +1210,7 @@ seqBlock irs = snd <$> isolate (mapM seqS irs)
 --For now, no tail call support
 seqS :: S -> Seq ()
 seqS = \case
+  --TODO opt: *pMem = *p2 => copy
   p := e -> do
     (t,ws) <- seqE e
     patternMatch p t ws
@@ -858,7 +1224,7 @@ seqS = \case
     t <- askReturnType
     (t',ws) <- seqE e
     cws <- softCoerce t t' ws
-    emit $ IR1.Return () $ ["$mem","$ret"] ++ cws
+    emit $ IR1.Return () $ words "$mem $sto $tsto $ext $ret" ++ cws
   --Applies truthy to e, returning one word
   --Complication: what are the scope rules for the e in ifte? The same as
   --the block it's contained in... meaning an assignment in e will carry over
@@ -877,6 +1243,117 @@ seqS = \case
     (v,pre) <- isolate $ truthyE e
     post <- seqBlock body
     emit $ IR1.While () pre v post
+  --Case implementation:
+  --case e of {Con1 p -> s; ...}
+  --v = eval e : TyCon r .. restParams
+  --tag <- *(v :: Ptr r Byte) & mask (bitlen of #constructors)
+  --switch tag {case 0x00: p = do {(v+1 :: Ptr r argOfCon1); s}
+  --            ... a case for every constructor + invalid tags not caught by
+  --                the mask}
+  --FW: for types with many constructors and where only a few densely packed
+  --ones are considered,
+  --do 1-2 bounds checks first.
+  --If only a single one is considered, use an ifte instead.
+  Case e cases -> do
+    --TODO turn my faux + get type trick into a combinator
+    faux <- newAnonVar
+    seqS (PVar faux := e)
+    ni <- getCNameInfo faux
+    let IsLocal datatype = ni
+    --For now, only support case on datatypes; throw an error on any other type.
+    --Get tycon, region and remaining params
+    (tycon,r,params) <- parseDatatype e datatype
+    --Compute the arg ptr:
+    --Because seqBlock operates on [S], not IR, we need to expose the
+    --ptr to the C scope:
+    fauxPtr <- newAnonVar
+    seqS (PVar fauxPtr := (Var "+" :$ tupleE [EInteger 1,
+                                              Coerce (UInt 16) $ Var faux
+                                             ]))
+    --Get the (constructor,argPat) list of the datatype
+    (dtParams,dtCons) <- getDatatypeInfo tycon
+    --This'll error is a datatype value has somehow been created with the wrong
+    --number of params
+    if length (r:params) /= length dtParams
+      then error $ "Compiler error: something has gone very wrong"
+      else return ()
+    --Instantiate the argPats to get argTypes
+    let instantiation = M.fromList $ zip dtParams (r:params)
+        dtConsInst = map (id *** instT instantiation) dtCons
+    --Now we can create a map con => t and con => tag
+    let con2argType = M.fromList dtConsInst
+        con2tag = M.fromList $ zip (map fst dtConsInst) [0..]
+        numTags = length dtConsInst
+    --We convert the case list to a map Int => (Pat,S)
+    --Duplicate constructor mentions are a compiler error for now.
+    tag2PatTS <- buildTagMap tycon con2argType con2tag cases
+    --Create the blocks for each case: tag,(pat,argType,s)
+    --becomes (tag,do {pat = fauxPtr :: Ptr r argType; s})
+    let tagPatTS = M.toList tag2PatTS
+    tag2IR <- M.fromList <$> mapM (\(tag,(pat,arg,s)) -> do
+                                      ir <- seqBlock [
+                                        pat := Coerce (Ptr r arg) (Var fauxPtr),
+                                        s]
+                                      return (tag,ir)) tagPatTS
+    --Finally, fetch the tag and switch on it
+    --tag <- eval *(faux :: Ptr r Byte)
+    (_,tagws) <- seqE $ Var "deref" :$ Coerce (Ptr r (UInt 8)) (Var faux)
+    let [tag] = tagws
+    emit $ Switch () tag numTags tag2IR
+  Block ss -> do
+    ir <- seqBlock ss
+    mapM_ emit ir
+--The tycon tag is for error reporting
+--con => arg type, con => tag, [(con,pat,s)] -> Int => (pat,arg type,s)
+--Con cases which aren't in the datatype are an error;
+--Duplicate cases for a con are an error.
+buildTagMap :: Name ->
+               Map Name T -> Map Name Int -> [(Name,Pat,S)] ->
+               Seq (Map Int (Pat,T,S))
+buildTagMap tycon con2t con2tag = go M.empty
+  where
+    go :: Map Int (Pat,T,S) -> [(Name,Pat,S)] -> Seq (Map Int (Pat,T,S))
+    go m = \case
+          [] -> return m
+          (con,pat,s):cases ->
+            case M.lookup con con2tag of
+              Just tag
+                | M.member tag m ->
+                  throwE $ GenericError $
+                  "Duplicate constructor in case: " ++ con
+                --This is guaranteed to work; TODO change to a single map
+                | let argT = con2t M.! con ->
+                  go (M.insert tag (pat,argT,s) m) cases
+              Nothing ->
+                throwE $ GenericError $
+                unwords["Error in case:",
+                        "Constructor",con,"does not exist in datatype",tycon]
+                  
+--tycon -> nonempty list of params, constructors
+--throws an error if no such datatype
+--TODO change nonempty list to Name,[Name]
+getDatatypeInfo :: Name -> Seq ([Name],[(Name,T)])
+getDatatypeInfo tycon = do
+  minfo <- M.lookup tycon <$> datatypes <$> seqrModule <$> ask
+  case minfo of
+    Just info -> return info
+    Nothing -> throwE $ GenericError $ "No such datatype in case: " ++ tycon
+--The E is for error reporting
+parseDatatype :: E -> T -> Seq (Name,T,[T])
+parseDatatype e t =
+  case go t of
+    Just info -> return info
+    Nothing -> throwE $ GenericError $
+               "Non-datatype in case on expression " ++ show (e,t)
+  where go = \case
+          TyCon con :$$ t
+            | not (con `elem` primTyCons) -> return (con,t,[])
+          tf :$$ tx -> do
+            (con,r,ps) <- go tf
+            return (con,r,ps++[tx])
+          _ -> Nothing
+          
+    
 --You need to know the *word* vars returned to use them;
 --if $mem is involved it remains the same.
 --Also returns the type (which only depends on global info, locals and
@@ -942,6 +1419,9 @@ seqE = \case
       IsFunction t -> do
         v <- pushK t (LabelConst nm)
         return (t,[v])
+      IsPrimFun ->
+        throwE $ GenericError $ "Primfun " ++ nm ++
+        " may not occur as a standalone expression (may change later)"
       IsLocal t -> do
         --The number of words is determined by t... but it won't be a pure fun
         --once user-defined types are supported.
@@ -967,7 +1447,39 @@ seqE = \case
   --Note you can't always eval the arg first; consider a && b.
   --Primfun names may neither be assigned nor defined to, so I don't need to
   --worry about shadowing.
-    
+
+  --The short-circuited primfuns:
+  --Because it short-circuits I can't recursively seqE; I must require
+  --the argument is syntactically a pair.
+  --Because &&() is a syntax error I should really catch it in desugar...
+  --But I'll do it here for now.
+  --Type: a -> b -> Byte, a && b returns 1 if both are truthy and 0 otherwise.
+  Var "&&" :$ pair ->
+    case pair of
+      EStruct [((Word,Word),Nothing,a),
+               ((Word,Word),Nothing,b)] -> do
+        comment "&& start"
+        --I'll use the faux C var trick again
+        ret <- newAnonVar
+        seqS $ PVar ret := EInteger 0 --Needed to declare ret; will be pruned
+        seqS $ DTs.Ifte a [PVar ret := (Var "truthy" :$ b)]
+          [PVar ret := EInteger 0]
+        return (UInt 8, [ret ++ "#1"])
+      _ -> throwE $ GenericError $
+           "Syntax error: the argument to && must be a syntactic tuple (a,b)"
+  --TODO deduplicate...
+  Var "||" :$ pair ->
+    case pair of
+      EStruct [((Word,Word),Nothing,a),
+               ((Word,Word),Nothing,b)] -> do
+        comment "|| start"
+        ret <- newAnonVar
+        seqS $ PVar ret := EInteger 0 --will be pruned
+        seqS $ DTs.Ifte a [PVar ret := EInteger 1]
+          [PVar ret := (Var "truthy" :$ b)]
+        return (UInt 8, [ret ++ "#1"])
+      _ -> throwE $ GenericError $
+           "Syntax error: the argument to || must be a syntactic tuple (a,b)"
   --Simple primfuns, no short-circuiting:
   Var pf :$ x
     | Just scheme <- M.lookup pf simplePFs -> do
@@ -992,7 +1504,7 @@ seqE = \case
         --word output.
         --Stack layout before jump: wf,args,ret.
         --Note: the IR does not include the ret argument!
-        emitOp (("$mem",Mem):zip retws retts) Call ("$mem":wf:args)
+        emitOp (callOutState ++ zip retws retts) Call (callInState ++ (wf:args))
         return (b,retws)
       _ -> throwE $ ApplicationToNonFunction f tf
   --The fields are concatenated, with the field values emitted in reverse
@@ -1050,7 +1562,109 @@ seqE = \case
                                  fst <$> (runEDSL $ coerce irt (EVar w))) $
                          zip [W n targetT | n <- [1..]] (maskedLeftmost:rest)
             return (targetT,retypedWs)
-          
+  --Implementation (Con (arg :: argT) (allocPtr :: Ptr r Byte)):
+  --Each constructor has type arg -> TyCon params, where arg and params may
+  --contain free vars.
+  --actualParams <- subst params given (argT,r) =:= (arg,firstParam)
+  --rett = TyCon actualParams
+  --retPtr <- copy allocPtr :: rett
+  -- *(allocPtr :: Ptr r {Byte,argT}) = {tag_Con,arg}
+  --allocPtr += <1 + sizeof arg>
+  --return (rett,retPtr)
+  Con con arg allocPtrPat -> do
+    ptrE <- pat2e con allocPtrPat
+    --To both check the pointer has an appropriate type and use it, we must
+    --save it to a faux C var
+    fauxPtr <- newAnonVar
+    seqS (PVar fauxPtr := ptrE)
+    ni <- getCNameInfo fauxPtr
+    let IsLocal ptrT = ni
+    case ptrT of
+      Ptr r (UInt 8)
+        | not $ r `elem` [Memory,Storage,TStorage] ->
+          throwE $ GenericError $
+          "Alloc ptr for " ++ con ++ " points into an immutable region " ++
+          show r
+        | let -> do
+            --Get the constructors tag byte, (polymorphic) arg type and
+            --return type. The return type is split into tycon, region
+            --parameter and the remaining params to make 0-arity tycons
+            --non-representable and ease unification of the region param with
+            --r.
+            --Note unification is local; the type system is not Hindley-Milner.
+            (tagCon,conArgT,tycon,rt,remParams) <- getConInfo con
+            let tagConE = EInteger $ fromIntegral tagCon
+            --Because I don't separate type inference from compilation, I
+            --need to save {tag,arg} to a new faux C var before I can check
+            --the arg is actually a valid argument.
+            faux <- newAnonVar
+            seqS (PVar faux := structE [tagConE,arg])
+            --Now we retrieve the arg's type...
+            ni <- getCNameInfo faux
+            let IsLocal structT@(Struct [_,(_,_,argT)]) = ni
+            case bindT (Pair conArgT $ TyVar rt) (Pair argT r) of
+              Left err -> throwE $ GenericError $
+                "Bind failure in " ++ con ++ " allocation: " ++ show
+                --err
+                (conArgT,argT,rt,r)
+              Right v2t -> do
+                --Instantiate the datatype
+                --Note we check arg and alloc pointer contain enough info to
+                --determine the datatype's params once per datatype; we don't
+                --need to do so here.
+                let datatype = foldl (:$$) (TyCon tycon) $
+                               map (v2t M.!) $ rt:remParams
+                --Now we write the struct to the pointer:
+                --(*(fauxPtr :: Ptr r structT)) = faux
+                seqS (Deref (Coerce (Ptr r structT) $ Var fauxPtr) :=
+                      Var faux)
+                --We bump allocPtr by sizeof structT:
+                --This works becuase fauxPtr is a byte ptr
+                sz <- numBytesT structT
+                seqS (allocPtrPat := (Var "+" :$
+                                      tupleE [Var fauxPtr,
+                                              EInteger $ fromIntegral sz
+                                             ]))
+                --fauxPtr now holds the original ptr to return coerced to
+                --datatype:
+                --error $ "Datatype of first alloc: " ++ show datatype
+                seqE (Coerce datatype $ Var fauxPtr)
+      _ -> throwE $ GenericError $
+        "Alloc ptr for " ++ con ++ " must be a byte ptr, but instead it's "
+        ++ show ptrT
+
+--The state variables a call takes
+callInState = words "$mem $sto $tsto $ext"
+--and returns, associated with their IRTs:
+callOutState = zip callInState [Mem,Sto,TSto,Ext]
+      
+--pat2e pat returns e if the given pattern unambiguously corresponds to
+--the expression e.
+--Example: foo.bar is an unambigous pattern as long as foo is bound.
+--Note type errors may be thrown when you try to evaluate the expression;
+--for example, foo may not have the field bar.
+--It's in Seq to check if locals are bound and to immediately throw an
+--error if it encounters an unbound one.
+pat2e :: Name -> Pat -> Seq E
+pat2e con = go
+  where
+    go :: Pat -> Seq E
+    go = \case
+      PVar nm -> do
+        ni <- getCNameInfo nm
+        case ni of
+          IsLocal t -> return $ Var nm
+          _ -> throwE $ GenericError $
+               con ++ ": Bad name info for var " ++ nm ++ " in pat2e: " ++
+               show ni
+      PTup ps -> tupleE <$> mapM go ps
+      PDot p field -> (:. field) <$> go p
+      PHash p ix -> (:# ix) <$> go p
+      Deref e -> return $ Var "deref" :$ e
+      p -> throwE $ GenericError $
+           con ++ ": Pattern does not unambigously correspond to an expr: "
+           ++ show p
+                           
 unrollEFields :: E -> (E,[Either Name Int])
 unrollEFields = (id *** reverse) . go
   where go = \case
@@ -1088,13 +1702,384 @@ handleIndexing e = do
     _ -> do
       (structT,structWs) <- seqE struct
       getStructFields structT structWs nmixs
-{-
-  ixs <- indicesAndNamesToIndices fieldIxs t
-  --Return type, its size, offset in the struct, left and right-padding
-  --We don't need right-padding, so we ignore it.
-  (tRes,szRes,offRes,lpRes,_) <- fieldsInfo ixs t
--}
 
+--Read len bytes from byte index ptr of storage or tstorage
+--Parameterized by load operation (sload or tload)
+--Does not consider potential left or right-padding atm
+derefSto :: (Name -> Seq Name) -> Int -> Name -> Seq [Name]
+derefSto load len ptr = do
+  --Optimization means these ops will be pruned if not used
+  slot <- wop2 "shr" (wword 5) (return ptr)
+  off <- wop2 "and" (wword 31) (return ptr)
+  case len of
+    0 -> return []
+    --A 1-byte value can't overlap a word
+    1 -> do
+      error "mumu"
+      --v = load (ptr >> 5)
+      v <- load slot
+      --res = v >> (248-8*(ptr&31))
+      res <- wop2 "shr" (wop2 "sub"
+                         (wword 248)
+                         (wop2 "mul" (wword 8) (return off)))
+             (return v)
+      return [res]
+    --Another simple case: instead of checking the bound, we branch on the
+    --byte offset ptr%32 directly.
+    --if !off:
+    -- x = load slot
+    --else:
+    -- x1 = load slot
+    -- x2 = load (slot+1)
+    -- x = x1 << 8*off | x2 >> 8*off
+    --return x
+    --TODO: generalize to any multiple of 32
+    32 -> do
+      --Better to use isolate than seqBlock here...
+      --Oh no: need to return words from an ifte. Might need to use seqBlock
+      --after all... no, I can use emitOp to bind the result to x in both
+      --cases.
+      x <- newAnonVar
+      putIRVarType x tword
+      (_,irElse) <- isolate $ do
+        v <- load slot
+        copyTo tword x v
+      (_,irThen) <- isolate $ do
+        x1 <- load slot
+        --Note no overflowing done here
+        slotplusone <- wop2 "add" (wword 1) (return slot)
+        x2 <- load slotplusone
+        off8 <- wop2 "shl" (wword 3) (return off)
+        x' <- wop2 "or"
+          (wop2 "shl" (return off8) (return x1))
+          (wop2 "shr" (return off8) (return x2))
+        copyTo tword x x'
+      emit (IR1.Ifte () off irThen irElse)
+      return [x]
+    n -> do
+      let numWords = (n `roundedUpMod` 32) `div` 32
+          modulus = n `mod` 32
+      --Two cases: if ptr%32 + modulus > 32 then the value is spread over
+      --numWords + 1 slots, otherwise numWords.
+      --The condition is equivalent to 32 - modulus < off
+      let bound = 32 - modulus
+      cond <- wop2 "lt" (wword bound) (return off)
+      --Need to allocate numWords IR vars
+      result <- replicateM numWords newAnonVar
+      mapM_ (`putIRVarType` tword) result
+      let caseN ixbound = (snd <$>) $ isolate $ do
+            --Load slot, slot+1 .. slot+numWords-1
+            shiftedRes <- sequence [
+              do slot' <- waddK i (return slot)
+                 load slot'
+              | i <- [0..ixbound]]
+            --Shift value: 256 - 8*(off + modulus)
+            --That can be simplified to (256-8*modulus) - 8*off,
+            --where the lhs is a constant
+            shiftVal <- wop2 "sub" (wword $ 256 - 8*modulus) $
+                        wop2 "shl" (wword 3) (return off)
+            res <- reconstruct n shiftVal shiftedRes
+            zipWithM (copyTo tword) result res
+      irElse <- caseN (numWords-1)
+      irThen <- caseN numWords
+      emit $ IR1.Ifte () cond irThen irElse
+      return result
+ 
+--Given an n-byte value embedded in a given list of words and a dynamic
+--leftshift, reconstruct the value. Doesn't make use of padding, so the
+--top word may be masked.
+--Assumes each word contains the value, i.e. a minimal number of words have
+--been passed.
+--TODO deduplicate reconstruction logic in mem deref.
+{-
+Algo for length ws == wordLen:
+for w from init (reverse ws):
+ w >>= shiftVal
+ w |= (next w << shiftVal)
+top w = head ws >>= shiftVal
+
+If length ws == wordLen + 1, the top word of the output must be reconstructed
+from two words before masking it.
+Example: w1@{...,b1}w2@{b2,...} --a 2-byte value shifted left by 31 bytes.
+Result: (w1 << 8 | w2 >> 248) & 0xffff
+The mask is static and w2's shift is just shiftVal... but what about w1's shift
+in the general case?
+The number of "spillover bytes" in the top word is byte shift + length mod 32.
+-}
+reconstruct :: Int -> Name -> [Name] -> Seq [Name]
+reconstruct len shiftVal ws
+  | not $ lenws  `elem` [wordLen,wordLen+1] =
+    error $ "Compiler error: bad number of input words to reconstruct: "
+    ++ show (len,shiftVal,ws)
+  | let = do
+          let go = if lenws == wordLen
+                   then go1
+                   else go2
+              hd:tl = ws
+          reverse <$> go hd tl
+          where
+            --Reconstruction for length ws == wordLen
+            go1 w [] =
+              (:[]) <$> (wmask (8*modulus) $ wop2 "shr" (return shiftVal)
+                         ((return w)))
+            go1 w (wnext:ws) = do
+              w' <- wop2 "or" (wop2 "shr" (return shiftVal) (return w))
+                (wop2 "shl" (return shiftVal) (return wnext))
+              ws' <- go1 wnext ws
+              return (w':ws')
+            --Reconstruction for length ws == wordLen + 1
+            --Since the shift value is dynamic, masking the top word before the
+            --or (which would lead to a smaller mask) would require dynamically
+            --computing the mask.
+            go2 w [wlast] =
+              (:[]) <$> (wmask (8*modulus) $ wop2 "or"
+                         (wop2 "shl" (return shiftVal) (return wlast))
+                         (wop2 "shr" (return shiftVal) (return w)))
+            go2 w (wnext:ws) = do
+              w' <- wop2 "or" (wop2 "shr" (return shiftVal) (return w))
+                (wop2 "shl" (return shiftVal) (return wnext))
+              ws' <- go2 wnext ws
+              return (w':ws')
+            wsLen = length ws
+            wordLen = (len `roundedUpMod` 32) `div` 32
+            modulus = len `mod` 32
+            lenws = length ws
+            
+--Now we do the opposite: deconstruct a value and store it.
+--Pointer assignment for storage and tstorage.
+--We ignore padding for now.
+--That could later be used to avoid writes: consider a {pad word Byte} stored
+--across a word boundary. Since you have a pointer of that type, you may
+--assume the padding bytes are already 0 and so don't need to modify the lower
+--word.
+--If len is a multiple of 32, the cond which determines overlap is just off.
+--In that case two words are partially overlapped; the rest are whole.
+--If len > 0 is not a multiple of 32, it will partially overlap 1 or 2 slots.
+assignSto ::
+  (Name -> Seq Name) ->       --load instruction, used to save unwritten bytes
+  (Name -> Name -> Seq ()) -> --store instruction
+  Int ->                      --byte length of value to write
+  Name ->                     --the pointer to write to
+  [Name] ->                   --the value's words
+  Seq ()
+assignSto load store len ptr ws = do
+  comment "Slot:"
+  slot <- wop2 "shr" (wword 5) (return ptr)
+  comment "Offset:"
+  off <- wop2 "and" (wword 31) (return ptr)
+  case len of
+    0 -> return ()
+    --Simple case, can never overlap two words
+    1 -> do
+      --leftshift = 248 - 8*off
+      --zeromask = ~(0xff << leftshift)
+      --w' = w << leftshift
+      --new = w' | (old & zeromask)
+      let [w] = ws
+      old <- load slot
+      --The number of bits to shift the byte and zeroing mask by
+      leftshift <- wop2 "sub" (wword 248) (wop2 "shl" (wword 3) (return off))
+      w' <- wop2 "shl" (return leftshift) (return w)
+      zeromask <- wop1 "not" $ wop2 "shl" (return leftshift) (wword 0xff)
+      new <- wop2 "or" (return w') (wop2 "and" (return zeromask) (return old))
+      store slot new
+    --Instead of an lt to detect overlap, we use off as the cond
+    --Thankfully there's no need to return any values from the ifte branches...
+    _ | (len `mod` 32) == 0 -> do
+          --Simple case: no overlap
+          (_,irElse) <- isolate $ sequence_ [
+            do slot' <- waddK i (return slot)
+               store slot' w
+            | (i,w) <- zip [0..] ws
+            ]
+          (_,irThen) <- isolate $ do
+            --We must shift the ws into |ws|+1 words, left-shifting them by
+            --32-off bytes.
+            --That means the first word of the output is right-shifted by off
+            --bytes.
+            --The first word of the shifted result must be or'd with the top off
+            --bytes of sload(slot)
+            --The last word must be or'd with the bottom 32-off bytes of
+            --sload(slot+|ws|)
+            --Note the mask of the first is the complement of the mask of the
+            --last.
+            rightshift <- wop2 "shl" (wword 3) $ return off
+            leftshift <- wop2 "sub" (wword 256) $ return rightshift
+            ws' <- deconstruct32 leftshift rightshift ws
+            --ws' has at least two elements, so this'll work
+            let fst = head ws' --the top partial word
+                middle = tail $ init ws'
+                lst = last ws' --the bottom partial word
+            fstMask <- wop2 "shl" (return leftshift) (wop1 "not" $ wword 0)
+            lstMask <- wop1 "not" (return fstMask)
+            --Update fst
+            old <- wop2 "and" (return fstMask) (load slot)
+            store slot <$> wop2 "or" (return fst) (return old)
+            --Update middle
+            sequence_ [
+              do slot' <- waddK i (return slot)
+                 store slot' w
+              | (i,w) <- zip [1..] middle
+              ]
+            --Update lst
+            slot' <- waddK (length ws) (return slot)
+            old <- wop2 "and" (return lstMask) (load slot')
+            store slot' <$> (wop2 "or" (return lst) $ return old)
+          emit $ IR1.Ifte () off irThen irElse
+    _ -> do
+      --If len mod 32 + off > 32 then the value is stored across |ws|+1
+      --words; otherwise it's stored across |ws| words.
+      --In the former case we can use deconstruct32 to get the shifted value.
+      let spare = len `mod` 32
+          bound = 32 - spare
+      cond <- wop2 "lt" (wword bound) (return off)
+      (_,irElse) <- isolate $ do
+        comment "No spillover in *storagePtr = v:non32"
+        --debugReturn $ wword 0xdeadbeef
+        --the value is stored across |ws| words
+        --TODO check: should leftshift and rightshift be the same as in irThen?
+        rightshift <- wop2 "shl" (wword 3) $
+                      wop2 "and" (wword 31) $
+                      wop2 "add" (wword spare) $ return off
+        leftshift <- wop2 "and" (wword 255) $
+                     wop2 "sub" (wword 256) (return rightshift)
+        ws' <- deconstructNon32 leftshift rightshift ws
+        --debugReturns $ [wword $ length ws] ++ map return ws ++ [wword 0xbbcc]
+        --  ++ map return ws'
+        --There are two scenarios: either ws' = [w], which is both the first
+        --and last word, or it consists of fst:(8*spare+leftshift bits),
+        --n whole middle words and lst: relevant << leftshift
+        case ws' of
+          [w] -> do
+            comment "Writing single word"
+            mask <- wop1 "not" $
+                    wop2 "shl" (return leftshift) $ wword (2 ^ (8*spare) - 1)
+            new <- (wop2 "or" (wop2 "and" (return mask) (load slot))
+                     (return w))
+            --debugReturns [return new, return mask, return w]
+            store slot new
+            --comment "If there's not a *store before this I'll be confused"
+          fst:rest -> do
+            --debugReturn $ wword 0xbead00bee
+            comment "Writing multiple words"
+            let middle = init rest
+                lst = last rest
+            not0 <- wop1 "not" (wword 0)
+            --8*spare + leftshift bits of fst are relevant
+            fstMask <- wop2 "shl" (wop2 "add" (wword $ 8*spare)
+                                   (return leftshift))
+                       (return not0)
+            --lstMask is unchanged vs other cases
+            lstMask <- wop2 "shr" (return rightshift) (return not0)
+            comment "Writing:"
+            --Modify first word
+            (wop2 "or" (wop2 "and" (return fstMask) (load slot)))
+              (return fst) >>= store slot
+            --Store middle words
+            sequence_ [
+              do slot' <- waddK i (return slot)
+                 store slot' w
+              | (i,w) <- zip [1..] middle
+              ]
+            --Modify last word
+            slot' <- waddK (length ws) (return slot)
+            new <- wop2 "or"
+                   (wop2 "and" (return lstMask) (load slot'))
+                   (return lst)
+            store slot' new
+      (_,irThen) <- isolate $ do
+        comment $ "Spillover in *storagePtr=v:non32"
+        --the value is stored across |ws|+1 words
+        --Consider a 16b value at offset 17; one byte would spill over into
+        --the next word, so the leftshift,rightshift would be 31, 1.
+        --Generally, rightshift is 8*((spare + off) mod 32);
+        --leftshift is 8*(32-that).
+        rightshift <- wop2 "shl" (wword 3) $
+                      wop2 "and" (wword 31) $
+                      wop2 "add" (wword spare) $ return off
+        leftshift <- wop2 "sub" (wword 256) (return rightshift)
+        ws' <- deconstruct32 leftshift rightshift ws
+        --Only spare of the bytes of the first word are relevant, but that's
+        --decreased by rightshift
+        not0 <- wop1 "not" $ wword 0
+        fstMask <- wop2 "shl" (wop2 "sub" (wword $ 8*spare)
+                               (return rightshift)) (return not0)
+        --The mask for the last word is unchanged vs len = 32n.
+        --Common subexpression elimination would be nice here...
+        lstMask <- wop2 "shr" (return rightshift) (return not0)
+        let fst = head ws'
+            middle = init $ tail ws'
+            lst = last ws'
+        comment "Writing:"
+        --Modify first word
+        old <- wop2 "and" (return fstMask) (load slot)
+        wop2 "or" (return fst) (return old) >>= store slot
+        --Store middle words
+        sequence_ [
+          do slot' <- waddK i (return slot)
+             store slot' w
+          | (i,w) <- zip [1..] middle
+          ]
+        --Modify last word
+        slot' <- waddK (length ws) (return slot)
+        old <- wop2 "and" (return lstMask) (load slot')
+        wop2 "or" (return lst) (return old) >>= store slot'
+      emit $ IR1.Ifte () cond irThen irElse
+
+--EVM code to return a given expr, useful when staring at the output fails
+debugReturns :: [Seq Name] -> Seq ()
+debugReturns es = do
+  comment "A debug return, you probably shouldn't have this in your output"
+  ws <- sequence es
+  sequence_ [
+    do ix <- wword $ i * 32
+       mstore ix w
+    | (i,w) <- zip [0..] ws
+    ]
+  z <- wword 0
+  bytelen <- wword $ 32 * length es
+  emitOp callOutState (Opcode "return") $ callInState ++ [z,bytelen]
+  return ()
+debugReturn :: Seq Name -> Seq ()
+debugReturn e = debugReturns [e]
+      
+--Shifts ws (containing a value that's a whole number of words, so there are
+--no irrelevant bits) left by leftshift, a multiple of 8 <= 248.
+--It takes leftshift and rightshift as arguments to avoid recomputation.
+--out[0] = ws[0] >> rightshift
+--out[i] = ws[i-1] << leftshift | ws[i] >> rightshift
+--out[|ws]] = ws[|ws|-1] << leftshift
+--Precondition: |ws| > 0
+deconstruct32 :: Name -> Name -> [Name] -> Seq [Name]
+deconstruct32 leftshift rightshift ws@(hd:tl) = do
+  out <- wop2 "shr" (return rightshift) $ return hd
+  outs <- go ws tl
+  return $ out:outs
+    where
+      go :: [Name] -> [Name] -> Seq [Name]
+      go (w:ws) (w':ws') = do
+        out <- wop2 "or" (wop2 "shl" (return leftshift) (return w)) $
+               wop2 "shr" (return rightshift) (return w')
+        outs <- go ws ws'
+        return $ out:outs
+      go [w] [] = (:[]) <$> wop2 "shl" (return leftshift) (return w)
+--For left-shifting a value where the top word doesn't spill over into a new
+--word.
+--The init of ws is left-shifted and or'd with the tail;
+--the last element is just left-shifted.
+deconstructNon32 :: Name -> Name -> [Name] -> Seq [Name]
+deconstructNon32 leftshift rightshift ws =
+  case ws of
+    [w] -> (:[]) <$> wop2 "shl" (return leftshift) (return w)
+    hd:tl -> do
+      let lefts = init ws
+          lst = last ws --equivalent to last tl...
+      lefts' <- mapM (wop2 "shl" (return leftshift)) $ map return lefts
+      rights <- mapM (wop2 "shr" (return rightshift)) $ map return tl
+      prefix <- zipWithM (wop2 "or") (map return lefts') (map return rights)
+      lst' <- wop2 "shl" (return leftshift) (return lst)
+      return $ prefix ++ [lst']
+      
 --The compilation schemes for simple primfuns (where their argument is evaluated
 --normally rather than short-circuited).
 --Badargs should lead to a Seq exception.
@@ -1107,12 +2092,150 @@ simplePFs = M.fromList [
       case (t,ws) of
         (Pair t1@(Int s1 len1) t2@(Int s2 len2),[w1,w2]) ->
           pfMathOp "add" t1 t2 (w1,w2)
+        --ptr_a + n => ptr + sizeof(a) * n
+        (Pair (Ptr r a) (Int s len), [wptr,wn]) -> do
+          sz <- numBytesT a
+          off <- wop2 "mul" (wword sz) (return wn)
+          ptr' <- wmask 16 $ wop2 "add" (return off) (return wptr)
+          return (Ptr r a, [ptr'])
         _ -> throwE $ BadArgPrimFun "+" t),
-  --Recall: mul/smul, div/sdiv need special treatment
+  --Unary - OTOH is *not* vestigial
+  ("-",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int{}) t2@(Int{}), [w1,w2]) ->
+          pfMathOp "sub" t1 t2 (w1,w2)
+        (Pair (Ptr r a) (Int s len), [wptr,wn]) -> do
+          sz <- numBytesT a
+          off <- wop2 "mul" (wword sz) (return wn)
+          ptr' <- wmask 16 $ wop2 "sub" (return wptr) (return off)
+          return (Ptr r a, [ptr'])
+        --Note negation does not change the result type to signed;
+        --(-1) should be 255 :: Byte
+        (Int s len, [w]) -> do
+          w' <- wmask (fromInteger len) $
+                wop2 "sub" (wword 0) (return w)
+          return (Int s len, [w'])
+        --Note this error may also be thrown if the argument is of the right
+        --type but has the wrong number of words...
+        _ -> throwE $ BadArgPrimFun "-" t),
+  --I special-case unary * (deref) in desugar so I don't need to handle it
+  --here... perhaps a mistake.
+  ("*",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int{}) t2@(Int{}), [w1,w2]) ->
+          pfMathOp "mul" t1 t2 (w1,w2)
+        _ -> throwE $ BadArgPrimFun "*" t),
+  --Use sdiv if numerator is signed
+  --w2 is softCoerced to a Word, so it may be signextended
+  ("/",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int s len) t2@(Int{}), [w1,w2]) -> do
+          --w1 also needs to be signextended!
+          w1's <- softCoerce (UInt 256) t1 [w1]
+          let [w1'] = w1's
+          w2's <- softCoerce (UInt 256) t2 [w2]
+          let [w2'] = w2's
+          comment (if s == "Signed"
+                    then "Should be sdiv"
+                    else "Should be div")
+          dividend <- wmask (fromInteger len) $
+                      wop2 (if s == "Signed"
+                            then "sdiv"
+                            else "div") (return w1') (return w2')
+          return (t1,[dividend])
+        _ -> throwE $ BadArgPrimFun "/" t),
+  --Use smod if numerator is signed; may also signextend w2
+  ("%",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int s len) t2@(Int{}), [w1,w2]) -> do
+          w2's <- softCoerce (UInt 256) t2 [w2]
+          let [w2'] = w2's
+          modulus <- wmask (fromInteger len) $
+                     wop2 (if s == "Signed"
+                           then "smod"
+                           else "mod") (return w1) (return w2')
+          return (t1,[modulus])
+        _ -> throwE $ BadArgPrimFun "%" t),
+  --Shift preserves the type of the first argument;
+  --you might think 1 << 8 == 256, but in fact it's 0.
+  --The shift value is treated as a word but not signextended;
+  --(1 :: Word) << (-1) == 2 ** 255
+  ("<<",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int _ len) t2@(Int{}), [w1,w2]) -> do
+          res <- wmask (fromInteger len) $ wop2 "shl" (return w1) (return w2)
+          return (t1,[res])
+        _ -> throwE $ BadArgPrimFun "<<" t),
+  (">>",\t ws ->
+      case (t,ws) of
+        (Pair t1@(Int _ len) t2@(Int{}), [w1,w2]) -> do
+          res <- wop2 "shr" (return w1) (return w2)
+          return (t1,[res])
+        _ -> throwE $ BadArgPrimFun ">>" t),
   --Binary bitwise ops
   ("&", binaryBitOp "&" "and" False),
   ("|", binaryBitOp "|" "or" True),
   ("^", binaryBitOp "^" "xor" True),
+  --Bitwise NOT, only applicable to ints (unlike !)
+  ("~",\t ws ->
+      case (t,ws) of
+        (Int s len, [w]) -> do
+          w' <- wmask (fromInteger len) $ wop1 "not" (return w)
+          return (Int s len, [w'])
+        _ -> throwE $ BadArgPrimFun "~" t),
+  --Relational operators
+  --All relations return a uint8
+  --Deviation from C: == is supported for any two types and compares the
+  --bitpattern; pad the shorter type with 0 words.
+  --If a has more words than b, check they're all 0 using iszero (w1 | w2 ...);
+  --and that with the result.
+  --For the shared words as bs, as[1] eq bs[1] & ... 
+  --I can use Reduce here, allowing better codegen in future.
+  ("==", primEq "=="),
+  ("!=",\t ws -> do
+      (_,ress) <- primEq "!=" t ws
+      let [res] = ress
+      res' <- wop1 "iszero" $ return res
+      return (UInt 8, [res'])),
+  --Todo opt: gt(a,b) and lt(b,a) are interchangeable
+  --Applicable only to any pair of Int types and to pointers of equal type.
+  --When comparing ints, softCoerce both to Word (i.e. signextend if
+  --necessary), then apply sgt if either argument is signed.
+  (">",\t ws -> do
+      comp <- primCompare ">" "gt" "sgt" t ws
+      return (UInt 8, [comp])
+  ),
+  ("<",\t ws -> do
+      comp <- primCompare "<" "lt" "slt" t ws
+      return (UInt 8, [comp])
+  ),
+  --(>=) lacks primitive support, so it must be implemented using or eq.
+  (">=",\t ws ->
+      case ws of
+        [w1,w2] -> do
+          comp <- primCompare ">=" "gt" "sgt" t ws
+          eq <- wop2 "eq" (return w1) (return w2)
+          res <- wop2 "or" (return eq) (return comp)
+          return (UInt 8, [res])
+        _ -> throwE $ BadArgPrimFun ">=" t),
+  ("<=",\t ws ->
+      case ws of
+        [w1,w2] -> do
+          comp <- primCompare "<=" "lt" "slt" t ws
+          eq <- wop2 "eq" (return w1) (return w2)
+          res <- wop2 "or" (return eq) (return comp)
+          return (UInt 8, [res])
+        _ -> throwE $ BadArgPrimFun "<=" t),
+  --Logical not, applicable to any type; equals iszero truthy
+  --Always returns a uint8
+  --Unintuitive behavior: a ! b desugars to !(a,b)
+  ("!",\_ ws -> do
+      bool <- wop1 "iszero" $ wreduce "or" ws
+      return (UInt 8, [bool])),
+  --The inverse of !_, truthy
+  ("truthy",\_ ws -> do
+      bool <- wop1 "iszero" $ wop1 "iszero" $ wreduce "or" ws
+      return (UInt 8, [bool])),
   --Pointer derefence
   ("deref",derefPtr),
   --Branching primfuns; they can be simple because the IR is unaware of
@@ -1121,7 +2244,7 @@ simplePFs = M.fromList [
   ("evm_return",\t ws ->
       case (t,ws) of
         (Pair (Ptr Memory a) (UInt blen), [p,len]) -> do
-          emit $ EVM_RETURN () "$mem" p len
+          emit $ EVM_RETURN () "$mem" "$sto" "$tsto" "$ext" p len
           return (Struct [], [])
         _ -> throwE $ BadArgPrimFun "evm_return" t),
   --Generic copy operation, to integrate all *copy instructions except
@@ -1139,15 +2262,82 @@ simplePFs = M.fromList [
               let [n] = nws
               bytesz <- numBytesT a
               tot <- runEDSLW $ mulK bytesz (EVar n)
+              let f op = emitOp [("$mem",Mem)] (Opcode op)
+                         ["$mem",pto,pfrom,tot]
               case r of
-                Memory ->
-                  emitOp [("$mem",Mem)] (Opcode "mcopy")
-                    ["$mem",pto,pfrom,tot]
-                Code -> emitOp [("$mem",Mem)] (Opcode "codecopy")
-                  [pto,pfrom,tot]
+                Memory -> f "mcopy"
+                Code -> f "codecopy"
+                Calldata -> f "calldatacopy"
+                --Since returndata is mutable, I should also add a $rd
+                --state variable... $ext is not sufficient since
+                --staticcall shouldn't mutate it.
                 _ -> error $ "Compiler error: todo in copy " ++ show r
-              return (Struct [], []))
+              return (Struct [], [])),
+    --(MPtr a, Int{}) -> Word
+    ("sha3",\t ws ->
+        case t of
+          Pair (Ptr Memory a) (Int{}) -> do
+            let [ptr,len] = ws
+            h <- newAnonVar
+            emitOp [(h,tword)] (Opcode "sha3") ["$mem",ptr,len]
+            return (UInt 256, [h]))
   ]
+
+--The primfun is for error reporting since this is also used in !=
+primEq :: Name -> T -> [Name] -> Seq (T,[Name])
+primEq primfun t ws =
+  case t of
+    Pair t1 t2 -> do
+      n1 <- numWordsT t1
+      let ws1 = take n1 ws
+          ws2 = drop n1 ws
+          n2 = length ws2
+          as = if (n1 > n2)
+               then drop (n1-n2) ws1
+               else ws1
+          bs = if (n2 > n1)
+               then drop (n2-n1) ws2
+               else ws2
+          excess = case () of
+                     _ | n1 > n2 -> take (n1-n2) ws1
+                       | n2 > n2 -> take (n2-n1) ws2
+                       | let -> []
+      --Compare shared words
+      bools <- zipWithM (\a b -> wop2 "eq" (return a) (return b))
+               as bs
+      bool <- wreduce "and" bools
+      if null excess
+        then return (UInt 8, [bool])
+        else do
+        cond <- wop1 "iszero" $ wreduce "or" excess
+        ret <- wop2 "and" (return cond) (return bool)
+        return (UInt 8, [ret])
+    _ -> throwE $ BadArgPrimFun primfun t
+
+--Supports only comparison of any two int types and of pointers of equal type.
+--Deviation from C: my positive integer literals are unsigned by default;
+--to ensure (1 > (-1)) has the expected result, signed comparison is used if
+--either argument is signed.
+primCompare :: Name ->   --The operator primCompare is being used to implement
+               String -> --Unsigned comparison opcode
+               String -> --Signed comparison opcode
+               T ->      --Type of argument to operator (should be a pair)
+               [Name] -> --The value of the argument (should be 2 words)
+               Seq Name  --The result, a single uint8
+primCompare primfun comp compSigned t ws =
+  case (t,ws) of
+    (Pair t1@(Int s1 _) t2@(Int s2 _),[w1,w2]) -> do
+        w1's <- softCoerce (UInt 256) t1 [w1]
+        let [w1'] = w1's
+        w2's <- softCoerce (UInt 256) t2 [w2]
+        let [w2'] = w2's
+        wop2 (if "Signed" `elem` [s1,s2]
+              then compSigned
+              else comp) (return w1') (return w2')
+    (Pair p1@(Ptr{}) p2@(Ptr{}), [pw1,pw2])
+      | p1 == p2 -> wop2 comp (return pw1) (return pw2)
+    _ -> throwE $ BadArgPrimFun primfun t
+    
 --Pointer type, pointer word (singular) -> *ptr
 --All regions are byte-addressed starting from 0; all values stored in a
 --region are byte-padded, with their first byte starting at address p.
@@ -1172,8 +2362,8 @@ derefPtr (Ptr r a) [w] = do
   ws <- case r of
           Memory -> derefMem mload sz w
           Calldata -> derefMem calldataload sz w
-          Storage -> error"Compiler error: derefPtr storage not supported yet"
-          TStorage -> error"Compiler error: derefPtr tstorage not supported yet"
+          Storage -> derefSto sload (sz`div`8) w
+          TStorage -> derefSto tload (sz`div`8) w
           _ -> throwE $ GenericError $ "Region does not support deref: " ++
                show r
   ws' <- coerceValue a ws
@@ -1461,6 +2651,27 @@ derefBytes off bs ptr
                            return (0,[w])
                    else do w <- mload ptr
                            return (cr-off,[w])
+
+--TODO deduplicate
+sload :: Name -> Seq Name
+sload addr = do
+  res <- newAnonVar
+  emitOp [("$sto",Sto),(res,tword)] (Opcode "sload") ["$sto",addr]
+  return res
+sstore :: Name -> Name -> Seq ()
+sstore addr val = do
+  emitOp [("$sto",Sto)] (Opcode "sstore") ["$sto",addr,val]
+  return ()
+tload :: Name -> Seq Name
+tload addr = do
+  res <- newAnonVar
+  emitOp [("$tsto",TSto),(res,tword)] (Opcode "tload") ["$tsto",addr]
+  return res
+tstore :: Name -> Name -> Seq ()
+tstore addr val = do
+  emitOp [("$tsto",TSto)] (Opcode "tstore") ["$tsto",addr,val]
+  return ()
+
 --($mem,result) = mload ($mem,addr)
 --TODO first tree shake away unused mloads, then force the next write to be
 --placed after all remaining ones.
@@ -1524,9 +2735,6 @@ assignPtr ptr t ws = do
                mstore ptr' w'
             | (off,w') <- zip (map (+bsFst) $ map (32*) [0..]) ws'
             ]
-    
---Implements *ptr#ix* = v
-assignPtrFields = error "TODO"
 
 --Scheme: (a,b) -> a; combine a with b starting with the lowest words
 --If b is longer than a and a is not a whole number of words, mask the
@@ -1597,7 +2805,7 @@ pfMathOp opcode int1@(Int{}) int2@(Int{}) (w1,w2) = do
   w <- if len < 256
        then fst <$> (runEDSL $ mask (fromInteger len) $ EVar v)
        else return v
-  return (tres,[v])
+  return (tres,[w])
 
 truthyE :: E -> Seq Name
 truthyE e = do
@@ -1627,6 +2835,13 @@ assign x ws = do
       sequence_ [emitOp [(x ++ "#" ++ show n, W n t)] Copy [w]
                 | (n,w) <- zip [1..] ws]
     _ -> throwE $ BadFirstRHSInAssign x mt ws
+--x = y at the IR level; I need this to return words from expressions
+--containing iftes.
+--Also need to pass the IRT of x in case x has already been assigned.
+copyTo :: IRT -> Name -> Name -> Seq ()
+copyTo irt x y = do
+  emitOp [(x,irt)] Copy [y]
+  return ()
 
 --target type, source type, words of source value
 --Supported coercion: any int -> int, any struct -> struct
@@ -1639,7 +2854,11 @@ for nth field = name, t in target:
 Note result.field = source.field also involves soft coercion
 -}
 softCoerce :: T -> T -> [Name] -> Seq [Name]
---When lengthening to a signed int, signextend
+--When lengthening *from* a signed int to any int, signextend
+--Caught bug: (-1 :: SInt 8) should of course still be -1 when coerced to
+--a Word.
+--Signextend takes the little-endian byte index of the byte with the sign bit...
+--that means only an int(8*x) can be signextended.
 --When shortening any int, mask
 --TODO: when it would shorten code sufficiently, replace mask with shl,shr
 softCoerce target source ws
@@ -1648,9 +2867,26 @@ softCoerce target source ws
     Int s2 len2 <- source,
     [w] <- ws =
       case () of
-        _ | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
-          | len1 > len2, s1 == "Signed" ->
-            runEDSLWord $ signextend (word $ fromIntegral len1) (EVar w)
+        --Special case for 0 needed to avoid breaking signextend
+        --Should int0 even be an acceptable type..?
+        _ | len1 == 0 -> return [] --int0s have a zero-word repr
+          | len2 == 0 -> do
+              z <- wword 0
+              return [z]
+          | len1 < len2 -> runEDSLWord $ fromInteger len1 `lowestBits` (EVar w)
+          | len1 > len2, s2 == "Signed" ->
+            --What happens if you extend from an int8 to an int15?
+            --If the int8 is negative, the sign bit in the int15 will still be
+            --1.
+            if (len2 `mod` 8) /= 0
+            then throwE $ GenericError $
+                 "Signed ints which aren't a whole number of bytes can't be "
+                 ++ "signextended: " ++ show (target,source,ws)
+            else do
+              let byteIx = (len2 `div` 8) - 1
+              --signextend always extends to 256b, so we must mask as well.
+              w' <- wmask len1 $ wop2 "signextend" (wword byteIx) (return w)
+              return [w']
           | let -> runEDSLWord $ coerce (W 1 target) (EVar w)
   --Adding general tuple coercion
   --Goal: {2,3} can be coerced to {foo: Word, bar: Word}
@@ -1671,6 +2907,19 @@ unTupleT = \case
             (t:) <$> go padmnmts
           _ -> Nothing
 
+--Unsafe coercion of values in EVMC;
+--drops words if #words of the target type is lower,
+--pads with zero words if it's higher.
+--Does not do any masking, so 256 :! Byte will have an invalid bitpattern.
+evmcUnsafeCoerce :: T -> [Name] -> Seq [Name]
+evmcUnsafeCoerce t ws = do
+  n <- numWordsT t
+  let len = length ws
+  if len >= n
+    then return $ drop (len-n) ws
+    else do
+    z <- wword 0
+    return $ replicate (n-len) z ++ ws
 --Scheme: for each field in target, softCoerce source field and then coerce
 --to tuple words.
 --I'll add a restriction for now: require the lenghts are equal.
@@ -2299,7 +3548,9 @@ runEDSL = \case
   EVar nm -> do
     mt <- M.lookup nm <$> gets irLocalTypes
     case mt of
-      Nothing -> throwE $ Couldn'tLookupVarTypeInEDSL nm
+      Nothing ->
+        --return (nm,W 1 "Bad")
+        throwE $ Couldn'tLookupVarTypeInEDSL nm
       Just t -> return (nm,t)
   App op ty arges -> do
     es <- mapM runEDSL arges
@@ -2319,6 +3570,9 @@ typedAnonVar irt = do
   return (v,irt)
 
 type Expr = EDSL EVar
+--TODO transition to just using Seq directly...
+wword :: Integral n => n -> Seq Name
+wword k = runEDSLW $ word k
 word :: Integral n => n -> Expr
 word k = head <$> App (Push $ Const $ fromIntegral k) (\_ -> Just [tword]) []
 tword = W 1 (UInt 256)
@@ -2347,6 +3601,11 @@ shl = op2 "shl"
 shr = op2 "shr"
 (&) = op2 "and"
 (.|) = op2 "or"
+
+wshift :: Int -> Seq Name -> Seq Name
+wshift n e = do
+  v <- e
+  runEDSLW $ shift n (EVar v)
 --Utility function: shift n shifts an EVar n bits left (or right if n is
 --negative)
 --If n > 256 or < -256, returns 0
@@ -2358,11 +3617,20 @@ shift n e
   | n == 0 = e
   | n < 0 = shr (word $ fromIntegral $ negate n) e
 
+wreduce :: String -> [Name] -> Seq Name
+wreduce opcode ws = do
+  v <- newAnonVar
+  emitOp [(v,tword)] (Reduce opcode) ws
+  return v
 op1 :: String -> Expr -> Expr
 op1 opcode a = do
   [v] <- App (Opcode opcode) (\case [W{}] -> Just [tword]
                                     _ -> Nothing) [a]
   return v
+wop1 :: String -> Seq Name -> Seq Name
+wop1 opcode a = do
+  w <- a
+  runEDSLW $ op1 opcode (EVar w)
 --Useful variant: op2 embedded in Seq
 wop2 :: String -> Seq Name -> Seq Name -> Seq Name
 wop2 op e1 e2 = do
@@ -2400,15 +3668,26 @@ signextend = op2 "signextend"
 --Synonym for lowestBits:
 mask :: Int -> Expr -> Expr
 mask = lowestBits
+wmask :: Integral n => n -> Seq Name -> Seq Name
+wmask 0 _ = wword 0
+wmask 256 e = e
+wmask len e = do
+  w <- e
+  runEDSLW $ maskValue len & EVar w
 lowestBits :: Int -> Expr -> Expr
 --Opt: if len = 0, just return 0 (but don't discard potential side effects in
 --e)
 lowestBits 0 e = e >> word 0
 lowestBits 256 e = e
 lowestBits len e = maskValue len & e
-maskValue :: Int -> Expr
+maskValue :: Integral n => n -> Expr
 maskValue 256 = op1 "not" (word 0) --special case: 30 bytes saved for 3 gas
 maskValue len = word $ 2 ^ len - 1
+
+waddK :: Integral n => n -> Seq Name -> Seq Name
+waddK k e = do
+  w <- e
+  runEDSLW $ addK k (EVar w)
 --k + x
 addK :: Integral n => n -> Expr -> Expr
 addK 0 e = e
@@ -2551,17 +3830,17 @@ data NameInfo = IsFunction T
               | IsTySyn --ditto
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
-primFunSet = M.keysSet simplePFs {-S.fromList $ concat $ map words [
-  --Ptr primops
-  "deref",
-  --Mathops
-  "+ * - / negate %",
-  --Logops (with short-circuiting)
-  "&& || !",
-  --Bitops
-  "& | ~ ^"
-  --TODO: EVM ops
-  ]-}
+primFunSet = M.keysSet simplePFs `S.union` S.fromList ["&&","||"]
+
+--Given a constructor name, returns its (tag,argT,tycon,fst param,rest)
+--Fails if there's no such constructor
+getConInfo :: Name -> Seq (Int,T,Name,Name,[Name])
+getConInfo nm = do
+  cons <- constructors <$> seqrModule <$> ask
+  case M.lookup nm cons of
+    Nothing -> throwE $ GenericError $
+               "No such constructor: " ++ nm
+    Just x -> return x
 
 getCNameInfo :: Name -> Seq NameInfo
 getCNameInfo nm
@@ -2600,6 +3879,9 @@ numBitsT = \case
                        return (pad,al,sz)) padnmts
     let (sz,structure) = B.structLayout padalszs
     return sz
+  --Currently the only other use of :$$ is datatypes, which are just wrapped
+  --pointers. That will change once I add Proxy a
+  _ :$$ _ -> return 16
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 

@@ -17,6 +17,8 @@ import E.ErrM
 %name pListDataCon ListDataCon
 %name pConLHS ConLHS
 %name pDataCon DataCon
+%name pListEnumCon ListEnumCon
+%name pEnumCon EnumCon
 %name pS S
 %name pListS ListS
 %name pListCASE ListCASE
@@ -55,21 +57,22 @@ import E.ErrM
   'do' { PT _ (TS _ 19) }
   'else' { PT _ (TS _ 20) }
   'end' { PT _ (TS _ 21) }
-  'if' { PT _ (TS _ 22) }
-  'import' { PT _ (TS _ 23) }
-  'memory' { PT _ (TS _ 24) }
-  'module' { PT _ (TS _ 25) }
-  'of' { PT _ (TS _ 26) }
-  'pad' { PT _ (TS _ 27) }
-  'return' { PT _ (TS _ 28) }
-  'storage' { PT _ (TS _ 29) }
-  'then' { PT _ (TS _ 30) }
-  'tstorage' { PT _ (TS _ 31) }
-  'type' { PT _ (TS _ 32) }
-  'while' { PT _ (TS _ 33) }
-  'word' { PT _ (TS _ 34) }
-  '{' { PT _ (TS _ 35) }
-  '}' { PT _ (TS _ 36) }
+  'enum' { PT _ (TS _ 22) }
+  'if' { PT _ (TS _ 23) }
+  'import' { PT _ (TS _ 24) }
+  'memory' { PT _ (TS _ 25) }
+  'module' { PT _ (TS _ 26) }
+  'of' { PT _ (TS _ 27) }
+  'pad' { PT _ (TS _ 28) }
+  'return' { PT _ (TS _ 29) }
+  'storage' { PT _ (TS _ 30) }
+  'then' { PT _ (TS _ 31) }
+  'tstorage' { PT _ (TS _ 32) }
+  'type' { PT _ (TS _ 33) }
+  'while' { PT _ (TS _ 34) }
+  'word' { PT _ (TS _ 35) }
+  '{' { PT _ (TS _ 36) }
+  '}' { PT _ (TS _ 37) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -99,6 +102,7 @@ D : Ident E3 ':=' S { E.Abs.Defun $1 $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion Ident ':' E { E.Abs.Global $1 $2 $4 }
   | 'data' ConLHS '=' '{' ListDataCon '}' { E.Abs.Data $2 $5 }
+  | 'enum' UIdent '{' ListEnumCon '}' { E.Abs.Enum $2 $4 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
@@ -118,6 +122,12 @@ ConLHS : UIdent Ident { E.Abs.CLNil $1 $2 }
        | ConLHS Ident { E.Abs.CLCons $1 $2 }
 DataCon :: { DataCon }
 DataCon : UIdent E3 { E.Abs.DC $1 $2 }
+ListEnumCon :: { [EnumCon] }
+ListEnumCon : {- empty -} { [] }
+            | EnumCon { (:[]) $1 }
+            | EnumCon ',' ListEnumCon { (:) $1 $3 }
+EnumCon :: { EnumCon }
+EnumCon : Ident { E.Abs.EC $1 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }
