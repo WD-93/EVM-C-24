@@ -5,6 +5,7 @@ Making them 16b would let me avoid looking at anything but type structure to get
 already always 16b on the stack. Enums with function values would let me restrict an API to a limited set of
 functions.
 newtype would require fixing pure sizeof.
+Implemented enums, changed size to 8b - making them more convenient for type tags and non-case instrs.
 
 Interpretation:
 dispatch(S) :=

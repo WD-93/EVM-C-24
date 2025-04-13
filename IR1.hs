@@ -630,9 +630,10 @@ pureSz = \case
                             in (pad,al,sz)) padnmts
         (sz,structure) = B.structLayout padalszs
     in sz
-  --Datatypes are just wrapped pointers
-  TyCon _ -> 16
+  --All datatypes are applied
   _ :$$ _ -> 16
+  --Only enums are standalone tycons, and they're all 8b
+  TyCon _ -> 8
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 
@@ -3891,7 +3892,7 @@ numBitsT = \case
   --pointers. That will change once I add Proxy a
   _ :$$ _ -> return 16
   --Only enums are unapplied tycons for now
-  TyCon _ -> return 16
+  TyCon _ -> return 8
   t -> error $ "Compiler error: undefd numBitsT for " ++ show t
 
 

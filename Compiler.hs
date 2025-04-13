@@ -311,7 +311,7 @@ data DError = TySigDefunMismatch Name Name
             | StandaloneConstructorName String
             | DuplicateConstructors Name
             | BadPatternInCase P.E
-            | MoreThan65535EnumNamesInOneEnum
+            | MoreThan256EnumNamesInOneEnum
             -- ^A helpful message on the off chance whoever triggers it isn't
             --fuzzing for vulns
             | DuplicateEnumName Name Name
@@ -387,15 +387,15 @@ desugarDs (P.Data lhs rhs : rest) = do
   s <- get
   put s{datatypes = M.insert tycon (params,conmts) $ datatypes s}
   desugarDs rest
---Enums are currently 16b by default and have values 0..|ecs|-1.
+--Enums are currently 8b by default and have values 0..|ecs|-1.
 --Ways enum can fail:
 --tycon or member collision with existing value;
 --duplicate member names;
--- >65535 constructors
+-- >256 constructors
 desugarDs ((P.Enum (UIdent tycon) ecs):rest) = do
   let nms = map (\(P.EC (Ident nm)) -> nm) ecs
-  if length nms > 65535
-    then throwE MoreThan65535EnumNamesInOneEnum
+  if length nms > 256
+    then throwE MoreThan256EnumNamesInOneEnum
     else return ()
   case filter ((>1) . snd) $ count nms of
     (nm,_):_ -> throwE $ DuplicateEnumName tycon nm
