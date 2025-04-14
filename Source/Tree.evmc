@@ -31,7 +31,7 @@ storage merkleRoot : Hash;
 --object bytes len: uint16
 --object data: byte[len]
 main:()->();
-main() := do {
+main() := do { 
  --Initialize object pointer table, load object bytes into memory
  otblSize = *(0 :: CPtr Short);
  obytesLen = *(2 :: CPtr Short);
@@ -41,21 +41,21 @@ main() := do {
  loadScript = (obytesLen + 4) :: CPtr LoadInstr; --todo check for overflow
 
  --Load the objects into the object table
- load((loadScript,obytes,otable),otable+otblSize)
+ load((loadScript,obytes :: OPtr,otable),otable+otblSize) 
 };
 
 type LoadS = (CPtr LoadInstr,OPtr,MPtr OPtr);
-load : (LoadS,OPtr) -> (LoadS,Hash);
-load((pc,oin,otbl),bound) := do {
- loadInstr = *pc;
+load : (LoadS, MPtr OPtr) -> (LoadS,Hash);
+load((pc,oin,otbl),bound) := do { 
+ loadInstr = *pc; 
  if loadInstr
  then do { --load object; base case
   h = hashObject(oin);
-  pc = pc + 1;
+  pc = pc + 1; 
   --Push the object to the object pointer table
   otbl = pushObject(otbl,bound,oin);
   oin = ((oin :: UInt 16) + lenObject(oin)) :: OPtr;
-  return ((pc,oin,otbl),h)
+  return ((pc,oin,otbl),h) 
  } else do { --load node; recurse twice
   pc = pc + 1;
   ((pc2,oin2,otbl2),h1) = load ((pc,oin,otbl),bound);
@@ -63,7 +63,7 @@ load((pc,oin,otbl),bound) := do {
   h = hash2(h1,h2);
   return ((pc3,oin3,otbl3),h)
  }
- end
+ end 
 };
 --The bound ensures you can't corrupt objects by pushing to the otbl
 --TODO add revert...
@@ -75,13 +75,13 @@ pushObject(otbl,bound,obj):=
   otbl = otbl + 1;
   return otbl
   } else evm_return(0::MPtr(),0)
-  end;
+  end; 
 --Only valid when the object is unlinked...
 hashObject:OPtr -> Hash;
 hashObject(optr):= do {
  ohdr = *optr;
  if ohdr.otype == otMerkle
- then return *(optr :: Ptr OMerkle).hash
+ then return (*(optr :: MPtr OMerkle)).hash
  else return sha3(optr,ohdr.sz)
  end
 };
@@ -94,6 +94,6 @@ hash2(h1,h2):= do {
  return sha3(0::MPtr(),64)
 };
 --Inlining would be very nice to have...
-lenObject:Optr->Short;
-lenObject(optr):= return *optr.sz
+lenObject:OPtr->Short;
+lenObject(optr):= return (*optr).sz
 }

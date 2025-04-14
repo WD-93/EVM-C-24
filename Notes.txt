@@ -10,6 +10,18 @@ It calls substTySynsM... AHA, I missed an apostrophe on targsPrefix,suffix = tak
 failing to recursively substitute the arguments!
 TODO deduplicate substTySynT in the where and the other subst function.
 
+TODO fix parsing precedence of *ptr.field; it should be (*ptr).field?
+TODO (big effort...): pass line-col info and position in parse tree to errors (possible in BNFC?).
+If I used hasCallStack and did some black magic with unsafePerformIO in the AST thunks...? There must be RW,
+a preexisting location monad...
+
+At this point need debugging tools in the JS API and EVMC itself. An analogue to the ABI for call and
+returndata; it needs to support strings, arrays, enums, datatypes, functions (and later other static data)
+and integers.
+The fact that programs can return a custom format and contain scripts complicates matters.
+Sounds like a good application domain for a Haskell DSL... might be a workshop paper in there if I can find a 
+neat trick.
+
 Missing feature: enums. Each data decl could implicitly declare an 8b enum type: tag_Con.
 Simplest: only support 8b enums. Use lowercase names.
 Extension: optional constant values rather than 0..n-1.

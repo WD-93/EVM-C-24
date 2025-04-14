@@ -109,7 +109,8 @@ duplicatedShowT = do
     SInt n -> "int"++show n
     a :-> b -> "(" ++ r a ++ " -> " ++ r b ++ ")"
     TyCon nm -> nm
-    tf :$$ tx -> r tf ++ " " ++ r tx
+    --TODO reconcile with showT; add smarter paren emission
+    tf :$$ tx -> r tf ++ " (" ++ r tx ++ ")"
     TyNat n -> show n
     tup | Just ts <- unTupleT tup ->
           "(" ++ intercalate ", " (map showT ts) ++ ")"

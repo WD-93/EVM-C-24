@@ -2280,7 +2280,13 @@ simplePFs = M.fromList [
                 --state variable... $ext is not sufficient since
                 --staticcall shouldn't mutate it.
                 _ -> error $ "Compiler error: todo in copy " ++ show r
-              return (Struct [], [])),
+              return (Struct [], [])
+          | let -> throwE $ GenericError $
+            "Pointer type mismatch in copy; (from,to): " ++ show (a,a')
+        _ -> throwE $ GenericError $
+             "Badarg to copy : (MPtr a, Ptr r a, Int{}) -> (); arg type: "
+             ++ show t
+  ),
     --(MPtr a, Int{}) -> Word
     ("sha3",\t ws ->
         case t of
