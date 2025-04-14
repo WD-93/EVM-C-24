@@ -188,6 +188,7 @@ seqModule mod = do
   --having been substituted away. However, they should still be in the
   --interface info.
   mod' <- handleTySyns mod
+  --error $ "Foo: " ++ show mod'
   let mod = mod'
   let fdefs = M.toList $ defuns mod
   checkDatatypesValidity $ datatypes mod
@@ -828,8 +829,8 @@ substTySynsM oldSyns syn = do
                 if argslen > length targs
                   then lift $ throwE $ InTySyn syn (UnderAppliedSyn nm)
                   else do
-                  let targsPrefix = take argslen targs
-                      targsSuffix = drop argslen targs
+                  let targsPrefix = take argslen targs'
+                      targsSuffix = drop argslen targs'
                       res = applyTySyn args template targsPrefix
                   return $ unCollectTyApps res targsSuffix
           Struct pnts ->
@@ -925,6 +926,7 @@ checkForCycles mod = do
         case staticNameInfo nm mod of
           IsPrimTyCon -> return ()
           IsTySyn -> return ()
+          IsEnum -> return ()
           IsUnbound -> Left $ InTySyn synnm (TyConOOS nm)
           ni -> error $ "Compiler error: unexpected name info for tycon"
       TyVar nm
@@ -971,6 +973,7 @@ staticNameInfo nm mod
   | S.member nm primTyCons = IsPrimTyCon
   | S.member nm primFunSet = IsPrimFun
   | M.member nm $ tysyns mod = IsTySyn
+  | M.member nm $ enums mod = IsEnum
   | Just (Defun _ t _ _) <- M.lookup nm $ defuns mod = IsFunction t
   | otherwise = IsUnbound
 
@@ -3834,6 +3837,7 @@ data NameInfo = IsFunction T
               | IsPrimTyCon --no kind info for now
               | IsTySyn --ditto
               | IsEnumName (Name,Int)
+              | IsEnum
   deriving (Eq,Ord,Read,Show)
 primFunSet :: Set Name
 primFunSet = M.keysSet simplePFs `S.union` S.fromList ["&&","||"]

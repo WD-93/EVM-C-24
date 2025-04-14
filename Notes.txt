@@ -1,3 +1,15 @@
+HLM dev:
+TyCon OHeader out of scope --in kind check
+But OHeader is a type synonym... tysyn substitution must've missed it.
+Perhaps a problem with application order of tysins - expansion occurring before eval of args?
+type A = ();
+type B = MPtr A; --becomes B => Ptr Memory A, not Ptr Memory ()
+Same for B = MPtr Byte
+The problem must be in substTySyns, which does tysyn substitution of the tysin rhses.
+It calls substTySynsM... AHA, I missed an apostrophe on targsPrefix,suffix = take,drop argsLen targs, thus
+failing to recursively substitute the arguments!
+TODO deduplicate substTySynT in the where and the other subst function.
+
 Missing feature: enums. Each data decl could implicitly declare an 8b enum type: tag_Con.
 Simplest: only support 8b enums. Use lowercase names.
 Extension: optional constant values rather than 0..n-1.
@@ -6,6 +18,14 @@ already always 16b on the stack. Enums with function values would let me restric
 functions.
 newtype would require fixing pure sizeof.
 Implemented enums, changed size to 8b - making them more convenient for type tags and non-case instrs.
+
+Add switch syntax, or just case on enum? Enum case could be implemented efficiently...
+
+Hygienic macros would make push and pop off pointer vars much cleaner... but I shouldn't complicate the
+language design when the interpreter PoC is already implementable.
+Inlining and tail calls are preferable; the code can already be written, but it needs to be fast.
+
+Idea: padded and clobber pointers with cheaper read/write.
 
 Interpretation:
 dispatch(S) :=

@@ -1,0 +1,99 @@
+--Goal: load and link objects from a Merkle
+module {
+type CPtr = Ptr Calldata;
+--I could have both a datatype and an enum for the tags, but need to ensure
+--they align...
+enum OType {otMerkle};
+--The fields shared by every object: object type, #ptrs and total byte size
+--Object layout: header, ptrs (32-bit since they must fit uids), bytes
+type OHeader = {otype: OType, numPtrs: Byte, sz: Short};
+--The in-memory layout of a Merkle object
+type OMerkle = {hdr:OHeader,hash:Hash};
+type OPtr = MPtr OHeader;
+type Hash = UInt 160;
+--LoadInstrs are interpreted from calldata; their immediate argument (object
+--data to hash) is parsed from memory
+enum LoadInstr {
+ loadNode,
+ loadObject
+ };
+--loadObject and loadMerkle can perhaps be merged if hash(merkle) = merkle.hash
+--With two cases, loadInstr is just a Bool.
+--Would I save gas parsing a bit at a time...?
+
+--To support hashing nodes
+memory left : Word;
+memory right : Word;
+memory otable : OPtr[0]; --it's dynamically sized
+storage merkleRoot : Hash;
+--Params:
+--object pointer table size : uint16
+--object bytes len: uint16
+--object data: byte[len]
+main:()->();
+main() := do {
+ --Initialize object pointer table, load object bytes into memory
+ otblSize = *(0 :: CPtr Short);
+ obytesLen = *(2 :: CPtr Short);
+ obytes = (2 * otblSize) :: MPtr Byte;
+ copy(obytes,4 :: CPtr Byte, obytesLen);
+ --The load script is after the end of the object data
+ loadScript = (obytesLen + 4) :: CPtr LoadInstr; --todo check for overflow
+
+ --Load the objects into the object table
+ load((loadScript,obytes,otable),otable+otblSize)
+};
+
+type LoadS = (CPtr LoadInstr,OPtr,MPtr OPtr);
+load : (LoadS,OPtr) -> (LoadS,Hash);
+load((pc,oin,otbl),bound) := do {
+ loadInstr = *pc;
+ if loadInstr
+ then do { --load object; base case
+  h = hashObject(oin);
+  pc = pc + 1;
+  --Push the object to the object pointer table
+  otbl = pushObject(otbl,bound,oin);
+  oin = ((oin :: UInt 16) + lenObject(oin)) :: OPtr;
+  return ((pc,oin,otbl),h)
+ } else do { --load node; recurse twice
+  pc = pc + 1;
+  ((pc2,oin2,otbl2),h1) = load ((pc,oin,otbl),bound);
+  ((pc3,oin3,otbl3),h2) = load ((pc2,oin2,otbl2),bound);
+  h = hash2(h1,h2);
+  return ((pc3,oin3,otbl3),h)
+ }
+ end
+};
+--The bound ensures you can't corrupt objects by pushing to the otbl
+--TODO add revert...
+pushObject:(MPtr OPtr,MPtr OPtr,OPtr)->MPtr OPtr;
+pushObject(otbl,bound,obj):=
+ if otbl < bound
+ then do {
+  (*otbl) = obj;
+  otbl = otbl + 1;
+  return otbl
+  } else evm_return(0::MPtr(),0)
+  end;
+--Only valid when the object is unlinked...
+hashObject:OPtr -> Hash;
+hashObject(optr):= do {
+ ohdr = *optr;
+ if ohdr.otype == otMerkle
+ then return *(optr :: Ptr OMerkle).hash
+ else return sha3(optr,ohdr.sz)
+ end
+};
+--Secure from confusion with hashObject because it hashes a 64B 0-tagged
+--bytestring whereas Merkle (the 0-tagged object) is 24B.
+hash2:(Hash,Hash)->Hash;
+hash2(h1,h2):= do {
+ left = h1;
+ right = h2;
+ return sha3(0::MPtr(),64)
+};
+--Inlining would be very nice to have...
+lenObject:Optr->Short;
+lenObject(optr):= return *optr.sz
+}

@@ -1,0 +1,9 @@
+--Goal: load and link objects from a Merkle
+module {
+--type A = ();
+type B = MPtr Byte;
+memory otable : B;
+
+main:()->();
+main() := ()
+}
