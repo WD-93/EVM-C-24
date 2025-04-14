@@ -7,7 +7,8 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Char (intToDigit)
 
-import DTs (Name(..),T(..),Padding(..),pattern (:->),pattern UInt, pattern SInt)
+import DTs (Name(..),T(..),Padding(..),pattern (:->),pattern UInt, pattern SInt,
+           unTupleT)
 import IR1
 import ToyCFG
 import Asm hiding (Asm(Opcode,Push),Label())

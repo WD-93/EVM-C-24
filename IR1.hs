@@ -2905,16 +2905,6 @@ softCoerce target source ws
   | let = throwE $ GenericError $
           "Unsupported in softCoerce " ++ show (target,source,ws)
 
-unTupleT :: T -> Maybe [T]
-unTupleT = \case
-  Struct padmnmts -> go padmnmts
-  _ -> Nothing
-  where go = \case
-          [] -> Just []
-          ((Word,Word),Nothing,t):padmnmts ->
-            (t:) <$> go padmnmts
-          _ -> Nothing
-
 --Unsafe coercion of values in EVMC;
 --drops words if #words of the target type is lower,
 --pads with zero words if it's higher.

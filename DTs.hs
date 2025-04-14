@@ -13,6 +13,9 @@ import Data.String (IsString(..))
 --TODO add BNFC syntax to repo
 --Start: absolutely minimal complete pipeline
 
+--For duplicatedShowT; TODO remove...
+import Data.List (intercalate)
+
 --AST, converted from BNFC CST in desugaring stage
 type Name = String
 data E = EInteger Integer
@@ -93,7 +96,49 @@ data T = TyCon Name
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
        | Struct [Field T]
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read)
+--Making T show prettier by duplicating Pretty code...
+--TODO move IR1's data decls here so it can import Pretty.hs without a cycle.
+instance Show T where
+  show = duplicatedShowT
+duplicatedShowT = do
+  let r = showT
+      showT = duplicatedShowT
+  \case
+    UInt n -> "uint"++show n
+    SInt n -> "int"++show n
+    a :-> b -> "(" ++ r a ++ " -> " ++ r b ++ ")"
+    TyCon nm -> nm
+    tf :$$ tx -> r tf ++ " " ++ r tx
+    TyNat n -> show n
+    tup | Just ts <- unTupleT tup ->
+          "(" ++ intercalate ", " (map showT ts) ++ ")"
+    Struct fields -> "{" ++ intercalate ", "
+      (map duplicatedShowFieldT fields) ++ "}"
+duplicatedShowFieldT ((pad,al),mnm,t) =
+  let p = case pad of
+            Bit -> ["pad bit"]
+            Byte -> []
+            Word -> ["pad word"]
+      a = case al of
+            Bit -> ["align bit"]
+            Byte -> []
+            Word -> ["align word"]
+      n = case mnm of
+            Nothing -> []
+            Just nm -> [nm,":"]
+  in unwords $ p ++ n ++ [duplicatedShowT t]
+
+unTupleT :: T -> Maybe [T]
+unTupleT = \case
+  Struct padmnmts -> go padmnmts
+  _ -> Nothing
+  where go = \case
+          [] -> Just []
+          ((Word,Word),Nothing,t):padmnmts ->
+            (t:) <$> go padmnmts
+          _ -> Nothing
+
 --Unification is pretty fundamental, so might as well put it in here
 --Left (mnm,t1,t2) => subtypes t1 and t2 failed to unify
 --mnm = Just nm => unification was with nm, bound to t1
