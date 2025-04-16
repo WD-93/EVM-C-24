@@ -10,10 +10,33 @@ It calls substTySynsM... AHA, I missed an apostrophe on targsPrefix,suffix = tak
 failing to recursively substitute the arguments!
 TODO deduplicate substTySynT in the where and the other subst function.
 
+Since constructors don't clash with tycons, I can easily define both an object type tag enum,
+type Closure = {...} struct per object type and a datatype
+data Object r = {Closure Closure; ...}
+
+TODO new feature: on-stack datatypes? No.
+Need &_ now... what lvalues do I have? *p, lvalue.field
+p->field => (*p).field.
+p[ix] => *(p+ix)
+I either need to reengineer the IR compilation of *p.field* or split out offset of field.
+What is the debt amortization solution, i.e. what should the .field* code look like?
+Merge :. and :# to Index which takes a list of Either Name Int; convert repeated indexing to Index in desugar.
+Implement rightOffset t fields.
+Recursively call seqE/S, incrementally compiling the code and ensuring codegen logic is reused so the
+language has a "narrow waist" that can more easily be rendered bug-free.
+
+Tree.evmc is 100 lines including comments and 889B compiled; that gives a rough estimate of the room available
+in a single smart contract. 2400 lines should be enough to fit a pretty nifty runtime.
+
+Trick to get sizeof t: ((0::MPtr t)+1) :: UInt 16
+
 TODO fix parsing precedence of *ptr.field; it should be (*ptr).field?
 TODO (big effort...): pass line-col info and position in parse tree to errors (possible in BNFC?).
 If I used hasCallStack and did some black magic with unsafePerformIO in the AST thunks...? There must be RW,
 a preexisting location monad...
+Use Generic to define a fold operation which passes down AST and source location info to each node?
+The usual good practice of divide and conquer and passing around as little state as possible is in conflict 
+with good error reporting...
 
 At this point need debugging tools in the JS API and EVMC itself. An analogue to the ABI for call and
 returndata; it needs to support strings, arrays, enums, datatypes, functions (and later other static data)

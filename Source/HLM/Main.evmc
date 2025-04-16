@@ -1,0 +1,120 @@
+module {
+import Types;
+import Globals;
+import Util;
+import Load;
+import Link;
+
+{-
+HLM is a high-level interpreter designed for execution on the ETH L1.
+It is intended to run user metatransactions, store and execute virtual
+smart contracts in Merkle storage and interact with the rest of the L1 on
+the users' behalf.
+Beyond providing gas savings through sharing
+1)the fixed transaction cost,
+2)storage access costs (via Merklization),
+3)cold load costs (when interacting with external contracts)
+and reducing the transaction authorization cost,
+HLM aims to give L1 users access to a new functional programming paradigm
+that will enable faster, more expressive and more composable programs, as well
+as closer and safer cooperation.
+-}
+
+{-
+Merklization is transparent to the user; the work of assembling Merkle proofs
+and controlling Merkle layout is done by a sequencer.
+Sequencing (whether centralized or via a PoS protocol) is necessary at least at
+the per-Merkle tree level because modifications to a Merkle invalidate
+subsequent proofs assuming the old state.
+Fortunately, there is an upside: the need for planning by the sequencer
+enables metatransactions to benefit from *hinting*, where the sequencer does
+work off-chain and the user's script merely verifies it.
+An example: sorting can be done in O(n) rather than O(log n) on-chain: the
+sequencer hints a permutation, and the user checks it produces a sorted list.
+A practical example: a user signs a metatransaction approving a token swap;
+it releases A and attempts to withdraw B from the counterparty's balance
+(reverting otherwise).
+The user needn't specify the counterparty; that can be left to the sequencer.
+Furthermore, require(someCond) in a metatransaction could be used to enforce
+complex conditions without running the risk of the txn wasting gas against the
+user's will (as is possible with ETH txns); ensuring the conditions are
+fulfilled before submitting the txn is the responsibility of the sequencer.
+Note hinting is essential to making Merkle accesses cheap - by placing data
+sensibly (using off-chain planning), you can ensure correlated data has high
+locality and hot data is placed high up.
+My hope is that with good planning this will reduce the read-write cost of
+data to approx 16 gas per byte (down from 156.25 + call overhead).
+
+From the user's perspective, the logical state of the HLM is a set of objects
+which reference each other. Objects are the basic unit of state considered by
+the HLM; they include balances, mutable and immutable bytestrings and arrays,
+closures and abstract datatypes.
+
+To enable persistence, object references use 32b UIDs. Sequential allocation of
+UIDs enables them to be much smaller than ETH addresses.
+
+Calls to the HLM are divided into 5 phases:
+1) Loading objects from Merkle storage,
+2) Linking objects (replacing UIDs with memory pointers)
+3) Execution (where user metatxns and virtual smart contracts run)
+4) Unlinking
+5) Hashing and storage
+-}
+
+
+main:()->();
+main() := do {
+ -- *******************Load phase********************************
+ --Load phase params:
+ --object pointer table size : uint16
+ --object bytes len: uint16
+ --object data: byte[len]
+
+ --Initialize object pointer table, load object bytes into memory
+ --TODO ensure the object table is null-terminated
+ otblSize = *(0 :: CPtr Short);
+ obytesLen = *(2 :: CPtr Short);
+ obytes = (2 * otblSize) :: MPtr Byte;
+ copy(obytes,4 :: CPtr Byte, obytesLen);
+ --The load script is after the end of the object data
+ loadScript = (obytesLen + 4) :: CPtr LoadInstr; --todo check for overflow
+ 
+ --Load the objects into the object table
+ ((pc,allocPtr,otblPtr),h) =
+  load((loadScript,obytes :: OPtr,otable),otable+otblSize);
+ require(h == merkleRoot);
+ -- *******************Link phase********************************
+ --Link phase params:
+ --ixs, a concatenated list of lists of object table indices
+ {-
+ Algo:
+ for obj in otable:      --until !obj :: OPtr
+  for uidptr in obj:     --uidptr ranges over the ptrs to each uid in obj
+   o = otable[pop(ixs)]
+   if o.uid == *uidptr   --the UIDs need to match
+   then *uidptr = o      --replace the UID with a memory pointer
+   else revert()
+   end
+ -} 
+ ixs = pc :: CPtr (UInt 16); --todo bound object table size...
+ nextPtr = link(ixs)  --todo rename nextPtr to whatever it needs to be
+ -- *******************Pre-execution phase***************************
+ --Now we should have an object table containing linked preexisting
+ --objects. But how do new objects get there? Through execution of metatxns.
+ --Just as all commands in a REPL start as strings not containing any
+ --object references, metatxns start as just a bytestring without any
+ --special permissions (i.e. handles to objects).
+ --That bytestring must be loaded into memory; any references to registered
+ --objects (analogous to those available in the global env of a REPL) must be
+ --resolved here.
+ --Design:
+ --s = init interpreter state
+ --bs = alloc from calldata
+ --os = parse ixs to registered objects, index otable
+ --co = spawn(bs,os)
+ --enter(s,co)
+ --There's no need for a stack of entered coroutines in memory since
+ --the EVM stack can be used (with the enter instruction performing a non-tail
+ --call enter(s,co)). That's what Lua does IIRC. 
+}
+}

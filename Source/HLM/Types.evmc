@@ -1,0 +1,31 @@
+--HLM is large and complex enough to motivate splitting the program into
+--several modules. This is the module for type definitions.
+module {
+type CPtr = Ptr Calldata;
+
+--I could have both a datatype and an enum for the tags, but need to ensure
+--they align...
+enum OType {otMerkle};
+
+--The fields shared by every object: object type, #ptrs and total byte size
+--It also needs a UID ofc!
+--Object layout: header, ptrs (32-bit since they must fit uids), bytes
+--Total size (subject to change): 1 + 4 + 1 + 2 = 8
+type OHeader = {otype: OType, uid: UID, numPtrs: Byte, sz: Short};
+type UID = UInt 32;
+
+--The in-memory layout of a Merkle object
+--It doesn't need a UID, does it...?
+type OMerkle = {hdr:OHeader,hash:Hash};
+
+type OPtr = MPtr OHeader;
+
+type Hash = UInt 160;
+
+--LoadInstrs are interpreted from calldata; their immediate argument (object
+--data to hash) is parsed from memory
+enum LoadInstr {
+ loadNode,
+ loadObject
+ };
+}

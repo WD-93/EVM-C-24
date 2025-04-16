@@ -1,0 +1,24 @@
+module {
+--Functions specific to the load phase
+type LoadS = (CPtr LoadInstr,OPtr,MPtr OPtr);
+load : (LoadS, MPtr OPtr) -> (LoadS,Hash);
+load((pc,oin,otbl),bound) := do { 
+ loadInstr = *pc; 
+ if loadInstr
+ then do { --load object; base case
+  h = hashObject(oin);
+  pc = pc + 1; 
+  --Push the object to the object pointer table
+  otbl = pushObject(otbl,bound,oin);
+  oin = ((oin :: UInt 16) + lenObject(oin)) :: OPtr;
+  return ((pc,oin,otbl),h) 
+ } else do { --load node; recurse twice
+  pc = pc + 1;
+  ((pc2,oin2,otbl2),h1) = load ((pc,oin,otbl),bound);
+  ((pc3,oin3,otbl3),h2) = load ((pc2,oin2,otbl2),bound);
+  h = hash2(h1,h2);
+  return ((pc3,oin3,otbl3),h)
+ }
+ end 
+}
+}

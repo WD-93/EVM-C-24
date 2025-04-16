@@ -1,0 +1,14 @@
+module {
+--All the globals in one place, sorted by region
+
+--To support hashing nodes; reused as shared word registers
+memory left : Word;
+memory right : Word;
+
+--The table of allocated persistent objects, used for linking and to track
+--what needs to be persisted.
+memory otable : OPtr[0]; --it's dynamically sized
+
+--The Merkle containing HLM's persistent state; currently there's only one
+storage merkleRoot : Hash
+}

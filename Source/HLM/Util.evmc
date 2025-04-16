@@ -1,0 +1,62 @@
+module {
+--Generally useful functions
+--The bound ensures you can't corrupt objects by pushing to the otbl
+--TODO add revert...
+pushObject:(MPtr OPtr,MPtr OPtr,OPtr)->MPtr OPtr;
+pushObject(otbl,bound,obj):=
+ if otbl < bound
+ then do {
+  (*otbl) = obj;
+  otbl = otbl + 1;
+  return otbl
+  } else evm_return(0::MPtr(),0)
+  end;
+  
+--Only valid when the object is unlinked...
+hashObject:OPtr -> Hash;
+hashObject(optr):= do {
+ ohdr = *optr;
+ if ohdr.otype == otMerkle
+ then return (*(optr :: MPtr OMerkle)).hash
+ else return sha3(optr,ohdr.sz)
+ end
+};
+
+--Secure from confusion with hashObject because it hashes a 64B 0-tagged
+--bytestring whereas Merkle (the 0-tagged object) is 24B.
+hash2:(Hash,Hash)->Hash;
+hash2(h1,h2):= do {
+ left = h1;
+ right = h2;
+ return sha3(0::MPtr(),64)
+};
+
+--Inlining would be very nice to have...
+lenObject:OPtr->Short;
+lenObject(optr):= return (*optr).sz;
+
+--Returns (fst,bound), where fst is a pointer to the first ref (a pointer or
+--UID) and bound is the last + 1
+--Why not fst, len? Because using bound and incrementing the pointer rather
+--than indexing is more efficient in for loops.
+refsOf:OPtr->(MPtr UID,MPtr UID);
+refsOf o := do {
+ ohdr = *o;
+ fst = (o+1) :: MPtr UID;
+ --works because Optr is an object header pointer; every object "inherits"
+ --from OHeader
+ bound = fst + (ohdr.numPtrs);
+ return (fst,bound)
+};
+
+--Placeholder; TODO add revert primitive
+revert:()->();
+revert():= evm_return(0::MPtr(),0);
+
+require:Byte->();
+require cond :=
+ if cond
+ then return ()
+ else revert()
+ end
+}

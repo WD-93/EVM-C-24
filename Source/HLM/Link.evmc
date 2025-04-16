@@ -1,0 +1,41 @@
+module {
+{-
+ Algo:
+ for obj in otable:      --until !obj :: OPtr
+  for uidptr in obj:     --uidptr ranges over the ptrs to each uid in obj
+   o = otable[pop(ixs)]  --no need for a bounds check
+   if o.uid == *uidptr   --the UIDs need to match
+   then *uidptr = o      --replace the UID with a memory pointer
+   else revert()
+   end
+ -}
+ --Parses ixs, a list of object table indices, off calldata to hint linking of
+ --the objects in the object table
+link:(CPtr Short) -> CPtr Short;
+link ixs := do { 
+ --for obj in otable
+ otbl = otable;
+ obj = *otbl; --because I don't have assignment expressions...
+ while (obj) do {
+  --for uidptr in obj:
+  (uidptr,bound) = refsOf(obj);
+  while (uidptr < bound) do { 
+   uid = *uidptr;
+   --o = otable[pop(ixs)]
+   ix = *ixs;
+   ixs = ixs + 1;
+   o = (otable[ix]);
+   if ((*o).uid) == uid
+   then (*uidptr) = (o :: UID)
+   else revert()
+   end;
+   uidptr = uidptr + 1
+  };
+  
+  otbl = otbl + 1;
+  obj = *otbl
+ };
+ return ixs 
+}; 
+
+}

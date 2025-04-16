@@ -1,0 +1,73 @@
+module {
+--The code for the execution phase
+--Recall the shared object format: ohdr, refs, bytes
+--Problem: Array, Coroutine and Closure have a dynamic number of refs, but
+--ByteString has a dynamic number of bytes.
+--Byte fields should be first then... then Arr, Co and Clos can have len fields
+--in their struct.
+--But wait - the coroutine stack contains a mix of bytes and refs!
+--Solution 1: change call frame to {code: bs, pc: bs32, bp: bs32}, where pc
+--and bp are one-word mutable bytestrings. PC would need to be persisted as
+--an offset into a bytestring... meaning if you jump outside a bytestring, you
+--better not persist that coroutine until you're back in the fold...
+--Solution 2: a sizeof and persist/unlink method for each object
+--type, perhaps best implemented via a case. Then OHeader can be smaller,
+--pointers and bytes can be mixed and coroutines can have their own format +
+--adjust PC on persistence.
+
+data INSTR r = {
+
+};
+type Instr = INSTR Memory;
+--The interpreter state
+type IState = {pad word self : MPtr Coroutine, --Erlang's self
+               accumW : Word,
+	       accumO : OPtr,
+               pad word pc: Instr
+	      }
+--Global registers; todo figure out how many are needed
+memory globalWs : Word[2];
+memory globalOs : OPtr[16]
+
+--PC and BP is only relevant when the coroutine isn't running...
+--Why the weird ordering (dead between yielded and hibernating)?
+--Because now co->status & 1 means enterable
+enum CoStatus {running, --reentry reverts; no reentry attacks!
+               yielded, --may enter
+	       dead, --when a coroutine returns but the stack is empty it dies
+               hibernating --may persist (or be entered)
+	      };
+--The cheapest way to implement die on return: instead of a bp == 0 check,
+--statically allocate a die() instruction at diePtr and add a first call frame
+--{pc: diePtr,bp: 0} to coroutines on spawn.
+
+type Ref = UID;
+--Note every reference in objects is a 16b memory pointer when linked, but a
+--32b UID when unlinked. All refs in objects must therefore be of type UID to
+--be large enough to fit a UID on unlinking. The Ref type is to avoid confusion
+--between fields which should be treated as refs and values known to be UIDs.
+
+--Need & to get s.self->localOs
+--Oh no... to support in-place linking and unlinking, stack slots need to be 4B
+type Coroutine = {hdr: OHeader,
+                  pc:Instr, --written to on yield
+		  status: CoStatus,
+		  bp:MPtr OPtr, --protects ptrs above;
+		  --incremented on call, decremented on return
+		  localWs : {Word,Word},
+		  localOs : Word, --actually a Ref[8]
+		  stackLen: Byte --A number of Ref slots; followed by stack
+		  }
+--Invariant: bp always points to 16 available slots; stack slots are indexed
+--using 4b indices in instrs.
+--The stack consists of (callFrame,optr*)*
+--A call frame is a {pc,bp} pair.
+type CallFrame = {pc:Instr,bp:MPtr OPtr};
+--The type of functions that contain closed objects...
+--I could also allow bytestrings to be called as bytecode.
+type Closure {hdr: OHeader,
+              bytecode: Ref, --Always a ByteString
+	      closedLen: Byte,
+	      closed: () --(clos->closed) :: MPtr Ref
+	     }
+}
