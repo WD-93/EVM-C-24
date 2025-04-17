@@ -15,6 +15,33 @@ module {
 --pointers and bytes can be mixed and coroutines can have their own format +
 --adjust PC on persistence.
 
+--Object layout in memory: OType/datatype tag, uid:UID, flags:8; the rest
+--varies based on type.
+
+--All objects except Merkle (not a runtime object) start with this
+--Flags:
+--registered = 0x01
+--owned vs shared? Need to control object destruction.
+--FW: Reserve some bits for max depth and location pin? If there are several
+--sequencers I need to avoid one burying or scattering objects.
+type OHeader = {otype: OType, uid: UID, flags: Byte};
+--All constructor arguments of Object except Merkle must start with this
+type OHdr = {uid: UID, flags: Byte}
+--Making a custom type synonym per {OHeader,content} pair doesn't make sense...
+--just use p :: MPtr {OHeader,content} directly.
+
+enum OType {otMerkle};
+data Object r = {
+ Null OHdr; --Statically allocated; uid=0,flags=0
+ Unlinked OHdr; --registered status is irrelevant
+ Merkle Hash; --The one type that doesn't need an OHdr
+ --User types:
+ Coroutine Coroutine;
+ Closure Closure;
+ ByteString ByteString; --boxed integer ~ frozen bytestring
+ Array Array;
+ --TODO add: Balance, SendHandle(?), ADT, SigAccount, HBAAccount
+};
 data INSTR r = {
 
 };
@@ -46,6 +73,7 @@ type Ref = UID;
 --32b UID when unlinked. All refs in objects must therefore be of type UID to
 --be large enough to fit a UID on unlinking. The Ref type is to avoid confusion
 --between fields which should be treated as refs and values known to be UIDs.
+--Untagged unions would be very useful here.
 
 --Need & to get s.self->localOs
 --Oh no... to support in-place linking and unlinking, stack slots need to be 4B

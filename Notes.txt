@@ -19,11 +19,34 @@ Need &_ now... what lvalues do I have? *p, lvalue.field
 p->field => (*p).field.
 p[ix] => *(p+ix)
 I either need to reengineer the IR compilation of *p.field* or split out offset of field.
-What is the debt amortization solution, i.e. what should the .field* code look like?
+What is the debt amortization solution, i.e. what should the .field* code ultimately look like?
 Merge :. and :# to Index which takes a list of Either Name Int; convert repeated indexing to Index in desugar.
 Implement rightOffset t fields.
 Recursively call seqE/S, incrementally compiling the code and ensuring codegen logic is reused so the
 language has a "narrow waist" that can more easily be rendered bug-free.
+Parsing ->: by adding a dedicated rule for it and :: I can simplify desugaring. But will it cause conflict
+with the Infix token...? If so need to ensure a->b is a lower E<n> since Infix is more general.
+I don't have any user-defined operators so it might be simplest to just hardcode precedence in the syntax.
+
+For the back burner:
+Separating type inference from compilation would let me get rid of costly and complex coercion at runtime.
+In particular, struct coercion and integer masking could be done statically.
+Con {} --the lhs of the con may be polymorphic... but if the expected type of Con is known...
+If I add fixed-size arrays as on-stack values (useful for coroutine object regs, for example), _[_] becomes
+overloaded. I only need template polymorphism when the function type has a constraint.
+Ex: sizeof, num, index... maybe deref.
+Hashmaps would be a natural application of _[_], _[_] =. However, that means an overloaded primfun has an
+implicit effect on $sto... resolve overloading and instantiate templates before IR gen.
+Can I do something weaker than full Hindley-Milner? Pushing down a Maybe target type...
+Strings are also natural to overload: memory, code, bytes32. Code strings require a staticData decl.
+At what stage should inlining be applied? Perhaps in a new C -> C stage; annotate functions with an inline
+decl.
+Type inference info: arg, ret, locals.
+Exprs return a type, impose constraints and 
+truthy :: Wordsizeof a n => a -> Word --you only need to know the word size, not the byte size
+Struct construction (given a struct of known type) only needs wordsize for word-padded fields.
+Recognizing globals rather than converting them to offsets could help with later anti-aliasing/memory
+segmentation opts.
 
 Tree.evmc is 100 lines including comments and 889B compiled; that gives a rough estimate of the room available
 in a single smart contract. 2400 lines should be enough to fit a pretty nifty runtime.

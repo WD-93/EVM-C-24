@@ -3,9 +3,7 @@
 module {
 type CPtr = Ptr Calldata;
 
---I could have both a datatype and an enum for the tags, but need to ensure
---they align...
-enum OType {otMerkle};
+
 
 --The fields shared by every object: object type, #ptrs and total byte size
 --It also needs a UID ofc!
