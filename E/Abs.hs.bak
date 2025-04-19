@@ -13,66 +13,33 @@ newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
-data D
-    = Defun Ident E S
-    | TySig Ident E
-    | TySyn ConArgs E
-    | Import ModuleName
-    | Global GlobalRegion Ident E
-    | Data ConLHS [DataCon]
+data D = Defun Ident E S | TestE E
   deriving (Eq, Ord, Show, Read)
 
-data ConArgs = CANil UIdent | CACons ConArgs Ident
+data S = SE E
   deriving (Eq, Ord, Show, Read)
 
-data ModuleName = MNil UIdent | MCons UIdent ModuleName
-  deriving (Eq, Ord, Show, Read)
-
-data GlobalRegion = Memory | Storage | TStorage
-  deriving (Eq, Ord, Show, Read)
-
-data ConLHS = CLNil UIdent Ident | CLCons ConLHS Ident
-  deriving (Eq, Ord, Show, Read)
-
-data DataCon = DC UIdent E
-  deriving (Eq, Ord, Show, Read)
-
-data S
-    = SE E | If E S S | While E S | Return E | Do [S] | Case E [CASE]
-  deriving (Eq, Ord, Show, Read)
-
-data CASE = C E S
+data EField = ENamed Ident E | EAnon E
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = Index E E
-    | Assign E E
-    | Ops E Infix OS
-    | PrefixOp Infix E
-    | App E E
-    | Var Ident
-    | Con UIdent
-    | Dot E Ident
-    | Hash E Integer
-    | Int Integer
-    | Str String
-    | EmptyTup
-    | Tup E [E]
-    | EmptyStruct
-    | EStruct [Field]
-    | Wild
+    = Struct [EField] | Int Integer | And E E | Or E E | Assign E AOp E
   deriving (Eq, Ord, Show, Read)
 
-data OS = OSNil E | OSCons E Infix OS
+data AOp
+    = Eq
+    | PlusEq
+    | MinusEq
+    | MulEq
+    | DivEq
+    | ModEq
+    | ShlEq
+    | ShrEq
+    | AndEq
+    | XorEq
+    | OrEq
   deriving (Eq, Ord, Show, Read)
 
-data Field
-    = AnnotPad PadInfo Field
-    | AnnotAlign PadInfo Field
-    | Named Ident E
-    | Anon E
-  deriving (Eq, Ord, Show, Read)
-
-data PadInfo = Bit | Byte | Word
+data T = TVar
   deriving (Eq, Ord, Show, Read)
 

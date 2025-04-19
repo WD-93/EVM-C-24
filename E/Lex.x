@@ -21,7 +21,7 @@ $i = [$l $d _ ']          -- identifier character
 $u = [\0-\255]          -- universal: any character
 
 @rsyms =    -- symbols and non-identifier-like reserved words
-   \{ | \} | \; | \: \= | \: | \= | \. | \, | \( | \) | \= \> | \[ | \] | \# | \_
+   \; | \: \= | \{ | \} | \, | \: | \& \& | \| \| | \( | \) | \= | \+ \= | \- \= | \* \= | \/ \= | \% \= | \< \< \= | \> \> \= | \& \= | \^ \= | \| \=
 
 :-
 "--" [.]* ; -- Toss single line comments
@@ -33,7 +33,7 @@ $c ($l | $d | \_)* { tok (\p s -> PT p (eitherResIdent (T_UIdent . share) s)) }
 [\! \# \@ \$ \% \& \/ \? \+ \* \- \^ \| \: \= \. \> \<]+ { tok (\p s -> PT p (eitherResIdent (T_Infix . share) s)) }
 
 $l $i*   { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
-\" ([$u # [\" \\ \n]] | (\\ (\" | \\ | \' | n | t)))* \"{ tok (\p s -> PT p (TL $ share $ unescapeInitTail s)) }
+
 
 $d+      { tok (\p s -> PT p (TI $ share s))    }
 
@@ -104,7 +104,7 @@ eitherResIdent tv s = treeFind resWords
                               | s == a = t
 
 resWords :: BTree
-resWords = b "do" 19 (b "=>" 10 (b "." 5 (b ")" 3 (b "(" 2 (b "#" 1 N N) N) (b "," 4 N N)) (b ";" 8 (b ":=" 7 (b ":" 6 N N) N) (b "=" 9 N N))) (b "bit" 15 (b "_" 13 (b "]" 12 (b "[" 11 N N) N) (b "align" 14 N N)) (b "case" 17 (b "byte" 16 N N) (b "data" 18 N N)))) (b "return" 29 (b "import" 24 (b "enum" 22 (b "end" 21 (b "else" 20 N N) N) (b "if" 23 N N)) (b "of" 27 (b "module" 26 (b "memory" 25 N N) N) (b "pad" 28 N N))) (b "while" 34 (b "tstorage" 32 (b "then" 31 (b "storage" 30 N N) N) (b "type" 33 N N)) (b "{" 36 (b "word" 35 N N) (b "}" 37 N N))))
+resWords = b ":=" 12 (b "*=" 6 (b "&=" 3 (b "&&" 2 (b "%=" 1 N N) N) (b ")" 5 (b "(" 4 N N) N)) (b "-=" 9 (b "," 8 (b "+=" 7 N N) N) (b ":" 11 (b "/=" 10 N N) N))) (b "^=" 18 (b "=" 15 (b "<<=" 14 (b ";" 13 N N) N) (b "TYPE" 17 (b ">>=" 16 N N) N)) (b "|=" 21 (b "{" 20 (b "testE" 19 N N) N) (b "}" 23 (b "||" 22 N N) N)))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 

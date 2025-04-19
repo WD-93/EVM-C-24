@@ -11,7 +11,7 @@ import E.Par
 import E.Skel
 import E.Print
 import E.Abs
-
+import E.Layout
 
 
 
@@ -19,7 +19,7 @@ import E.ErrM
 
 type ParseFun a = [Token] -> Err a
 
-myLLexer = myLexer
+myLLexer = resolveLayout True . myLexer
 
 type Verbosity = Int
 

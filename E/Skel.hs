@@ -24,77 +24,36 @@ transM x = case x of
 transD :: D -> Result
 transD x = case x of
   Defun ident e s -> failure x
-  TySig ident e -> failure x
-  TySyn conargs e -> failure x
-  Import modulename -> failure x
-  Global globalregion ident e -> failure x
-  Data conlhs datacons -> failure x
-  Enum uident enumcons -> failure x
-transConArgs :: ConArgs -> Result
-transConArgs x = case x of
-  CANil uident -> failure x
-  CACons conargs ident -> failure x
-transModuleName :: ModuleName -> Result
-transModuleName x = case x of
-  MNil uident -> failure x
-  MCons uident modulename -> failure x
-transGlobalRegion :: GlobalRegion -> Result
-transGlobalRegion x = case x of
-  Memory -> failure x
-  Storage -> failure x
-  TStorage -> failure x
-transConLHS :: ConLHS -> Result
-transConLHS x = case x of
-  CLNil uident ident -> failure x
-  CLCons conlhs ident -> failure x
-transDataCon :: DataCon -> Result
-transDataCon x = case x of
-  DC uident e -> failure x
-transEnumCon :: EnumCon -> Result
-transEnumCon x = case x of
-  EC ident -> failure x
+  TestE e -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
-  If e s1 s2 -> failure x
-  While e s -> failure x
-  Return e -> failure x
-  Do ss -> failure x
-  Case e cases -> failure x
-transCASE :: CASE -> Result
-transCASE x = case x of
-  C e s -> failure x
+transEField :: EField -> Result
+transEField x = case x of
+  ENamed ident e -> failure x
+  EAnon e -> failure x
 transE :: E -> Result
 transE x = case x of
-  Index e1 e2 -> failure x
-  Assign e1 e2 -> failure x
-  Ops e infix_ os -> failure x
-  PrefixOp infix_ e -> failure x
-  App e1 e2 -> failure x
-  Var ident -> failure x
-  Con uident -> failure x
-  Dot e ident -> failure x
-  Hash e integer -> failure x
+  Struct efields -> failure x
   Int integer -> failure x
-  Str string -> failure x
-  EmptyTup -> failure x
-  Tup e es -> failure x
-  EmptyStruct -> failure x
-  EStruct fields -> failure x
-  Wild -> failure x
-transOS :: OS -> Result
-transOS x = case x of
-  OSNil e -> failure x
-  OSCons e infix_ os -> failure x
-transField :: Field -> Result
-transField x = case x of
-  AnnotPad padinfo field -> failure x
-  AnnotAlign padinfo field -> failure x
-  Named ident e -> failure x
-  Anon e -> failure x
-transPadInfo :: PadInfo -> Result
-transPadInfo x = case x of
-  Bit -> failure x
-  Byte -> failure x
-  Word -> failure x
+  Var ident -> failure x
+  And e1 e2 -> failure x
+  Or e1 e2 -> failure x
+  Assign e1 aop e2 -> failure x
+transAOp :: AOp -> Result
+transAOp x = case x of
+  Eq -> failure x
+  PlusEq -> failure x
+  MinusEq -> failure x
+  MulEq -> failure x
+  DivEq -> failure x
+  ModEq -> failure x
+  ShlEq -> failure x
+  ShrEq -> failure x
+  AndEq -> failure x
+  XorEq -> failure x
+  OrEq -> failure x
+transT :: T -> Result
+transT x = case x of
+  TVar -> failure x
 

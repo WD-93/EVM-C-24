@@ -93,101 +93,50 @@ instance Print Infix where
 
 instance Print M where
   prt i e = case e of
-    Module ds -> prPrec i 0 (concatD [doc (showString "module"), doc (showString "{"), prt 0 ds, doc (showString "}")])
+    Module ds -> prPrec i 0 (concatD [prt 0 ds])
 
 instance Print D where
   prt i e = case e of
     Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 3 e_, doc (showString ":="), prt 0 s])
-    TySig id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
-    TySyn conargs e_ -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 e_])
-    Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
-    Global globalregion id e_ -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 e_])
-    Data conlhs datacons -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), doc (showString "{"), prt 0 datacons, doc (showString "}")])
-  prtList _ [] = (concatD [])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
-instance Print ConArgs where
-  prt i e = case e of
-    CANil uident -> prPrec i 0 (concatD [prt 0 uident])
-    CACons conargs id -> prPrec i 0 (concatD [prt 0 conargs, prt 0 id])
-
-instance Print ModuleName where
-  prt i e = case e of
-    MNil uident -> prPrec i 0 (concatD [prt 0 uident])
-    MCons uident modulename -> prPrec i 0 (concatD [prt 0 uident, doc (showString "."), prt 0 modulename])
-
-instance Print GlobalRegion where
-  prt i e = case e of
-    Memory -> prPrec i 0 (concatD [doc (showString "memory")])
-    Storage -> prPrec i 0 (concatD [doc (showString "storage")])
-    TStorage -> prPrec i 0 (concatD [doc (showString "tstorage")])
-
-instance Print ConLHS where
-  prt i e = case e of
-    CLNil uident id -> prPrec i 0 (concatD [prt 0 uident, prt 0 id])
-    CLCons conlhs id -> prPrec i 0 (concatD [prt 0 conlhs, prt 0 id])
-
-instance Print DataCon where
-  prt i e = case e of
-    DC uident e_ -> prPrec i 0 (concatD [prt 0 uident, prt 3 e_])
+    TestE e_ -> prPrec i 0 (concatD [doc (showString "testE"), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print S where
   prt i e = case e of
     SE e_ -> prPrec i 0 (concatD [prt 0 e_])
-    If e_ s1 s2 -> prPrec i 0 (concatD [doc (showString "if"), prt 0 e_, doc (showString "then"), prt 0 s1, doc (showString "else"), prt 0 s2, doc (showString "end")])
-    While e_ s -> prPrec i 0 (concatD [doc (showString "while"), doc (showString "("), prt 0 e_, doc (showString ")"), prt 0 s])
-    Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
-    Do ss -> prPrec i 0 (concatD [doc (showString "do"), doc (showString "{"), prt 0 ss, doc (showString "}")])
-    Case e_ cases -> prPrec i 0 (concatD [doc (showString "case"), prt 0 e_, doc (showString "of"), doc (showString "{"), prt 0 cases, doc (showString "}")])
-  prtList _ [] = (concatD [])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
-instance Print CASE where
+
+instance Print EField where
   prt i e = case e of
-    C e_ s -> prPrec i 0 (concatD [prt 2 e_, doc (showString "=>"), prt 0 s])
+    ENamed id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
+    EAnon e_ -> prPrec i 0 (concatD [prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
-    Index e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
-    Assign e_1 e_2 -> prPrec i 0 (concatD [prt 3 e_1, doc (showString "="), prt 1 e_2])
-    Ops e_ infix_ os -> prPrec i 1 (concatD [prt 2 e_, prt 0 infix_, prt 0 os])
-    PrefixOp infix_ e_ -> prPrec i 1 (concatD [prt 0 infix_, prt 1 e_])
-    App e_1 e_2 -> prPrec i 2 (concatD [prt 2 e_1, prt 3 e_2])
-    Var id -> prPrec i 3 (concatD [prt 0 id])
-    Con uident -> prPrec i 3 (concatD [prt 0 uident])
-    Dot e_ id -> prPrec i 3 (concatD [prt 3 e_, doc (showString "."), prt 0 id])
-    Hash e_ n -> prPrec i 3 (concatD [prt 3 e_, doc (showString "#"), prt 0 n])
+    Struct efields -> prPrec i 3 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
     Int n -> prPrec i 3 (concatD [prt 0 n])
-    Str str -> prPrec i 3 (concatD [prt 0 str])
-    EmptyTup -> prPrec i 3 (concatD [doc (showString "("), doc (showString ")")])
-    Tup e_ es -> prPrec i 3 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
-    EmptyStruct -> prPrec i 3 (concatD [doc (showString "{"), doc (showString "}")])
-    EStruct fields -> prPrec i 3 (concatD [doc (showString "{"), prt 0 fields, doc (showString "}")])
-    Wild -> prPrec i 3 (concatD [doc (showString "_")])
-  prtList _ [] = (concatD [])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
-instance Print OS where
-  prt i e = case e of
-    OSNil e_ -> prPrec i 0 (concatD [prt 2 e_])
-    OSCons e_ infix_ os -> prPrec i 0 (concatD [prt 2 e_, prt 0 infix_, prt 0 os])
+    And e_1 e_2 -> prPrec i 2 (concatD [prt 2 e_1, doc (showString "&&"), prt 3 e_2])
+    Or e_1 e_2 -> prPrec i 1 (concatD [prt 1 e_1, doc (showString "||"), prt 2 e_2])
+    Assign e_1 aop e_2 -> prPrec i 0 (concatD [prt 1 e_1, prt 0 aop, prt 0 e_2])
 
-instance Print Field where
+instance Print AOp where
   prt i e = case e of
-    AnnotPad padinfo field -> prPrec i 0 (concatD [doc (showString "pad"), prt 0 padinfo, prt 0 field])
-    AnnotAlign padinfo field -> prPrec i 0 (concatD [doc (showString "align"), prt 0 padinfo, prt 0 field])
-    Named id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
-    Anon e_ -> prPrec i 0 (concatD [prt 0 e_])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
-instance Print PadInfo where
+    Eq -> prPrec i 0 (concatD [doc (showString "=")])
+    PlusEq -> prPrec i 0 (concatD [doc (showString "+=")])
+    MinusEq -> prPrec i 0 (concatD [doc (showString "-=")])
+    MulEq -> prPrec i 0 (concatD [doc (showString "*=")])
+    DivEq -> prPrec i 0 (concatD [doc (showString "/=")])
+    ModEq -> prPrec i 0 (concatD [doc (showString "%=")])
+    ShlEq -> prPrec i 0 (concatD [doc (showString "<<=")])
+    ShrEq -> prPrec i 0 (concatD [doc (showString ">>=")])
+    AndEq -> prPrec i 0 (concatD [doc (showString "&=")])
+    XorEq -> prPrec i 0 (concatD [doc (showString "^=")])
+    OrEq -> prPrec i 0 (concatD [doc (showString "|=")])
+
+instance Print T where
   prt i e = case e of
-    Bit -> prPrec i 0 (concatD [doc (showString "bit")])
-    Byte -> prPrec i 0 (concatD [doc (showString "byte")])
-    Word -> prPrec i 0 (concatD [doc (showString "word")])
+    TVar -> prPrec i 0 (concatD [doc (showString "TYPE")])
 
 

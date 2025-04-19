@@ -14,6 +14,12 @@ Since constructors don't clash with tycons, I can easily define both an object t
 type Closure = {...} struct per object type and a datatype
 data Object r = {Closure Closure; ...}
 
+Special case for inlining: if the entire function is straight-line followed by a return you don't need local
+return.
+Local return ~ assign vars (initially set to 0), local break. A recursive tail call could be converted to a
+local continue. Note the assignment in the loop should be done only on return to ensure they're dead until the
+return itself.
+
 TODO new feature: on-stack datatypes? No.
 Need &_ now... what lvalues do I have? *p, lvalue.field
 p->field => (*p).field.
@@ -27,6 +33,37 @@ language has a "narrow waist" that can more easily be rendered bug-free.
 Parsing ->: by adding a dedicated rule for it and :: I can simplify desugaring. But will it cause conflict
 with the Infix token...? If so need to ensure a->b is a lower E<n> since Infix is more general.
 I don't have any user-defined operators so it might be simplest to just hardcode precedence in the syntax.
+
+Syntax update plan:
+Add ->, (::), constructors for primitive infix operators. Hardcode precedence.
+Separate out the T and Pat syntactic constructs from E; the increased complexity in the parser is paid for by
+reduced complexity in desugar... and fewer parens in EVMC source.
+ T ::= tyvar, tycon, t t, t -> t, {tfield}, n
+ P ::= _, var, con arg(?), p (.field | #ix)*, tuple, *e
+I don't use the layout rule in module; just make semicolons mandatory and remove the module {...} wrapper.
+module {...} would still be useful for static data.
+Move assignment to E, return the value assigned. That doesn't cause problems for stack variable assignment
+since you already have the words; if you don't use (x = e) as a value it has no runtime impact.
+Add ++p, p++, += etc.
+*p = e should parse as (*p) = e; = should bind hardest.
+Ditto for s.field = e
+x + y++ --(_++) should bind weakly
+x = y++
+I'll copy the precedence and associativity from C...
+Change the rhs of defuns to S? Do I have any use for do/layout? I'm not using layout currently, so I'll
+replace it with {s;...} for now.
+I'll still have Haskell-style application... it should bind more weakly than any C operator; see 
+f ++x, f.field x. f x + g y
+x.y.z = a + b
+
+Parsing ambiguity: {e} struct vs {e} block. Is that the cause of the r-r conflict? Yes.
+Removing coercions from S seems to have eliminated the r-r conflict... but still need to add back struct
+exprs.
+a = b = c --because patterns are distinct from Es that should parse as a = (b = c).
+
+Support ternary expressions? No need for now.
+Inlining would benefit from named expression blocks and local returns. Q: inline at the AST, IR or CFG level?
+IR is probably best; then I can convert to CFG incrementally with access to structure information.
 
 For the back burner:
 Separating type inference from compilation would let me get rid of costly and complex coercion at runtime.
@@ -42,7 +79,7 @@ Strings are also natural to overload: memory, code, bytes32. Code strings requir
 At what stage should inlining be applied? Perhaps in a new C -> C stage; annotate functions with an inline
 decl.
 Type inference info: arg, ret, locals.
-Exprs return a type, impose constraints and 
+Exprs return a type, impose constraints and unify tyvars.
 truthy :: Wordsizeof a n => a -> Word --you only need to know the word size, not the byte size
 Struct construction (given a struct of known type) only needs wordsize for word-padded fields.
 Recognizing globals rather than converting them to offsets could help with later anti-aliasing/memory

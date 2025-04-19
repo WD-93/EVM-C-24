@@ -9,54 +9,111 @@ token Infix ((["!#@$%&/?+*-^|:=.><"])+);
 --token HexNumber ( "0x" (['0'-'9''A'-'F''a'-'f']+) );
 --token HexNumber ({"0x"} (["0123456789abcdefABCDEF"]+));
 
-layout "module";
-Module. M ::= "module" "{" [D] "}";
+--layout "module";
+Module. M ::= [D];
 separator D ";";
---MCons. M ::= D M;
---MNil. M ::= D;
 
---layout ":=";
-Defun. D ::= Ident E3 ":=" S; --"{" [S] "}";
---separator S ";";
-TySig. D ::= Ident ":" E;
+Defun. D ::= Ident E3 ":=" S;
+TestE. D ::= "testE" E;
+{-
+TySig. D ::= Ident ":" T;
 --type Con args = t
 --t ::= t t | var | Con | t -> t
-TySyn. D ::= "type" ConArgs "=" E;
+TySyn. D ::= "type" ConArgs "=" T;
 CANil. ConArgs ::= UIdent;
 CACons. ConArgs ::= ConArgs Ident;
 Import. D ::= "import" ModuleName;
 MNil. ModuleName ::= UIdent;
 MCons. ModuleName ::= UIdent "." ModuleName;
 --Ex: memory x : UInt 16
-Global. D ::= GlobalRegion Ident ":" E;
+Global. D ::= GlobalRegion Ident ":" T;
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
-layout "=";
+--layout "=";
 Data. D ::= "data" ConLHS "=" "{" [DataCon] "}";
 separator DataCon ";";
 --0-parameter datatypes are now a syntax error
 CLNil. ConLHS ::= UIdent Ident;
 CLCons. ConLHS ::= ConLHS Ident;
 --0-parameter constructors are now a syntax error
-DC. DataCon ::= UIdent E3;
+DC. DataCon ::= UIdent T;
 Enum. D ::= "enum" UIdent "{" [EnumCon] "}";
 separator EnumCon ",";
 EC. EnumCon ::= Ident;
+-}
 
-SE. S ::= E;
+SE. S ::= E; {-
 If. S ::= "if" E "then" S "else" S "end";
 While. S ::= "while" "(" E ")" S;
 Return. S ::= "return" E;
-layout "do";
 Do. S ::= "do" "{" [S] "}";
 separator S ";";
-layout "of";
+--layout "of";
 Case. S ::= "case" E "of" "{" [CASE] "}";
 separator CASE ";";
 --TODO add pattern type?
-C. CASE ::= E2 "=>" S;
+C. CASE ::= P "=>" S;
+-}
 
+
+Struct. E3 ::= "{" [EField] "}";
+separator EField ",";
+ENamed. EField ::= Ident ":" E;
+EAnon. EField ::= E;
+Int. E3 ::= Integer;
+Var. E3 ::= Ident;
+
+And. E2 ::= E2 "&&" E3;
+Or. E1 ::= E1 "||" E2;
+--E2. E1 ::= E2;
+coercions E 4;
+
+Assign. E ::= E1 AOp E;
+--E1. E ::= E1;
+
+Eq. AOp ::= "=";
+PlusEq. AOp ::= "+=";
+MinusEq. AOp ::= "-=";
+MulEq. AOp ::= "*=";
+DivEq. AOp ::= "/=";
+ModEq. AOp ::= "%=";
+ShlEq. AOp ::= "<<=";
+ShrEq. AOp ::= ">>=";
+AndEq. AOp ::= "&=";
+XorEq. AOp ::= "^=";
+OrEq. AOp ::= "|=";
+
+
+--P ::= _, var, Con apps, {p,field: p}, *e, p(.field|#ix)*, e[e]
+{-
+PAT. P3 ::= "PAT";
+P3. P ::= P3;
+-}
+--Parens. P3 ::= "(" P ")";
+{-
+PVar. P3 ::= Ident;
+PWild. P3 ::= "_";
+PStruct. P3 ::= "{" [PField] "}";
+separator PField ",";
+PFAnon. PField ::= P;
+PFNamed. PField ::= Ident ":" P;
+
+
+PDot. P2 ::= PDots;
+PDNil. PDots ::= P3;
+PDDot. PDots ::= PDots "." Ident;
+PDHash. PDots ::= PDots "#" Integer;
+PCon. P ::= PCon;
+PCNil. PCon ::= UIdent;
+PCCons. PCon ::= PCon P3;
+-}
+--coercions P 2;
+--P3. P ::= P3;
+
+TVar. T ::= "TYPE"; --Ident;
+
+{-
 Index. E ::= E3 "[" E "]";
 Assign. E ::= E3 "=" E1;
 Ops. E1 ::= E2 Infix OS;
@@ -70,7 +127,7 @@ Hash. E3 ::= E3 "#" Integer;
 --Since (E) E is identical to application, I need non-C syntax for
 --coercion.
 --For now Ill use e :: t, though thats a bit misleading: it doesnt inform
---any overloading of e since there is none, nor does it fail if e isn't t.
+--any overloading of e since there is none, nor does it fail if e isnt t.
 Int. E3 ::= Integer;
 --HexInt. E3 ::= Integer;
 Str. E3 ::= String;
@@ -98,3 +155,4 @@ Anon. Field ::= E;
 Bit. PadInfo ::= "bit";
 Byte. PadInfo ::= "byte";
 Word. PadInfo ::= "word";
+-}
