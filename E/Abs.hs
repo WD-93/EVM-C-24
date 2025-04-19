@@ -13,7 +13,7 @@ newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
-data D = Defun Ident E S | TestE E
+data D = Defun Ident E S
   deriving (Eq, Ord, Show, Read)
 
 data S = SE E
@@ -26,6 +26,7 @@ data E
     = Struct [EField]
     | Int Integer
     | Var Ident
+    | BitwiseOr E E
     | And E E
     | Or E E
     | Assign E AOp E

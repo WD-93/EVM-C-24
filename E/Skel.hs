@@ -24,7 +24,6 @@ transM x = case x of
 transD :: D -> Result
 transD x = case x of
   Defun ident e s -> failure x
-  TestE e -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
@@ -37,6 +36,7 @@ transE x = case x of
   Struct efields -> failure x
   Int integer -> failure x
   Var ident -> failure x
+  BitwiseOr e1 e2 -> failure x
   And e1 e2 -> failure x
   Or e1 e2 -> failure x
   Assign e1 aop e2 -> failure x

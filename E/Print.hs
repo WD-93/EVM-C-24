@@ -97,8 +97,7 @@ instance Print M where
 
 instance Print D where
   prt i e = case e of
-    Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 3 e_, doc (showString ":="), prt 0 s])
-    TestE e_ -> prPrec i 0 (concatD [doc (showString "testE"), prt 0 e_])
+    Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 7 e_, doc (showString ":="), prt 0 s])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -115,9 +114,10 @@ instance Print EField where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
-    Struct efields -> prPrec i 3 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
-    Int n -> prPrec i 3 (concatD [prt 0 n])
-    Var id -> prPrec i 3 (concatD [prt 0 id])
+    Struct efields -> prPrec i 7 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
+    Int n -> prPrec i 7 (concatD [prt 0 n])
+    Var id -> prPrec i 7 (concatD [prt 0 id])
+    BitwiseOr e_1 e_2 -> prPrec i 3 (concatD [prt 3 e_1, doc (showString "|"), prt 7 e_2])
     And e_1 e_2 -> prPrec i 2 (concatD [prt 2 e_1, doc (showString "&&"), prt 3 e_2])
     Or e_1 e_2 -> prPrec i 1 (concatD [prt 1 e_1, doc (showString "||"), prt 2 e_2])
     Assign e_1 aop e_2 -> prPrec i 0 (concatD [prt 1 e_1, prt 0 aop, prt 0 e_2])

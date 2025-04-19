@@ -11,7 +11,7 @@ import E.Par
 import E.Skel
 import E.Print
 import E.Abs
-import E.Layout
+
 
 
 
@@ -19,7 +19,7 @@ import E.ErrM
 
 type ParseFun a = [Token] -> Err a
 
-myLLexer = resolveLayout True . myLexer
+myLLexer = myLexer
 
 type Verbosity = Int
 
@@ -64,9 +64,9 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    [] -> hGetContents stdin >>= run 2 pM
-    "-s":fs -> mapM_ (runFile 0 pM) fs
-    fs -> mapM_ (runFile 2 pM) fs
+    [] -> hGetContents stdin >>= run 2 pD
+    "-s":fs -> mapM_ (runFile 0 pD) fs
+    fs -> mapM_ (runFile 2 pD) fs
 
 
 

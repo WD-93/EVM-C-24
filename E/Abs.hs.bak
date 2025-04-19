@@ -10,10 +10,7 @@ module E.Abs where
 newtype Ident = Ident String deriving (Eq, Ord, Show, Read)
 newtype UIdent = UIdent String deriving (Eq, Ord, Show, Read)
 newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
-data M = Module [D]
-  deriving (Eq, Ord, Show, Read)
-
-data D = Defun Ident E S | TestE E
+data D = TestE E
   deriving (Eq, Ord, Show, Read)
 
 data S = SE E
@@ -23,7 +20,13 @@ data EField = ENamed Ident E | EAnon E
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = Struct [EField] | Int Integer | And E E | Or E E | Assign E AOp E
+    = Struct [EField]
+    | Int Integer
+    | Var Ident
+    | BitwiseOr E E
+    | And E E
+    | Or E E
+    | Assign E AOp E
   deriving (Eq, Ord, Show, Read)
 
 data AOp

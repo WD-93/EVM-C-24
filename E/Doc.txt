@@ -35,15 +35,15 @@ Infix literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``TYPE`` | ``testE`` |  | 
+  | ``TYPE`` |  |  | 
 
 The symbols used in E are the following:
   | ; | := | { | }
-  | , | : | && | ||
-  | ( | ) | = | +=
-  | -= | *= | /= | %=
-  | <<= | >>= | &= | ^=
-  | |= |  |  | 
+  | , | : | | | &&
+  | || | ( | ) | =
+  | += | -= | *= | /=
+  | %= | <<= | >>= | &=
+  | ^= | |= |  | 
 
 ===Comments===
 Single-line comments begin with --.Multiple-line comments are  enclosed with {- and -}.
@@ -58,25 +58,28 @@ All other symbols are terminals.
   | //[D]// | -> | **eps**
   |  |  **|**  | //D// 
   |  |  **|**  | //D// ``;`` //[D]// 
-  | //D// | -> | //Ident// //E3// ``:=`` //S// 
-  |  |  **|**  | ``testE`` //E// 
+  | //D// | -> | //Ident// //E7// ``:=`` //S// 
   | //S// | -> | //E// 
-  | //E3// | -> | ``{`` //[EField]// ``}`` 
+  | //E7// | -> | ``{`` //[EField]// ``}`` 
   |  |  **|**  | //Integer// 
   |  |  **|**  | //Ident// 
-  |  |  **|**  | //E4// 
+  |  |  **|**  | ``(`` //E// ``)`` 
   | //[EField]// | -> | **eps**
   |  |  **|**  | //EField// 
   |  |  **|**  | //EField// ``,`` //[EField]// 
   | //EField// | -> | //Ident// ``:`` //E// 
   |  |  **|**  | //E// 
+  | //E3// | -> | //E3// ``|`` //E7// 
+  |  |  **|**  | //E4// 
   | //E2// | -> | //E2// ``&&`` //E3// 
   |  |  **|**  | //E3// 
   | //E1// | -> | //E1// ``||`` //E2// 
   |  |  **|**  | //E2// 
   | //E// | -> | //E1// 
   |  |  **|**  | //E1// //AOp// //E// 
-  | //E4// | -> | ``(`` //E// ``)`` 
+  | //E4// | -> | //E5// 
+  | //E5// | -> | //E6// 
+  | //E6// | -> | //E7// 
   | //AOp// | -> | ``=`` 
   |  |  **|**  | ``+=`` 
   |  |  **|**  | ``-=`` 
