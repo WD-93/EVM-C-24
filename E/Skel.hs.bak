@@ -18,12 +18,52 @@ transUIdent x = case x of
 transInfix :: Infix -> Result
 transInfix x = case x of
   Infix string -> failure x
+transM :: M -> Result
+transM x = case x of
+  Module ds -> failure x
 transD :: D -> Result
 transD x = case x of
-  TestE e -> failure x
+  Defun ident e s -> failure x
+  TySig ident t -> failure x
+  TySyn conargs t -> failure x
+  Import modulename -> failure x
+  Global globalregion ident t -> failure x
+  Data conlhs datacons -> failure x
+  Enum uident enumcons -> failure x
+transConArgs :: ConArgs -> Result
+transConArgs x = case x of
+  CANil uident -> failure x
+  CACons conargs ident -> failure x
+transModuleName :: ModuleName -> Result
+transModuleName x = case x of
+  MNil uident -> failure x
+  MCons uident modulename -> failure x
+transGlobalRegion :: GlobalRegion -> Result
+transGlobalRegion x = case x of
+  Memory -> failure x
+  Storage -> failure x
+  TStorage -> failure x
+transConLHS :: ConLHS -> Result
+transConLHS x = case x of
+  CLNil uident ident -> failure x
+  CLCons conlhs ident -> failure x
+transDataCon :: DataCon -> Result
+transDataCon x = case x of
+  DC uident t -> failure x
+transEnumCon :: EnumCon -> Result
+transEnumCon x = case x of
+  EC ident -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
+  If e s1 s2 -> failure x
+  While e s -> failure x
+  Return e -> failure x
+  Do ss -> failure x
+  Case e cases -> failure x
+transCASE :: CASE -> Result
+transCASE x = case x of
+  C e s -> failure x
 transEField :: EField -> Result
 transEField x = case x of
   ENamed ident e -> failure x
@@ -31,15 +71,50 @@ transEField x = case x of
 transE :: E -> Result
 transE x = case x of
   Struct efields -> failure x
+  EmptyTuple -> failure x
+  Tuple e es -> failure x
   Int integer -> failure x
   Var ident -> failure x
+  String string -> failure x
+  Con uident -> failure x
+  Wild -> failure x
+  PlusPlusPost e -> failure x
+  MinusMinusPost e -> failure x
+  Index e1 e2 -> failure x
+  Dot e ident -> failure x
+  Arrow e ident -> failure x
+  Hash e integer -> failure x
+  App e1 e2 -> failure x
+  PlusPlusPre e -> failure x
+  MinusMinusPre e -> failure x
+  Negate e -> failure x
+  Not e -> failure x
+  BitwiseNot e -> failure x
+  Deref e -> failure x
+  AddressOf e -> failure x
+  Mul e1 e2 -> failure x
+  Div e1 e2 -> failure x
+  Mod e1 e2 -> failure x
+  Plus e1 e2 -> failure x
+  Minus e1 e2 -> failure x
+  Shl e1 e2 -> failure x
+  Shr e1 e2 -> failure x
+  MyLT e1 e2 -> failure x
+  LTE e1 e2 -> failure x
+  MyGT e1 e2 -> failure x
+  GTE e1 e2 -> failure x
+  Eq e1 e2 -> failure x
+  NEq e1 e2 -> failure x
+  BitwiseAnd e1 e2 -> failure x
+  BitwiseXor e1 e2 -> failure x
   BitwiseOr e1 e2 -> failure x
   And e1 e2 -> failure x
   Or e1 e2 -> failure x
   Assign e1 aop e2 -> failure x
+  Coerce e t -> failure x
 transAOp :: AOp -> Result
 transAOp x = case x of
-  Eq -> failure x
+  EqEq -> failure x
   PlusEq -> failure x
   MinusEq -> failure x
   MulEq -> failure x
@@ -50,7 +125,18 @@ transAOp x = case x of
   AndEq -> failure x
   XorEq -> failure x
   OrEq -> failure x
+transTField :: TField -> Result
+transTField x = case x of
+  TNamed ident t -> failure x
+  TAnon t -> failure x
 transT :: T -> Result
 transT x = case x of
-  TVar -> failure x
+  TVar ident -> failure x
+  TNat integer -> failure x
+  TCon uident -> failure x
+  TStruct tfields -> failure x
+  TEmptyTup -> failure x
+  TTup t ts -> failure x
+  TApp t1 t2 -> failure x
+  TArray t integer -> failure x
 

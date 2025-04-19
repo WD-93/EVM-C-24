@@ -60,6 +60,7 @@ Parsing ambiguity: {e} struct vs {e} block. Is that the cause of the r-r conflic
 Removing coercions from S seems to have eliminated the r-r conflict... but still need to add back struct
 exprs.
 a = b = c --because patterns are distinct from Es that should parse as a = (b = c).
+Should I add character literals? No need for now.
 
 Support ternary expressions? No need for now.
 Inlining would benefit from named expression blocks and local returns. Q: inline at the AST, IR or CFG level?

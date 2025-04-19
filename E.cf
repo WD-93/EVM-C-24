@@ -1,6 +1,6 @@
---Haskell-style comments
-comment "--";
-comment "{-" "-}";
+--Goodbye Haskell-style comments, they dont work with x-- or {--x--}
+comment "//";
+comment "/*" "*/";
 
 --Ill see if merging Pat, T and E parsing solves reduce-reduce conflicts
 token UIdent (upper (letter | digit | '_')*);
@@ -13,9 +13,7 @@ token Infix ((["!#@$%&/?+*-^|:=.><"])+);
 Module. M ::= [D];
 separator D ";";
 
-Defun. D ::= Ident E7 ":=" S;
---TestE. D ::= E;
-{-
+Defun. D ::= Ident E13 ":=" S;
 TySig. D ::= Ident ":" T;
 --type Con args = t
 --t ::= t t | var | Con | t -> t
@@ -41,9 +39,8 @@ DC. DataCon ::= UIdent T;
 Enum. D ::= "enum" UIdent "{" [EnumCon] "}";
 separator EnumCon ",";
 EC. EnumCon ::= Ident;
--}
 
-SE. S ::= E; {-
+SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
 While. S ::= "while" "(" E ")" S;
 Return. S ::= "return" E;
@@ -53,28 +50,77 @@ separator S ";";
 Case. S ::= "case" E "of" "{" [CASE] "}";
 separator CASE ";";
 --TODO add pattern type?
-C. CASE ::= P "=>" S;
--}
-
+C. CASE ::= E "=>" S;
 
 --L for leaf so I can add new precedence levels incrementally
-Struct. E7 ::= "{" [EField] "}";
+Struct. E13 ::= "{" [EField] "}";
 separator EField ",";
 ENamed. EField ::= Ident ":" E;
 EAnon. EField ::= E;
-Int. E7 ::= Integer;
-Var. E7 ::= Ident;
+EmptyTuple. E13 ::= "(" ")";
+Tuple. E13 ::= "(" E "," [E] ")";
+separator nonempty E ",";
+Int. E13 ::= Integer;
+Var. E13 ::= Ident;
+String. E13 ::= String;
+Con. E13 ::= UIdent;
+Wild. E13 ::= "_";
 
-BitwiseOr. E3 ::= E3 "|" E7;
+--Left-to-right
+--12: _++ _-- call _[_] .field ->field
+PlusPlusPost. E12 ::= E12 "++";
+MinusMinusPost. E12 ::= E12 "--";
+Index. E12 ::= E12 "[" E "]";
+Dot. E12 ::= E12 "." Ident;
+Arrow. E12 ::= E12 "->" Ident;
+--Anonymous struct access
+Hash. E12 ::= E12 "#" Integer;
+--For s.f x to parse corectly, Haskell-style application needs to be here
+App. E12 ::= E12 E13;
+--Right-to-left
+--11: ++_ --_ +_ (omit?) -_ ! ~ cast(?) *_ &_ sizeof
+PlusPlusPre. E11 ::= "++" E11;
+MinusMinusPre. E11 ::= "--" E11;
+Negate. E11 ::= "-" E11;
+Not. E11 ::= "!" E11;
+BitwiseNot. E11 ::= "~" E11;
+Deref. E11 ::= "*" E11;
+AddressOf. E11 ::= "&" E11;
+--Left-to-right
+--10: * / %
+Mul. E10 ::= E10 "*" E11;
+Div. E10 ::= E10 "/" E11;
+Mod. E10 ::= E10 "%" E11;
+--9: + -
+Plus. E9 ::= E9 "+" E10;
+Minus. E9 ::= E9 "-" E10;
+--8: << >>
+Shl. E8 ::= E8 "<<" E9;
+Shr. E8 ::= E8 ">>" E9;
+--7: < <= > >=
+MyLT. E7 ::= E7 "<" E8;
+LTE. E7 ::= E7 "<=" E8;
+MyGT. E7 ::= E7 ">" E8;
+GTE. E7 ::= E7 ">=" E8;
+--6: eq, new
+Eq. E6 ::= E6 "==" E7;
+NEq. E6 ::= E6 "!=" E7;
+--Smooth sailing above?
+BitwiseAnd. E5 ::= E5 "&" E6;
+BitwiseXor. E4 ::= E4 "^" E5;
+BitwiseOr. E3 ::= E3 "|" E4;
 And. E2 ::= E2 "&&" E3;
 Or. E1 ::= E1 "||" E2;
 --E2. E1 ::= E2;
-coercions E 7;
+coercions E 13;
 
+--Right-to-left
 Assign. E ::= E1 AOp E;
+--Coerce using ::
+Coerce. E ::= E1 "::" T;
 --E1. E ::= E1;
 
-Eq. AOp ::= "=";
+EqEq. AOp ::= "=";
 PlusEq. AOp ::= "+=";
 MinusEq. AOp ::= "-=";
 MulEq. AOp ::= "*=";
@@ -86,6 +132,24 @@ AndEq. AOp ::= "&=";
 XorEq. AOp ::= "^=";
 OrEq. AOp ::= "|=";
 
+--Leaf types
+TVar. T1 ::= Ident;
+TNat. T1 ::= Integer;
+TCon. T1 ::= UIdent;
+TStruct. T1 ::= "{" [TField] "}";
+separator TField ",";
+TNamed. TField ::= Ident ":" T;
+TAnon. TField ::= T;
+TEmptyTup. T1 ::= "(" ")";
+TTup. T1 ::= "(" T "," [T] ")";
+separator nonempty T ",";
+--Type application
+TApp. T ::= T T1;
+--Fixed-size arrays, used in global decl syntax... todo add as a first-class
+--type?
+TArray. T ::= T "[" Integer "]";
+TArrow. T ::= T "->" T1;
+coercions T 1;
 
 --P ::= _, var, Con apps, {p,field: p}, *e, p(.field|#ix)*, e[e]
 {-
@@ -113,7 +177,7 @@ PCCons. PCon ::= PCon P3;
 --coercions P 2;
 --P3. P ::= P3;
 
-TVar. T ::= "TYPE"; --Ident;
+
 
 {-
 Index. E ::= E3 "[" E "]";

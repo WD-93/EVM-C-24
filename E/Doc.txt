@@ -21,6 +21,11 @@ reserved words excluded.
 Integer literals //Integer// are nonempty sequences of digits.
 
 
+String literals //String// have the form
+``"``//x//``"``}, where //x// is any sequence of any characters
+except ``"`` unless preceded by ``\``.
+
+
 
 
 
@@ -35,18 +40,28 @@ Infix literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``TYPE`` |  |  | 
+  | ``case`` | ``data`` | ``do`` | ``else``
+  | ``end`` | ``enum`` | ``if`` | ``import``
+  | ``memory`` | ``of`` | ``return`` | ``storage``
+  | ``then`` | ``tstorage`` | ``type`` | ``while``
 
 The symbols used in E are the following:
-  | ; | := | { | }
-  | , | : | | | &&
-  | || | ( | ) | =
-  | += | -= | *= | /=
-  | %= | <<= | >>= | &=
-  | ^= | |= |  | 
+  | ; | := | : | =
+  | . | { | } | ,
+  | ( | ) | => | _
+  | ++ | -- | [ | ]
+  | -> | # | - | !
+  | ~ | * | & | /
+  | % | + | << | >>
+  | < | <= | > | >=
+  | == | != | ^ | |
+  | && | || | :: | +=
+  | -= | *= | /= | %=
+  | <<= | >>= | &= | ^=
+  | |= |  |  | 
 
 ===Comments===
-Single-line comments begin with --.Multiple-line comments are  enclosed with {- and -}.
+Single-line comments begin with //.Multiple-line comments are  enclosed with /* and */.
 
 ==The syntactic structure of E==
 Non-terminals are enclosed between < and >. 
@@ -58,18 +73,98 @@ All other symbols are terminals.
   | //[D]// | -> | **eps**
   |  |  **|**  | //D// 
   |  |  **|**  | //D// ``;`` //[D]// 
-  | //D// | -> | //Ident// //E7// ``:=`` //S// 
+  | //D// | -> | //Ident// //E13// ``:=`` //S// 
+  |  |  **|**  | //Ident// ``:`` //T// 
+  |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
+  |  |  **|**  | ``import`` //ModuleName// 
+  |  |  **|**  | //GlobalRegion// //Ident// ``:`` //T// 
+  |  |  **|**  | ``data`` //ConLHS// ``=`` ``{`` //[DataCon]// ``}`` 
+  |  |  **|**  | ``enum`` //UIdent// ``{`` //[EnumCon]// ``}`` 
+  | //ConArgs// | -> | //UIdent// 
+  |  |  **|**  | //ConArgs// //Ident// 
+  | //ModuleName// | -> | //UIdent// 
+  |  |  **|**  | //UIdent// ``.`` //ModuleName// 
+  | //GlobalRegion// | -> | ``memory`` 
+  |  |  **|**  | ``storage`` 
+  |  |  **|**  | ``tstorage`` 
+  | //[DataCon]// | -> | **eps**
+  |  |  **|**  | //DataCon// 
+  |  |  **|**  | //DataCon// ``;`` //[DataCon]// 
+  | //ConLHS// | -> | //UIdent// //Ident// 
+  |  |  **|**  | //ConLHS// //Ident// 
+  | //DataCon// | -> | //UIdent// //T// 
+  | //[EnumCon]// | -> | **eps**
+  |  |  **|**  | //EnumCon// 
+  |  |  **|**  | //EnumCon// ``,`` //[EnumCon]// 
+  | //EnumCon// | -> | //Ident// 
   | //S// | -> | //E// 
-  | //E7// | -> | ``{`` //[EField]// ``}`` 
+  |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
+  |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
+  |  |  **|**  | ``return`` //E// 
+  |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
+  |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
+  | //[S]// | -> | **eps**
+  |  |  **|**  | //S// 
+  |  |  **|**  | //S// ``;`` //[S]// 
+  | //[CASE]// | -> | **eps**
+  |  |  **|**  | //CASE// 
+  |  |  **|**  | //CASE// ``;`` //[CASE]// 
+  | //CASE// | -> | //E// ``=>`` //S// 
+  | //E13// | -> | ``{`` //[EField]// ``}`` 
+  |  |  **|**  | ``(`` ``)`` 
+  |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
   |  |  **|**  | //Integer// 
   |  |  **|**  | //Ident// 
+  |  |  **|**  | //String// 
+  |  |  **|**  | //UIdent// 
+  |  |  **|**  | ``_`` 
   |  |  **|**  | ``(`` //E// ``)`` 
   | //[EField]// | -> | **eps**
   |  |  **|**  | //EField// 
   |  |  **|**  | //EField// ``,`` //[EField]// 
   | //EField// | -> | //Ident// ``:`` //E// 
   |  |  **|**  | //E// 
-  | //E3// | -> | //E3// ``|`` //E7// 
+  | //[E]// | -> | //E// 
+  |  |  **|**  | //E// ``,`` //[E]// 
+  | //E12// | -> | //E12// ``++`` 
+  |  |  **|**  | //E12// ``--`` 
+  |  |  **|**  | //E12// ``[`` //E// ``]`` 
+  |  |  **|**  | //E12// ``.`` //Ident// 
+  |  |  **|**  | //E12// ``->`` //Ident// 
+  |  |  **|**  | //E12// ``#`` //Integer// 
+  |  |  **|**  | //E12// //E13// 
+  |  |  **|**  | //E13// 
+  | //E11// | -> | ``++`` //E11// 
+  |  |  **|**  | ``--`` //E11// 
+  |  |  **|**  | ``-`` //E11// 
+  |  |  **|**  | ``!`` //E11// 
+  |  |  **|**  | ``~`` //E11// 
+  |  |  **|**  | ``*`` //E11// 
+  |  |  **|**  | ``&`` //E11// 
+  |  |  **|**  | //E12// 
+  | //E10// | -> | //E10// ``*`` //E11// 
+  |  |  **|**  | //E10// ``/`` //E11// 
+  |  |  **|**  | //E10// ``%`` //E11// 
+  |  |  **|**  | //E11// 
+  | //E9// | -> | //E9// ``+`` //E10// 
+  |  |  **|**  | //E9// ``-`` //E10// 
+  |  |  **|**  | //E10// 
+  | //E8// | -> | //E8// ``<<`` //E9// 
+  |  |  **|**  | //E8// ``>>`` //E9// 
+  |  |  **|**  | //E9// 
+  | //E7// | -> | //E7// ``<`` //E8// 
+  |  |  **|**  | //E7// ``<=`` //E8// 
+  |  |  **|**  | //E7// ``>`` //E8// 
+  |  |  **|**  | //E7// ``>=`` //E8// 
+  |  |  **|**  | //E8// 
+  | //E6// | -> | //E6// ``==`` //E7// 
+  |  |  **|**  | //E6// ``!=`` //E7// 
+  |  |  **|**  | //E7// 
+  | //E5// | -> | //E5// ``&`` //E6// 
+  |  |  **|**  | //E6// 
+  | //E4// | -> | //E4// ``^`` //E5// 
+  |  |  **|**  | //E5// 
+  | //E3// | -> | //E3// ``|`` //E4// 
   |  |  **|**  | //E4// 
   | //E2// | -> | //E2// ``&&`` //E3// 
   |  |  **|**  | //E3// 
@@ -77,9 +172,7 @@ All other symbols are terminals.
   |  |  **|**  | //E2// 
   | //E// | -> | //E1// 
   |  |  **|**  | //E1// //AOp// //E// 
-  | //E4// | -> | //E5// 
-  | //E5// | -> | //E6// 
-  | //E6// | -> | //E7// 
+  |  |  **|**  | //E1// ``::`` //T// 
   | //AOp// | -> | ``=`` 
   |  |  **|**  | ``+=`` 
   |  |  **|**  | ``-=`` 
@@ -91,6 +184,23 @@ All other symbols are terminals.
   |  |  **|**  | ``&=`` 
   |  |  **|**  | ``^=`` 
   |  |  **|**  | ``|=`` 
-  | //T// | -> | ``TYPE`` 
+  | //T1// | -> | //Ident// 
+  |  |  **|**  | //Integer// 
+  |  |  **|**  | //UIdent// 
+  |  |  **|**  | ``{`` //[TField]// ``}`` 
+  |  |  **|**  | ``(`` ``)`` 
+  |  |  **|**  | ``(`` //T// ``,`` //[T]// ``)`` 
+  |  |  **|**  | ``(`` //T// ``)`` 
+  | //[TField]// | -> | **eps**
+  |  |  **|**  | //TField// 
+  |  |  **|**  | //TField// ``,`` //[TField]// 
+  | //TField// | -> | //Ident// ``:`` //T// 
+  |  |  **|**  | //T// 
+  | //[T]// | -> | //T// 
+  |  |  **|**  | //T// ``,`` //[T]// 
+  | //T// | -> | //T// //T1// 
+  |  |  **|**  | //T// ``[`` //Integer// ``]`` 
+  |  |  **|**  | //T// ``->`` //T1// 
+  |  |  **|**  | //T1// 
 
 

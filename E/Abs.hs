@@ -13,10 +13,39 @@ newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
-data D = Defun Ident E S
+data D
+    = Defun Ident E S
+    | TySig Ident T
+    | TySyn ConArgs T
+    | Import ModuleName
+    | Global GlobalRegion Ident T
+    | Data ConLHS [DataCon]
+    | Enum UIdent [EnumCon]
   deriving (Eq, Ord, Show, Read)
 
-data S = SE E
+data ConArgs = CANil UIdent | CACons ConArgs Ident
+  deriving (Eq, Ord, Show, Read)
+
+data ModuleName = MNil UIdent | MCons UIdent ModuleName
+  deriving (Eq, Ord, Show, Read)
+
+data GlobalRegion = Memory | Storage | TStorage
+  deriving (Eq, Ord, Show, Read)
+
+data ConLHS = CLNil UIdent Ident | CLCons ConLHS Ident
+  deriving (Eq, Ord, Show, Read)
+
+data DataCon = DC UIdent T
+  deriving (Eq, Ord, Show, Read)
+
+data EnumCon = EC Ident
+  deriving (Eq, Ord, Show, Read)
+
+data S
+    = SE E | If E S S | While E S | Return E | Do [S] | Case E [CASE]
+  deriving (Eq, Ord, Show, Read)
+
+data CASE = C E S
   deriving (Eq, Ord, Show, Read)
 
 data EField = ENamed Ident E | EAnon E
@@ -24,16 +53,51 @@ data EField = ENamed Ident E | EAnon E
 
 data E
     = Struct [EField]
+    | EmptyTuple
+    | Tuple E [E]
     | Int Integer
     | Var Ident
+    | String String
+    | Con UIdent
+    | Wild
+    | PlusPlusPost E
+    | MinusMinusPost E
+    | Index E E
+    | Dot E Ident
+    | Arrow E Ident
+    | Hash E Integer
+    | App E E
+    | PlusPlusPre E
+    | MinusMinusPre E
+    | Negate E
+    | Not E
+    | BitwiseNot E
+    | Deref E
+    | AddressOf E
+    | Mul E E
+    | Div E E
+    | Mod E E
+    | Plus E E
+    | Minus E E
+    | Shl E E
+    | Shr E E
+    | MyLT E E
+    | LTE E E
+    | MyGT E E
+    | GTE E E
+    | Eq E E
+    | NEq E E
+    | BitwiseAnd E E
+    | BitwiseXor E E
     | BitwiseOr E E
     | And E E
     | Or E E
     | Assign E AOp E
+    | Coerce E T
   deriving (Eq, Ord, Show, Read)
 
 data AOp
-    = Eq
+    = EqEq
     | PlusEq
     | MinusEq
     | MulEq
@@ -46,6 +110,18 @@ data AOp
     | OrEq
   deriving (Eq, Ord, Show, Read)
 
-data T = TVar
+data TField = TNamed Ident T | TAnon T
+  deriving (Eq, Ord, Show, Read)
+
+data T
+    = TVar Ident
+    | TNat Integer
+    | TCon UIdent
+    | TStruct [TField]
+    | TEmptyTup
+    | TTup T [T]
+    | TApp T T
+    | TArray T Integer
+    | TArrow T T
   deriving (Eq, Ord, Show, Read)
 

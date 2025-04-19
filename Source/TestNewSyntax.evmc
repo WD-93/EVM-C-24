@@ -1,0 +1,30 @@
+//This is just a test of the new syntax.
+memory ret : Word;
+memory primes : Word[0];
+
+main : () -> ();
+main _ := do {
+     //Add the prime words in calldata until a zero is encountered
+     pc = 0 :: Ptr Calldata Word;
+     accum = 0 :: Word;
+     w = 0 :: Word;
+     while (w = *pc++)
+      if isPrime(w)
+      then accum += w
+      else do {}
+      end;
+     ret = accum;
+     evm_return(0::MPtr(),32)
+};
+//Memoizes primes for Erastosthenes' sieve because we have multiple calls of
+//isPrime.
+isPrime:Word -> Byte;
+isPrime n := do {
+	if n == 1
+	then return 1
+	else do {}
+	end;
+	pptr = primes;
+	//...and so on
+	}
+	
