@@ -4,6 +4,9 @@ memory primes : Word[0];
 
 main : () -> ();
 main _ := do {
+     //Initialize the primes list
+     *primes = 2;
+     primes[1] = 3;
      //Add the prime words in calldata until a zero is encountered
      pc = 0 :: Ptr Calldata Word;
      accum = 0 :: Word;
@@ -20,11 +23,30 @@ main _ := do {
 //isPrime.
 isPrime:Word -> Byte;
 isPrime n := do {
-	if n == 1
-	then return 1
-	else do {}
+	//Instantiate a new iterator
+	(p,pptr) = (2,primes+1);
+	while(p*p <= n)
+	if n % p == 0
+	then return 0
+	else (p,pptr) = primeIterator pptr
 	end;
-	pptr = primes;
-	//...and so on
-	}
-	
+	return 1
+};
+//Mimics a lazy list
+primeIterator:MPtr Word -> (Word,MPtr Word);
+primeIterator pptr := do {
+	      p = *pptr;
+	      if p
+	      then return (p,pptr+1)
+	      else do {
+	      //Search for a new prime, add it to the list
+	      //Q: do I signextend when adding signed numbers to ptrs?
+	      candidate = pptr[-1] + 2;
+	      while (!isPrime(candidate))
+	        candidate += 2;
+	      //We found a new prime
+	      *pptr = candidate;
+	      return (candidate,pptr+1)
+	      }
+	      end
+	      }

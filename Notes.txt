@@ -66,6 +66,42 @@ Support ternary expressions? No need for now.
 Inlining would benefit from named expression blocks and local returns. Q: inline at the AST, IR or CFG level?
 IR is probably best; then I can convert to CFG incrementally with access to structure information.
 
+Next: support updated syntax, combine (.field | #ix)*, desugar op=.
+Distinguish primitive operators from application; prefix primops such as return1/2 and copy could also be
+separate syntactic elements.
+A separate typecheck stage; later invariant: every subexpr tagged with type.
+Pushdown typing: push down a Maybe desired type.
+p = e --if p already has a type, it's the desired type of e
+(a,b,c) desired t --push down desired field types into fields
+(f : a -> b) x desired t --desired x = a; function applications do not push down t
+e :: t --the desired type of e is t, because that minimizes the runtime coercion cost
+Polymorphic exprs: integers, strings, tuples, structs.
+(f:{} -> ()) {unusedField: e} --e should still be evaluated, but not included in the argument struct
+Alt: only allow a subset of the desired fields, disallow additional fields.
+Eval order should be textual, regardless of the field order of the resulting struct...
+Problem: constructor applications impose only a partial constraint on type. Push down the polymorphic type;
+when it's {{Byte,a},a} for {{3,e1},e2} it's still useful.
+Switch to min-31 pointers? Not yet...
+First: update desugar. Break out desugar into a new module. Then: add a new typecheck phase in a new mod.
+Retain global information rather than reducing them to constants directly.
+Pointer aliasing rules: k covers all... 
+Optimize at the structured IR stage (?): constant expansion, inlining, tail calls.
+Extend ops with modifies S instead of produce-consume; impose barriers. Split state vars off the stack?
+Ideally a function with no memory effect would have none when statically called. Effect tracking before IR...
+stop(), revert(), invalid() don't depend on memory.
+return1(e) --also ignores memory.
+If effect tracking is done in an earlier stage, don't tag ops with effects in IR?
+Break compound expressions and (&&)/(||) up earlier? The desugaring phase alongside ->, maybe [] would make
+sense. By using a stack of local returns instead of names I can do that without any state, and without
+errors caused by local return to bad name. Local returns for expr blocks may jump n levels...
+consider blockE {...; blockE {...;localReturn 1 e;...}}, where the nested return returns to the top-level
+block expression.
+Do stack var modification tracking 
+With local return:
+e1 && e2 =>
+n <- new label
+{a = e1; if a then return@n truthy(e2) else return@n 0}@n
+
 For the back burner:
 Separating type inference from compilation would let me get rid of costly and complex coercion at runtime.
 In particular, struct coercion and integer masking could be done statically.
