@@ -18,9 +18,9 @@ transUIdent x = case x of
 transInfix :: Infix -> Result
 transInfix x = case x of
   Infix string -> failure x
-transHexInt :: HexInt -> Result
-transHexInt x = case x of
-  HexInt string -> failure x
+transHexInteger :: HexInteger -> Result
+transHexInteger x = case x of
+  HexInteger string -> failure x
 transM :: M -> Result
 transM x = case x of
   Module ds -> failure x
@@ -33,6 +33,8 @@ transD x = case x of
   Global globalregion ident t -> failure x
   Data conlhs datacons -> failure x
   Enum uident enumcons -> failure x
+  StaticData t ident e -> failure x
+  StaticDatatype t ident e -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -81,10 +83,11 @@ transEField x = case x of
   EAnon e -> failure x
 transE :: E -> Result
 transE x = case x of
+  AnonStaticData t e -> failure x
   Struct efields -> failure x
   EmptyTuple -> failure x
   Tuple e es -> failure x
-  HexInt hexint -> failure x
+  HexInt hexinteger -> failure x
   Int integer -> failure x
   Var ident -> failure x
   String string -> failure x

@@ -11,6 +11,9 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
+--AST -> AST
+import Desugar.Transforms
+
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Data.Set (Set(..))
@@ -19,6 +22,7 @@ import Control.Monad.Trans.Except
 import Control.Monad.State
 import Text.Read (readMaybe)
 import Data.List (sort)
+import Data.Char (ord) --for string desugaring
 
 data DError = TySigDefunMismatch Name Name
             | DuplicateDefun Name
@@ -42,6 +46,9 @@ data DError = TySigDefunMismatch Name Name
             -- ^A helpful message on the off chance whoever triggers it isn't
             --fuzzing for vulns
             | DuplicateEnumName Name Name
+            | WildcardInExprContext
+            | MalformedPattern P.E
+            | MalformedPatternField P.EField
   deriving (Eq,Ord,Read,Show)
 
 desugar :: P.M -> Either DError Module
@@ -131,6 +138,10 @@ desugarDs ((P.Enum (UIdent tycon) ecs):rest) = do
                      $ enumValues s
        }
   desugarDs rest
+desugarDs (P.StaticData pt (Ident nm) pe : rest) = do
+  let t = desugarT pt
+  e <- desugarE pe
+  error "todo"
 desugarDs other = throwE $ BadDOrdering other
 
 count :: Ord a => [a] -> [(a,Int)]
@@ -246,88 +257,43 @@ desugarFieldT = go1
             ((pad,al),Nothing,desugarT pt)
 
 {-
-desugarFieldP :: P.Field -> De (Maybe Name,Pat)
-desugarFieldP = \case
-  P.Named (Ident nm) e -> do
-    p <- desugarP e
-    return (Just nm, p)
-  P.Anon e -> do
-    p <- desugarP e
-    return (Nothing, p)
--}
---Now struct fields need pad,alignment,mnm,e
---Niggle: even if different pad or alignment info has no effect on runtime
---repr, the types are distinct.
-{-
-desugarField :: (P.E -> De a) -> P.Field -> De (Field a)
-desugarField de = go Nothing Nothing
-  where go mpad mal = \case
-          P.AnnotPad p f
-            | Just p' <- mpad -> throwE $ DuplicatePads p' $ P.AnnotPad p f
-            | P.Bit <- p -> throwE BitPaddingDeprecated
-            | let -> go (toPad p) mal f
-          P.AnnotAlign p f
-            | Just p' <- mal -> throwE $ DuplicateAligns p' $ P.AnnotAlign p f
-            | P.Bit <- p -> throwE BitPaddingDeprecated
-            | let -> go mpad (toPad p) f
-          P.Named (Ident nm) e -> do
-            x <- de e
-            return ((deflt mpad, deflt mal), Just nm, x)
-          P.Anon e -> do
-            x <- de e
-            return ((deflt mpad, deflt mal), Nothing, x)
-        deflt = \case
-          Nothing -> Byte
-          Just p -> p
-        toPad = Just . \case
-          P.Bit -> Bit
-          P.Byte -> Byte
-          P.Word -> Word
--}
-{-
-_, x, {p | field:p,...}, (p1,p2,...)
+_, x, {p | field:p,...}, (p1,p2,...), *e, e[e], p.field, p#ix
+In future: Con p
 -}
 desugarP :: P.E -> De Pat
-desugarP = error "todo"
-{-
-desugarP = do
-  let r = desugarP
-  \case
-    P.Index ptr ix -> desugarP $ (P.PrefixOp (Infix "*") $
-                                  P.Ops ptr (Infix "+") (OSNil ix))
-    --Assign makes no sense
-    --FW ops: !! ~ _[_]
-    --FW prefix op: *_, -_
-    --For now, there are no Con ps applications
-    P.Var (Ident nm) -> return $ PVar nm
-    --For now, no Con patterns
-    --Dot makes sense, but unsupported for now
-    --FW: integer constants
-    P.EmptyTup -> return $ PTup []
-    P.Tup e es -> PTup <$> ((:) <$> r e <*> mapM r es)
-    P.EmptyStruct -> return $ PStruct []
-    P.EStruct fields -> PStruct <$> mapM desugarFieldP fields
-    P.Wild -> return PWild
-    P.Dot p (Ident field) -> PDot <$> r p <*> return field
-    P.Hash p n -> PHash <$> r p <*> return (fromInteger n)
-    P.PrefixOp (Infix "*") e -> Deref <$> desugarE e
-    e -> throwE $ BadEInPat e
--}
+desugarP = go
+  where go = \case
+          P.Struct _ -> todo
+          P.EmptyTuple -> return $ PTup []
+          P.Tuple p ps -> PTup <$> mapM go (p:ps)
+          P.Var (Ident nm) -> return $ PVar nm
+          P.Wild -> return PWild
+          P.Index arr ix -> PIndex <$> desugarE arr <*> desugarE ix
+          P.Dot p (Ident nm) -> PDot <$> go p <*> return nm
+          P.Hash p ix -> PHash <$> go p <*> return (fromInteger ix)
+          P.Deref e -> Deref <$> desugarE e
+          e -> throwE $ MalformedPattern e
+        todo = error "todo"
+--Fields in patterns should never contain pad or align pragmas, so they cause
+--an error
+desugarFieldP :: P.EField -> De (Maybe Name, Pat)
+desugarFieldP (P.EF1 (P.EF2 f)) =
+  case f of
+    P.ENamed (Ident nm) e -> do
+      p <- desugarP e
+      return (Just nm, p)
+    P.EAnon e -> do
+      p <- desugarP e
+      return (Nothing, p)
+    f -> throwE $ MalformedPatternField f
 
---DTs.S now has a concept of standalone do blocks...
-desugarBlock :: P.S -> De [S]
-desugarBlock =
-  \case P.Do ss -> mapM desugarS ss
-        s -> (:[]) <$> desugarS s
 desugarS :: P.S -> De S
 desugarS = \case
-  P.SE (P.Assign lhs aop rhs) -> error "TODO"
-    --(:=) <$> desugarP lhs <*> desugarE rhs
-  P.SE e -> (PWild :=) <$> desugarE e
-  P.If e th el -> Ifte <$> desugarE e <*> desugarBlock th <*> desugarBlock el
-  P.While e body -> While <$> desugarE e <*> desugarBlock body
+  P.SE e -> SE <$> desugarE e
+  P.If e th el -> Ifte <$> desugarE e <*> desugarS th <*> desugarS el
+  P.While e body -> While <$> desugarE e <*> desugarS body
   P.Return e -> Return <$> desugarE e
-  P.Do ss -> Block <$> desugarBlock (P.Do ss)
+  P.Do ss -> Block <$> mapM desugarS ss
     --throwE $ BadDoInDesugarS ss
   P.Case pe pcases -> do
     e <- desugarE pe
@@ -349,115 +315,264 @@ desugarE :: P.E -> De E
 desugarE = go
   where
     go = \case
-      P.Struct efields -> error "todo"
+      P.AnonStaticData pt pe -> do
+        let t = desugarT pt
+        e <- desugarE pe
+        handleStaticDataExpr t e
+      P.AnonStaticDatatype pt pe -> do
+        let t = desugarT pt
+        e <- desugarE pe
+        nm <- newAnonStaticName
+        handleStaticDatatype t nm e
+        return $ Var nm
+      P.Struct efields -> EStruct <$> mapM desugarFieldE efields
+      P.EmptyTuple -> return $ EStruct []
+      P.Tuple pe pes -> tupleE <$> mapM go (pe:pes)
+      P.HexInt (P.HexInteger str) -> return $ EInteger $ read str
+      P.Int n -> return $ EInteger n
+      P.Var (Ident nm) -> return $ Var nm
+      P.String str -> do
+        let len = length str
+        handleStaticDataExpr (Array (UInt 8) $ fromIntegral len) $
+          structE $ map (EInteger . fromIntegral . ord) str
+      --TODO distinguish name types in the AST type?
+      --The only valid use of standalone uppercase names is enum values
+      P.Con (UIdent nm) -> return $ Var nm
+      P.Wild -> throwE WildcardInExprContext
+      P.BlockE pss -> BlockE <$> mapM desugarS pss
+      P.PlusPlusPost pe -> do
+        pat <- incLRDepthP 0 <$> desugarP pe
+        expr <- incLRDepth 0 <$> go pe
+        temp <- newDeName "temp"
+        return $ BlockE [
+          SE $ PVar temp := expr,
+          SE $ pat := PrimOp "+" [Var temp,EInteger 1],
+          LocalReturn 0 $ Var temp
+          ]
+      P.MinusMinusPost pe -> do
+        pat <- incLRDepthP 0 <$> desugarP pe
+        expr <- incLRDepth 0 <$> go pe
+        temp <- newDeName "temp"
+        return $ BlockE [
+          SE $ PVar temp := expr,
+          SE $ pat := PrimOp "-" [Var temp,EInteger 1],
+          LocalReturn 0 $ Var temp
+          ]
+      P.Index arr ix -> po "index" [arr,ix]
+      --Fold field accesses into a single Dots
+      --That's better done in a later traversal...
+      --Note that ideally x = a.b; y = x.c would be caught via symbolic eval
+      P.Dot pe (Ident nm) -> do
+        e <- go pe
+        return $ Dots e [Left nm]
+      P.Arrow pe field -> go $ P.Deref pe `P.Dot` field
+      P.Hash pe ix -> do
+        e <- go pe
+        return $ Dots e [Right $ fromInteger ix]
+      --Can now no longer be confused with primfun applications, modulo
+      --prefix ident primfuns
+      --However, Con arg also uses P.App:
+      P.App (P.Con (UIdent con)) parg -> do
+        arg <- go parg
+        return $ Con con arg
+      P.App f x -> (:$) <$> go f <*> go x
+      -- ++x =>
+      --block {
+      -- x += 1;
+      -- localReturn 0 x
+      --}
+      --Todo deduplicate
+      P.PlusPlusPre pe -> do
+        pat <- incLRDepthP 0 <$> desugarP pe
+        expr <- incLRDepth 0 <$> go pe
+        return $ BlockE [
+          SE $ pat := PrimOp "+" [expr,EInteger 1],
+          LocalReturn 0 expr
+          ]
+      P.MinusMinusPre pe -> do
+        pat <- incLRDepthP 0 <$> desugarP pe
+        expr <- incLRDepth 0 <$> go pe
+        return $ BlockE [
+          SE $ pat := PrimOp "-" [expr,EInteger 1],
+          LocalReturn 0 expr
+          ]
+      --Unary - now has its own primfun
+      P.Negate pe -> po "negate" [pe]
+      P.Not pe -> po "!" [pe]
+      P.BitwiseNot pe -> po "~" [pe]
+      --Add a pattern synonym for Deref in E?
+      P.Deref pe -> po "deref" [pe]
+      --It's not strictly a primop...
+      P.AddressOf pe -> po "&_" [pe]
+      P.Mul a b -> po "*" [a,b]
+      P.Div a b -> po "/" [a,b]
+      P.Mod a b -> po "%" [a,b]
+      P.Plus a b -> po "+" [a,b]
+      P.Minus a b -> po "-" [a,b]
+      P.Shl a b -> po "<<" [a,b]
+      P.Shr a b -> po ">>" [a,b]
+      --Note only <, <=, ==, != primops are supported
+      P.MyLT a b -> po "<" [a,b]
+      P.LTE a b -> po "<=" [a,b]
+      P.MyGT a b -> po "<" [b,a]
+      P.GTE a b -> po "<=" [b,a]
+      P.Eq a b -> po "==" [a,b]
+      P.NEq a b -> po "!=" [a,b]
+      P.BitwiseAnd a b -> po "&" [a,b]
+      P.BitwiseXor a b -> po "^" [a,b]
+      P.BitwiseOr  a b -> po "|" [a,b]
+      --Desugar to block expressions
+      --a && b =>
+      --block {
+      -- if a
+      -- then localReturn 0 truthy b
+      -- else localReturn 0 0
+      --}
+      --Note a and b may contain explicit local returns, so their return
+      --index needs to be incremented.
+      P.And a b -> do
+        a' <- incLRDepth 0 <$> go a
+        b' <- incLRDepth 0 <$> go b
+        return $ BlockE [
+          Ifte a' (LocalReturn 0 $ PrimOp "truthy" [b'])
+            (LocalReturn 0 $ EInteger 0)
+          ]
+      P.Or a b -> do
+        a' <- incLRDepth 0 <$> go a
+        b' <- incLRDepth 0 <$> go b
+        return $ BlockE [
+          Ifte a' (LocalReturn 0 $ EInteger 1)
+            (LocalReturn 0 $ PrimOp "truthy" [b'])
+          ]
+      --Desugar += etc to block expressions
+      --TODO opt: *p.a.b.c += e to avoid duplicating the address calc
+      --a.b.c |= or ^= could also be easily optimized
+      -- +=, *= are less straightforward due to overflow
+      P.Assign lhs aop rhs -> do
+        p <- desugarP lhs
+        e <- desugarE rhs
+        case aop of
+          P.EqEq ->
+            return $ p := e
+          _ -> do
+            let primop = case aop of
+                           P.PlusEq -> "+"
+                           P.MinusEq -> "-"
+                           P.MulEq -> "*"
+                           P.DivEq -> "/"
+                           P.ModEq -> "%"
+                           P.ShlEq -> "<<"
+                           P.ShrEq -> ">>"
+                           P.AndEq -> "&"
+                           P.XorEq -> "^"
+                           P.OrEq -> "|"
+            --Note string allocation is duplicated here; opt to get rid of it
+            oldp <- desugarE lhs
+            return $ p := PrimOp primop [oldp,e]
+      P.Coerce e t -> Coerce (desugarT t) <$> go e
+    po nm es = PrimOp nm <$> mapM go es
+desugarFieldE :: P.EField -> De (Field E)
+desugarFieldE = go1
+  where go1 = \case
+          P.EPad fld -> go2 Word fld
+          P.EF1 fld -> go2 Byte fld
+        go2 pad = \case
+          P.EAlign fld -> go3 pad Word fld
+          P.EF2 fld -> go3 pad Byte fld
+        go3 pad al = \case
+          P.ENamed (Ident nm) pe -> do
+            e <- desugarE pe
+            return ((pad,al),Just nm,e)
+          P.EAnon pe -> do
+            e <- desugarE pe
+            return ((pad,al),Nothing,e)
 
---Allocates $static<n> off anonStaticCtr
-newAnonStaticName :: De Name
-newAnonStaticName = do
+--String literals are lifted to staticData decls:
+--"abc" becomes staticData (Byte[3]) {97,98,99};
+--staticData t e expressions are desugared further to
+--newname : Ptr Code t with an accompanying
+--staticData t newname = e
+--declaration.
+{-
+Permitted static exprs:
+k (integer constants),
+-k (negation can be applied statically),
+var: function, enum value, staticdata name
+&global
+struct
+tuple
+Con arg
+
+In theory arbitrary expressions could be permitted, but something like
+&global + k would require a more expressive linker - better to keep the
+limitations explicit and leave it to the programmer to implement their own
+custom creation script logic when necessary.
+-}
+
+--handleStaticDataExpr allocates the accompanying decl and returns newname
+handleStaticDataExpr :: T -> E -> De E
+handleStaticDataExpr t e = do
+  nm <- newAnonStaticName
+  handleStaticData t nm e
+  return $ Var nm
+--Handles staticData (t) nm = e;
+--e : t is placed in code; nm : Ptr Code t points to it
+--Note constructor applications, staticData exprs and strings create nested
+--static data/type references.
+--Strings and staticData/type exprs are handled when desugaring the e, but
+--constructor applications are not; they must be handled here.
+--The actual layout in terms of bytes and labels is computed after type
+--checking; all we need to do here is create the static declaration and
+--recursively allocate staticDatatypes.
+handleStaticData :: T -> Name -> E -> De ()
+handleStaticData t nm e = error "todo"
+
+--Like staticData, but for datatypes (which are boxed).
+--staticDatatype (tycon args) nm = Con arg
+--places {tag_Con,arg} in code, nm : tycon args Code points to it.
+--Note the top-level Con is mandatory, and only tycon args (a datatype without
+--the region applied) is an acceptable t parameter.
+--As with staticData, 
+handleStaticDatatype t nm e = error "todo"
+
+--Recursively allocates staticDatatypes, substituting them for their names as
+--in staticDatatype expressions.
+--Standalone names are only valid if they're enum values, functions or static
+--names, but we don't check that here.
+--A feature that would be nice to have in Haskell: union patterns.
+--Constraint: equal var set with compatible types.
+--That could be used to make a pattern for "valid leaf exprs" here.
+--Oh no - to allocate static data for Con arg I need to know the type, but I
+--don't know it yet! Better defer that until type checking then.
+handleStaticExpr :: E -> De E
+handleStaticExpr = go
+  where go e =
+          case e of
+            EInteger _ -> return e
+            Var _ -> return e
+            --Only valid for globals:
+            PrimOp "&_" [Var _] -> return e
+            EStruct fields -> EStruct <$> mapMFields go fields
+            Con con arg -> error "todo"
+--Utility function; todo use it elsewhere
+--It just ignores padding and the field name, a common pattern
+mapMFields :: (a -> m b) -> [Field a] -> [Field b]
+mapMFields f = mapM (\(pad,mnm,a) -> do
+                        b <- f a
+                        return (pad,mnm,b))
+
+--Allocates $prefix<n> off anonStaticCtr; need a generic version because I
+--also need to allocate vars for the desugaring of x++ to
+--block {
+-- temp = x;
+-- x = x + 1;
+-- localReturn 0 temp
+-- }
+--The $ ensures it won't be confused with user variables
+newDeName :: String -> De Name
+newDeName prefix = do
   s <- get
   let n = anonStaticCtr s
   put s{anonStaticCtr = n + 1}
-  return $ "$static" ++ show n
-  
-{-
-desugarE = do
-  let r = desugarE
-  \case
-    --For now I always desugar a[b] to *(a + b) because that simplifies
-    --ptr[ix].field* = e in IR1
-    P.Index ptr ix -> desugarE (P.PrefixOp (Infix "*") $
-                               P.Ops ptr (Infix "+") (OSNil ix))
-    --Assign is not an expr, but should it be...?
-    --Pro: that's what C does; it gives you neat puns
-    --Con: it's not a higher-level description of an existing EVM pattern, but
-    --rather a C feature imposed on the EVM;
-    --side effects not as explicit
-    P.Assign l r -> throwE $ AssignIsNotAnE l r
-    --Special handling of e :: t, the coercion operator
-    --No handling of e :: t1 :: t2 for now
-    --(::) mixed with other operators => parse failure
-    P.Ops e (Infix "::") (OSNil te) ->
-      Coerce <$> desugarT te <*> desugarE e
-    P.Ops _ (Infix op) os
-      | let os2ops (OSNil _) = []
-            os2ops (OSCons _ (Infix op) os) = op:os2ops os,
-        "::" `elem` (op:os2ops os) -> throwE $ CoerceMixedWithOps (op:os2ops os)
-    --For now, use constant fixity info. FW: gather and process fixity decls
-    --before desugaring Es.
-    P.Ops e (Infix op) os -> do
-      e1 <- r e
-      opes <- desugarOpsE op os
-      return $ opsToApps opPrecedenceInfo e1 opes
-    --1-arity constructor allocation, the only type allowed.
-    P.App (P.App (P.Con (UIdent con)) parg) ppat -> do
-      arg <- desugarE parg
-      p <- desugarP ppat
-      return $ Con con arg p
-    --Hack: BNFC doesn't like adding a hexadecimal number token, so I'll
-    --use hex("deadbeef") instead
-    P.App (P.Var (Ident "hex")) (P.Str str) ->
-     EInteger <$> (case readMaybe $ "0x"++str of
-                      Just n -> return n
-                      Nothing -> throwE $ GenericDError $
-                        "Couldn't read hex number in hex(...): " ++ show str)
-    P.App f x -> (:$) <$> r f <*> r x
-    P.Var (Ident x) -> return $ Var x
-    P.Con (UIdent x) -> throwE $ StandaloneConstructorName x
-    --return $ Var x --a name's a name to the IR
-    P.Dot e (Ident f) -> (:.) <$> r e <*> return f
-    P.Hash e n -> (:#) <$> r e <*> return (fromInteger n)
-    P.Int n -> return $ EInteger n
-    P.Str str -> return $ EString str
-    P.EmptyTup -> return $ EStruct []
-    P.Tup e es -> tupleE <$> ((:) <$> r e <*> mapM r es)
-    P.EmptyStruct -> return $ EStruct []
-    P.EStruct fields -> EStruct <$> mapM desugarFieldE fields
-    --Prefix ops: * & ! ~ -
-    P.PrefixOp (Infix nm) e
-      | "*" <- nm ->
-       (Var "deref" :$) <$> desugarE e
-      | let -> (Var nm :$) <$> desugarE e
-    x -> error $ "Missing case in desugarE: " ++ show x
-
-desugarOpsE op = \case
-  OSNil e -> do
-    x <- desugarE e
-    return [(op,x)]
-  OSCons e (Infix op') os -> do
-    x <- desugarE e
-    opes <- desugarOpsE op' os
-    return $ (op,x) : opes
-
---True: binds left. Lower number: higher binding strength.
-type PrecInfo = (Bool,Int)
-opPrecedenceInfo = M.fromList [
-  ("+",(False,6)),
-  ("-",(False,6)),
-  ("*",(False,5)),
-  ("/",(False,5))
-                              ]
-defaultPrecInfo = (True,10)
---o1 `gtPrec` o2 iff o1 has a lower number or an equal number & o2 binds left
-gtPrec :: PrecInfo -> PrecInfo -> Bool
-gtPrec (l1,b1) (l2,b2) = b1 < b2 || (b1 == b2 && l2)
---Given a sequence e op e op ... e, converts it to a tree of applications.
---e op e1 OP e2 OP e3 ... if OP binds left e1 may be nested arbitrarily deep.
---a op b OP c ... => a op (...
-opsToApps :: Map Name PrecInfo -> E -> [(Name,E)] -> E
-opsToApps m e opes = shunt [e] [] opes
-  --Shunting yard algo
-  --An E can always be constructed since there's no mismatch between #es & #ops
-  --Quirk: unlike Haskell's op prec parsing, never fails
-  where shunt es ops [] = buildOps es ops
-        shunt (b:a:es) (op':ops') ((op,e):opes)
-          | op' >? op = shunt (appOp op' a b : es) ops' ((op,e):opes)
-        shunt es ops ((op,e):opes) = shunt (e:es) (op:ops) opes
-        o1 >? o2 = pinfo o1 `gtPrec` pinfo o2
-        pinfo op = case M.lookup op m of
-                     Just i -> i
-                     Nothing -> defaultPrecInfo
-        buildOps [e] [] = e
-        buildOps (b:a:es) (op:ops) =
-          buildOps (appOp op a b : es) ops
-        appOp op a b = Var op :$ tupleE [a,b]
--}
+  return $ "$" ++ prefix ++ show n
+newAnonStaticName = newDeName "static"

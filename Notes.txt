@@ -48,6 +48,16 @@ I should compile pattern matching to SIMPLE form, rather than operating on words
 easier by the new separate type check.
 
 With static data lifted during desugaring, I can eliminate EString from E.
+Add a dedicated constructor for Deref in E? Not for now.
+No converting Es to Pats in IR, that's desugar's job.
+Data.Generics can't handle local return depth inc... switch to uniplate? No, I'll just write a traversal for
+now.
+Assignment is now in E, so it can be ignored in desugarS. P.SE e should not desugar to an assignment.
+I should maybe give Array a TyNat parameter... that way I could make polyfuns that take an array of
+polymorphic length. Later...
+
+Datatypes allocated to memory during a creation script's execution would remain valid as code datatypes,
+as long as the code starts at address 0. Similarly for calldata at address 0.
 
 Static data decl: name, type, e.
 Each Con arg becomes a new implicit decl. Then all can be converted to data: a mix of bytes and labels.

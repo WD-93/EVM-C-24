@@ -1,4 +1,5 @@
-{-# LANGUAGE PatternSynonyms, OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE PatternSynonyms, OverloadedStrings, LambdaCase,
+DeriveDataTypeable #-}
 module AST.DTs where
 
 import Data.Map (Map(..))
@@ -9,9 +10,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except (Except(..),runExcept,throwError) --for unification
 import Data.String (IsString(..))
---TODO split into DTs etc files
---TODO add BNFC syntax to repo
---Start: absolutely minimal complete pipeline
+import Data.Generics --for SYB
 
 --For duplicatedShowT; TODO remove...
 import Data.List (intercalate)
@@ -19,7 +18,8 @@ import Data.List (intercalate)
 --AST, converted from BNFC CST in desugaring stage
 type Name = String
 data E = EInteger Integer
-       | EString String
+       --EString is no longer needed because lifting is done in desugar
+       -- | EString String
        | Var Name --includes overloaded ops
        | E :$ E --Proper function application; excludes primops
        --Note && and || are not primops; they're desugared to block exprs
@@ -56,12 +56,14 @@ data E = EInteger Integer
        --the returned value is softCoerced to the type of the block it's
        --returning from.
        | BlockE [S]
-  deriving (Eq,Ord,Read,Show)
+       --Assignment moved to E
+       | Pat := E
+  deriving (Eq,Ord,Read,Show,Data)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
 --currently there is no support for bitfields
 data Padding = Byte | Word
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Data)
 pad2Sz :: Num a => Padding -> a
 pad2Sz = \case
   Byte -> 8
@@ -117,7 +119,7 @@ data T = TyCon Name
        | Struct [Field T]
        --Invariant: n >= 0; no region specified because it's unboxed (!)
        | Array T Integer
-  deriving (Eq,Ord,Read)
+  deriving (Eq,Ord,Read,Data)
 --Making T show prettier by duplicating Pretty code...
 --TODO move IR1's data decls here so it can import Pretty.hs without a cycle.
 instance Show T where
@@ -244,16 +246,17 @@ data Region = Memory
   deriving (Eq,Ord,Read,Show)
 -}
 --TODO generic instance
-data S = Pat := E
+data S = SE E --required because := has been moved to E
        | Return E
-       | Ifte E Block Block
-       | While E Block
+       | Ifte E S S
+       | While E S
        | Case E [(Name,Pat,S)]
-       | Block Block --Standalone do, scopes locals
+       | Block [S] --Standalone do, scopes locals
        | Break Int --break 0 ~ break in C; break n breaks out of n+1 loops
        | Continue Int --analogous
        | LocalReturn Int E --return out of n+1 nested block expressions
-  deriving (Eq,Ord,Read,Show)
+       
+  deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
          | PVar Name
@@ -263,17 +266,18 @@ data Pat = PWild
          | PDot Pat Name
          | PHash Pat Int
          | Deref E
-  deriving (Eq,Ord,Read,Show)
---data D = Defun Name T Pat Block
---  deriving (Eq,Ord,Read,Show)
-type Block = [S]
+         | PIndex E E --now required bc arr[ix] /=> *(arr + ix)
+  deriving (Eq,Ord,Read,Show,Data)
+
+--type Block = [S]
 --type Program = [D]
 
 --Output after desugaring phase:
 data Module = Module {
   defuns :: Map Name (T,Pat,S),
   tysyns :: Map Name ([Name],T),
-  --T = Ptr Code a | somedatatype Code
+  --T = Ptr Code a | somedatatype Code, i.e. the type is the type of the
+  --name.
   --String expressions are lifted and become
   --newname => (Ptr Code Byte[len],{c1,c2,...})
   --Nested Con args and strings in static data are also lifted and

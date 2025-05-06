@@ -31,7 +31,7 @@ $white+ ;
 @rsyms { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 $c ($l | $d | \_)* { tok (\p s -> PT p (eitherResIdent (T_UIdent . share) s)) }
 [\! \# \@ \$ \% \& \/ \? \+ \* \- \^ \| \: \= \. \> \<]+ { tok (\p s -> PT p (eitherResIdent (T_Infix . share) s)) }
-0 x [0 1 2 3 4 5 6 7 8 9 a b c d e f A B C D E F]+ { tok (\p s -> PT p (eitherResIdent (T_HexInt . share) s)) }
+0 x [0 1 2 3 4 5 6 7 8 9 a b c d e f A B C D E F]+ { tok (\p s -> PT p (eitherResIdent (T_HexInteger . share) s)) }
 
 $l $i*   { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 \" ([$u # [\" \\ \n]] | (\\ (\" | \\ | \' | n | t)))* \"{ tok (\p s -> PT p (TL $ share $ unescapeInitTail s)) }
@@ -56,7 +56,7 @@ data Tok =
  | TC !String         -- character literals
  | T_UIdent !String
  | T_Infix !String
- | T_HexInt !String
+ | T_HexInteger !String
 
  deriving (Eq,Show,Ord)
 
@@ -93,7 +93,7 @@ prToken t = case t of
   PT _ (TC s)   -> s
   PT _ (T_UIdent s) -> s
   PT _ (T_Infix s) -> s
-  PT _ (T_HexInt s) -> s
+  PT _ (T_HexInteger s) -> s
 
 
 data BTree = N | B String Tok BTree BTree deriving (Show)

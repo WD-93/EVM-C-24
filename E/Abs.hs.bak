@@ -10,7 +10,8 @@ module E.Abs where
 newtype Ident = Ident String deriving (Eq, Ord, Show, Read)
 newtype UIdent = UIdent String deriving (Eq, Ord, Show, Read)
 newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
-newtype HexInt = HexInt String deriving (Eq, Ord, Show, Read)
+newtype HexInteger = HexInteger String
+  deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
@@ -22,6 +23,8 @@ data D
     | Global GlobalRegion Ident T
     | Data ConLHS [DataCon]
     | Enum UIdent [EnumCon]
+    | StaticData T Ident E
+    | StaticDatatype T Ident E
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -68,10 +71,11 @@ data EField
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = Struct [EField]
+    = AnonStaticData T E
+    | Struct [EField]
     | EmptyTuple
     | Tuple E [E]
-    | HexInt HexInt
+    | HexInt HexInteger
     | Int Integer
     | Var Ident
     | String String

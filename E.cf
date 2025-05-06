@@ -40,6 +40,8 @@ DC. DataCon ::= UIdent T;
 Enum. D ::= "enum" UIdent "{" [EnumCon] "}";
 separator EnumCon ",";
 EC. EnumCon ::= Ident;
+StaticData. D ::= "staticData" "(" T ")" Ident "=" E;
+StaticDatatype. D ::= "staticDatatype" "(" T ")" Ident "=" E;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
@@ -58,7 +60,9 @@ LocalReturn. S ::= "localReturn" Integer E;
 --For isnt essential, its a convenience feature
 For. S ::= "for" "(" S ";" E ";" S ")" S;
 
---L for leaf so I can add new precedence levels incrementally
+--Anonymous static data exprs... might be useful.
+AnonStaticData. E13 ::= "staticData" "(" T ")" E13;
+AnonStaticDatatype. E13 ::= "staticDatatype" "(" T ")" E13;
 Struct. E13 ::= "{" [EField] "}";
 separator EField ",";
 --Order enforced: [pad sz][align sz](e | field: e)

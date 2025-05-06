@@ -48,8 +48,9 @@ The reserved words used in E are the following:
   | ``data`` | ``do`` | ``else`` | ``end``
   | ``enum`` | ``for`` | ``if`` | ``import``
   | ``localReturn`` | ``memory`` | ``of`` | ``return``
-  | ``storage`` | ``then`` | ``tstorage`` | ``type``
-  | ``while`` | ``wordalign`` | ``wordpad`` | 
+  | ``staticData`` | ``staticDatatype`` | ``storage`` | ``then``
+  | ``tstorage`` | ``type`` | ``while`` | ``wordalign``
+  | ``wordpad`` |  |  | 
 
 The symbols used in E are the following:
   | ; | := | : | =
@@ -86,6 +87,8 @@ All other symbols are terminals.
   |  |  **|**  | //GlobalRegion// //Ident// ``:`` //T// 
   |  |  **|**  | ``data`` //ConLHS// ``=`` ``{`` //[DataCon]// ``}`` 
   |  |  **|**  | ``enum`` //UIdent// ``{`` //[EnumCon]// ``}`` 
+  |  |  **|**  | ``staticData`` ``(`` //T// ``)`` //Ident// ``=`` //E// 
+  |  |  **|**  | ``staticDatatype`` ``(`` //T// ``)`` //Ident// ``=`` //E// 
   | //ConArgs// | -> | //UIdent// 
   |  |  **|**  | //ConArgs// //Ident// 
   | //ModuleName// | -> | //UIdent// 
@@ -120,7 +123,9 @@ All other symbols are terminals.
   |  |  **|**  | //CASE// 
   |  |  **|**  | //CASE// ``;`` //[CASE]// 
   | //CASE// | -> | //E// ``=>`` //S// 
-  | //E13// | -> | ``{`` //[EField]// ``}`` 
+  | //E13// | -> | ``staticData`` ``(`` //T// ``)`` //E13// 
+  |  |  **|**  | ``staticDatatype`` ``(`` //T// ``)`` //E13// 
+  |  |  **|**  | ``{`` //[EField]// ``}`` 
   |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
   |  |  **|**  | //HexInteger// 

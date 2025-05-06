@@ -113,19 +113,21 @@ import E.ErrM
   'memory' { PT _ (TS _ 57) }
   'of' { PT _ (TS _ 58) }
   'return' { PT _ (TS _ 59) }
-  'storage' { PT _ (TS _ 60) }
-  'then' { PT _ (TS _ 61) }
-  'tstorage' { PT _ (TS _ 62) }
-  'type' { PT _ (TS _ 63) }
-  'while' { PT _ (TS _ 64) }
-  'wordalign' { PT _ (TS _ 65) }
-  'wordpad' { PT _ (TS _ 66) }
-  '{' { PT _ (TS _ 67) }
-  '|' { PT _ (TS _ 68) }
-  '|=' { PT _ (TS _ 69) }
-  '||' { PT _ (TS _ 70) }
-  '}' { PT _ (TS _ 71) }
-  '~' { PT _ (TS _ 72) }
+  'staticData' { PT _ (TS _ 60) }
+  'staticDatatype' { PT _ (TS _ 61) }
+  'storage' { PT _ (TS _ 62) }
+  'then' { PT _ (TS _ 63) }
+  'tstorage' { PT _ (TS _ 64) }
+  'type' { PT _ (TS _ 65) }
+  'while' { PT _ (TS _ 66) }
+  'wordalign' { PT _ (TS _ 67) }
+  'wordpad' { PT _ (TS _ 68) }
+  '{' { PT _ (TS _ 69) }
+  '|' { PT _ (TS _ 70) }
+  '|=' { PT _ (TS _ 71) }
+  '||' { PT _ (TS _ 72) }
+  '}' { PT _ (TS _ 73) }
+  '~' { PT _ (TS _ 74) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -158,6 +160,8 @@ D : Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
   | GlobalRegion Ident ':' T { E.Abs.Global $1 $2 $4 }
   | 'data' ConLHS '=' '{' ListDataCon '}' { E.Abs.Data $2 $5 }
   | 'enum' UIdent '{' ListEnumCon '}' { E.Abs.Enum $2 $4 }
+  | 'staticData' '(' T ')' Ident '=' E { E.Abs.StaticData $3 $5 $7 }
+  | 'staticDatatype' '(' T ')' Ident '=' E { E.Abs.StaticDatatype $3 $5 $7 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
@@ -205,7 +209,9 @@ ListCASE : {- empty -} { [] }
 CASE :: { CASE }
 CASE : E '=>' S { E.Abs.C $1 $3 }
 E13 :: { E }
-E13 : '{' ListEField '}' { E.Abs.Struct $2 }
+E13 : 'staticData' '(' T ')' E13 { E.Abs.AnonStaticData $3 $5 }
+    | 'staticDatatype' '(' T ')' E13 { E.Abs.AnonStaticDatatype $3 $5 }
+    | '{' ListEField '}' { E.Abs.Struct $2 }
     | '(' ')' { E.Abs.EmptyTuple }
     | '(' E ',' ListE ')' { E.Abs.Tuple $2 $4 }
     | HexInteger { E.Abs.HexInt $1 }

@@ -23,6 +23,8 @@ data D
     | Global GlobalRegion Ident T
     | Data ConLHS [DataCon]
     | Enum UIdent [EnumCon]
+    | StaticData T Ident E
+    | StaticDatatype T Ident E
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -69,7 +71,9 @@ data EField
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = Struct [EField]
+    = AnonStaticData T E
+    | AnonStaticDatatype T E
+    | Struct [EField]
     | EmptyTuple
     | Tuple E [E]
     | HexInt HexInteger

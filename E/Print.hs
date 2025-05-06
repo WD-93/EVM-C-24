@@ -108,6 +108,8 @@ instance Print D where
     Global globalregion id t -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 t])
     Data conlhs datacons -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), doc (showString "{"), prt 0 datacons, doc (showString "}")])
     Enum uident enumcons -> prPrec i 0 (concatD [doc (showString "enum"), prt 0 uident, doc (showString "{"), prt 0 enumcons, doc (showString "}")])
+    StaticData t id e_ -> prPrec i 0 (concatD [doc (showString "staticData"), doc (showString "("), prt 0 t, doc (showString ")"), prt 0 id, doc (showString "="), prt 0 e_])
+    StaticDatatype t id e_ -> prPrec i 0 (concatD [doc (showString "staticDatatype"), doc (showString "("), prt 0 t, doc (showString ")"), prt 0 id, doc (showString "="), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -178,6 +180,8 @@ instance Print EField where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
+    AnonStaticData t e_ -> prPrec i 13 (concatD [doc (showString "staticData"), doc (showString "("), prt 0 t, doc (showString ")"), prt 13 e_])
+    AnonStaticDatatype t e_ -> prPrec i 13 (concatD [doc (showString "staticDatatype"), doc (showString "("), prt 0 t, doc (showString ")"), prt 13 e_])
     Struct efields -> prPrec i 13 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])
     Tuple e_ es -> prPrec i 13 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
