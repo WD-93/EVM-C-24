@@ -31,6 +31,7 @@ $white+ ;
 @rsyms { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 $c ($l | $d | \_)* { tok (\p s -> PT p (eitherResIdent (T_UIdent . share) s)) }
 [\! \# \@ \$ \% \& \/ \? \+ \* \- \^ \| \: \= \. \> \<]+ { tok (\p s -> PT p (eitherResIdent (T_Infix . share) s)) }
+0 x [0 1 2 3 4 5 6 7 8 9 a b c d e f A B C D E F]+ { tok (\p s -> PT p (eitherResIdent (T_HexInteger . share) s)) }
 
 $l $i*   { tok (\p s -> PT p (eitherResIdent (TV . share) s)) }
 \" ([$u # [\" \\ \n]] | (\\ (\" | \\ | \' | n | t)))* \"{ tok (\p s -> PT p (TL $ share $ unescapeInitTail s)) }
@@ -55,6 +56,7 @@ data Tok =
  | TC !String         -- character literals
  | T_UIdent !String
  | T_Infix !String
+ | T_HexInteger !String
 
  deriving (Eq,Show,Ord)
 
@@ -91,6 +93,7 @@ prToken t = case t of
   PT _ (TC s)   -> s
   PT _ (T_UIdent s) -> s
   PT _ (T_Infix s) -> s
+  PT _ (T_HexInteger s) -> s
 
 
 data BTree = N | B String Tok BTree BTree deriving (Show)
@@ -104,7 +107,7 @@ eitherResIdent tv s = treeFind resWords
                               | s == a = t
 
 resWords :: BTree
-resWords = b "==" 33 (b "-" 17 (b "(" 9 (b "%=" 5 (b "#" 3 (b "!=" 2 (b "!" 1 N N) N) (b "%" 4 N N)) (b "&&" 7 (b "&" 6 N N) (b "&=" 8 N N))) (b "+" 13 (b "*" 11 (b ")" 10 N N) (b "*=" 12 N N)) (b "+=" 15 (b "++" 14 N N) (b "," 16 N N)))) (b "::" 25 (b "." 21 (b "-=" 19 (b "--" 18 N N) (b "->" 20 N N)) (b "/=" 23 (b "/" 22 N N) (b ":" 24 N N))) (b "<<" 29 (b ";" 27 (b ":=" 26 N N) (b "<" 28 N N)) (b "<=" 31 (b "<<=" 30 N N) (b "=" 32 N N))))) (b "if" 50 (b "^=" 42 (b ">>=" 38 (b ">=" 36 (b ">" 35 (b "=>" 34 N N) N) (b ">>" 37 N N)) (b "]" 40 (b "[" 39 N N) (b "^" 41 N N))) (b "do" 46 (b "case" 44 (b "_" 43 N N) (b "data" 45 N N)) (b "end" 48 (b "else" 47 N N) (b "enum" 49 N N)))) (b "type" 58 (b "return" 54 (b "memory" 52 (b "import" 51 N N) (b "of" 53 N N)) (b "then" 56 (b "storage" 55 N N) (b "tstorage" 57 N N))) (b "|=" 62 (b "{" 60 (b "while" 59 N N) (b "|" 61 N N)) (b "}" 64 (b "||" 63 N N) (b "~" 65 N N)))))
+resWords = b ">>" 37 (b "-=" 19 (b ")" 10 (b "%=" 5 (b "#" 3 (b "!=" 2 (b "!" 1 N N) N) (b "%" 4 N N)) (b "&=" 8 (b "&&" 7 (b "&" 6 N N) N) (b "(" 9 N N))) (b "+=" 15 (b "+" 13 (b "*=" 12 (b "*" 11 N N) N) (b "++" 14 N N)) (b "-" 17 (b "," 16 N N) (b "--" 18 N N)))) (b "<" 28 (b ":" 24 (b "/" 22 (b "." 21 (b "->" 20 N N) N) (b "/=" 23 N N)) (b ":=" 26 (b "::" 25 N N) (b ";" 27 N N))) (b "==" 33 (b "<=" 31 (b "<<=" 30 (b "<<" 29 N N) N) (b "=" 32 N N)) (b ">" 35 (b "=>" 34 N N) (b ">=" 36 N N))))) (b "import" 55 (b "case" 46 (b "^=" 42 (b "]" 40 (b "[" 39 (b ">>=" 38 N N) N) (b "^" 41 N N)) (b "block" 44 (b "_" 43 N N) (b "break" 45 N N))) (b "end" 51 (b "do" 49 (b "data" 48 (b "continue" 47 N N) N) (b "else" 50 N N)) (b "for" 53 (b "enum" 52 N N) (b "if" 54 N N)))) (b "while" 64 (b "storage" 60 (b "of" 58 (b "memory" 57 (b "localReturn" 56 N N) N) (b "return" 59 N N)) (b "tstorage" 62 (b "then" 61 N N) (b "type" 63 N N))) (b "|=" 69 (b "{" 67 (b "wordpad" 66 (b "wordalign" 65 N N) N) (b "|" 68 N N)) (b "}" 71 (b "||" 70 N N) (b "~" 72 N N)))))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 

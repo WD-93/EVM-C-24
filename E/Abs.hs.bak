@@ -10,6 +10,7 @@ module E.Abs where
 newtype Ident = Ident String deriving (Eq, Ord, Show, Read)
 newtype UIdent = UIdent String deriving (Eq, Ord, Show, Read)
 newtype Infix = Infix String deriving (Eq, Ord, Show, Read)
+newtype HexInt = HexInt String deriving (Eq, Ord, Show, Read)
 data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
@@ -42,24 +43,41 @@ data EnumCon = EC Ident
   deriving (Eq, Ord, Show, Read)
 
 data S
-    = SE E | If E S S | While E S | Return E | Do [S] | Case E [CASE]
+    = SE E
+    | If E S S
+    | While E S
+    | Return E
+    | Do [S]
+    | Case E [CASE]
+    | Break Integer
+    | Continue Integer
+    | LocalReturn Integer E
+    | For S E S S
   deriving (Eq, Ord, Show, Read)
 
 data CASE = C E S
   deriving (Eq, Ord, Show, Read)
 
-data EField = ENamed Ident E | EAnon E
+data EField
+    = EPad EField
+    | EF1 EField
+    | EAlign EField
+    | EF2 EField
+    | ENamed Ident E
+    | EAnon E
   deriving (Eq, Ord, Show, Read)
 
 data E
     = Struct [EField]
     | EmptyTuple
     | Tuple E [E]
+    | HexInt HexInt
     | Int Integer
     | Var Ident
     | String String
     | Con UIdent
     | Wild
+    | BlockE [S]
     | PlusPlusPost E
     | MinusMinusPost E
     | Index E E
@@ -110,7 +128,13 @@ data AOp
     | OrEq
   deriving (Eq, Ord, Show, Read)
 
-data TField = TNamed Ident T | TAnon T
+data TField
+    = TPad TField
+    | TF1 TField
+    | TAlign TField
+    | TF2 TField
+    | TNamed Ident T
+    | TAnon T
   deriving (Eq, Ord, Show, Read)
 
 data T
@@ -122,5 +146,6 @@ data T
     | TTup T [T]
     | TApp T T
     | TArray T Integer
+    | TArrow T T
   deriving (Eq, Ord, Show, Read)
 

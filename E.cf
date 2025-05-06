@@ -8,6 +8,7 @@ token UIdent (upper (letter | digit | '_')*);
 token Infix ((["!#@$%&/?+*-^|:=.><"])+);
 --token HexNumber ( "0x" (['0'-'9''A'-'F''a'-'f']+) );
 --token HexNumber ({"0x"} (["0123456789abcdefABCDEF"]+));
+token HexInteger ({"0x"} ["0123456789abcdefABCDEF"] +) ;
 
 --layout "module";
 Module. M ::= [D];
@@ -51,20 +52,32 @@ Case. S ::= "case" E "of" "{" [CASE] "}";
 separator CASE ";";
 --TODO add pattern type?
 C. CASE ::= E "=>" S;
+Break. S ::= "break" Integer;
+Continue. S ::= "continue" Integer;
+LocalReturn. S ::= "localReturn" Integer E;
+--For isnt essential, its a convenience feature
+For. S ::= "for" "(" S ";" E ";" S ")" S;
 
 --L for leaf so I can add new precedence levels incrementally
 Struct. E13 ::= "{" [EField] "}";
 separator EField ",";
-ENamed. EField ::= Ident ":" E;
-EAnon. EField ::= E;
+--Order enforced: [pad sz][align sz](e | field: e)
+EPad. EField ::= "wordpad" EField1;
+EF1. EField ::= EField1;
+EAlign. EField1 ::= "wordalign" EField2;
+EF2. EField1 ::= EField2;
+ENamed. EField2 ::= Ident ":" E;
+EAnon. EField2 ::= E;
 EmptyTuple. E13 ::= "(" ")";
 Tuple. E13 ::= "(" E "," [E] ")";
 separator nonempty E ",";
+HexInt. E13 ::= HexInteger;
 Int. E13 ::= Integer;
 Var. E13 ::= Ident;
 String. E13 ::= String;
 Con. E13 ::= UIdent;
 Wild. E13 ::= "_";
+BlockE. E13 ::= "block" "{" [S] "}";
 
 --Left-to-right
 --12: _++ _-- call _[_] .field ->field
@@ -138,8 +151,13 @@ TNat. T1 ::= Integer;
 TCon. T1 ::= UIdent;
 TStruct. T1 ::= "{" [TField] "}";
 separator TField ",";
-TNamed. TField ::= Ident ":" T;
-TAnon. TField ::= T;
+--Order enforced: [pad sz][align sz](t | field: t)
+TPad. TField ::= "wordpad" TField1;
+TF1. TField ::= TField1;
+TAlign. TField1 ::= "wordalign" TField2;
+TF2. TField1 ::= TField2;
+TNamed. TField2 ::= Ident ":" T;
+TAnon. TField2 ::= T;
 TEmptyTup. T1 ::= "(" ")";
 TTup. T1 ::= "(" T "," [T] ")";
 separator nonempty T ",";

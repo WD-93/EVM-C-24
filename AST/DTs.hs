@@ -1,5 +1,5 @@
 {-# LANGUAGE PatternSynonyms, OverloadedStrings, LambdaCase #-}
-module DTs where
+module AST.DTs where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -21,11 +21,14 @@ type Name = String
 data E = EInteger Integer
        | EString String
        | Var Name --includes overloaded ops
-       | E :$ E
+       | E :$ E --Proper function application; excludes primops
+       --Note && and || are not primops; they're desugared to block exprs
+       | PrimOp Name [E] --primop/primfun application
        --The second Padding is alignment
        | EStruct [Field E]
-       | E :. Name --struct field access
-       | E :# Int --struct field access by index
+       -- | E :. Name --struct field access
+       -- | E :# Int --struct field access by index
+       | Dots E [Either Name Int]
        --tuples are sugar for structs
        --Hard coercion: zero-pads or truncates e
        --Doesn't zero internal padding for now; coercing to a struct
@@ -33,18 +36,34 @@ data E = EInteger Integer
        | Coerce T E
        -- *e becomes deref(e), so it doesn't need a dedicated constructor
        --Constructor application is substantially different from function
-       --application and takes a pattern as its second argument...
+       --application...
        --I'll therefore add a new construct rather than reusing :$
-       | Con Name E Pat
+       --The alloc ptr param is now given by @ (which handles entire expressions
+       --rather than a single constructor), so constructors no longer need a
+       --pattern parameter.
+       | Con Name E
+       --Statically specify the implicit alloc ptr parameter
+       --Ex: Cons 1 (Cons 2 (Nil ())) @ memptr
+       --The pattern parameter must be both a valid pattern and an expression
+       -- :: a mutable byte ptr
+       | E :@ Pat
+       --Block expressions, which may contain control flow; can be used to
+       --implement short-circuited combinators, ternary expressions and
+       --inlining.
+       --Exited via localReturn <level> e; if you reach the end without a
+       --return a null value (all bits 0) is implicitly returned.
+       -- <level> specifies how many nested block expressions to return out of;
+       --the returned value is softCoerced to the type of the block it's
+       --returning from.
+       | BlockE [S]
   deriving (Eq,Ord,Read,Show)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
---bitfields are bitpadded
-data Padding = Bit | Byte | Word
+--currently there is no support for bitfields
+data Padding = Byte | Word
   deriving (Eq,Ord,Read,Show)
 pad2Sz :: Num a => Padding -> a
 pad2Sz = \case
-  Bit -> 1
   Byte -> 8
   Word -> 256
 --padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0)
@@ -96,6 +115,8 @@ data T = TyCon Name
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
        | Struct [Field T]
+       --Invariant: n >= 0; no region specified because it's unboxed (!)
+       | Array T Integer
   deriving (Eq,Ord,Read)
 --Making T show prettier by duplicating Pretty code...
 --TODO move IR1's data decls here so it can import Pretty.hs without a cycle.
@@ -109,6 +130,7 @@ duplicatedShowT = do
     SInt n -> "int"++show n
     a :-> b -> "(" ++ r a ++ " -> " ++ r b ++ ")"
     TyCon nm -> nm
+    TyVar nm -> nm
     --TODO reconcile with showT; add smarter paren emission
     tf :$$ tx -> r tf ++ " (" ++ r tx ++ ")"
     TyNat n -> show n
@@ -116,13 +138,12 @@ duplicatedShowT = do
           "(" ++ intercalate ", " (map showT ts) ++ ")"
     Struct fields -> "{" ++ intercalate ", "
       (map duplicatedShowFieldT fields) ++ "}"
+    Array t n -> "(" ++ r t ++ "[" ++ show n ++ "])"
 duplicatedShowFieldT ((pad,al),mnm,t) =
   let p = case pad of
-            Bit -> ["pad bit"]
             Byte -> []
             Word -> ["pad word"]
       a = case al of
-            Bit -> ["align bit"]
             Byte -> []
             Word -> ["align word"]
       n = case mnm of
@@ -229,31 +250,37 @@ data S = Pat := E
        | While E Block
        | Case E [(Name,Pat,S)]
        | Block Block --Standalone do, scopes locals
+       | Break Int --break 0 ~ break in C; break n breaks out of n+1 loops
+       | Continue Int --analogous
+       | LocalReturn Int E --return out of n+1 nested block expressions
   deriving (Eq,Ord,Read,Show)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild
          | PVar Name
          | PStruct [(Maybe Name, Pat)]
          | PTup [Pat] --rhs must have exactly that many fields and it
-         --must be a tuple (word-padded with default names)
+         --must be a tuple (word-padded with anonymous fields)
          | PDot Pat Name
          | PHash Pat Int
          | Deref E
   deriving (Eq,Ord,Read,Show)
-data D = Defun Name T Pat Block
-  deriving (Eq,Ord,Read,Show)
+--data D = Defun Name T Pat Block
+--  deriving (Eq,Ord,Read,Show)
 type Block = [S]
-type Program = [D]
+--type Program = [D]
 
 --Output after desugaring phase:
 data Module = Module {
-  defuns :: Map Name D,
+  defuns :: Map Name (T,Pat,S),
   tysyns :: Map Name ([Name],T),
-  static :: Map Name (T,[E]), --named staticData
+  --T = Ptr Code a | somedatatype Code
+  --String expressions are lifted and become
+  --newname => (Ptr Code Byte[len],{c1,c2,...})
+  --Nested Con args and strings in static data are also lifted and
+  --replaced with the new name.
+  static :: Map Name (T,E),
   --the first T is a region: memory, t/storage
-  --If the global is an array, the Maybe Int = Just arrayLen
-  --Arrays of dynamic or indeterminate length are disallowed
-  globals :: [(Name,T,T,Maybe Int)],
+  globals :: [(Name,T,T)],
   --Used when compiling case
   datatypes :: Map Name --TyCon
                ([Name], --params (the first is region)
@@ -268,7 +295,10 @@ data Module = Module {
                             Name,   --first param
                             [Name]),--remaining params
   enums :: Map Name [Name],
-  enumValues :: Map Name (Name,Int)
+  enumValues :: Map Name (Name,Int),
+  --A counter for new names for static data decls $static<n>,
+  --inserted as a hack to avoid having to change the desugar monad's type.
+  anonStaticCtr :: Int
   }
   deriving (Eq,Ord,Read,Show)
 
@@ -281,62 +311,3 @@ xs !? n | n < 0 = Nothing
                       go (x:xs) n
                         | n == 0 = Just x
                         | let = go xs (n-1)
-
-{-
---Type checking
---No datatypes for now, so no need for finiteness checks.
-data TypeError = InFun Name TypeError
-               | NonFunctionDefun Name T
-  deriving (Eq,Ord,Read,Show)
-tcModule :: Module -> Either TypeError ()
-tcModule m = do
-  let fundefs = M.toList $ defuns m
-      fts = M.fromList $ map (\(nm,Defun _ t _ _) -> (nm,t)) fundefs
-  mapM_ (tcFun fts) (defuns m)
-tcFun :: Map Name T -> D -> Either TypeError ()
-tcFun fts (Defun nm t args block) =
-  case t of
-    a :-> b -> do
-      --First, match args to a
-      undefined
-    _ -> Left (NonFunctionDefun nm t)
-type GlobalTypeInfo = GTI {funTypes :: Map Name T} --Just functions for now
-type LocalTypeInfo = Map Name T --Just locals
-type TCE = ReaderT GlobalTypeInfo (StateT LocalTypeInfo (Either TypeError))
-runTCE :: TCE a ->
-  GlobalTypeInfo ->
-  LocalTypeInfo ->
-  Either TypeError (a,LocalTypeInfo)
-runTCE tce gti lti = runStateT (runReaderT tce gti) lti
-
-puke :: TypeError -> TCE a
-puke = lift . lift . Left
-data NameInfo = IsUnbound
-              | IsLocal T
-              | IsFunction T
---Ah... when compiling I need to know the type of every subexpr
---I'll annotate the AST with types
--}
-
---Type consequences of pattern unification:
---patterns should be ~polymorphic, ignoring padding
---{foo: bar} = e --should match any struct where e.foo matches bar
---{x,y} = e => x = e<1>, y = e<2>
---Con x y z
---Disallow shadowing or assigning to functions
-
---New vars: any type matches
---Existing vars: only its type matches
-
---The type system is monomorphic, using the C trick to type literals;
---no type inference stage is required.
---However, separate type checking before compilation simplifies the
---codegen stage.
---Note adding type synonyms and (potentially recursive) data decls complicates
---sizeof.
---No need for newtype since the language is strict.
---First, no parameterized types other than fun and ptr.
---In TC, check datatypes are of finite size.
---data Con = Con t | ...
---Layout: if 1 constructor then layout of t; otherwise byte + byte padded
---max size of contents.

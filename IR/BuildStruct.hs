@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module BuildStruct where
+module IR.BuildStruct where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M

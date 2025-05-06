@@ -90,6 +90,10 @@ instance Print Infix where
   prt _ (Infix i) = doc (showString ( i))
 
 
+instance Print HexInt where
+  prt _ (HexInt i) = doc (showString ( i))
+
+
 
 instance Print M where
   prt i e = case e of
@@ -148,6 +152,10 @@ instance Print S where
     Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
     Do ss -> prPrec i 0 (concatD [doc (showString "do"), doc (showString "{"), prt 0 ss, doc (showString "}")])
     Case e_ cases -> prPrec i 0 (concatD [doc (showString "case"), prt 0 e_, doc (showString "of"), doc (showString "{"), prt 0 cases, doc (showString "}")])
+    Break n -> prPrec i 0 (concatD [doc (showString "break"), prt 0 n])
+    Continue n -> prPrec i 0 (concatD [doc (showString "continue"), prt 0 n])
+    LocalReturn n e_ -> prPrec i 0 (concatD [doc (showString "localReturn"), prt 0 n, prt 0 e_])
+    For s1 e_ s2 s3 -> prPrec i 0 (concatD [doc (showString "for"), doc (showString "("), prt 0 s1, doc (showString ";"), prt 0 e_, doc (showString ";"), prt 0 s2, doc (showString ")"), prt 0 s3])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -159,8 +167,12 @@ instance Print CASE where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print EField where
   prt i e = case e of
-    ENamed id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
-    EAnon e_ -> prPrec i 0 (concatD [prt 0 e_])
+    EPad efield -> prPrec i 0 (concatD [doc (showString "wordpad"), prt 1 efield])
+    EF1 efield -> prPrec i 0 (concatD [prt 1 efield])
+    EAlign efield -> prPrec i 1 (concatD [doc (showString "wordalign"), prt 2 efield])
+    EF2 efield -> prPrec i 1 (concatD [prt 2 efield])
+    ENamed id e_ -> prPrec i 2 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
+    EAnon e_ -> prPrec i 2 (concatD [prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
@@ -169,11 +181,13 @@ instance Print E where
     Struct efields -> prPrec i 13 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])
     Tuple e_ es -> prPrec i 13 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
+    HexInt hexint -> prPrec i 13 (concatD [prt 0 hexint])
     Int n -> prPrec i 13 (concatD [prt 0 n])
     Var id -> prPrec i 13 (concatD [prt 0 id])
     String str -> prPrec i 13 (concatD [prt 0 str])
     Con uident -> prPrec i 13 (concatD [prt 0 uident])
     Wild -> prPrec i 13 (concatD [doc (showString "_")])
+    BlockE ss -> prPrec i 13 (concatD [doc (showString "block"), doc (showString "{"), prt 0 ss, doc (showString "}")])
     PlusPlusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "++")])
     MinusMinusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "--")])
     Index e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
@@ -226,8 +240,12 @@ instance Print AOp where
 
 instance Print TField where
   prt i e = case e of
-    TNamed id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
-    TAnon t -> prPrec i 0 (concatD [prt 0 t])
+    TPad tfield -> prPrec i 0 (concatD [doc (showString "wordpad"), prt 1 tfield])
+    TF1 tfield -> prPrec i 0 (concatD [prt 1 tfield])
+    TAlign tfield -> prPrec i 1 (concatD [doc (showString "wordalign"), prt 2 tfield])
+    TF2 tfield -> prPrec i 1 (concatD [prt 2 tfield])
+    TNamed id t -> prPrec i 2 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
+    TAnon t -> prPrec i 2 (concatD [prt 0 t])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
@@ -241,6 +259,7 @@ instance Print T where
     TTup t ts -> prPrec i 1 (concatD [doc (showString "("), prt 0 t, doc (showString ","), prt 0 ts, doc (showString ")")])
     TApp t1 t2 -> prPrec i 0 (concatD [prt 0 t1, prt 1 t2])
     TArray t n -> prPrec i 0 (concatD [prt 0 t, doc (showString "["), prt 0 n, doc (showString "]")])
+    TArrow t1 t2 -> prPrec i 0 (concatD [prt 0 t1, doc (showString "->"), prt 1 t2])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 

@@ -1,5 +1,17 @@
 {-# LANGUAGE LambdaCase, GADTs, OverloadedStrings #-}
-module IR1 where
+module IR.Compile where
+
+--The top-level module which handles compiling an AST module to a
+--structured IR module.
+--The IR makes word operations and state dependencies explicit.
+--Example: ptr[ix] = v modifies  memory,
+--precluding subsequent derefs to ptr from being moved before the write.
+--Multi-word values such as large structs are broken up into words; when a
+--field extends across a single word that makes field writes noops.
+
+--This is not the first stage of compilation after parsing and desugaring;
+--type checking (and maybe inlining, dataflow analysis and some
+--transformations) will be done earlier.
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -14,172 +26,12 @@ import Control.Arrow ((***))
 import Data.Char (ord,isUpper) --for string compilation
 --isUpper is for checking a var is a constructor
 
-import DTs
+import AST.DTs
+import IR.DTs
 --The logic for assembling structs from field values, split out into another
 --module:
-import qualified BuildStruct as B
+import qualified IR.BuildStruct as B
 
---The first stage of compilation from AST: word-level ops with structured
---patterns.
---Function call is treated as an op.
---Standard arg order for Call: $mem,$sto,$tsto,$ext,args,$ret
-data IRT = Mem  --has no runtime repr
-         | Sto  --represents the storage state
-         | TSto --ditto for tstorage
-         | Ext  --represents the state of external contracts
-         | W Int T --nth word of C-level t; 1-indexed
-         --Renamed from Word to avoid clash with Padding
-  deriving (Eq,Ord,Read,Show)
---Returns true if the IRT has no runtime repr because it represents state;
---to be used in later stages.
-isVirtual :: IRT -> Bool
-isVirtual = \case
-  W{} -> False
-  _ -> True
-
---Name mangling: nth word of local x becomes x#n
---From ToyCFG: IR is tagged with () or Live annots.
---It does not need a var type param because SSA is done on CFG's.
-data IRP a = Op a [(Name,IRT)] Operator [Name]
-               | Ifte a Name [IRP a] [IRP a]
-               | While a [IRP a] Name [IRP a]
-               | DoWhile a [IRP a] [IRP a] Name --body, cond
-               | Return a [Name]
-               | Break a Int
-               | Continue a Int
-               | TailCall a Name [Name]
-               | IRComment String --Ignored in later stages, used for debugging
-               --Branching EVM instructions
-               | EVM_RETURN a Name Name Name Name Name Name
-               -- $mem, $sto, $tsto, $ext, ptr, len
-               --For case:
-               --switch tag numTags cases
-               --Only cases for tags in the range 0..numTags-1 are acceptable.
-               --If the tag (a 1-byte value) has no matching case, revert with
-               --no message.
-               --Naive compilation: if numTags is not a power of two, and it
-               --by its bitlen and add revert cases directly to the jump table.
-               --If it is 2^n < 256, add an if tag > 2^n then revert() first.
-               --If numTags == 256, simply make a 256-elem table.
-               --Note switch is a bit of a misleading name; it doesn't do
-               --fallthrough like C switch
-               | Switch a Name Int (Map Int [IRP a])
-  deriving (Eq,Ord,Read,Show)
-type IR = IRP ()
-data Operator = Push StaticValue
-              | Opcode String
-              | Call --args: mem,sto,tsto,ext,f,args,ret
-              | Reduce Name --arg: a commutative and associative opcode,
-                --used for truthy
-              | Copy --x = y => x = copy [y]
-  deriving (Eq,Ord,Read,Show)
---Ret and f are created by push staticValue
-data StaticValue = Const Integer
-                 | LabelConst Name
-  deriving (Eq,Ord,Read,Show)
-
---Convert a defun to a sequence of IR1 ops.
---If any modification to $mem is made, it must be returned.
---If it happens in an ifte branch that returns, don't propagate (the branch
---doesn't have a successor).
---Reader: module (only function types relevant for now).
---State: C variable scope
---Only PVar and PTup assignment supported for now
---x = y becomes a renaming, but it's a pseudo-op.
---Emit: IR1 ops
-type Seq = ExceptT SeqError
-  (ReaderT SeqR
-   (WriterT [IR]
-    (State SeqS)))
-runSeq :: Seq a -> SeqR -> SeqS -> (Either SeqError a,
-                                     [IR],
-                                     SeqS)
-runSeq seq seqr s = let
-  x1 = runExceptT seq
-  x2 = runReaderT x1 seqr
-  x3 = runWriterT x2
-  x4 = runState x3 s
-  in case x4 of
-       ((ei,ir),s) -> (ei,ir,s)
-data SeqError = UnboundVar Name
-              --The stuff that can go wrong in an op
-              | IlltypedLHS Name IRT IRT
-              | DuplicateVarsInLHS Name (Set Name)
-              | Can'tCopyUnboundIRVar Name
-              | UnboundVarInOpRHS Name [(Name,IRT)] Operator [Name]
-
-              | Couldn'tLookupVarTypeInEDSL Name
-              | BadArgsInEDSL Operator [EVar]
-              | BadFirstRHSInAssign Name (Maybe IRT) [Name]
-              --C-level type errors
-              | BadFunctionType Name T
-              | Can'tAssignToFunction Name
-              | Can'tAssignToPrimFun Name --it's useful to distinguish
-              | ApplicationToNonFunction E T
-              | BadArgInTruthy [Name]
-              | BadArgPrimFun Name T
-              --Errors from pattern matching
-              | PTupNonTuple [Pat] T
-              | PTupLengthMismatch [Pat] [T]
-              --Type synonym errors
-              | TySynsShadowPrimTySyns (Set Name)
-              --Innovation: a single constructor for locating errors,
-              --structuring the error type into context-specific types
-              | InTySyn Name InTySynErr
-              --The error below isn't really specific to one syn...
-              | FoundTySynCycle [Name]
-              | UnderAppliedSynInDefun Name [T]
-              --Substituting
-              | ArgsAppliedToStructInDefun [Field T] [T]
-              --A placeholder error to avoid having to add new error types
-              --constantly while developing
-              | GenericError String
-  deriving (Eq,Ord,Read,Show)
-data InTySynErr = TyConOOS Name | TyVarOOS Name | TySynRepeatedArgs [Name]
-  | UnderAppliedSyn Name | ArgsAppliedToStruct [Field T]
-  deriving (Eq,Ord,Read,Show)
---pronounced seek s...
-data SeqS = SS {
-  --IR vars = v#1..n for each v in C locals, plus anonymous vars and $mem
-  irLocalTypes :: Map Name IRT,
-  cLocalTypes :: Map Name T,
-  anonVarCounter :: Int, --makes $anonN
-  --Static data support
-  anonLabelCounter :: Int,
-  --prepended to each time a new anon staticData is allocated
-  anonStaticData :: [Static]
-  }
-  deriving (Eq,Ord,Read,Show)
---So I can add info about the function being compiled, specifically the return
---type but maybe more stuff in future (opt choices?).
-data SeqR = SR {
-  seqrModule :: Module,
-  seqrFunction :: D
-  --name => (region = memory | storage | tstorage, t, offset)
-  --seqrGlobals :: Map Name (T,T,Int)
-  --I'll substitute globals, arrays and constants in a separate pass,
-  --so seqr doesn't need them.
-               }
-  deriving (Eq,Ord,Read,Show)
---Top-level function: given a module, generates the IR for each function.
---Pruning based on actual calls made from main can be done later.
---FW problem: the IR output may need additional info for placement, such as
---whether the code is a library, exported functions and JTs
-data IRModule = IRM {
-  irDefuns :: Map Name (Arity,[IR]),
-  --Static data: strings, arrays, nested modules
-  --For now, just strings
-  --(Name,Int) is a label use, Int a byte
-  --C-allocated anon label format: fname.static#n
-  --That ensures the counter needn't be shared between function compilations
-  staticData :: Map Name Static
-  }
-  deriving (Eq,Ord,Read,Show)
---Not very storage-efficient for strings...
-type Static = (T,[Either (Name,Int) Int])
---The number of argument words a function takes beyond $ret; needed for asm
---generation.
-type Arity = Int
 --Change now that I have strings: instead of a mapM, thread through the
 --anonLabelCounter and accumulate the staticData.
 seqModule :: Module -> Either SeqError IRModule

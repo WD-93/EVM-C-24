@@ -26,6 +26,8 @@ import E.ErrM
 %name pE13 E13
 %name pListEField ListEField
 %name pEField EField
+%name pEField1 EField1
+%name pEField2 EField2
 %name pListE ListE
 %name pE12 E12
 %name pE11 E11
@@ -44,6 +46,8 @@ import E.ErrM
 %name pT1 T1
 %name pListTField ListTField
 %name pTField TField
+%name pTField1 TField1
+%name pTField2 TField2
 %name pListT ListT
 %name pT T
 -- no lexer declaration
@@ -93,34 +97,42 @@ import E.ErrM
   '^' { PT _ (TS _ 41) }
   '^=' { PT _ (TS _ 42) }
   '_' { PT _ (TS _ 43) }
-  'case' { PT _ (TS _ 44) }
-  'data' { PT _ (TS _ 45) }
-  'do' { PT _ (TS _ 46) }
-  'else' { PT _ (TS _ 47) }
-  'end' { PT _ (TS _ 48) }
-  'enum' { PT _ (TS _ 49) }
-  'if' { PT _ (TS _ 50) }
-  'import' { PT _ (TS _ 51) }
-  'memory' { PT _ (TS _ 52) }
-  'of' { PT _ (TS _ 53) }
-  'return' { PT _ (TS _ 54) }
-  'storage' { PT _ (TS _ 55) }
-  'then' { PT _ (TS _ 56) }
-  'tstorage' { PT _ (TS _ 57) }
-  'type' { PT _ (TS _ 58) }
-  'while' { PT _ (TS _ 59) }
-  '{' { PT _ (TS _ 60) }
-  '|' { PT _ (TS _ 61) }
-  '|=' { PT _ (TS _ 62) }
-  '||' { PT _ (TS _ 63) }
-  '}' { PT _ (TS _ 64) }
-  '~' { PT _ (TS _ 65) }
+  'block' { PT _ (TS _ 44) }
+  'break' { PT _ (TS _ 45) }
+  'case' { PT _ (TS _ 46) }
+  'continue' { PT _ (TS _ 47) }
+  'data' { PT _ (TS _ 48) }
+  'do' { PT _ (TS _ 49) }
+  'else' { PT _ (TS _ 50) }
+  'end' { PT _ (TS _ 51) }
+  'enum' { PT _ (TS _ 52) }
+  'for' { PT _ (TS _ 53) }
+  'if' { PT _ (TS _ 54) }
+  'import' { PT _ (TS _ 55) }
+  'localReturn' { PT _ (TS _ 56) }
+  'memory' { PT _ (TS _ 57) }
+  'of' { PT _ (TS _ 58) }
+  'return' { PT _ (TS _ 59) }
+  'storage' { PT _ (TS _ 60) }
+  'then' { PT _ (TS _ 61) }
+  'tstorage' { PT _ (TS _ 62) }
+  'type' { PT _ (TS _ 63) }
+  'while' { PT _ (TS _ 64) }
+  'wordalign' { PT _ (TS _ 65) }
+  'wordpad' { PT _ (TS _ 66) }
+  '{' { PT _ (TS _ 67) }
+  '|' { PT _ (TS _ 68) }
+  '|=' { PT _ (TS _ 69) }
+  '||' { PT _ (TS _ 70) }
+  '}' { PT _ (TS _ 71) }
+  '~' { PT _ (TS _ 72) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
 L_quoted { PT _ (TL $$) }
 L_UIdent { PT _ (T_UIdent $$) }
 L_Infix { PT _ (T_Infix $$) }
+L_HexInt { PT _ (T_HexInt $$) }
 
 
 %%
@@ -130,6 +142,7 @@ Integer :: { Integer } : L_integ  { (read ( $1)) :: Integer }
 String  :: { String }  : L_quoted {  $1 }
 UIdent    :: { UIdent} : L_UIdent { UIdent ($1)}
 Infix    :: { Infix} : L_Infix { Infix ($1)}
+HexInt    :: { HexInt} : L_HexInt { HexInt ($1)}
 
 M :: { M }
 M : ListD { E.Abs.Module $1 }
@@ -177,6 +190,10 @@ S : E { E.Abs.SE $1 }
   | 'return' E { E.Abs.Return $2 }
   | 'do' '{' ListS '}' { E.Abs.Do $3 }
   | 'case' E 'of' '{' ListCASE '}' { E.Abs.Case $2 $5 }
+  | 'break' Integer { E.Abs.Break $2 }
+  | 'continue' Integer { E.Abs.Continue $2 }
+  | 'localReturn' Integer E { E.Abs.LocalReturn $2 $3 }
+  | 'for' '(' S ';' E ';' S ')' S { E.Abs.For $3 $5 $7 $9 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
@@ -191,18 +208,26 @@ E13 :: { E }
 E13 : '{' ListEField '}' { E.Abs.Struct $2 }
     | '(' ')' { E.Abs.EmptyTuple }
     | '(' E ',' ListE ')' { E.Abs.Tuple $2 $4 }
+    | HexInt { E.Abs.HexInt $1 }
     | Integer { E.Abs.Int $1 }
     | Ident { E.Abs.Var $1 }
     | String { E.Abs.String $1 }
     | UIdent { E.Abs.Con $1 }
     | '_' { E.Abs.Wild }
+    | 'block' '{' ListS '}' { E.Abs.BlockE $3 }
     | '(' E ')' { $2 }
 ListEField :: { [EField] }
 ListEField : {- empty -} { [] }
            | EField { (:[]) $1 }
            | EField ',' ListEField { (:) $1 $3 }
 EField :: { EField }
-EField : Ident ':' E { E.Abs.ENamed $1 $3 } | E { E.Abs.EAnon $1 }
+EField : 'wordpad' EField1 { E.Abs.EPad $2 }
+       | EField1 { E.Abs.EF1 $1 }
+EField1 :: { EField }
+EField1 : 'wordalign' EField2 { E.Abs.EAlign $2 }
+        | EField2 { E.Abs.EF2 $1 }
+EField2 :: { EField }
+EField2 : Ident ':' E { E.Abs.ENamed $1 $3 } | E { E.Abs.EAnon $1 }
 ListE :: { [E] }
 ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
 E12 :: { E }
@@ -285,12 +310,19 @@ ListTField : {- empty -} { [] }
            | TField { (:[]) $1 }
            | TField ',' ListTField { (:) $1 $3 }
 TField :: { TField }
-TField : Ident ':' T { E.Abs.TNamed $1 $3 } | T { E.Abs.TAnon $1 }
+TField : 'wordpad' TField1 { E.Abs.TPad $2 }
+       | TField1 { E.Abs.TF1 $1 }
+TField1 :: { TField }
+TField1 : 'wordalign' TField2 { E.Abs.TAlign $2 }
+        | TField2 { E.Abs.TF2 $1 }
+TField2 :: { TField }
+TField2 : Ident ':' T { E.Abs.TNamed $1 $3 } | T { E.Abs.TAnon $1 }
 ListT :: { [T] }
 ListT : T { (:[]) $1 } | T ',' ListT { (:) $1 $3 }
 T :: { T }
 T : T T1 { E.Abs.TApp $1 $2 }
   | T '[' Integer ']' { E.Abs.TArray $1 $3 }
+  | T '->' T1 { E.Abs.TArrow $1 $3 }
   | T1 { $1 }
 {
 

@@ -18,6 +18,9 @@ transUIdent x = case x of
 transInfix :: Infix -> Result
 transInfix x = case x of
   Infix string -> failure x
+transHexInt :: HexInt -> Result
+transHexInt x = case x of
+  HexInt string -> failure x
 transM :: M -> Result
 transM x = case x of
   Module ds -> failure x
@@ -61,11 +64,19 @@ transS x = case x of
   Return e -> failure x
   Do ss -> failure x
   Case e cases -> failure x
+  Break integer -> failure x
+  Continue integer -> failure x
+  LocalReturn integer e -> failure x
+  For s1 e s2 s3 -> failure x
 transCASE :: CASE -> Result
 transCASE x = case x of
   C e s -> failure x
 transEField :: EField -> Result
 transEField x = case x of
+  EPad efield -> failure x
+  EF1 efield -> failure x
+  EAlign efield -> failure x
+  EF2 efield -> failure x
   ENamed ident e -> failure x
   EAnon e -> failure x
 transE :: E -> Result
@@ -73,11 +84,13 @@ transE x = case x of
   Struct efields -> failure x
   EmptyTuple -> failure x
   Tuple e es -> failure x
+  HexInt hexint -> failure x
   Int integer -> failure x
   Var ident -> failure x
   String string -> failure x
   Con uident -> failure x
   Wild -> failure x
+  BlockE ss -> failure x
   PlusPlusPost e -> failure x
   MinusMinusPost e -> failure x
   Index e1 e2 -> failure x
@@ -127,6 +140,10 @@ transAOp x = case x of
   OrEq -> failure x
 transTField :: TField -> Result
 transTField x = case x of
+  TPad tfield -> failure x
+  TF1 tfield -> failure x
+  TAlign tfield -> failure x
+  TF2 tfield -> failure x
   TNamed ident t -> failure x
   TAnon t -> failure x
 transT :: T -> Result
@@ -139,4 +156,5 @@ transT x = case x of
   TTup t ts -> failure x
   TApp t1 t2 -> failure x
   TArray t integer -> failure x
+  TArrow t1 t2 -> failure x
 

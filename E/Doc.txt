@@ -29,21 +29,27 @@ except ``"`` unless preceded by ``\``.
 
 
 
+
 UIdent literals are recognized by the regular expression
 `````upper (letter | digit | '_')*`````
 
 Infix literals are recognized by the regular expression
 `````["!#@$%&/?+*-^|:=.><"]+`````
 
+HexInteger literals are recognized by the regular expression
+`````{"0x"} ["0123456789abcdefABCDEF"]+`````
+
 
 ===Reserved words and symbols===
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``case`` | ``data`` | ``do`` | ``else``
-  | ``end`` | ``enum`` | ``if`` | ``import``
-  | ``memory`` | ``of`` | ``return`` | ``storage``
-  | ``then`` | ``tstorage`` | ``type`` | ``while``
+  | ``block`` | ``break`` | ``case`` | ``continue``
+  | ``data`` | ``do`` | ``else`` | ``end``
+  | ``enum`` | ``for`` | ``if`` | ``import``
+  | ``localReturn`` | ``memory`` | ``of`` | ``return``
+  | ``storage`` | ``then`` | ``tstorage`` | ``type``
+  | ``while`` | ``wordalign`` | ``wordpad`` | 
 
 The symbols used in E are the following:
   | ; | := | : | =
@@ -103,6 +109,10 @@ All other symbols are terminals.
   |  |  **|**  | ``return`` //E// 
   |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
   |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
+  |  |  **|**  | ``break`` //Integer// 
+  |  |  **|**  | ``continue`` //Integer// 
+  |  |  **|**  | ``localReturn`` //Integer// //E// 
+  |  |  **|**  | ``for`` ``(`` //S// ``;`` //E// ``;`` //S// ``)`` //S// 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
@@ -113,16 +123,22 @@ All other symbols are terminals.
   | //E13// | -> | ``{`` //[EField]// ``}`` 
   |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
+  |  |  **|**  | //HexInteger// 
   |  |  **|**  | //Integer// 
   |  |  **|**  | //Ident// 
   |  |  **|**  | //String// 
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``_`` 
+  |  |  **|**  | ``block`` ``{`` //[S]// ``}`` 
   |  |  **|**  | ``(`` //E// ``)`` 
   | //[EField]// | -> | **eps**
   |  |  **|**  | //EField// 
   |  |  **|**  | //EField// ``,`` //[EField]// 
-  | //EField// | -> | //Ident// ``:`` //E// 
+  | //EField// | -> | ``wordpad`` //EField1// 
+  |  |  **|**  | //EField1// 
+  | //EField1// | -> | ``wordalign`` //EField2// 
+  |  |  **|**  | //EField2// 
+  | //EField2// | -> | //Ident// ``:`` //E// 
   |  |  **|**  | //E// 
   | //[E]// | -> | //E// 
   |  |  **|**  | //E// ``,`` //[E]// 
@@ -194,7 +210,11 @@ All other symbols are terminals.
   | //[TField]// | -> | **eps**
   |  |  **|**  | //TField// 
   |  |  **|**  | //TField// ``,`` //[TField]// 
-  | //TField// | -> | //Ident// ``:`` //T// 
+  | //TField// | -> | ``wordpad`` //TField1// 
+  |  |  **|**  | //TField1// 
+  | //TField1// | -> | ``wordalign`` //TField2// 
+  |  |  **|**  | //TField2// 
+  | //TField2// | -> | //Ident// ``:`` //T// 
   |  |  **|**  | //T// 
   | //[T]// | -> | //T// 
   |  |  **|**  | //T// ``,`` //[T]// 

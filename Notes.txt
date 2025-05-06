@@ -1,3 +1,182 @@
+Simplify AMAP; it's a huge job as is. Stick to implementing 4 vital optimizations: tail calls, inlining,
+constant expansion (and +0, *1 opt which comes basically for free)/DCE, basic alias handling.
+The latter is the lowest priority.
+Aliasing rules: globals are distinct, pointers of different types (passed as arguments) are distinct.
+What does argument mean when all functions are in fact arity one? Different fields of different pointer types
+are assumed distinct.
+Richer info is available within procedures:
+*pstruct = {foo: 0, bar: 1};
+p1 = &(pstruct->foo);
+p2 = &(pstruct->bar)
+--p1, p2 distinct (despite both being byte ptrs), but they alias with pstruct - despite pstruct having a
+--different type. Perform SIMPLE-like expression tree linearization first...
+Apply opts at the AST level (post typecheck and various transformations) AMAP.
+FW: apply at multiple levels (word expansion matters).
+Array indices are analogous to fields; pointers to unequal indices are distinct.
+Make an exception for Byte ptrs?
+I could make a rule similar to that for malloc for datatype allocation: for dt = (Con args @ p), dt is
+disjoint from p. Datatypes should also be included in alias analysis!
+Note pointers to immutable regions (code, calldata, returndata) can be ignored. Returndata is special in that
+its contents may change, though not by pointer writes.
+
+I could collect anonymous static data in the desugaring phase... that way compilation would be more uniform.
+TODO restrict the desugarE type to just have the desired effect.
+Problem: it would be nice to use staticData content for constant expansion, but the value of function labels
+isn't known until after Stack. Don't use it at all for now; consider only on-stack CE.
+Problem 2: (ptr,sz) would be nice to CE. sz at least can be known...
+Static data: k, &glob, EnumVal, Con arg, (e,...), {field,...}, "string"
+Problem: 3 in an array of uint16s should be coerced.
+Mandate a type decl for all staticData and push the desired type down; note that can use the same logic as
+for ordinary type inference. Serialize the type-tagged expr...
+Perhaps I should add a construct for e : t, marking the desired type without performing a coercion.
+:: --mark type
+:! --coerce
+:!! --unsafe(r) coerce
+StaticData t becomes a Ptr Code t, while a staticDatatype dt becomes a dt Code.
+Use lowercase names to refer to static data; they may also occur in static data.
+staticDatatype dt nm (Foo arg) --allocates the constructor in-place
+All other constructors found as subexprs in static data decls are allocated later; a pointer is left in-place.
+The type of a Con arg expression is based on its argument (note that causes a problem for [] and Nothing); its
+region is always Code.
+Collect during desugaring, compile in a later step.
+Should strings be arrays? Then I wouldn't need to sometimes return a sz, I could just use sizeof.
+String => Ptr Code Byte[len], not null-terminated.
+str = "hello"
+mptr = 0 :: MPtr Byte[5]
+*mptr = *str --should compile to a codecopy
+I should compile pattern matching to SIMPLE form, rather than operating on words directly... that'll be made
+easier by the new separate type check.
+
+With static data lifted during desugaring, I can eliminate EString from E.
+
+Static data decl: name, type, e.
+Each Con arg becomes a new implicit decl. Then all can be converted to data: a mix of bytes and labels.
+Strings don't need a type decl. Implicitly sized arrays (t[]) would be nice...
+Sharing opt: starting with largest (?), greedily overlap as much as possible. Treat labels as unknown
+constants, equal only to themselves... unless two are placed at the same location.
+Ex:
+staticData ({B,B,B}) foo = {1,2,3}
+staticData ({B,B}) bar = {1,2}
+--Here bar overlaps with the start of foo, so they can share an address. If they do, they'll be known to be
+equal and {1,foo} and {1,bar} should also completely overlap. Represent equality as label => canonical label.
+So if there are multiple points where you could place a section (with maximum sharing), one which overlaps 
+placed labels is better.
+Basic blocks are also a mix of bytes and labels... use the same sharing opt there? That could give sharing
+of identical small BBs for free.
+Better greedy overlap: pair the two with the most overlap first. If there is none, terminate.
+If you place incrementally you can convert some labels to constants, potentially enabling further sharing
+among the remainder...
+With unboxed arrays, array syntax {a,b,c} needn't just be supported for static data... if the desired type
+is an array, {a,b,c} is interpreted as an array, otherwise it's a struct.
+If a struct expr has any named fields, it may not be an array.
+
+A recursive tail call can be unrolled... when is it worth stopping?
+Consider Duff's device: code cost is roughly linear (modulo optimization of the unrolled code such as
+constant sharing), the branching cost is inversely proportionate to the unrolling.
+
+dispatch(s):
+ case s.pc of
+  Instr1 arg1 -> ...
+That is in fact straight-line code followed by a jump; return dispatch(s) should be easy to inline.
+If dispatch were structured as a case s.pc of {}; return dispatch(s), it should be possible to split the
+shared continuation. That could be done at the AST level, modulo the need for insight into code size and
+branching overhead from the Stack level.
+For interprocedural opt, need a global namespace for SLC (basic block) labels.
+Note splitting SLCs and inlining also allows you to specialize.
+
+To add: pragma "string" :: D, S for inlining annotations. annot "inline" e :: E.
+
+Note for writeup: the entangling of functions with CALL-exposed methods in Solidity is undesirable.
+
+Thought on HLM: ADTs are similar to compressed ZKPs in a way: you can check the result of many rule
+applications (combinators in the case of ADTs) in O(1) (by checking the ADT tag).
+
+From McCAT: "The identity of array and structure references should be retained..."
+"It should be possible to transmit important dataflow information [from HL IRs to LL IRs]"
+Clear semantics: no pointer decay. I don't have that (arrays are first-class), but what do I have that's
+analogous?
+Automatically generated analysis and optimization phases!
+ That's related to Sestoft's work on partial eval.
+ Inlining is related to partial evaluation... read the lit on it. Grok how to gen compiler from interpreter.
+  How to view the CFG as an expression that can be specialized? S -trace-> S'?
+  CFG labels as lets, jumps as calls. Typed assembly... every function is also a label address.
+  Reading list: 
+   Partial Evaluation and Automatic Compiler Generation, Neil D. Jones
+   Futamura projections
+I have no use for optimizing for machine-level parallelism.
+"The data flow analysis information, generated and stored in SIMPLE"...
+Key difference from EVM: variables are in memory
+LAST statements keep a reference to their parent SIMPLE statement to access dataflow info - brilliant!
+ When ops generated from a HL stmt don't bleed over into each other, you could optimize them separately.
+ Might it be possible to look at several abstraction levels simultaneously?
+Alias analysis: IC, definitely points and possibly points are vitally different - the former lets you prune
+earlier writes while the latter just forces you to treat the addr as volatile.
+Tagging structured constructs with labels in LAST is worth noting.
+"By applying all of these steps SIMPLE is annotated with [alias info]. This information is then available for
+further analysis and transformation [at the SIMPLE and LAST levels] (i.e. the information is pervasive)."
+How is minimal-cost tree matching applied to the code-generator generator?
+
+Blast from the past: should I do Monte Carlo sim to estimate exec frequency of SLCs? No, for my program sizes
+a full Markov chain equilibrium computation should be cheap enough. The randomness would also complicate
+things... in practice a fixed seed would need to be used, causing tiny changes in the program to have
+unpredictable effects on the output (extremely frustrating to the end user).
+
+Note relation to separation logic: results/hints such as inPlaceMap modifies reachable(xs) might be very
+useful.
+Reachable (xs) is the transitive closure of xs->head and xs->tail; that closure could be automatically
+discovered when analysing a loop over a list.
+
+Add *p = ... stmts, a concept of *_ to IR?
+
+(pa,prest) = allocFrom(p) --produces two disjoint pointers... if pa is not over-indexed.
+*arr[tooHighIx] should be a warning and UB if it actually occurs
+More restrictive pointer types (const, defined length...) could be useful for analysis. Ideally it would be
+possible to annotate EVMC with info gleaned from a HLL using EVMC as a backend.
+That's related to the opt API (and bounty) idea. TEEs could let you safely give your source to a proprietary
+optimizer...
+Ptr r (t[n]) is almost what I want... just need to add SingletonPtr. That would not support addition, ofc.
+Useful primops (implemented as coerces): singleton, imm.
+
+All read-write sequences are of the form out = f(in), where the previous content of out is erased but may have
+been part of in.
+
+Instructions as combinators:
+add a:b:ws s cont = cont (a+b):ws s
+jump lab:ws s _ = lab ws s
+stop _ _ _ = ...
+State can be split in that functional repr.
+Challenge: instructions are polymorphic in the stack and state.
+
+If I extend the AST to handle nth word and primops, I can perhaps drop the word-level structured IR and
+convert from AST to CFG directly.
+Might it be worth breaking up into word ops later...? I might be able to make more use of field writes then.
+While the stack and state need to preserve the necessary info, layout (including whether locals are packed or
+unpacked) is only inflexible at CC-compliant calls and returns.
+Local returns allow inlining at the AST level, but is that desirable..?
+Inlining static calls at the CFG level => rename vars in callee body, specialize $ret to a specific label.
+It's simpler to inline at the AST level, so do that first.
+A tantalizing opportunity: the IR must track implicit state read and written (akin to copy and mut handles
+in Rust). If that were supported at the AST level, the user could hint state splitting.
+Each function takes some minimum implicit state (read and write), as do operations.
+expr returns v, reads s and mutates s2 producing s3
+An operator to specify read, mut, producing for an expr? It should perhaps be an op on stmts.
+mem, sto, tsto etc states could be a single state type.
+*p reads State s | s contains p
+State s --parameterized by what it may read and modify
+Passing/modifying only one region is a special case of passing a subset of the state.
+If mload simply observes s, instructions which consume s must be treated specially: all observers must be
+scheduled before consumption. What happens if it's consumed in both branches of an ifte...?
+*ptr shows how breaking up ops into words is important for optimization: if some of the words are unused you
+can avoid loading them. But if you read a subset of the fields (let's say a subset that fit in a word),
+mloading from a fixed set of offsets off ptr is inefficient; you could just load off the word's offset.
+An explicit load(ptr,off,len) op...
+
+With &&p pointer escape, the arg pattern in case could be bound to *p.
+That would be more ergonomic... but would also require recognizing and optimizing &&p = *e. That's too messy,
+the user can just use Cons &(x,y) instead.
+
+****
+
 HLM dev:
 TyCon OHeader out of scope --in kind check
 But OHeader is a type synonym... tysyn substitution must've missed it.
@@ -10,12 +189,70 @@ It calls substTySynsM... AHA, I missed an apostrophe on targsPrefix,suffix = tak
 failing to recursively substitute the arguments!
 TODO deduplicate substTySynT in the where and the other subst function.
 
+The set of primfun names must be known during desugaring now...
+Add for?
+for (s1;e;s2) s =>
+do {
+ s1;
+ while (e) do {
+  s;
+  s2
+ }
+}
+The outermost do is vital, otherwise the counter var remains in scope.
+With local returns, need to track a stack of return types as well as the global return.
+How to figure out the type if it's not specified in the block expr? Use the type of the first expression
+returned to that level; if none has been returned by the time you exit the block, return ().
+That needs to interact with desired type...
+Compiling block exprs: assign a null value to a new C var, local return assigns that var and performs a goto.
+New local variables in the block expr are scoped.
+
+Need an allocPtr primitive to pass ptrs to allocating functions?
+blockE {(dt,allocPtr) = f(args,allocPtr); localReturn 1 dt} --requires a special allocPtr pattern
+Better to just use a local; that way you can also have alloc ptrs for each region.
+Note the return type of Cons (x,xs) depends on the type of the alloc ptr given!
+
+New constructs: blockE (syntax: block {s;...}), break n, continue n, localReturn n e. Break, continue and
+local return must be zero-indexed to syntactically prevent the invalid index (-1).
+Thread through syntax, desugar, typecheck.
+Using blockE I can desugar more constructs to AST: ++i, i++... note that requires incrementing the
+return index counts in the subexprs since subexprs may contain block exprs.
+Does a continue in a block expr break anything? It shouldn't...
+Since desugar is now doing more heavy lifting, it deserves its own folder.
+TODO remove desugarBlock, data D (it's only used for defuns); defuns should include only a single S as the
+rhs.
+With _[_] overloaded for pointers and arrays (TODO hashmaps), it must be supported in Pat.
+Handle type-specific desugaring (ptr[ix] => *(ptr+ix)) in type inference?
+
+x op= y => x = (x op y)
+Don't apply ordering opt (putting y first) for commutative ops, leave that to later opt passes.
+Disciplined optimization: I have a stack of languages with nontrivial choices and constraints for A -> A
+and A -> B transformations. Pass an optimizer and expose the rewrites as an API?
+In theory the optimizer could produce proofs to give to the API, simplifying it (or at least spreading out
+the complexity, avoiding interleaving multiple steps...).
+Having to make the equivalence properties for the different stages explicit would shed light on the languages'
+semantics.
+
+How strongly should @ bind..? Con () @ p && bla...
+p1 @ p2 = e
+
+New primfuns take syntactic tuples as arguments; a non-tuple expr means arity 1.
+Why? Because with limited polymorphism (simple recursive rather than with "global" state a la Hindley-Milner),
+for copy(a,b) I need to get the type of a before I can pass the desired type to b.
+With hygienic macros and full knowledge of the argument types I could implement map(f,pIn,pOut,len) using block
+exprs.
+Polymorphic functions with an optional inline pragma would be more code size-efficient...
+If a polymorphic fun is used standalone (a la f = map), the type variables could default to Word (defaulting
+to () is pretty useless).
+If a polyfun is passed a syntactic tuple or struct I can use clues from earlier arguments to resolve later
+ones.
+
 Since constructors don't clash with tycons, I can easily define both an object type tag enum,
 type Closure = {...} struct per object type and a datatype
 data Object r = {Closure Closure; ...}
 
 Special case for inlining: if the entire function is straight-line followed by a return you don't need local
-return.
+return. That could perhaps be implemented using optimization of local expr blocks.
 Local return ~ assign vars (initially set to 0), local break. A recursive tail call could be converted to a
 local continue. Note the assignment in the loop should be done only on return to ensure they're dead until the
 return itself.
@@ -68,14 +305,16 @@ IR is probably best; then I can convert to CFG incrementally with access to stru
 
 Next: support updated syntax, combine (.field | #ix)*, desugar op=.
 Distinguish primitive operators from application; prefix primops such as return1/2 and copy could also be
-separate syntactic elements.
+separate syntactic elements. No, instead handle primfun :$ tuple as a separate case in IR; make tuples
+mandatory for primfun application with >1 argument?
 A separate typecheck stage; later invariant: every subexpr tagged with type.
 Pushdown typing: push down a Maybe desired type.
 p = e --if p already has a type, it's the desired type of e
 (a,b,c) desired t --push down desired field types into fields
 (f : a -> b) x desired t --desired x = a; function applications do not push down t
 e :: t --the desired type of e is t, because that minimizes the runtime coercion cost
-Polymorphic exprs: integers, strings, tuples, structs.
+Polymorphic exprs: integers, strings, tuples, structs. Only for structs and tuples does desired type need to
+be passed down.
 (f:{} -> ()) {unusedField: e} --e should still be evaluated, but not included in the argument struct
 Alt: only allow a subset of the desired fields, disallow additional fields.
 Eval order should be textual, regardless of the field order of the resulting struct...
@@ -101,6 +340,101 @@ With local return:
 e1 && e2 =>
 n <- new label
 {a = e1; if a then return@n truthy(e2) else return@n 0}@n
+
+IR1 is 3800 lines... need to split it to make it manageable.
+Top-level: put everything together
+Pre-codegen: handle tysyns, check datatypes, subst globals, kind check.
+I'll modify those stages to throw appropriate error types, not SeqError.
+Tysyn substitution, kind check and datatype check needs to be done in the typecheck phase!
+Codegen: patterns, nested field/index get and set, seqS (case), seqE (primfuns)
+Fundamental: the Seq monad. Extricate the EDSL monad, it's cruft. Rename wword => word, wop => op...
+Goal: split into modules of ~300-400 lines.
+Moved into an IR folder... I'll move move (AST) DTs into an AST folder as well.
+TODO: more accurate error location reporting, report as many helpful errors as possible.
+At first, just report the single error from each function IR gen.
+Add {Position} to every BNFC rule... or use -position.
+Time to finally use generic rather than hand-rolled traversals... that should cut down on the code,
+revealing further refactoring opportunities.
+
+Module discipline: if a stage such as parse or desugar is small enough to fit in a single module, don't put
+it in a folder.
+
+Key opts: inlining, tail calls, symbolic eval and opt, dead var pruning (from dataflow), opts from effect
+tracking.
+Problem: there are two stages where symbolic eval could be done, AST and word-op IR. Do equivalent opts at
+both stages?
+Potential opt: struct writes could be floated and applied as late as possible.
+Treat s{field = v} as a value in symbolic eval...
+Generalizing "op modifies S": op consumes S, produces S'. That allows state splitting to be implemented
+nicely.
+Symbolic eval of effects: constant writes to memory (e.g. *ptr = nullObject) could be implemented using a
+codecopy. Then need to allocate static data during the opt phase...
+Resolving functions, globals and static data to constant addresses would enable additional opts... need to
+figure out how to optimize in a loop across stages.
+Recall: choices and constraints, search. Empty bytes in the .text could make it easier to find solutions...
+
+****CHECKPOINT
+
+Effect tracking would pair well with symbolic eval; s.field = p; *s.field --isn't problematic
+Split out IRDTs into separate module, eliminating Pretty's dependency on IR. Every module that uses a
+compiler datatype should be able to ppr it.
+Support proper prettyprinting? Yes.
+The CST has its own pretty-printer; expose it.
+My Pretty should support instances for each stage from CST to asm and be usable in each stage; that
+necessitates all DTs be moved lower. Split out .data and .text in asm.
+Convert CFGs to proper datatypes, allowing dedicated Pretty instances and easy addition of additional
+context (staticData etc).
+
+Do I need pad sz and align sz pragmas for expression fields? I'll do so.
+Syntactically enforce pad -> align -> field, disallow duplicates.
+Without bit it doesn't make sense to specify pad/align byte; it's the default. Replace with with
+wordpad, wordalign.
+
+Merging :., :# into Dots.
+I'll remove the alloc param from constructors and add a special e @ allocPat operator.
+Con (e : t) @ p =>
+ local {
+ x = p :: Ptr r datatype;
+ to = p :: {tag: Byte, t};
+ *to = {tag[Con], e};
+ to++;
+ p = to :: Ptr r Byte
+ localReturn x
+ }
+A @ operator variant could allocate without the pointer increment, but one can just throw away the
+pointer for a perf gain... you rarely want overlapping allocs anyway.
+
+Before rewriting desugaring I should carefully consider what it should do...
+For each datatype D args, add a TagD enum; Con => tagCon. Add a type synonym ReprCon args for each
+constructor?
+p->field
+arr[ix] --should not be desugared; it's overloaded.
+a && b, a || b => block expression
+Apply refinements incrementally, while keeping information necessary for subsequent stages.
+Add PrimOp Name [E]
+Finally use Generic for substitutions.
+Replace pad args in IRDTs.EStruct with Bools.
+
+In theory I could add dyn-size arrays to structs as long as their length expr can be inferred by reading
+left to right.
+{len: Short, contents: UID[len], lenBytes: Byte, bytes: Byte[lenBytes+5]}
+Better to do that manually for now... any dynamic datatypes also preclude loading on stack.
+
+Support a fixed-size array type and overload indexing for it? It leads to unintuitive results... a
+global array should be a pointer, but a fixed-size array could be on the stack.
+If you didn't special-case FSAs someone who used primes (from memory primes : Word[100]) would be in for
+a nasty surprise.
+It's not that bad... I'd need to extend *ptr.field* logic to handle at least one [ix] at the end.
+Decision: support FSAs as a first-class type, overload indexing for them (it also works on stack... for
+indices in range).
+That means s.a.b.c[i1][i2]... is a valid slice if the result of ...[i1] is a FSA.
+Also TODO: add constructors for each operator to AST? Nash, just a single primop one.
+Nice, nested arrays would work.
+Dynamically allocated FSAs in memory would need to be accessed by *arr[ix] = v.
+MPtr t[N] < MPtr t[n], MPtr t.
+I could warn on statically detected OOB, but sometimes that's what you want... esp for Array objects.
+
+************************************************************************************************************
 
 For the back burner:
 Separating type inference from compilation would let me get rid of costly and complex coercion at runtime.
