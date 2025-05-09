@@ -34,6 +34,12 @@ data E = EInteger Integer
        --Doesn't zero internal padding for now; coercing to a struct
        --is dangerous.
        | Coerce T E
+       --Type declaration, not coercion; useful for overloaded exprs
+       --(a,b,c), {a,b,c}, k
+       | TypeIs T E
+       --Unsafe(r) coercion: doesn't do any masking, so it's zero-cost but
+       --can produce corrupt values on stack.
+       | UnsafeCoerce T E
        -- *e becomes deref(e), so it doesn't need a dedicated constructor
        --Constructor application is substantially different from function
        --application...
@@ -46,7 +52,7 @@ data E = EInteger Integer
        --Ex: Cons 1 (Cons 2 (Nil ())) @ memptr
        --The pattern parameter must be both a valid pattern and an expression
        -- :: a mutable byte ptr
-       | E :@ Pat
+       | E :@ (Pat,E)
        --Block expressions, which may contain control flow; can be used to
        --implement short-circuited combinators, ternary expressions and
        --inlining.
@@ -275,7 +281,7 @@ data Pat = PWild
 --Output after desugaring phase:
 data Module = Module {
   defuns :: Map Name (T,Pat,S),
-  tysyns :: Map Name ([Name],T),
+  tysyns :: Syns,
   --T = Ptr Code a | somedatatype Code, i.e. the type is the type of the
   --name.
   --String expressions are lifted and become
@@ -305,6 +311,7 @@ data Module = Module {
   anonStaticCtr :: Int
   }
   deriving (Eq,Ord,Read,Show)
+type Syns = Map Name ([Name],T)
 
 --Putting this utility function here to make it widely available.
 --TODO update pkgs...

@@ -78,56 +78,59 @@ import E.ErrM
   '/' { PT _ (TS _ 22) }
   '/=' { PT _ (TS _ 23) }
   ':' { PT _ (TS _ 24) }
-  '::' { PT _ (TS _ 25) }
-  ':=' { PT _ (TS _ 26) }
-  ';' { PT _ (TS _ 27) }
-  '<' { PT _ (TS _ 28) }
-  '<<' { PT _ (TS _ 29) }
-  '<<=' { PT _ (TS _ 30) }
-  '<=' { PT _ (TS _ 31) }
-  '=' { PT _ (TS _ 32) }
-  '==' { PT _ (TS _ 33) }
-  '=>' { PT _ (TS _ 34) }
-  '>' { PT _ (TS _ 35) }
-  '>=' { PT _ (TS _ 36) }
-  '>>' { PT _ (TS _ 37) }
-  '>>=' { PT _ (TS _ 38) }
-  '[' { PT _ (TS _ 39) }
-  ']' { PT _ (TS _ 40) }
-  '^' { PT _ (TS _ 41) }
-  '^=' { PT _ (TS _ 42) }
-  '_' { PT _ (TS _ 43) }
-  'block' { PT _ (TS _ 44) }
-  'break' { PT _ (TS _ 45) }
-  'case' { PT _ (TS _ 46) }
-  'continue' { PT _ (TS _ 47) }
-  'data' { PT _ (TS _ 48) }
-  'do' { PT _ (TS _ 49) }
-  'else' { PT _ (TS _ 50) }
-  'end' { PT _ (TS _ 51) }
-  'enum' { PT _ (TS _ 52) }
-  'for' { PT _ (TS _ 53) }
-  'if' { PT _ (TS _ 54) }
-  'import' { PT _ (TS _ 55) }
-  'localReturn' { PT _ (TS _ 56) }
-  'memory' { PT _ (TS _ 57) }
-  'of' { PT _ (TS _ 58) }
-  'return' { PT _ (TS _ 59) }
-  'staticData' { PT _ (TS _ 60) }
-  'staticDatatype' { PT _ (TS _ 61) }
-  'storage' { PT _ (TS _ 62) }
-  'then' { PT _ (TS _ 63) }
-  'tstorage' { PT _ (TS _ 64) }
-  'type' { PT _ (TS _ 65) }
-  'while' { PT _ (TS _ 66) }
-  'wordalign' { PT _ (TS _ 67) }
-  'wordpad' { PT _ (TS _ 68) }
-  '{' { PT _ (TS _ 69) }
-  '|' { PT _ (TS _ 70) }
-  '|=' { PT _ (TS _ 71) }
-  '||' { PT _ (TS _ 72) }
-  '}' { PT _ (TS _ 73) }
-  '~' { PT _ (TS _ 74) }
+  ':!' { PT _ (TS _ 25) }
+  '::' { PT _ (TS _ 26) }
+  ':=' { PT _ (TS _ 27) }
+  ';' { PT _ (TS _ 28) }
+  '<' { PT _ (TS _ 29) }
+  '<<' { PT _ (TS _ 30) }
+  '<<=' { PT _ (TS _ 31) }
+  '<=' { PT _ (TS _ 32) }
+  '=' { PT _ (TS _ 33) }
+  '=:' { PT _ (TS _ 34) }
+  '==' { PT _ (TS _ 35) }
+  '=>' { PT _ (TS _ 36) }
+  '>' { PT _ (TS _ 37) }
+  '>=' { PT _ (TS _ 38) }
+  '>>' { PT _ (TS _ 39) }
+  '>>=' { PT _ (TS _ 40) }
+  '@' { PT _ (TS _ 41) }
+  '[' { PT _ (TS _ 42) }
+  ']' { PT _ (TS _ 43) }
+  '^' { PT _ (TS _ 44) }
+  '^=' { PT _ (TS _ 45) }
+  '_' { PT _ (TS _ 46) }
+  'block' { PT _ (TS _ 47) }
+  'break' { PT _ (TS _ 48) }
+  'case' { PT _ (TS _ 49) }
+  'continue' { PT _ (TS _ 50) }
+  'data' { PT _ (TS _ 51) }
+  'do' { PT _ (TS _ 52) }
+  'else' { PT _ (TS _ 53) }
+  'end' { PT _ (TS _ 54) }
+  'enum' { PT _ (TS _ 55) }
+  'for' { PT _ (TS _ 56) }
+  'if' { PT _ (TS _ 57) }
+  'import' { PT _ (TS _ 58) }
+  'localReturn' { PT _ (TS _ 59) }
+  'memory' { PT _ (TS _ 60) }
+  'of' { PT _ (TS _ 61) }
+  'return' { PT _ (TS _ 62) }
+  'staticData' { PT _ (TS _ 63) }
+  'staticDatatype' { PT _ (TS _ 64) }
+  'storage' { PT _ (TS _ 65) }
+  'then' { PT _ (TS _ 66) }
+  'tstorage' { PT _ (TS _ 67) }
+  'type' { PT _ (TS _ 68) }
+  'while' { PT _ (TS _ 69) }
+  'wordalign' { PT _ (TS _ 70) }
+  'wordpad' { PT _ (TS _ 71) }
+  '{' { PT _ (TS _ 72) }
+  '|' { PT _ (TS _ 73) }
+  '|=' { PT _ (TS _ 74) }
+  '||' { PT _ (TS _ 75) }
+  '}' { PT _ (TS _ 76) }
+  '~' { PT _ (TS _ 77) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -255,7 +258,8 @@ E11 : '++' E11 { E.Abs.PlusPlusPre $2 }
     | '&' E11 { E.Abs.AddressOf $2 }
     | E12 { $1 }
 E10 :: { E }
-E10 : E10 '*' E11 { E.Abs.Mul $1 $3 }
+E10 : E10 '@' E11 { E.Abs.At $1 $3 }
+    | E10 '*' E11 { E.Abs.Mul $1 $3 }
     | E10 '/' E11 { E.Abs.Div $1 $3 }
     | E10 '%' E11 { E.Abs.Mod $1 $3 }
     | E11 { $1 }
@@ -291,6 +295,8 @@ E :: { E }
 E : E1 { $1 }
   | E1 AOp E { E.Abs.Assign $1 $2 $3 }
   | E1 '::' T { E.Abs.Coerce $1 $3 }
+  | E1 '=:' T { E.Abs.TypeIs $1 $3 }
+  | E1 ':!' T { E.Abs.UnsafeCoerce $1 $3 }
 AOp :: { AOp }
 AOp : '=' { E.Abs.EqEq }
     | '+=' { E.Abs.PlusEq }

@@ -3,10 +3,115 @@ module Compiler where
 
 --Imports the modules for each step, handles running the pipeline
 
+import Util ((?))
+
 --String -> CST
-import Parse
+import Parse (parseModule)
+--Collecting modules
+import E.Abs (UIdent(..))
+import qualified E.Abs as P
+import Data.Set (Set(..))
+import qualified Data.Set as S
+import Data.Map (Map(..))
+import qualified Data.Map as M
+import System.Directory (doesPathExist,getCurrentDirectory)
+import Control.Monad.Reader
+import Control.Monad.State
 --CST -> AST
-import Desugar
+import AST.DTs (Module(..))
+import Desugar.Desugar (desugar, DError(..))
+
+data CompilerError = ParserError String
+                   | DesugarError DError   {-
+                   | SeqError SeqError
+                   | IllFormedCFG Name [IR]
+                   | AsmError String
+                   | BytecodeError AsmError -}
+  deriving (Eq,Ord,Read,Show)
+
+--The compilation process is pure once you have the set of relevant modules...
+--but collecting it requires parsing them.
+collectModules :: [FilePath] -> [String] -> IO P.M
+collectModules libpaths modname = do
+  cwd <- getCurrentDirectory
+  let searchPaths = libpaths ++ [cwd]
+  ds <- evalStateT (runReaderT (loadModule modname) searchPaths) S.empty
+  return $ P.Module ds
+
+type ModuleLoader = ReaderT [FilePath] (StateT (Set [String]) IO)
+--Loads a module and fills in its imports, recursively importing their
+--imports.
+loadModule :: [String] -> ModuleLoader [P.D]
+loadModule modname = do
+  explored <- get
+  if S.member modname explored
+    then return []
+    else do
+    put (S.insert modname explored)
+    paths <- ask
+    meim <- lift $ lift $ getModule paths modname
+    case meim of
+      Just (Right (P.Module ds)) ->
+        concat <$> mapM (\case
+                            P.Import mname ->
+                              loadModule $ moduleName mname
+                            d -> return [d]) ds
+      _ -> error $ "getModule failed: " ++ show (paths,modname,meim)
+--Returns Nothing if there is no module there, returns Just (Left (path,err)) if
+--there is but there's a syntax error in the module at path.
+getModule :: [FilePath] -> [String] ->
+             IO (Maybe (Either (FilePath,String) P.M))
+getModule paths modname = go paths
+  where go [] = return Nothing
+        go (path:paths) = do
+          let modPath = path ++ "/" ++ fp
+          b <- doesPathExist modPath
+          if b
+            then do
+            str <- readFile modPath
+            case parseModule str of
+              Left err -> return $ Just $ Left (path,err)
+              Right m -> return $ Just $ Right m
+            else go paths
+        fp = moduleName2Path modname ++ ".evmc"
+moduleName :: P.ModuleName -> [String]
+moduleName = \case
+  P.MNil (UIdent nm) -> [nm]
+  P.MCons (UIdent nm) rest -> nm : moduleName rest
+moduleName2Path :: [String] -> FilePath
+moduleName2Path = \case
+  [nm] -> nm
+  nm:nms -> nm ++ "/" ++ moduleName2Path nms
+
+--No compiler params for now, just pass a module through the pipeline
+{-
+--The params to the pure compilation process... currently just the parsed
+--module.
+--Future: .exe or .o mode, opt level, verbosity
+--Library paths could be a flag parameter, -l; it should be deleted
+--after module loading.
+--Command line: evmc [flags] modname
+data CompilerParams = CompilerParams {
+  cpModule :: P.M,
+  cpFlags :: Flags
+  }
+  deriving (Eq,Ord,Read,Show)
+type Flags = Map String String
+
+
+--For debugging; skips module loading and uses no flags
+pureParams :: String -> Either CompilerError CompilerParams
+pureParams str = do
+  m <- parseModule str ? ParserError
+  return CompilerParams{cpModule = m, cpFlags = M.empty}
+-}
+pipeline2parse :: String -> Either CompilerError P.M
+pipeline2parse str = parseModule str ? ParserError
+pipeline2desugar :: String -> Either CompilerError Module
+pipeline2desugar str = do
+  m <- pipeline2parse str
+  desugar m ? DesugarError
+
 {-
 import DTs
 import Data.Map (Map(..))
@@ -15,12 +120,11 @@ import Control.Monad.Trans.Except
 import Control.Monad.State
 import Text.Read (readMaybe)
 import Data.List (sort)
--}
+
 --AST -> IR
 import IR1 hiding (Ifte,While,Return)
 --IR -> CFG (non-stack aware)
---TODO rename...
-import ToyCFG
+import CFG
 --CFG2 -> Asm
 import Stack
 --Asm -> Bytecode
@@ -71,50 +175,7 @@ compile libpaths cwd modname = do
           writeFile (cwd ++ "/" ++ moduleName2Path modname ++ ".evm") $
             toHexString bytecode
       | let -> putStrLn $ "Undefined labels in asm: " ++ show undefinedLabels
-type ModuleLoader = ReaderT [FilePath] (StateT (Set [String]) IO)
---Loads a module and fills in its imports, recursively importing their
---imports.
-loadModule :: [String] -> ModuleLoader [P.D]
-loadModule modname = do
-  explored <- get
-  if S.member modname explored
-    then return []
-    else do
-    put (S.insert modname explored)
-    paths <- ask
-    meim <- lift $ lift $ getModule paths modname
-    case meim of
-      Just (Right (P.Module ds)) ->
-        concat <$> mapM (\case
-                            P.Import mname ->
-                              loadModule $ moduleName mname
-                            d -> return [d]) ds
-      _ -> error $ "getModule failed: " ++ show (paths,modname,meim)
---Returns Nothing if there is no module there, returns Just (Left (path,err)) if
---there is but there's a syntax error in the module at path.
-getModule :: [FilePath] -> [String] ->
-             IO (Maybe (Either (FilePath,String) P.M))
-getModule paths modname = go paths
-  where go [] = return Nothing
-        go (path:paths) = do
-          let modPath = path ++ "/" ++ fp
-          b <- doesPathExist modPath
-          if b
-            then do
-            str <- readFile modPath
-            case parseModule str of
-              Left err -> return $ Just $ Left (path,err)
-              Right m -> return $ Just $ Right m
-            else go paths
-        fp = moduleName2Path modname ++ ".evmc"
-moduleName :: P.ModuleName -> [String]
-moduleName = \case
-  P.MNil (UIdent nm) -> [nm]
-  P.MCons (UIdent nm) rest -> nm : moduleName rest
-moduleName2Path :: [String] -> FilePath
-moduleName2Path = \case
-  [nm] -> nm
-  nm:nms -> nm ++ "/" ++ moduleName2Path nms
+
   
 --A simple compilation function; takes a file and produces a .evm.txt
 --file containing the bytecode. Prints the error if compilation fails or if
@@ -176,13 +237,7 @@ printAsm str =
     Left err -> putStrLn $ "Error: " ++ show err
 
 --Putting it all together (in progress):
-data CompilerError = ParserError String
-                   | DesugarError DError
-                   | SeqError SeqError
-                   | IllFormedCFG Name [IR]
-                   | AsmError String
-                   | BytecodeError AsmError
-  deriving (Eq,Ord,Read,Show)
+
 
 --The string set is a warning of undefined labels; none should exist
 pipeline2Bytecode :: String -> Either CompilerError (Set String, [Int])
@@ -279,6 +334,5 @@ fun2IR m = do
   irmod <- seqModule mod ? SeqError
   return irmod
 
-(?) :: Either localErr a -> (localErr -> globalErr) -> Either globalErr a
-Right b ? _ = Right b
-Left err ? errt = Left $ errt err
+
+-}

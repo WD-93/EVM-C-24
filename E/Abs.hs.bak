@@ -72,6 +72,7 @@ data EField
 
 data E
     = AnonStaticData T E
+    | AnonStaticDatatype T E
     | Struct [EField]
     | EmptyTuple
     | Tuple E [E]
@@ -116,6 +117,8 @@ data E
     | Or E E
     | Assign E AOp E
     | Coerce E T
+    | TypeIs E T
+    | UnsafeCoerce E T
   deriving (Eq, Ord, Show, Read)
 
 data AOp

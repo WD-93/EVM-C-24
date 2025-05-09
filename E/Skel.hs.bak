@@ -84,6 +84,7 @@ transEField x = case x of
 transE :: E -> Result
 transE x = case x of
   AnonStaticData t e -> failure x
+  AnonStaticDatatype t e -> failure x
   Struct efields -> failure x
   EmptyTuple -> failure x
   Tuple e es -> failure x
@@ -128,6 +129,8 @@ transE x = case x of
   Or e1 e2 -> failure x
   Assign e1 aop e2 -> failure x
   Coerce e t -> failure x
+  TypeIs e t -> failure x
+  UnsafeCoerce e t -> failure x
 transAOp :: AOp -> Result
 transAOp x = case x of
   EqEq -> failure x

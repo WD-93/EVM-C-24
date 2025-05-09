@@ -19,6 +19,31 @@ disjoint from p. Datatypes should also be included in alias analysis!
 Note pointers to immutable regions (code, calldata, returndata) can be ignored. Returndata is special in that
 its contents may change, though not by pointer writes.
 
+Next: desugar staticDatatype.
+Desugar prefix primops to PrimOps, not function applications.
+copy(pto,pfrom,len) --doesn't actually benefit from pushing the desired type down into pfrom
+But future primops (assignPtr?) might... I'll treat arguments to prefix primops specially, requiring they be
+either arity 1 or syntactic tuples.
+
+I actually do need the anon name counter for the next pass, since staticdatatype decls are associated with
+their type.
+What is the type of Con arg in static data? Region is fixed... the desired type template could be pushed
+down, with tyvars treated as *.
+{e1,...,eN} : t[n] --t can be pushed down into the es; length mismatch is a type error.
+I'll add (:) (expr type declaration) and (:!) (unsafe(r) coerce) to the syntax.
+Tree shaking, symbolic eval (0 * x = 0 when x has no state effect) and DCE synergize.
+I could mark calls for pseudo-inlining (placing the function there) during the IR opt stage.
+After type-checking, convert to structured word-op IR; perform opts there.
+Use type info during opt... I can make assumptions about the bitpattern of v:t#n.
+Constructor allocations should be possible to constant-expand.
+IR stage opts: pruning dead vars, var-level dataflow on loops. State splitting: a read of constant memory
+should not depend on writes to other memory.
+If a pointer p is incremented in a loop, its range should be unchanged... the range of a ptr var in a loop is 
+the fixpoint union.
+When to inline? If there is only one call: always. The cost of inlining is increased code size; if the
+resulting inlined call is no larger than the original call, always inline.
+That depends on other opts such as var pruning (the inlined function may ignore some of its args).
+
 I could collect anonymous static data in the desugaring phase... that way compilation would be more uniform.
 TODO restrict the desugarE type to just have the desired effect.
 Problem: it would be nice to use staticData content for constant expansion, but the value of function labels

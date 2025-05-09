@@ -141,7 +141,13 @@ desugarDs ((P.Enum (UIdent tycon) ecs):rest) = do
 desugarDs (P.StaticData pt (Ident nm) pe : rest) = do
   let t = desugarT pt
   e <- desugarE pe
-  error "todo"
+  handleStaticData t nm e
+  desugarDs rest
+desugarDs (P.StaticDatatype pt (Ident nm) pe : rest) = do
+  let t = desugarT pt
+  e <- desugarE pe
+  handleStaticDatatype t nm e
+  desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
 
 count :: Ord a => [a] -> [(a,Int)]
@@ -371,6 +377,10 @@ desugarE = go
         return $ Dots e [Right $ fromInteger ix]
       --Can now no longer be confused with primfun applications, modulo
       --prefix ident primfuns
+      P.App (P.Var (Ident nm)) pe
+        | S.member nm prefixPrimfuns -> do
+            es <- desugarExplicitTuple pe
+            return $ PrimOp nm es
       --However, Con arg also uses P.App:
       P.App (P.Con (UIdent con)) parg -> do
         arg <- go parg
@@ -404,6 +414,13 @@ desugarE = go
       P.Deref pe -> po "deref" [pe]
       --It's not strictly a primop...
       P.AddressOf pe -> po "&_" [pe]
+      --We split the alloc ptr into pat and expr here to avoid needing to do
+      --so in later stages.
+      P.At a b -> do
+        a' <- desugarE a
+        bp <- desugarP b
+        be <- desugarE b
+        return $ a' :@ (bp,be)
       P.Mul a b -> po "*" [a,b]
       P.Div a b -> po "/" [a,b]
       P.Mod a b -> po "%" [a,b]
@@ -470,6 +487,8 @@ desugarE = go
             oldp <- desugarE lhs
             return $ p := PrimOp primop [oldp,e]
       P.Coerce e t -> Coerce (desugarT t) <$> go e
+      P.TypeIs e t -> TypeIs (desugarT t) <$> go e
+      P.UnsafeCoerce e t -> UnsafeCoerce (desugarT t) <$> go e
     po nm es = PrimOp nm <$> mapM go es
 desugarFieldE :: P.EField -> De (Field E)
 desugarFieldE = go1
@@ -486,6 +505,19 @@ desugarFieldE = go1
           P.EAnon pe -> do
             e <- desugarE pe
             return ((pad,al),Nothing,e)
+--So primops can use the type information of one argument to inform the
+--desired type of another. This means the argument of a prefix primop
+--application has different semantics: for an ordinary function application
+--tup = (a,b); f tup
+--is equivalent to f (a,b), but not for primops.
+desugarExplicitTuple :: P.E -> De [E]
+desugarExplicitTuple = \case
+  P.EmptyTuple -> return []
+  P.Tuple pe pes -> mapM desugarE (pe:pes)
+  pe -> (:[]) <$> desugarE pe
+--Need to keep this in sync with typecheck and codegen... perhaps move to DTs
+prefixPrimfuns :: Set Name
+prefixPrimfuns = S.fromList $ words "stop revert copy"
 
 --String literals are lifted to staticData decls:
 --"abc" becomes staticData (Byte[3]) {97,98,99};
@@ -520,46 +552,24 @@ handleStaticDataExpr t e = do
 --Note constructor applications, staticData exprs and strings create nested
 --static data/type references.
 --Strings and staticData/type exprs are handled when desugaring the e, but
---constructor applications are not; they must be handled here.
---The actual layout in terms of bytes and labels is computed after type
---checking; all we need to do here is create the static declaration and
---recursively allocate staticDatatypes.
+--constructor applications are not. However, they can't be handled until after
+--type checking so we just record the mapping nm => (Ptr Code t, e) here.
 handleStaticData :: T -> Name -> E -> De ()
-handleStaticData t nm e = error "todo"
+handleStaticData t nm e = do
+  s <- get
+  checkForDuplicates nm
+  put s{static = M.insert nm (Ptr Code t, e) $ static s}
 
 --Like staticData, but for datatypes (which are boxed).
 --staticDatatype (tycon args) nm = Con arg
 --places {tag_Con,arg} in code, nm : tycon args Code points to it.
 --Note the top-level Con is mandatory, and only tycon args (a datatype without
 --the region applied) is an acceptable t parameter.
---As with staticData, 
-handleStaticDatatype t nm e = error "todo"
-
---Recursively allocates staticDatatypes, substituting them for their names as
---in staticDatatype expressions.
---Standalone names are only valid if they're enum values, functions or static
---names, but we don't check that here.
---A feature that would be nice to have in Haskell: union patterns.
---Constraint: equal var set with compatible types.
---That could be used to make a pattern for "valid leaf exprs" here.
---Oh no - to allocate static data for Con arg I need to know the type, but I
---don't know it yet! Better defer that until type checking then.
-handleStaticExpr :: E -> De E
-handleStaticExpr = go
-  where go e =
-          case e of
-            EInteger _ -> return e
-            Var _ -> return e
-            --Only valid for globals:
-            PrimOp "&_" [Var _] -> return e
-            EStruct fields -> EStruct <$> mapMFields go fields
-            Con con arg -> error "todo"
---Utility function; todo use it elsewhere
---It just ignores padding and the field name, a common pattern
-mapMFields :: (a -> m b) -> [Field a] -> [Field b]
-mapMFields f = mapM (\(pad,mnm,a) -> do
-                        b <- f a
-                        return (pad,mnm,b))
+--That's checked in the type-checking phase.
+handleStaticDatatype t nm e = do
+  s <- get
+  checkForDuplicates nm
+  put s{static = M.insert nm (t, e) $ static s}
 
 --Allocates $prefix<n> off anonStaticCtr; need a generic version because I
 --also need to allocate vars for the desugaring of x++ to

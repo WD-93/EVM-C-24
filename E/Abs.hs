@@ -97,6 +97,7 @@ data E
     | BitwiseNot E
     | Deref E
     | AddressOf E
+    | At E E
     | Mul E E
     | Div E E
     | Mod E E
@@ -117,6 +118,8 @@ data E
     | Or E E
     | Assign E AOp E
     | Coerce E T
+    | TypeIs E T
+    | UnsafeCoerce E T
   deriving (Eq, Ord, Show, Read)
 
 data AOp

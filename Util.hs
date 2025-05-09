@@ -1,0 +1,8 @@
+module Util where
+
+--General utility functions that should be available to any module and don't
+--fit anywhere else.
+
+(?) :: Either localErr a -> (localErr -> globalErr) -> Either globalErr a
+Right b ? _ = Right b
+Left err ? errt = Left $ errt err

@@ -105,6 +105,8 @@ Deref. E11 ::= "*" E11;
 AddressOf. E11 ::= "&" E11;
 --Left-to-right
 --10: * / %
+--I'll place @ here for now...
+At. E10 ::= E10 "@" E11;
 Mul. E10 ::= E10 "*" E11;
 Div. E10 ::= E10 "/" E11;
 Mod. E10 ::= E10 "%" E11;
@@ -135,6 +137,10 @@ coercions E 13;
 Assign. E ::= E1 AOp E;
 --Coerce using ::
 Coerce. E ::= E1 "::" T;
+--Type declaration... using =: instead of : to avoid a shift-reduce
+TypeIs. E ::= E1 "=:" T;
+--Coercion without masking at runtime
+UnsafeCoerce. E ::= E1 ":!" T;
 --E1. E ::= E1;
 
 EqEq. AOp ::= "=";

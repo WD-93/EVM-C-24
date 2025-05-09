@@ -20,7 +20,7 @@ incLRDepth = go
           Dots e fs -> Dots (go n e) fs
           Coerce t e -> Coerce t (go n e)
           Con nm e -> Con nm (go n e)
-          e :@ p -> go n e :@ incLRDepthP n p
+          e :@ (p,pe) -> go n e :@ (incLRDepthP n p, go n pe)
           p := e -> incLRDepthP n p := go n e
           e -> e
 incLRDepthS :: Int -> S -> S

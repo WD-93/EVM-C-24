@@ -109,6 +109,7 @@ transE x = case x of
   BitwiseNot e -> failure x
   Deref e -> failure x
   AddressOf e -> failure x
+  At e1 e2 -> failure x
   Mul e1 e2 -> failure x
   Div e1 e2 -> failure x
   Mod e1 e2 -> failure x
@@ -129,6 +130,8 @@ transE x = case x of
   Or e1 e2 -> failure x
   Assign e1 aop e2 -> failure x
   Coerce e t -> failure x
+  TypeIs e t -> failure x
+  UnsafeCoerce e t -> failure x
 transAOp :: AOp -> Result
 transAOp x = case x of
   EqEq -> failure x

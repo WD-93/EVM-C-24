@@ -206,6 +206,7 @@ instance Print E where
     BitwiseNot e_ -> prPrec i 11 (concatD [doc (showString "~"), prt 11 e_])
     Deref e_ -> prPrec i 11 (concatD [doc (showString "*"), prt 11 e_])
     AddressOf e_ -> prPrec i 11 (concatD [doc (showString "&"), prt 11 e_])
+    At e_1 e_2 -> prPrec i 10 (concatD [prt 10 e_1, doc (showString "@"), prt 11 e_2])
     Mul e_1 e_2 -> prPrec i 10 (concatD [prt 10 e_1, doc (showString "*"), prt 11 e_2])
     Div e_1 e_2 -> prPrec i 10 (concatD [prt 10 e_1, doc (showString "/"), prt 11 e_2])
     Mod e_1 e_2 -> prPrec i 10 (concatD [prt 10 e_1, doc (showString "%"), prt 11 e_2])
@@ -226,6 +227,8 @@ instance Print E where
     Or e_1 e_2 -> prPrec i 1 (concatD [prt 1 e_1, doc (showString "||"), prt 2 e_2])
     Assign e_1 aop e_2 -> prPrec i 0 (concatD [prt 1 e_1, prt 0 aop, prt 0 e_2])
     Coerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "::"), prt 0 t])
+    TypeIs e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "=:"), prt 0 t])
+    UnsafeCoerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString ":!"), prt 0 t])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print AOp where
