@@ -19,6 +19,10 @@ disjoint from p. Datatypes should also be included in alias analysis!
 Note pointers to immutable regions (code, calldata, returndata) can be ignored. Returndata is special in that
 its contents may change, though not by pointer writes.
 
+I now catch collisions with primitive tycons and tysyns in checkForDuplicates in Desugar...
+I should also add primfuns.
+Note having a single duplicate checker function means I can't define data Foo = Foo.
+
 Next: desugar staticDatatype.
 Desugar prefix primops to PrimOps, not function applications.
 copy(pto,pfrom,len) --doesn't actually benefit from pushing the desired type down into pfrom

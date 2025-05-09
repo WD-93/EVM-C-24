@@ -212,7 +212,9 @@ checkForDuplicates nm = do
      M.keysSet $ datatypes m,
      M.keysSet $ enums m,
      M.keysSet $ enumValues m,
-     primTyCons]
+     primTyCons,
+     M.keysSet primTySyns,
+     primFuns]
     then throwE $ DuplicateDeclsForName nm
     else return ()
 

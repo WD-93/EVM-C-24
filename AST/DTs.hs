@@ -104,6 +104,7 @@ pattern SInt n = Int "Signed" n
 pattern UInt n = Int "Unsigned" n
 pattern Int s n = "Int" :$$ s :$$ TyNat n
 pattern a :-> b = "->" :$$ a :$$ b
+infixr 5 :->
 --I should perhaps have separated structs and tuples after all...
 pattern Pair a b = Struct [((Word,Word),Nothing,a),
                            ((Word,Word),Nothing,b)]
@@ -225,6 +226,17 @@ primTyCons = S.fromList $
   "Signed Unsigned " ++ --signedness
   "Memory Storage TStorage Calldata Returndata Code " ++ --region
   "Int Ptr -> " --the primitive types
+--The kinds for the prim tycons which aren't polymorphic
+--(i.e. excluding (->) :: a -> b -> Type).
+primTyConKinds :: Map Name T
+primTyConKinds = M.fromList $
+  are "Type" "Type Region Signedness Nat" ++
+  are "Signedness" "Signed Unsigned" ++
+  are "Region" "Memory Storage TStorage Calldata Returndata Code" ++
+  is ("Signedness" :-> "Nat" :-> "Type") "Int" ++
+  is ("Region" :-> "Type" :-> "Type") "Ptr"
+  where are t = map (\nm -> (nm,t)) . words
+        is = are --English lesson of the day
 primTySyns :: Map Name ([Name],T)
 primTySyns = M.fromList [
   "Byte" =: UInt 8,
@@ -240,6 +252,15 @@ primTySyns = M.fromList [
   "MPtr" =: ("Ptr" :$$ "Memory")
   ]
   where nm =: t = (nm,([],t))
+
+--Should be the full set of primfuns, including infix ones...
+primFuns :: Set Name
+primFuns = S.fromList $ words $
+  --Exiting functions
+  --return1(x) --RETURNs the value x (written to 0)
+  --return2(ptr,len)
+  "stop revert return1 return2" --no reason to add invalid, jump, jumpi?
+  
 --The kind check can't be done here, you need to defer it to IR.
 tupleT :: [T] -> T
 tupleT = Struct . tupleF
@@ -310,7 +331,7 @@ data Module = Module {
   --inserted as a hack to avoid having to change the desugar monad's type.
   anonStaticCtr :: Int
   }
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Data)
 type Syns = Map Name ([Name],T)
 
 --Putting this utility function here to make it widely available.

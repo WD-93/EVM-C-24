@@ -3,7 +3,7 @@ module TypeCheck.TySyn where
 
 --The module where the tysyn substitution phase of typechecking is defined.
 
-import Util ((?))
+import Util ((?),complainIf)
 
 import AST.DTs
 
@@ -21,7 +21,9 @@ data TySynError = TyConsNotInScope (Set Name)
                 | TyVarsNotInScope (Set Name)
                 | UnderappliedTySyn Name
                 | TySynCycle [Name] --ex: type A = B; type B = A
-                | TySynsShadowPrimTySyns (Set Name)
+                --Desugar catches this error:
+                -- | TySynsShadowPrimTySyns (Set Name)
+                | DuplicateTySynParams --need to put it somewhere...
                 | In String Name TySynError
                 --For location reporting:
                 -- | InTySyn Name TySynError
@@ -44,10 +46,6 @@ substTySyns m = do
       primsyns = M.keysSet primTySyns
       usersyns = M.keysSet $ tysyns m
       syncons = S.union primsyns usersyns
-  let conflict = S.intersection primsyns usersyns
-    in if conflict /= S.empty
-       then Left $ TySynsShadowPrimTySyns conflict
-       else return ()
   syns <- handleTySyns tycons syncons $ M.union primTySyns $ tysyns m
   --It might be possible to use everywhereM to just apply the tysyns to
   --everything in one fell swoop... but I don't want to do that since I want
@@ -140,21 +138,21 @@ handleTySyns tycons syncons syns = do
   --Finally, recursively substitute all tysyns in tysyn bodies
   normalizeTySyns syns
 
---Repeated vars in the arg list of a tysyn is an error... where to report?
+--Repeated vars in the arg list of a tysyn is an error... I'll report it here
 scopeCheckTySyns tycons syncons syns = do
   let scope = S.union tycons syncons
   mapM_ (\(synnm,(args,body)) ->
             (do let vars = tyVars body
                     argset = S.fromList args
                     vardiff = S.difference vars argset
-                if vardiff /= S.empty
-                  then Left $ TyVarsNotInScope vardiff
-                  else do
-                  let cons = tyCons body
-                      condiff = S.difference cons scope
-                  if condiff /= S.empty
-                    then Left $ TyConsNotInScope condiff
-                    else return ()
+                complainIf (S.size argset < length args)
+                  DuplicateTySynParams
+                complainIf (vardiff /= S.empty)
+                  $ TyVarsNotInScope vardiff
+                let cons = tyCons body
+                    condiff = S.difference cons scope
+                complainIf (condiff /= S.empty)
+                  $ TyConsNotInScope condiff
             ) ? In "tysyn" synnm
         )
     $ M.toList syns
@@ -224,9 +222,8 @@ applyTySyns syns t = do
     TyCon con
       | Just (args,body) <- M.lookup con syns ->
         do let arity = length args
-           if arity > length targs2
-             then Left $ UnderappliedTySyn con
-             else return ()
+           complainIf (arity > length targs2)
+             $ UnderappliedTySyn con
            let prefix = take arity targs2
                suffix = drop arity targs2
                substMap = M.fromList $ zip args prefix

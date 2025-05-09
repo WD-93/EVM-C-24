@@ -1,8 +1,15 @@
 module Util where
 
+import Control.Monad.Except
+
 --General utility functions that should be available to any module and don't
 --fit anywhere else.
 
 (?) :: Either localErr a -> (localErr -> globalErr) -> Either globalErr a
 Right b ? _ = Right b
 Left err ? errt = Left $ errt err
+ 
+complainIf :: MonadError err m => Bool -> err -> m ()
+complainIf b err
+  | b = throwError err
+  | let = return ()
