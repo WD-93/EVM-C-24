@@ -41,7 +41,9 @@ kindCheck m = do
   let kinds = getKindMap m
   --I remove the globals to avoid an erroneous complaint that their regions
   --aren't types:
-  let m' = m{globals = []}
+  --Aha, tysyns need to be emptied as well; tysyn bodies may contain any
+  --kind.
+  let m' = m{globals = [], tysyns = M.empty}
   checkTopLevelTypes kinds m'
   --Now to check the globals
   mapM_ (\(nm,_region,t) -> wellkinded kinds t ? In "global" nm) $ globals m

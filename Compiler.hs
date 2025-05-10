@@ -20,9 +20,13 @@ import Control.Monad.State
 --CST -> AST
 import AST.DTs (Module(..))
 import Desugar.Desugar (desugar, DError(..))
+--Type checking
+import TypeCheck.TC (typecheck, TCError(..))
 
 data CompilerError = ParserError String
-                   | DesugarError DError   {-
+                   | DesugarError DError
+                   | TypeCheckError TCError
+                   {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
                    | AsmError String
@@ -111,6 +115,9 @@ pipeline2desugar :: String -> Either CompilerError Module
 pipeline2desugar str = do
   m <- pipeline2parse str
   desugar m ? DesugarError
+pipeline2typechecked str = do
+  m <- pipeline2desugar str
+  typecheck m ? TypeCheckError
 
 {-
 import DTs

@@ -282,7 +282,6 @@ data S = SE E --required because := has been moved to E
        | Break Int --break 0 ~ break in C; break n breaks out of n+1 loops
        | Continue Int --analogous
        | LocalReturn Int E --return out of n+1 nested block expressions
-       
   deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment
 data Pat = PWild

@@ -3,7 +3,7 @@ module TypeCheck.TySyn where
 
 --The module where the tysyn substitution phase of typechecking is defined.
 
-import Util ((?),complainIf)
+import Util ((?),complainIf,unsafePrint)
 
 import AST.DTs
 
@@ -73,7 +73,7 @@ inMap :: Data d => String ->
 inMap loctype field syns m = M.fromList <$>
         (mapM (\(nm,def) -> do
                   def' <- genericApplyTySyns syns def ? In loctype nm
-                  return (nm,def)) $ M.toList $ field m)
+                  return (nm,def')) $ M.toList $ field m)
   
 --The cycle check can be disentangled from tysyn subst in tysyns:
 --get syn => syns using SYB, then check for a cycle.
