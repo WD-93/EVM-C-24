@@ -170,6 +170,7 @@ unTupleT = \case
             (t:) <$> go padmnmts
           _ -> Nothing
 
+{-
 --Unification is pretty fundamental, so might as well put it in here
 --Left (mnm,t1,t2) => subtypes t1 and t2 failed to unify
 --mnm = Just nm => unification was with nm, bound to t1
@@ -217,7 +218,7 @@ instT m = go
           tf :$$ tx -> go tf :$$ go tx
           Struct padnmts -> Struct $ map (\(pad,nm,t) -> (pad,nm,go t)) padnmts
           t -> t
-
+-}
 --Including kinds
 primTyCons :: Set Name
 primTyCons = S.fromList $

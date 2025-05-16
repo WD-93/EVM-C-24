@@ -19,6 +19,354 @@ disjoint from p. Datatypes should also be included in alias analysis!
 Note pointers to immutable regions (code, calldata, returndata) can be ignored. Returndata is special in that
 its contents may change, though not by pointer writes.
 
+Pattern-matching decomposition should perhaps be done in desugar before TC... but (a,b,c) = e needs to be
+checked for tupleness.
+Problem: if block exprs scope locals, decomposing to a block expr doesn't work without hoisting the assigned
+vars.
+There's no need to decompose in TC, just type the e and assign types to locals.
+Problem: {_,x} = e --I can't unify e with a mix of Nothing and Just t...
+Solution: always push down a t, but when it's unknown allocate a new tyvar.
+At that point maybe I should just go full HM...
+
+-------------------------------------START NEW TYPE DISCUSSION-------------------------------------------------
+
+For functions like typeOf, it would be nice if I could get the alloc pointer; it could be in a constraint/dict.
+That's cleaner than @, allowing me to transparently use an implicit alloc pointer for alloc with no syntactic
+overhead. Con arg :: dat r st HasAllocPtr r
+I need to be able to dynamically create dicts...
+In-out dicts? Explicitly accessible and mutable dicts?
+f :: mutable c => a -> b --becomes (c,b) = f(c,a). Pass dicts at time of application.
+Since I don't have closures, instantiation can only occur during application: dicts and ordinary arguments
+must be passed all at once.
+So either treat integer literals separately or implement an Integer#, fromInteger# analogue.
+With fixed-size dicts I can go further than template polymorphism... but primitives such as .field might be
+tricky.
+State regions might be expressible using dicts.
+
+Assuming multi-param typeclasses are a bad idea:
+deref :: (Dereferencable r, Sizeof a) => Ptr r a -> a
+class Dereferencable r where
+ primDeref :: Sizeof a => Ptr r a -> a
+class Sizeof a where
+ sizeof :: proxy a -> UInt 16
+Note the method in Dereferencable is quantified on a; with single params classes that would be multi-param
+(C a b c) become a hierarchy:
+class C a --quantified on a and b, requires lower constraints
+Single-param typeclasses can be implemented using a case on the param... but with a fixed universe of
+classes multi-param might be just as easy. Better not find out if I can avoid it (i.e. if primops can be
+implemented with single-param).
+
+Ease of type checking > familiar or convenient syntax.
+Add on-stack newtypes, replace structs with them? That would greatly simplify struct construction, but not
+.field. Simplification: only newtypes/named structs may have .fields.
+Implement a new syntax for arrays... Array {a,b,c}?
+index :: Indexable f => (f a, Int s len) -> a
+instance Dereferencable r => Indexable (Ptr r)
+instance KnownNat len => Indexable (Array len) --without known len, the array can't be on stack
+But we usually don't want it on stack! I perhaps need ops for pointer transformation:
+->[ix], ->field
+
+User-level variadic getSized:
+newtype Sized a = MkSized {Sizeof a, a}
+getSized :: MPtr (Sized a) -> a
+getSized p =
+ case *p of
+  {MkSizeof, a} -> return a
+--MkSizeof contains an implicit dict;
+{MkSizeof,a} = *p becomes 
+MkSizeof {dict = d} = *p#0(size 2, offset 0);
+a = *p#1(size d, offset 2)
+Offset calculation must go from left to right; there's no way to get a non-initial field and work backward.
+instance Sizeof t, KnownNat len => Sizeof (Array len t) where
+ --Direct access to the dicts is required to multiply t by len strictly, since the resulting dict can't fit
+ --subdicts
+
+Implement instances for dynSizeof? Problem: many input classes.
+But if you define in instances how to compute a (fixed-size) class from the inputs rather than including them 
+in full...
+
+Lift primitives to the user level AMAP? Inline assembly could help with that.
+deref_r (sz,ptr) could be implemented as a loop and then specialized.
+Instance definitions would be much nicer if they were implemented in a language (and thus compiled down to
+a smaller, cleaner set of primitives) than if they were implemented ad hoc in the compiler.
+I might also get user-level typeclasses for free (or at least cheaper).
+
+class Addable ...oh, here's trouble. I could implement a hierarchy (AddArg1, AddArg2) or just restrict its
+type and use a different op for pointers.
+
+f x --need not know the type of x; it's just assumed to be pushed on the stack, at which point you jump to f.
+Perhaps I need a new IR suitable for type checking?
+Local assignment needs WordSizeof (sizeof modulo 256) to compute stack offsets. Note stack words are not in a
+fixed order...
+Add a primitive pattern that splits on-stack values into their composite words?
+
+To read before I shoot myself in the foot: Hindley-Milner algo, HM with constraints papers.
+
+A simple solution to the issue of which region param Con arg should have: always memory?
+Otherwise I need a type in the implicit context... that's simple enough, allocRegion could be separate from
+constraints. Con arg :: AllocRegionIs r => DT params r
+An alt to mutable dicts:
+class Alloc r where
+ allocPtr :: MPtr (Ptr r Byte)
+But mutable dicts would let me implement methods and effects cleanly... and passing on stack is much more
+efficient. The most obvious type to implement a method on is the interpreter state.
+
+Could constructor tags be viewed as dicts...? Yes, recall the Scott encoding.
+More efficient: listCon a ~ staticJT_List a b -> b. That makes case an expr, not a control structure...
+staticJT_List a b ~ staticJT {() -> b, Ptr r (a,List a) -> b}
+But we don't necessarily want to load the contents onto the stack...
+For overloading purposes it would be nice if r didn't always have to be the last parameter.
+To construct datatypes from lower-level primitives: allocCon :: (Constructor arg ret, arg) -> ret
+That allows constructors outside the defined set - including inline-mutating thunks!
+Downside: case requires an additional thunk, data format isn't predictable (preventing opts).
+Compromise: parameterized enums.
+enum ListCon arg a where
+ NIL :: ListCon () a
+ CONS :: ListCon (a,List a) a
+List r a ~ Ptr r {ListCon arg a, arg}
+case *xs of
+ {NIL,_} => ...
+ {CONS,&&pxxs}
+Note the enum tag does not *contain* the relevant dicts for accessing the arg, but it gives the
+compiler enough info to insert them.
+So I can implement user datatypes using just enums and structs/newtypes!
+Aside: anonymous structs are really nice to have...
+The dict/GADT usage technique would also be useful for variable-size objects in the interpreter:
+data Object where
+ ArrayObj :: {KnownNat len, Array len (MPtr Object)}
+safeIndex :: KnownNat len => Array len a -> Int s len' -> a
+
+Recall the classic use of overloading: p = malloc()
+With an implicit alloc pointer and Sizeof that becomes a breeze!
+malloc :: (AllocRegionIs r, Sizeof a) => () -> Ptr r a
+malloc () :=
+ p = allocPtr() :: Ptr r Byte
+ pret = coerce p :: Ptr r a
+ incAllocPtr(sizeof $ P :: Proxy a)
+ return pret
+--That wouldn't work in Haskell since the r and a are assumed to be quantified... is that a mandatory
+choice? The alt is a convoluted use of lets.
+
+Mutable dicts could perhaps be used for separating unrelated writes.
+For exprs to be separate you need to return from both of them in one body... so the IR bodies need to be more
+complex than just straight-line code.
+Could modifying the type of the mutable dict be used for indexed monads? 
+
+Restrict instances to the form
+instance constraints => Con vars where
+ --derivation function
+
+Use hetlists and Syms for structs? That's pretty esoteric type-level magic even for Haskell...
+struct ~ () | Cons fieldName a struct
+data Struct (hetlist :: Fields) where
+ Nil :: Struct HNil
+ Cons :: a -> Struct fs -> Struct (HCons nm a fs)
+Issue: to get the offset from ptr you need sizeof the previous fields... but on stack you could in
+fact work from the back? Don't try it...
+Hetlist-based anonymous structs require MPTCs; "arbitrarily" add the sizeof constraint to .field and use
+named structs instead. Build .field from slice off len :: Pat a -> Pat b?
+You don't strictly need sizeof; you could write QP code 
+setField :: Sizeof f ~ k1, Offset nm s ~ k2, HasField nm f s, WordSizeof s ~ k3 => s -> f -> s
+Hold on... there's RW on that... an ICFP talk?
+
+Solution from Haskell: datatype-specific field names so there's no ambiguity.
+.field as sugar for lens and IO-like stuff?
+Something unexplored so far (modulo my mention new locals need Sizeof): the stack as a data structure.
+Transform CFG to tail calls a la compiler lecture notes? Argument ordering could then be specified, but
+changed as an opt.
+Well-behaved while loops could become lets, but in general they may localReturn, break or continue to other
+locations than the next statement.
+let vs = f x; cont<vs> becomes f x (\vs -> ...)?
+local returns (and indeed the global return) simply become continuation calls.
+
+Constructs of the functional IR:
+if w then e1 else e2
+let v = primopApp in ...
+
+Local assignment becomes a let (with the newest value passed to the continuation).
+Struct modification could perhaps become a whole-struct assignment, which is then symbolically optimized.
+If deref now takes an explicit size param, that might simplify memory access opts.
+struct{field=e} needn't be broken into word ops immediately; wordify the IR as a separate step later?
+Problem: polymorphic primops such as deref may return a variable number of words. How to express that?
+There's a tension between the need for precise stack control in the primitives and the location-less stack
+vars of the functional IR. Instruction combinators?
+Function properties: stack, returns to f. If you decomposed function types to that explicitly, you could
+perhaps represent more underneath...
+
+deref (sz,ptr) =
+ m = sz mod 32
+ fst = mload ptr >> 8*(32-m)
+ d = sz div 32
+ rest = mload ptr+m,ptr+m+32 .. ptr+m+32*(d-1)
+ return fst:rest
+deref with a dynamic sz must push to ToS in a loop based on ptr and bound (requiring 3 swaps).
+Since the value in memory and on the stack is the same, perhaps leave that unspecified at the functional IR
+level; treat values as bytestrings and "arbitrarily" require knowledge of sizeof/word size.
+Sizeof a ~ KnownNat sz, sz ~ TyFamSizeof a
+In what situation would I know word size but not exact size?
+Sizeof a => WordSizeof a
+But if I use tyfams I could say (exists t . WordSizeof t ~ 1 => ...) to express generic ops such as swapping
+two tuple elements as QP functions. KnownNat converts between type-level tyfam value :: Nat and dynamic dict.
+Note: equality constraints do not correspond to a dict so the function can still be effectively QP!
+Simple approach: leave values abstract in the functional IR stage, specialize primfuns and divide into words
+in a later stage (after aliasing analysis).
+
+Talk idea: show how the static data is translated to dict passing (no opt so gas usage is horrible), then
+show the specialized version. Note how it's done automatically and the resulting code is polymorphic!
+Title: How to stay classy on the blockchain; or high-level features for a low-level smart contract language.
+EVMC pitch: high fees encourage low-level control of the EVM, but it would be nice to have the amenities of
+home... (or even just structured data and pointers).
+Like C, it allows typed, structured programming with user-created data structures.
+But wait, there's more! It allows polymorphic programming.
+Example: show swap :: (a,b) -> (b,a). That doesn't work! Why? Because EVMC is a low-level language; unlike
+Haskell, values are unboxed. Without knowing the size *in 256b stack words* of a and b, it can't generate
+the bytecode to swap the values. Note that as long as word size is the same, you can still apply the
+correctly typed fun. Show its inferred type!
+How to implement swap using dynamic dicts? They must perhaps be known for stack ops; that's where template
+polymorphism shines.
+Complication: it's bare metal and there's no runtime or memory management... so the dicts must be fixed-size
+and passed on stack. That means they must be strictly computed (more implem details to come); explicit
+computation on dicts is both convenient and powerful.
+Aside: show memory management with @ region/ptr, how it ties into the type system.
+Brief summary: using Nat/KnownNat, type classes and tyfams from Haskell (maybe with a brief GADT cameo), we
+can do polymorphic low-level programming.
+RW: typed asm?
+
+Applications (HLM) could be a different talk.
+
+Linear types for state: each function also takes an s :: State; a -> b has additional params
+(state observed and modified).
+incX {mut: {x=n}} = let n' = n+1 in return x {x=n'}
+A function which takes x can take any state >=x; when unifying minimum states take the max.
+Mutable dicts would also be linear...
+safeMalloc() could produce new state "guaranteed" not to be aliased...
+If a pointer to newly allocated state is dropped or freed, it shouldn't be visible in the type...
+Closures built with newly alloc'd state could also hide it.
+Ptrs could also have a hidden range parameter.
+Types containing pointers could take hidden parameters or default to everything.
+Could zero-cost abstractions more amenable to static analysis be used internally...?
+Simplest approach: type inference is not aware of state, alias analysis is deferred.
+
+class Mutable r => Alloc r where
+ allocPtr :: BytePtr r
+
+Fields as lenses:
+set :: Pat a -> a -> ()
+get :: Pat a -> a
+.field :: Pat s -> Pat elem
+_[_] :: Indexable arr => Pat (arr a) -> Int {} -> Pat a
+What's &(p[ix]) then...?
+What about locals?
+Patterns either point into a region or are on the stack; I could have specialized logic for each.
+Wildcard could be translated into a fresh stack var.
+Stack:
+sv.f1.f2 = e => sv = sv{f1=f1 sv {f2 = e}}
+Stack field writes need different info: left offset, not right offset. Padding may also be relevant.
+Use a WordPad a prim type? What about align?
+
+Potential simplification for v1: use simple Hindley-Milner (no constraints, maybe defaults) as the first step
+of type checking before template polymorphism. Then attempt to instantiate ops on monomorphization from main,
+which may fail!
+deref becomes :: Ptr r a -> a, for example; r is not checked for dereferencability until instantiation.
+add :: a -> b -> c...
+With no dicts WithSize a and closures can't be supported at the user level.
+You could get the code sharing opt for effectively QP functions by comparing the generated low-level code.
+No need to mess about with a new functional IR; do TC at the AST level as before.
+(=) :: a -> a -> a! Then I need either 1) separate var declaration or 2) special treatment of new vars in
+(=). A separate typing rule for assignment (equivalent to one for lets) is cleaner.
+Type-specific fields: .field :: TyCon params -> fieldT<params>
+No #ix operator; tuples reduce to on-stack constructors as in Haskell.
+Then how to express tup.fst = 1? Implicitly defined field names tup_arity_ix.
+Padding and alignment info could be retained.
+struct TyCon params = Con {[pad] [align] fieldName :: t, ...}
+data TyCon params r = Con1 {same}
+Mandatory field names for every constructor argument? You need that to be able to mutate them... but
+xs.head is unsafe ofc.
+case xs of
+ Cons x xs' -> ... --x, xs' aliased to memory.
+.head :: List a -> a
+let x = *p
+x = 3 --assigns p
+That's complex and confusing... better for cases to bind the pattern to a ptr as before.
+Named structs make case a bit more cumbersome, but that's acceptable.
+Mitigation: anonymous struct patterns? {f: p} = e => p = e.f
+data List a =
+ Nil
+ Cons {head :: a, tail :: List a} --allocate a new hidden named struct type parameterized by a?
+case xs of
+ Cons &{hd: x,tl: xs} => ...
+
+From typeclasses paper (PJ, Wadler et al '94)
+"Every entry in a context pairs a class name with a type variable. Pairing with a [TyCon params]
+is not allowed."
+Avoid requiring superclasses (e.g. Eq a, Ord a instead of just Ord a)? Perhaps distinguish class-universal
+superclasses from instance-specific ones.
+"The target language used here differs in that all polymorphism has been made
+explicit. It has constructs for type abstraction and application, and each bound
+variable is labeled with its type." Type abstraction: A v1..vN e; type application: e t1..tN
+A program
+consists of a set of bindings, which may be mutually recursive, followed by an
+expression. --that's main
+
+"In an overloaded type, [constraints may have the form kappa tau (constraints with simple type params rather
+than variables)]. The extra generality of overloaded types is required during the inference process." 
+Why is that necessary?
+
+Say sort :: Ord a => [a] -> [a] is monomorphized to sort@Word and stored in a list of functions. Since I
+don't have closures, the "partial application" must become \xs -> sort ordWordDict xs which is then 
+specialized.
+
+With HM, I don't need mandatory tysigs on functions, globals or staticdata. The latter two should be
+monomorphized, however.
+At the end of inference, default unspecified tyvars (independent of fun args or result) to Word?
+
+I can drop pad and align for now.
+Build tuples from Nil and Pair, (a,b,c) as sugar for (a,(b,c))? That way I get something like hetlists
+for free thanks to template polymorphism.
+I could implement something like AHP by defining a most general type for overloaded functions and then trying
+instances (more specific patterns) in order.
+class getIndex :: arr a -> Int s len -> a
+instance getIndex :: Ptr r a -> Int s len -> a --or Ptr r a?
+a.field = e => a = setField a e
+arr[ix] = e => arr = setIndex arr e? --need to optimize that if arr is in mem...
+ *arr[ix] = e => *indexPtr arr ix = e
+Every pattern match reduces to *p = e, g = e, local = e or fresh = e.
+p->field = e => * dotField p = e
+p[ix] = e => * indexPtr p ix = e
+Con arg = e =>
+arg = null ();
+case e of
+ Con arg => do {}
+StructCon {field1: p1, ...} = e =>
+ new = e;
+ p1 = getField1 new; ...
+Recall pointer context for pattern match so I can support &&p.
+
+Simplification: type inference can ignore implementation and repeat some analysis work that will also be done
+in IR gen.
+Fresh vars in a pattern are given a new type a. Wildcards are also a but don't affect scope. Otherwise,
+patterns are typed as exprs.
+p = freshA = 1 || freshB = 2 --are fresh1, fresh2 in scope when p is tc'd?
+Simplification: I'll explicitly declare new locals. Why reinvent the wheel only to make it square?
+Note: that and anon structs worked well enough when the type system was bottom-up, but HM is better.
+OK, then all vars in a pattern must already be in scope; local x = e is sugar for local x; x = e.
+Block expressions scope locals; that's not a problem because you can hoist locals to whatever scope you want.
+Tag every subexpr with type or just type apply polymorphic components?
+defaults are easy enough to handle: setDefault var t :: TC ()
+If a tyvar is not rigid (bound by tysig), unbound and has a default, set it at the end of fun infer.
+If it is rigid, propagate the default?
+Then tysigs are of the form forall tyvars . t; default v = t'; ... --where t' may contain new free vars, but
+they may not have defaults in turn (since they're already free).
+f :: a -> b; default a = List c; default b = List c --should that be expressible?
+
+Do tyvars of multiple kinds complicate inference? Doubtful.
+
+-------------------END NEW TYPE DISCUSSION-------------------------------------------------------------------
+
+f x --f :: f a b, st IsFunction f, default f = (->)
+
+What's the point of staticDatatype? I can't do case on code... perhaps need a deepcopy primitive.
+
 I now catch collisions with primitive tycons and tysyns in checkForDuplicates in Desugar...
 I should also add primfuns.
 Note having a single duplicate checker function means I can't define data Foo = Foo.
