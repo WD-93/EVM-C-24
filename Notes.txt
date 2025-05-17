@@ -407,7 +407,14 @@ Call: var vars
 Calling a fixed label: let f = const in f tup? It makes sense, every expr ultimately becomes a stack var... and
 it can be treated uniformly with other constants.
 
-HM on FIR would lead to confusing error messages...
+HM on FIR would lead to confusing error messages... apply it to desugared AST.
+Plan: support a subset at a time.
+pats treated as exprs, (=) :: a -> a -> a
+var x = e --get e's type, bind local x to it
+dots => dot again; remove hash
+Remove PrimOp as distinct from ordinary names; it's only relevant during monomorphization and conversion to
+FIR. FIR should be monomorphic then?
+
 Changes:
 1) Remove anonymous struct types
 2) Add struct TyCon params = Con {[pad] [align] field :: t, ...}; disallow reuse of fields within or between
@@ -415,7 +422,12 @@ types.
 Con a b c --may then be a datatype or a struct
 3) Extend datatypes to support multiple arguments; specify the region var with "region" Ident
 --That means pad and align annots must be associated with arguments.
-Add shadow params to enum? Alt: unboxed datatypes which subsume both enum and struct.
+Add shadow params to enum? Alt: unboxed datatypes which subsume both enum and struct. TC needn't care about
+tag size. Layout (relevant later): {tag,union}.
+Add a primitive union type (:||) with two fields, u1 and u2? Perhaps structs and data could be broken up into
+union, pair and pad. .field could be sugar for .snd.snd.snd...fst.
+How about xs.head = x? xs => a union of pointers to tag,struct pairs. I still need data to allow cyclical
+datatypes. It may be relevant to compilation, but not to TC: Con :: args -> ret is all it needs to care about.
 Do not support: GADTs
 Function signatures now non-mandatory.
 f x := s as sugar for f := \x -> s, allowing consistent treatment with sp := staticData e
