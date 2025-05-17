@@ -358,9 +358,130 @@ If it is rigid, propagate the default?
 Then tysigs are of the form forall tyvars . t; default v = t'; ... --where t' may contain new free vars, but
 they may not have defaults in turn (since they're already free).
 f :: a -> b; default a = List c; default b = List c --should that be expressible?
+Simplification: only default locally and only for primops.
 
 Do tyvars of multiple kinds complicate inference? Doubtful.
+It means quantified variables may themselves have a kind...
 
+Reduction to CPS (with functions given an explicit cont argument) might simplify TC.
+f :: t1 -> t2 => f :: (t2 -> a, t1) -> a
+Pass localret, break, continue and return conts to each stmt; each cont also takes their scope.
+Use let f = \... -> ... to give functions local scope, allowing them to be specialized.
+Opts: if an argument x to f is unused, remove x from its lhs and call sites;
+if an argument is constant for all calls, remove it and replace it in the body with the constant (if it's
+small enough).
+revert, RETURN, stop take the place of a cont call: stop :: () -> a.
+while => ifte, which takes a Word argument.
+How to implement ifte? It should perhaps take a cond, two conts and their combined scope... and be custom per
+instance a la fixpoints in Plutus.
+Adjust the conts so they take the same arg... then it becomes ifte cond c1 c2 arg.
+Adjust c1 to also take c2...
+Function calls become f(cont,args). Allow tuples and primop applications as exprs.
+Distinguish side-effecting let from function def letrec?
+
+If f continues to a constant g, g args can either be inlined (corresponding to basic block merge) or be
+converted from param to constant.
+Transform to functional IR before TC. With pure lets (modulo state side effects), you need to convert to SSA
+immediately.
+
+Each functional IR body is of the form
+let vs = es --ops
+in contexpr
+(after lambda lifting letrecs)
+This repr might make it easier to e.g. omit return addresses to non-returning functions... by analyzing which
+functions call which, I can regain the advantage of letrecs while applying interprocedural opts.
+HM might give theorems for free if I opt on the polymorphic funs...
+HM is applied after conversion to CPS... any function where the cont param is unbound will not return.
+Indeed, that also applies to block exprs.
+FIR is similar to CFG, but the breakup into basic blocks is done before wordification... and labels are
+treated as ordinary functions.
+Mem, sto etc could be converted to explicit arguments; inlining f args = let {} in g <subset of args> can
+then discover they're unnecessary. All user-defined function entrypoints take state args and a cont; optimize
+to eliminate them. State args could simply be ~ (), allowing them to be of the same kind as user types.
+FW: user control of state separation: (m1,m2) = split(mem()); withState m1 f args --a primitive that passes in
+m1 instead of the global m.
+(m,a) = deref (m,pa) --FIR should be able to handle tuples a la ops; conts should also take tuples.
+Note a may be a multi-word user type.
+
+Call: var vars
+Calling a fixed label: let f = const in f tup? It makes sense, every expr ultimately becomes a stack var... and
+it can be treated uniformly with other constants.
+
+HM on FIR would lead to confusing error messages...
+Changes:
+1) Remove anonymous struct types
+2) Add struct TyCon params = Con {[pad] [align] field :: t, ...}; disallow reuse of fields within or between
+types.
+Con a b c --may then be a datatype or a struct
+3) Extend datatypes to support multiple arguments; specify the region var with "region" Ident
+--That means pad and align annots must be associated with arguments.
+Add shadow params to enum? Alt: unboxed datatypes which subsume both enum and struct.
+Do not support: GADTs
+Function signatures now non-mandatory.
+f x := s as sugar for f := \x -> s, allowing consistent treatment with sp := staticData e
+Desugar f x y = s to f := \(x,y) -> s?
+Since the language is strict and definitions can only be for static values, there's no need for a monomorphism
+restriction. Allow sv := 3 or Con x y z? An unboxed dt is static iff its arguments are; a datatype must have
+region Code. Side effect of template polymorphism: I could allocate an instance for each monotype of
+globals and static data... that's not desirable, so apply mono restriction for them.
+Optional type signatures for staticData?
+Array :: Nat -> Type -> Type --a prim tycon, not a T constructor
+Explicit array syntax?
+Optional signatures for globals would be dope:
+given memory arr, in main arr = {1,2,3} --array length is inferred!
+Mandatory declaration of locals: var x | var x = v. Unassigned locals default to null()
+Give each primfun a quantified type. When an already TC'd function f is encountered, look up its type and
+instantiate it with new variables, then type apply those to f. After unification, substitute all bound
+variables.
+a && b is not a problem: short-circuiting can be done at the IR level.
+
+If all variables must be pre-declared, sum becomes:
+sum xs :=
+ var x;
+ case xs of
+  Nil -> return 0
+  Cons &x &xs -> return (x + sum xs) --irl one would use a helper with an accum ofc
+Bad: unused vars must be declared. Good: Nil doesn't need any arguments.
+Does template polymorphism cause any problems for polymorphic recursion? It can diverge... but the potential
+problem is inference, not instantiation. Or is there no problem without classes?
+
+On the back burner: independence-aware reordering beyond basic blocks.
+Free reordering and pruning of mallocs...
+
+Capitulate and add memory management? That would allow deref of code and returndata, as well as allocating
+call and sha3. Structuring memory accesses through malloc would both automate finding new free addresses and
+perhaps enable new opts. Scratch memory could be introduced as an opt.
+Ooh: scratch would let me do case on datatypes in code! Arguments could be loaded at the same time as an opt.
+C has malloc and it's treated specially by the compiler...
+Most importantly, I could remove @ ptr. If I want to manually control where a datatype is allocated to, I
+can do so using a struct and coerce.
+Allow the region param to be placed at any index:
+data List r a = {...} region r
+Cons x xs has an ambiguous type, but usage Cons x xs fixes it. Need a persistent storage alloc ptr and
+a tstore ptr in tstorage?
+newMap () :: Map k v --requires a persistent map alloc counter
+
+malloc :: () -> MPtr a
+malloc _ :=
+ p = coerce mallocPtr
+ mallocPtr += sizeof (*p)
+ return p
+sizeof :: a -> uint16, special-case it to ignore side effects
+
+writePtr mem pa a --must be marked as consuming mem to force all reads to be performed first. Pair each 
+argument in FIR funs with consuming :: Bool?
+If effects are associated with 0-size capability values under the hood, it would be nice to be able to
+explicitly restrict them as well. Ex: disallow divergence (modulo gas). FW...
+
+Desugar global g to *g_ptr before type checking?
+Global lifting opt in FIR: add/reuse a v = deref g_ptr mem, replace all subsequent derefs with v and writes
+with let (v',...) = op vs. Either replace (static) continuations with a function that takes an additional
+v arg (and returns it if it writes) or flush v.
+Aliasing rules should ensure the equivalence of the transformation.
+
+With a fixed, finite universe of referenced types, mem could be reasoned about as a data structure.
+Prerequisite: pointer bitpattern is arbitrary. FW...
+ 
 -------------------END NEW TYPE DISCUSSION-------------------------------------------------------------------
 
 f x --f :: f a b, st IsFunction f, default f = (->)
