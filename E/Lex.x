@@ -21,7 +21,7 @@ $i = [$l $d _ ']          -- identifier character
 $u = [\0-\255]          -- universal: any character
 
 @rsyms =    -- symbols and non-identifier-like reserved words
-   \; | \: \= | \: | \= | \. | \{ | \} | \, | \( | \) | \= \> | \_ | \+ \+ | \- \- | \[ | \] | \- \> | \# | \- | \! | \~ | \* | \& | \@ | \/ | \% | \+ | \< \< | \> \> | \< | \< \= | \> | \> \= | \= \= | \! \= | \^ | \| | \& \& | \| \| | \: \: | \= \: | \: \! | \+ \= | \- \= | \* \= | \/ \= | \% \= | \< \< \= | \> \> \= | \& \= | \^ \= | \| \=
+   \; | \: \= | \: | \= | \. | \{ | \} | \, | \( | \) | \= \> | \_ | \+ \+ | \- \- | \[ | \] | \- \> | \- | \! | \~ | \* | \& | \/ | \% | \+ | \< \< | \> \> | \< | \< \= | \> | \> \= | \= \= | \! \= | \^ | \| | \& \& | \| \| | \: \: | \= \: | \: \! | \+ \= | \- \= | \* \= | \/ \= | \% \= | \< \< \= | \> \> \= | \& \= | \^ \= | \| \=
 
 :-
 "//" [.]* ; -- Toss single line comments
@@ -107,7 +107,7 @@ eitherResIdent tv s = treeFind resWords
                               | s == a = t
 
 resWords :: BTree
-resWords = b ">>" 39 (b "->" 20 (b ")" 10 (b "%=" 5 (b "#" 3 (b "!=" 2 (b "!" 1 N N) N) (b "%" 4 N N)) (b "&=" 8 (b "&&" 7 (b "&" 6 N N) N) (b "(" 9 N N))) (b "+=" 15 (b "+" 13 (b "*=" 12 (b "*" 11 N N) N) (b "++" 14 N N)) (b "--" 18 (b "-" 17 (b "," 16 N N) N) (b "-=" 19 N N)))) (b "<<" 30 (b ":!" 25 (b "/=" 23 (b "/" 22 (b "." 21 N N) N) (b ":" 24 N N)) (b ";" 28 (b ":=" 27 (b "::" 26 N N) N) (b "<" 29 N N))) (b "==" 35 (b "=" 33 (b "<=" 32 (b "<<=" 31 N N) N) (b "=:" 34 N N)) (b ">" 37 (b "=>" 36 N N) (b ">=" 38 N N))))) (b "localReturn" 59 (b "case" 49 (b "^" 44 (b "[" 42 (b "@" 41 (b ">>=" 40 N N) N) (b "]" 43 N N)) (b "block" 47 (b "_" 46 (b "^=" 45 N N) N) (b "break" 48 N N))) (b "end" 54 (b "do" 52 (b "data" 51 (b "continue" 50 N N) N) (b "else" 53 N N)) (b "if" 57 (b "for" 56 (b "enum" 55 N N) N) (b "import" 58 N N)))) (b "while" 69 (b "staticDatatype" 64 (b "return" 62 (b "of" 61 (b "memory" 60 N N) N) (b "staticData" 63 N N)) (b "tstorage" 67 (b "then" 66 (b "storage" 65 N N) N) (b "type" 68 N N))) (b "|=" 74 (b "{" 72 (b "wordpad" 71 (b "wordalign" 70 N N) N) (b "|" 73 N N)) (b "}" 76 (b "||" 75 N N) (b "~" 77 N N)))))
+resWords = b "=>" 35 (b "-=" 18 (b ")" 9 (b "&" 5 (b "%" 3 (b "!=" 2 (b "!" 1 N N) N) (b "%=" 4 N N)) (b "&=" 7 (b "&&" 6 N N) (b "(" 8 N N))) (b "+=" 14 (b "+" 12 (b "*=" 11 (b "*" 10 N N) N) (b "++" 13 N N)) (b "-" 16 (b "," 15 N N) (b "--" 17 N N)))) (b ";" 27 (b ":" 23 (b "/" 21 (b "." 20 (b "->" 19 N N) N) (b "/=" 22 N N)) (b "::" 25 (b ":!" 24 N N) (b ":=" 26 N N))) (b "<=" 31 (b "<<" 29 (b "<" 28 N N) (b "<<=" 30 N N)) (b "=:" 33 (b "=" 32 N N) (b "==" 34 N N))))) (b "if" 52 (b "_" 44 (b "[" 40 (b ">>" 38 (b ">=" 37 (b ">" 36 N N) N) (b ">>=" 39 N N)) (b "^" 42 (b "]" 41 N N) (b "^=" 43 N N))) (b "data" 48 (b "case" 46 (b "break" 45 N N) (b "continue" 47 N N)) (b "end" 50 (b "else" 49 N N) (b "for" 51 N N)))) (b "type" 61 (b "return" 57 (b "memory" 55 (b "localReturn" 54 (b "import" 53 N N) N) (b "of" 56 N N)) (b "then" 59 (b "storage" 58 N N) (b "tstorage" 60 N N))) (b "|=" 65 (b "{" 63 (b "while" 62 N N) (b "|" 64 N N)) (b "}" 67 (b "||" 66 N N) (b "~" 68 N N)))))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 

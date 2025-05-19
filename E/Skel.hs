@@ -30,11 +30,9 @@ transD x = case x of
   TySig ident t -> failure x
   TySyn conargs t -> failure x
   Import modulename -> failure x
-  Global globalregion ident t -> failure x
-  Data conlhs datacons -> failure x
-  Enum uident enumcons -> failure x
-  StaticData t ident e -> failure x
-  StaticDatatype t ident e -> failure x
+  Global globalregion ident -> failure x
+  Data conargs datarhs -> failure x
+  StaticData ident e -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -48,16 +46,23 @@ transGlobalRegion x = case x of
   Memory -> failure x
   Storage -> failure x
   TStorage -> failure x
-transConLHS :: ConLHS -> Result
-transConLHS x = case x of
-  CLNil uident ident -> failure x
-  CLCons conlhs ident -> failure x
+transDataRHS :: DataRHS -> Result
+transDataRHS x = case x of
+  Unboxed unboxedrhs -> failure x
+transUnboxedRHS :: UnboxedRHS -> Result
+transUnboxedRHS x = case x of
+  URHS datacons -> failure x
 transDataCon :: DataCon -> Result
 transDataCon x = case x of
-  DC uident t -> failure x
-transEnumCon :: EnumCon -> Result
-transEnumCon x = case x of
-  EC ident -> failure x
+  DCArgs dca -> failure x
+  DCRecord uident recordfields -> failure x
+transDCA :: DCA -> Result
+transDCA x = case x of
+  DCANil uident -> failure x
+  DCACons dca t -> failure x
+transRecordField :: RecordField -> Result
+transRecordField x = case x of
+  RF ident t -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
@@ -73,19 +78,8 @@ transS x = case x of
 transCASE :: CASE -> Result
 transCASE x = case x of
   C e s -> failure x
-transEField :: EField -> Result
-transEField x = case x of
-  EPad efield -> failure x
-  EF1 efield -> failure x
-  EAlign efield -> failure x
-  EF2 efield -> failure x
-  ENamed ident e -> failure x
-  EAnon e -> failure x
 transE :: E -> Result
 transE x = case x of
-  AnonStaticData t e -> failure x
-  AnonStaticDatatype t e -> failure x
-  Struct efields -> failure x
   EmptyTuple -> failure x
   Tuple e es -> failure x
   HexInt hexinteger -> failure x
@@ -94,13 +88,11 @@ transE x = case x of
   String string -> failure x
   Con uident -> failure x
   Wild -> failure x
-  BlockE ss -> failure x
   PlusPlusPost e -> failure x
   MinusMinusPost e -> failure x
   Index e1 e2 -> failure x
   Dot e ident -> failure x
   Arrow e ident -> failure x
-  Hash e integer -> failure x
   App e1 e2 -> failure x
   PlusPlusPre e -> failure x
   MinusMinusPre e -> failure x
@@ -109,7 +101,6 @@ transE x = case x of
   BitwiseNot e -> failure x
   Deref e -> failure x
   AddressOf e -> failure x
-  At e1 e2 -> failure x
   Mul e1 e2 -> failure x
   Div e1 e2 -> failure x
   Mod e1 e2 -> failure x
@@ -145,23 +136,14 @@ transAOp x = case x of
   AndEq -> failure x
   XorEq -> failure x
   OrEq -> failure x
-transTField :: TField -> Result
-transTField x = case x of
-  TPad tfield -> failure x
-  TF1 tfield -> failure x
-  TAlign tfield -> failure x
-  TF2 tfield -> failure x
-  TNamed ident t -> failure x
-  TAnon t -> failure x
 transT :: T -> Result
 transT x = case x of
   TVar ident -> failure x
   TNat integer -> failure x
   TCon uident -> failure x
-  TStruct tfields -> failure x
   TEmptyTup -> failure x
   TTup t ts -> failure x
   TApp t1 t2 -> failure x
-  TArray t integer -> failure x
+  TArray t1 t2 -> failure x
   TArrow t1 t2 -> failure x
 

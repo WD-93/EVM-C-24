@@ -44,28 +44,26 @@ HexInteger literals are recognized by the regular expression
 The set of reserved words is the set of terminals appearing in the grammar. Those reserved words that consist of non-letter characters are called symbols, and they are treated in a different way from those that are similar to identifiers. The lexer follows rules familiar from languages like Haskell, C, and Java, including longest match and spacing conventions.
 
 The reserved words used in E are the following:
-  | ``block`` | ``break`` | ``case`` | ``continue``
-  | ``data`` | ``do`` | ``else`` | ``end``
-  | ``enum`` | ``for`` | ``if`` | ``import``
-  | ``localReturn`` | ``memory`` | ``of`` | ``return``
-  | ``staticData`` | ``staticDatatype`` | ``storage`` | ``then``
-  | ``tstorage`` | ``type`` | ``while`` | ``wordalign``
-  | ``wordpad`` |  |  | 
+  | ``break`` | ``case`` | ``continue`` | ``data``
+  | ``else`` | ``end`` | ``for`` | ``if``
+  | ``import`` | ``localReturn`` | ``memory`` | ``of``
+  | ``return`` | ``storage`` | ``then`` | ``tstorage``
+  | ``type`` | ``while`` |  | 
 
 The symbols used in E are the following:
   | ; | := | : | =
   | . | { | } | ,
   | ( | ) | => | _
   | ++ | -- | [ | ]
-  | -> | # | - | !
-  | ~ | * | & | @
-  | / | % | + | <<
-  | >> | < | <= | >
-  | >= | == | != | ^
-  | | | && | || | ::
-  | =: | :! | += | -=
-  | *= | /= | %= | <<=
-  | >>= | &= | ^= | |=
+  | -> | - | ! | ~
+  | * | & | / | %
+  | + | << | >> | <
+  | <= | > | >= | ==
+  | != | ^ | | | &&
+  | || | :: | =: | :!
+  | += | -= | *= | /=
+  | %= | <<= | >>= | &=
+  | ^= | |= |  | 
 
 ===Comments===
 Single-line comments begin with //.Multiple-line comments are  enclosed with /* and */.
@@ -84,11 +82,9 @@ All other symbols are terminals.
   |  |  **|**  | //Ident// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
   |  |  **|**  | ``import`` //ModuleName// 
-  |  |  **|**  | //GlobalRegion// //Ident// ``:`` //T// 
-  |  |  **|**  | ``data`` //ConLHS// ``=`` ``{`` //[DataCon]// ``}`` 
-  |  |  **|**  | ``enum`` //UIdent// ``{`` //[EnumCon]// ``}`` 
-  |  |  **|**  | ``staticData`` ``(`` //T// ``)`` //Ident// ``=`` //E// 
-  |  |  **|**  | ``staticDatatype`` ``(`` //T// ``)`` //Ident// ``=`` //E// 
+  |  |  **|**  | //GlobalRegion// //Ident// 
+  |  |  **|**  | ``data`` //ConArgs// ``=`` //DataRHS// 
+  |  |  **|**  | //Ident// ``:=`` //E// 
   | //ConArgs// | -> | //UIdent// 
   |  |  **|**  | //ConArgs// //Ident// 
   | //ModuleName// | -> | //UIdent// 
@@ -96,21 +92,24 @@ All other symbols are terminals.
   | //GlobalRegion// | -> | ``memory`` 
   |  |  **|**  | ``storage`` 
   |  |  **|**  | ``tstorage`` 
+  | //DataRHS// | -> | //UnboxedRHS// 
+  | //UnboxedRHS// | -> | ``{`` //[DataCon]// ``}`` 
   | //[DataCon]// | -> | **eps**
   |  |  **|**  | //DataCon// 
   |  |  **|**  | //DataCon// ``;`` //[DataCon]// 
-  | //ConLHS// | -> | //UIdent// //Ident// 
-  |  |  **|**  | //ConLHS// //Ident// 
-  | //DataCon// | -> | //UIdent// //T// 
-  | //[EnumCon]// | -> | **eps**
-  |  |  **|**  | //EnumCon// 
-  |  |  **|**  | //EnumCon// ``,`` //[EnumCon]// 
-  | //EnumCon// | -> | //Ident// 
+  | //DataCon// | -> | //DCA// 
+  |  |  **|**  | //UIdent// ``{`` //[RecordField]// ``}`` 
+  | //DCA// | -> | //UIdent// 
+  |  |  **|**  | //DCA// //T1// 
+  | //[RecordField]// | -> | **eps**
+  |  |  **|**  | //RecordField// 
+  |  |  **|**  | //RecordField// ``,`` //[RecordField]// 
+  | //RecordField// | -> | //Ident// ``:`` //T// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
   |  |  **|**  | ``return`` //E// 
-  |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
+  |  |  **|**  | ``{`` //[S]// ``}`` 
   |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
   |  |  **|**  | ``break`` //Integer// 
   |  |  **|**  | ``continue`` //Integer// 
@@ -123,10 +122,7 @@ All other symbols are terminals.
   |  |  **|**  | //CASE// 
   |  |  **|**  | //CASE// ``;`` //[CASE]// 
   | //CASE// | -> | //E// ``=>`` //S// 
-  | //E13// | -> | ``staticData`` ``(`` //T// ``)`` //E13// 
-  |  |  **|**  | ``staticDatatype`` ``(`` //T// ``)`` //E13// 
-  |  |  **|**  | ``{`` //[EField]// ``}`` 
-  |  |  **|**  | ``(`` ``)`` 
+  | //E13// | -> | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
   |  |  **|**  | //HexInteger// 
   |  |  **|**  | //Integer// 
@@ -134,17 +130,7 @@ All other symbols are terminals.
   |  |  **|**  | //String// 
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``_`` 
-  |  |  **|**  | ``block`` ``{`` //[S]// ``}`` 
   |  |  **|**  | ``(`` //E// ``)`` 
-  | //[EField]// | -> | **eps**
-  |  |  **|**  | //EField// 
-  |  |  **|**  | //EField// ``,`` //[EField]// 
-  | //EField// | -> | ``wordpad`` //EField1// 
-  |  |  **|**  | //EField1// 
-  | //EField1// | -> | ``wordalign`` //EField2// 
-  |  |  **|**  | //EField2// 
-  | //EField2// | -> | //Ident// ``:`` //E// 
-  |  |  **|**  | //E// 
   | //[E]// | -> | //E// 
   |  |  **|**  | //E// ``,`` //[E]// 
   | //E12// | -> | //E12// ``++`` 
@@ -152,7 +138,6 @@ All other symbols are terminals.
   |  |  **|**  | //E12// ``[`` //E// ``]`` 
   |  |  **|**  | //E12// ``.`` //Ident// 
   |  |  **|**  | //E12// ``->`` //Ident// 
-  |  |  **|**  | //E12// ``#`` //Integer// 
   |  |  **|**  | //E12// //E13// 
   |  |  **|**  | //E13// 
   | //E11// | -> | ``++`` //E11// 
@@ -163,8 +148,7 @@ All other symbols are terminals.
   |  |  **|**  | ``*`` //E11// 
   |  |  **|**  | ``&`` //E11// 
   |  |  **|**  | //E12// 
-  | //E10// | -> | //E10// ``@`` //E11// 
-  |  |  **|**  | //E10// ``*`` //E11// 
+  | //E10// | -> | //E10// ``*`` //E11// 
   |  |  **|**  | //E10// ``/`` //E11// 
   |  |  **|**  | //E10// ``%`` //E11// 
   |  |  **|**  | //E11// 
@@ -211,23 +195,13 @@ All other symbols are terminals.
   | //T1// | -> | //Ident// 
   |  |  **|**  | //Integer// 
   |  |  **|**  | //UIdent// 
-  |  |  **|**  | ``{`` //[TField]// ``}`` 
   |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //T// ``,`` //[T]// ``)`` 
   |  |  **|**  | ``(`` //T// ``)`` 
-  | //[TField]// | -> | **eps**
-  |  |  **|**  | //TField// 
-  |  |  **|**  | //TField// ``,`` //[TField]// 
-  | //TField// | -> | ``wordpad`` //TField1// 
-  |  |  **|**  | //TField1// 
-  | //TField1// | -> | ``wordalign`` //TField2// 
-  |  |  **|**  | //TField2// 
-  | //TField2// | -> | //Ident// ``:`` //T// 
-  |  |  **|**  | //T// 
   | //[T]// | -> | //T// 
   |  |  **|**  | //T// ``,`` //[T]// 
   | //T// | -> | //T// //T1// 
-  |  |  **|**  | //T// ``[`` //Integer// ``]`` 
+  |  |  **|**  | //T// ``[`` //T// ``]`` 
   |  |  **|**  | //T// ``->`` //T1// 
   |  |  **|**  | //T1// 
 

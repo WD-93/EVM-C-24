@@ -1,0 +1,34 @@
+//Standard type synonyms and datatypes imported by default into EVMC programs.
+//No functions for now (need tree shaking opt first).
+//Unlike Prim, these definitions aren't overridden during compilation.
+
+//Type synonyms
+type UInt = Int Unsigned;
+type SInt = Int Signed;
+type Byte = UInt 8;
+type Char = Byte;
+type Short = UInt 16;
+type Size_T = Short;
+type Long = UInt 32;
+type Half = UInt 128;
+type Word = UInt 256;
+
+type MPtr = Ptr Memory;
+type SPtr = Ptr Storage;
+type TSPtr = Ptr TStorage;
+type CaPtr = Ptr Calldata;
+type RPtr = Ptr Returndata;
+type CoPtr = Ptr Code;
+
+type BytePtr r = Ptr r Byte;
+
+//Datatypes; tuples desugar into Pair and Unit.
+//TODO add padding metadata to make tuples behave correctly at runtime...
+data Unit = {Unit};
+data Pair a b = {Pair {fst: a, snd: b}};
+data Bool = {False;True};
+data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
+data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
+
+//A newtype wrapper for EVM addresses
+data Addr = {Addr (UInt 160)};

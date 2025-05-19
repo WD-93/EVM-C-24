@@ -1,0 +1,145 @@
+//A module used for specifying primitive types and functions in an ergonomic
+//format. This is used for type checking; during compilation special
+//treatment of the primitives takes over.
+//Definitions of the primitives are placeholders a la let x = x in x in
+//GHC.Prim
+//The kinds, regions and -> are hardcoded.
+
+//Primitive types
+Int : Signedness -> Nat -> Type;
+data Int s l = {};
+
+Ptr : Region -> Type -> Type;
+data Ptr r a = {};
+
+//Primfuns; constructs such as + or *_ desugar into prefix names.
+
+//Numeric ops
+//Important: don't shadow the EVM opcode names! The EVMC ops do additional
+//masking to keep them well-typed; the opcodes are of type Word* -> Word | ()
+//Integer constants desugar to fromWord w, because all overloading is captured
+//in polymorphic functions (which are then type applied during type inference).
+fromWord : Word -> Int s len;
+fromWord _ := ();
+
+//(+) and (-) must have this awkward HM type because ptr + n and n + ptr both
+//become pointers.
+plus : (a,b) -> c;
+plus _ := ();
+minus : (a,b) -> c;
+minus _ := ();
+
+//Is it OK to make its type more restrictive than C's?
+multiply : (Int a b, Int a b) -> Int a b;
+multiply _ := ();
+divide : (Int a b, Int a b) -> Int a b;
+modulo : (Int a b, Int a b) -> Int a b;
+modulo _ := ();
+
+negate : Int a b -> Int a b;
+negate _ := ();
+
+shL : Int a b -> Int c d -> Int a b;
+shL _ := ();
+shR : Int a b -> Int c d -> Int a b;
+
+//Pointer ops; writePtr isn't necessary here since it appears after type
+//checking.
+
+//With inbuilt support for malloc, every region can now be deref'd.
+deref : Ptr r a -> a;
+deref _ := ();
+//Note the polymorphic result type independent of the argument!
+//malloc n :: MPtr a allocates enough space for n a's
+//The first word of memory is reserved for the alloc ptr, which is set in the
+//prologue before calling main.
+malloc : Int s l -> MPtr a;
+malloc _ := ();
+//Because index must support both arrays and pointers, its type is flexible
+index : arr a -> Int s l -> a;
+index _ := ();
+//The other primitives are black magic but this one is blacker due to its
+//non-compositional semantics.
+// &e = p if e can be inferred to be *p
+//Applicable arguments: globals, static data, variables bound by case on a
+//boxed datatype.
+//HM doesn't check the region is correct, that's done later.
+addressOf : a -> Ptr r a;
+addressOf _ := ();
+
+//Short-circuited ops; if called on a non-explicit tuple the short-circuiting
+//doesn't occur.
+scAnd : (a,a) -> Bool;
+scAnd _ := ();
+scOr : (a,a) -> Bool;
+scOr _ := ();
+
+//Logical and bitwise ops
+truthy : a -> Bool;
+truthy _ := ();
+lNot : a -> Bool;
+lNot _ := ();
+bwAnd : (a,a) -> a;
+bwAnd _ := ();
+bwOr : (a,a) -> a;
+bwOr _ := ();
+bwXor : (a,a) -> a;
+bwXor _ := ();
+bwNot : a -> a;
+bwNot _ := ();
+
+//Comparison ops
+//Because block exprs have been removed, > can't be implemented as sugar for
+// < with reverse argument eval order.
+lt_ : (a,a) -> Bool;
+lt_ _ := ();
+lte_ : (a,a) -> Bool;
+lte_ _ := ();
+gt_ : (a,a) -> Bool;
+gt_ _ := ();
+gte_ : (a,a) -> Bool;
+gte_ _ := ();
+eq_ : (a,a) -> Bool;
+eq_ _ := ();
+neq_ : (a,a) -> Bool;
+neq_ _ := ();
+
+//Coercion
+//coerce may result in an invalid bitpattern, but it at least masks the
+//result to the correct bitlength
+coerce : a -> b;
+coerce _ := ();
+//unsafeCoerce does not, which makes it cheaper but more dangerous.
+unsafeCoerce : a -> b;
+unsafeCoerce _ := ();
+
+//Utility functions
+//copy(to,from,n) copies n elems from from to to; it's a shared frontend for
+//the EVM copy variants (mcopy, calldatacopy, returndatacopy, codecopy).
+//extcodecopy is not covered because it requires an additional address
+//argument.
+copy : (MPtr a, Ptr r a, Int s l) -> ()
+copy _ := ();
+
+//RETURNs the given argument, malloc'd into memory
+returnValue : a -> ();
+returnValue _ := ();
+//RETURNs the value pointed to
+returnPtr : MPtr a -> ();
+returnPtr _ := ()
+//RETURN n elements pointed to
+returnPtrLen : (MPtr a, Int s l) -> ();
+returnPtrLen _ := ();
+//Raw RETURN
+returnRaw : (MPtr Byte, Int s l) -> ();
+returnRaw _ := ();
+
+//TODO Ditto for revert
+//Solidity handles it via dispatch on the argument types, but that doesn't
+//fit HM well.
+//Sol's ABI serialization and deserialization for call/return is cool, but I
+//don't need to add primitive support for it... it wouldn't work well with
+//cyclical data structures anyway.
+//Template polymorphism might be able to support serialize/deserialize.
+//By returning the entire memory (with a mptr at a fixed address), you could
+//convert a memory datatype to a returndata one and deserialize lazily.

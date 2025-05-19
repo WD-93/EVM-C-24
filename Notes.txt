@@ -414,9 +414,138 @@ var x = e --get e's type, bind local x to it
 dots => dot again; remove hash
 Remove PrimOp as distinct from ordinary names; it's only relevant during monomorphization and conversion to
 FIR. FIR should be monomorphic then?
+With Pat ~ expr AST, I need to support tuple in both. Desugar to repeated Pair application.
+Cons just become ordinary functions; deref, index and .field can as well.
+Desugar Con {f=e} to setField_f e (Con null() null() ...)? Doesn't work well with pattern-matching...
+I could desugar it two different ways in expr and pat contexts (even though it's simpler for TC to make them
+the same type).
+If I had let and ifte in the expr context... it would still be useful to have block exprs, since they can
+break out of code and implement inlining.
+What if everything was an expr? return could be a specialized form of local return (jumping either one level
+or all the way). Not worth the syntactic hassle and need to define a var x = e expr... exprs not affecting
+scope (a very nice property) would then also be broken.
+S is also simple to TC.
+A-ha - I don't need block exprs for inlining if I inline at the FIR level! That function-internal labels and
+interprocedural calls are treated the same is the key.
+Inlining is almost too easy in FIR - specialize the cont function and merge blocks.
+The subtlety arises when you inline a while loop.
+
+f = g cont
+g c = g c
+g c [c = cont] = g cont... which is equal to the rhs of f
+For a non-recursive source g, it should in general be possible to inline it entirely.
+
+Pats must be convertible to exprs, but they're still of a more restricted form; I can implement pat2e and
+keep catching bad pats in desugar. _ => null()
+With no local returns, TC context = static/global/fun types, local types, return type.
+With no struct exprs, I can maybe remove the do keyword!
+
+case e of
+ Con {field: x} => ... --works for both boxed and unboxed datatypes... if I give List r a .head the
+type List r a -> Ptr r a.
+Note: with unboxed datatypes and arrays *p (.field | [ix])* will be a sub-pointer of p; for dt .field* that
+is not the case. For example, *(xs.tail) may be xs itself.
+If I add a stage after type inference but before continuation-passing FIR where state-passing is explicit but
+letrec {f = \...} and let {v = f args} are supported, I could perhaps reorder while loops.
+Remove nonlocal break and continue to make while loops well-behaved. &&, || can use ternary exprs (expr-
+level ifte).
+while e stmt =>
+ letrec fwhile scope =
+  let scope' = f_truthy_e scope
+  in if <cond from scope'>
+     then let scope'' = f_stmt scope'
+          in fwhile scope''
+     else scope'
+Read local => param; written => result.
+do ss => a sequence of lets.
+Return and branching primops complicate matters; if a while contains them it may not be well-behaved.
+Infer types first...
+
+Ugh: storage pointer read/write involves an ifte; need to retroactively convert the deref opE to control
+flow in FIR.
+
+IR branch forms: f args; f = var, primfun ifte, revert, stop, evm_return
+Op forms: push (label | k), copy, the non-branching primfuns. Or a tree thereof? Notably absent: call.
+truthy can be a primfun; note this is pre-wordification.
+By normalizing lets to a tree whenever a var has one use (or is a small enough constant to be worth
+duplicating), I get symbolic eval within basic blocks for free.
+Lets can be represented as Map Name OpE; for sequential ops eval ordering is implicit. That should make
+treegraph codegen easier, even after wordification messes things up.
+In deref, split the mem for the separate words and then merge it again.
 
 Changes:
-1) Remove anonymous struct types
+Syntax:
+data TyCon vars = {
+ Con {field :: t}; ...
+} [region var] --specifying region makes the datatype boxed
+--TODO: add padding and alignment metadata per field
+--remove enum
+nm : t --type signatures allowed for any name
+Globals: region nm; --no signature
+Staticdata: nm := e | boxed nm := e
+The boxed distinction is needed because xs := Cons 1 Nil becomes a ptr to the list by default.
+Or maybe nm :: t; nm := e should bind nm to t, which then gets dereferenced on use...
+That way &nm can be a code pointer...
+nm : List Code Bool;
+nm := Cons x xs --should work; it can be optimized to avoid allocating the address in code.
+When is &_ valid in an expr context? For static data, globals and *p(.field | [ix])*. FW: hint the ptr
+region with an is<Memory | ...> function application.
+Should tuples be hetlists built from Pair and end in () or a | (a,b)? The former prevents ambiguity between
+(a,b,c) and (a,(b,c)). To get the (), explicitly use Pair.
+Prelude datatype: Pair a b = Pair a b. Separate the tycon and constructor namespaces.
+Bool, Either and Maybe could also be supported!
+FW: specify tag size and values.
+
+Opt: when assigning a large static constant to memory, codecopy it directly instead of push-writePtr or
+deref (codecopy into scratch, mload)-writePtr.
+That's a special case of *p1 = *p2, which can also be used for *mptr = global.
+Semantics of sv := e:
+e must be of restricted form: k, sv, &global, UnboxedCon args, BoxedCon args --with region Code
+And \p -> s!
+svptr: serialize e --is included in the code
+sv => *svptr
+Because svptr's value is statically known, *svptr can always be replaced with its value (note allocation of
+boxed cons in code is only done once). If no occurrences of a sv remain (modulo roots), it's valid to remove
+it... after its type constraints have been applied!
+memory x => x is *xptr, f _ = hasSameRegion xptr mptr.
+To avoid having to place xptr early: extern xptr --enforcing monomorphism at the same time?
+
+Dynamic module adaptation/.o mode: do I need it? If so need a decl export nm :: monotype since the end
+result of compilation is monomorphized functions and static data.
+To create an object file, I need to split .text and .data and keep references to labels in data unresolved.
+It could be useful for an FFI to Sol; then need support for its calling convention.
+Don't support for now; extern could be a vestigial foreshadowing of it in the IR... but I won't support that
+either for now.
+Instead, have 4 ways to introduce a non-primitive expr name: global, static, function, constructor.
+The validity of &_ (memory global -> @Memory, static to @Code...) is checked at monomorphization time.
+Monomorphize from main :: () -> () before conversion to FIR. Useful precondition: there are no type variables
+in the TC'd bodies unbound by its signature; they've either been defaulted or raised errors.
+
+Having case on boxed datatypes bind Con pattern args to pointers is efficient, but messes with HMTC:
+the Con has one type when constructing and another when deconstructing. That won't do!
+Instead, bind the arg patterns p to *ptr and allow &p to refer to ptr.
+Rule: whenever symbolic analysis can infer e = *ptr, &e is ptr.
+xs.head => *(coerce ((coerce xs :: BytePtr r) + offset) :: Ptr r a) --note that's unsafe if xs is Nil.
+Allow boxed datatype . field . unboxedFields* to be optimized. Given the coerces xs.head is not a "nice"
+expr, but in fact any *expr .unboxedFields* can be optimized.
+After monomorphization and wordification, constant-expanding the offset addition should be easy.
+
+I could overload string to be Ptr r Byte, but it's not worth it...
+String will be the only instance of user-accessible anonymous static data creation; anonStaticData and
+datatype are ugly and superfluous.
+Ideally I'd implement transformations in simple, sequential passes...
+
+Prim unit: data Unit = Unit. TODO separate tycons and tysigs from the dynamic namespace.
+TODO add HM types of all primfuns somewhere appropriate.
+Idea: use the parser and TH to write the prelude in a .evmc file.
+Ptr :: Region -> Type -> Type --isn't valid EVMC, but I'd need to add it to allow user-specified kinds anyway.
+0-con data decl => no representation specified?
+
+If I substitute every implicit deref (so svs and globals), perhaps I can treat &_ as a hygienic macro that
+just strips away * from *ptr(fields). But that messes with &a = pa. The problem is that &_ doesn't evaluate
+to a pointer with a fixed region, but that's not a big deal... I can just add type annots if necessary.
+
+1) Remove anonymous struct types --done
 2) Add struct TyCon params = Con {[pad] [align] field :: t, ...}; disallow reuse of fields within or between
 types.
 Con a b c --may then be a datatype or a struct
@@ -493,6 +622,16 @@ Aliasing rules should ensure the equivalence of the transformation.
 
 With a fixed, finite universe of referenced types, mem could be reasoned about as a data structure.
 Prerequisite: pointer bitpattern is arbitrary. FW...
+
+Open Q: does template polymorphism make implementing mappings as first-class values in non-prim EVMC viable?
+As long as you have sizeof...
+
+Prim and prelude: load the strings using Template Haskell, then deal with them in Compiler. Desugar need not
+be aware of primitives, except to desugar C ops to them.
+Prim currently depends on tysyns in prelude, so they must be imported together.
+
+Thought: will malloc now allowed, I could more easily support typeclasses where instances have a variable
+number of superclasses... the dict could be a closure that stores its subdicts in memory.
  
 -------------------END NEW TYPE DISCUSSION-------------------------------------------------------------------
 

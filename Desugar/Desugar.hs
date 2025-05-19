@@ -12,7 +12,6 @@ import qualified E.Abs as P
 --CST -> AST
 import AST.DTs
 --AST -> AST
-import Desugar.Transforms
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -24,8 +23,7 @@ import Text.Read (readMaybe)
 import Data.List (sort)
 import Data.Char (ord) --for string desugaring
 
-data DError = TySigDefunMismatch Name Name
-            | DuplicateDefun Name
+data DError = DuplicateDefun Name
             | BadDOrdering [P.D]
             | BadOpInType String
             | BadEInType P.E --catch-all error for desugarT
@@ -48,59 +46,61 @@ data DError = TySigDefunMismatch Name Name
             | DuplicateEnumName Name Name
             | WildcardInExprContext
             | MalformedPattern P.E
-            | MalformedPatternField P.EField
+            | DuplicateTySigs Name
+            | UnresolvedImport P.ModuleName
   deriving (Eq,Ord,Read,Show)
 
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
   case runState (runExceptT $ desugarDs ds) $
-  Module {defuns = M.empty,
+  Module {tysigs = M.empty,
+          defuns = M.empty,
           tysyns = M.empty,
           static = M.empty,
-          globals = [],
+          globals = M.empty,
           datatypes = M.empty,
           constructors = M.empty,
-          enums = M.empty,
-          enumValues = M.empty,
           anonStaticCtr = 0
          } of
     (Left derr, _) -> Left derr
     (Right (), m) -> Right m
---Every defun f must be preceded by a tysig f : t; together they become one
---DT.Defun.
---Duplicate defuns are an error.
+
 type De = ExceptT DError (State Module)
+--Declarations are order-independent, modulo the static names allocated to
+--strings (which should be irrelevant to compilation if it's successful).
 desugarDs :: [P.D] -> De ()
-desugarDs [] = return ()
-desugarDs (P.TySyn conargs te : rest) = do
-  let (nm,args) = desugarConArgs conargs
-  let t = desugarT te
-  modify (\m -> m{tysyns = M.insert nm (args,t) $ tysyns m})
-  desugarDs rest
-desugarDs (P.TySig (Ident f) t :
-           P.Defun (Ident f') lhs s :
-           rest)
-  | f /= f' = throwE $ TySigDefunMismatch f f'
-  | let = do
-          checkForDuplicates f
-          let t' = desugarT t
-          --Note patterns are a subset of syntactically valid Es
-          p <- desugarP lhs
-          --Need to add do block support to DTs?
-          s' <- desugarS s
-          insertDefun f (t',p,s')
-          desugarDs rest
---Decision: fixed-size arrays are now a first-class type; array globals no
---longer decay to pointers.
---Catch arr[len > 65536] in desugarT
-desugarDs (P.Global pr (Ident x) pt : rest) = do
-  checkForDuplicates x
-  let r = TyCon $ show pr
-  let t = desugarT pt
-  s <- get
-  put s{globals = globals s ++ [(x,r,t)]} --I know it's quadratic...
-  desugarDs rest
-desugarDs (P.Data lhs rhs : rest) = do
+desugarDs = mapM_ desugarD
+
+
+desugarD = \case
+  P.Defun (Ident f') lhs s -> do
+    checkForDuplicates f
+    let t' = desugarT t
+    --Note patterns are a subset of syntactically valid Es
+    p <- desugarP lhs
+    --Need to add do block support to DTs?
+    s' <- desugarS s
+    insertDefun f (p,s')
+  P.TySig (Ident f) pt -> do
+    let t = desugarT pt
+    mt <- M.lookup f <$> gets tysigs
+    case mt of
+      Nothing -> modify (\m->m{tysigs = M.insert f t m})
+      Just _ -> throwError $ DuplicateTySigs f 
+  P.TySyn conargs te -> do
+    let (nm,args) = desugarConArgs conargs
+    let t = desugarT te
+    modify (\m -> m{tysyns = M.insert nm (args,t) $ tysyns m})
+  P.Import mnm -> throwError $ UnresolvedImport mnm
+  --Decision: fixed-size arrays are now a first-class type; array globals no
+  --longer decay to pointers.
+  --Catch arr[len > 65536] in desugarT
+  P.Global pr (Ident x) -> do
+    checkForDuplicates x
+    let r = read $ take 2 $ show pr
+    modify (\m->m{globals = M.insert x r $ globals s})
+{-
+  P.Data lhs rhs -> do
   --Duplicate params, duplicate constructors and free tyvars in arg types to
   --be caught in IR1
   --It's also not necessary to check params don't shadow non-type names;
@@ -149,6 +149,7 @@ desugarDs (P.StaticDatatype pt (Ident nm) pe : rest) = do
   handleStaticDatatype t nm e
   desugarDs rest
 desugarDs other = throwE $ BadDOrdering other
+-}
 
 count :: Ord a => [a] -> [(a,Int)]
 count as =
@@ -162,11 +163,11 @@ count as =
                 | let -> (a,n) : go a' 1 as
 
 --This can't fail, so there's no need to make it a monad
-desugarConLHS :: P.ConLHS -> (Name,[Name])
-desugarConLHS = go
+desugarConArgs :: P.ConArgs -> (Name,[Name])
+desugarConArgs = go
   where go = \case
-          P.CLNil (UIdent tycon) (Ident rparam) -> (tycon,[rparam])
-          P.CLCons conlhs (Ident param) ->
+          P.CANil (UIdent tycon) (Ident rparam) -> (tycon,[rparam])
+          P.CACons conlhs (Ident param) ->
             let (tycon,params) = go conlhs
             in (tycon,params++[param]) --I know it's quadratic...
 
@@ -180,6 +181,7 @@ desugarConLHS = go
 --Problem: I'm determining the tags in the desugaring phase!
 --Maybe I should instead refer to a scheme for determining them, to be
 --resolved in IR.
+{-
 desugarConRHS :: (Name,[Name]) -> [P.DataCon] -> De [(Name,T)]
 desugarConRHS (tycon,r:params) cons =
   mapM (\(tag,(P.DC (UIdent con) parg)) -> do
@@ -187,6 +189,7 @@ desugarConRHS (tycon,r:params) cons =
            addConstructor con (tag,arg,tycon,r,params)
            return (con,arg)
        ) $ zip [0..] cons
+-}
 
 --Adds the info of a new constructor to the constructors map; throws an error
 --if there's a duplicate. Constructors do not conflict with tysyns or tycons.
@@ -198,57 +201,49 @@ addConstructor con info = do
     then throwE $ DuplicateConstructors con
     else put mod{constructors = M.insert con info cons}
 
---No decls (functions, tysyns, datatypes, globals, immutables...) may shadow
---each other.
---TODO add primfuns.
+--The check for duplicate names for dynamic values; datatypes and tysyns have
+--their own namespace.
 --Potential opt: split check for lowercase names and constructors
+--Because I've moved decls for most primitives to Prim.evmc, desugar only
+--needs to deal with hardcoded primitives.
 checkForDuplicates :: Name -> De ()
 checkForDuplicates nm = do
   m <- get
   --TODO give a more informative error message
-  if S.member nm $ S.unions $
-    [M.keysSet $ defuns m,
-     M.keysSet $ tysyns m,
-     M.keysSet $ datatypes m,
-     M.keysSet $ enums m,
-     M.keysSet $ enumValues m,
-     primTyCons,
-     M.keysSet primTySyns,
-     primFuns]
-    then throwE $ DuplicateDeclsForName nm
-    else return ()
-
+  complainIf (S.member nm $ S.unions $
+              [M.keysSet $ defuns m,
+               M.keysSet $ static m,
+               M.keysSet $ globals m,
+               M.keysSet $ constructors m,
+               primFuns,
+               error "Don't forget to add primcons!"])
+    $ DuplicateDeclsForName nm
+checkForDupTyCon :: Name -> De ()
+checkForDupTyCon nm = do
+  m <- get
+  complainIf (S.member nm $ S.unions $
+              [M.keysSet hardcodedTycons, 
+               M.keysSet primTySyns,
+               M.keysSet $ tysyns m,
+               M.keysSet $ datatypes m
+              ])
+    $ DuplicateTyCons nm
 insertDefun :: Name -> (T,Pat,S) -> De ()
 insertDefun f def =
   modify (\m->m{defuns=M.insert f def $ defuns m})
 
-desugarConArgs :: P.ConArgs -> (Name,[Name])
-desugarConArgs = \case
-  P.CANil (UIdent nm) -> (nm,[])
-  P.CACons cargs (Ident arg) ->
-    let (nm,args) = desugarConArgs cargs
-    in (nm,args++[arg]) --Tiny inefficiency
-
-{-
-type SInt = Int Signed
-type UInt = Int Unsigned
-T ::= Int signedness n
-    | T -> T --only op allowed
-    | {(T | field:T),...}
-FW: Ptr, unparam'd user types
--}
 desugarT :: P.T -> T
 desugarT = go
   where go = \case
           P.TVar (Ident nm) -> TyVar nm
           P.TNat n -> TyNat n
           P.TCon (UIdent nm) -> TyCon nm
-          P.TStruct fields -> Struct $ map desugarFieldT fields
-          P.TEmptyTup -> Struct []
+          P.TEmptyTup -> TyCon "Unit"
           P.TTup t ts -> tupleT $ map go $ t:ts
           P.TApp tf tx -> go tf :$$ go tx
           P.TArray t n -> Array (go t) n
           P.TArrow a b -> go a :-> go b
+{-
 --The syntax ensures ordering: [wordpad] [wordalign] (fnm: t | t)
 desugarFieldT :: P.TField -> Field T
 desugarFieldT = go1
@@ -263,7 +258,7 @@ desugarFieldT = go1
             ((pad,al),Just nm,desugarT pt)
           P.TAnon pt ->
             ((pad,al),Nothing,desugarT pt)
-
+-}
 {-
 _, x, {p | field:p,...}, (p1,p2,...), *e, e[e], p.field, p#ix
 In future: Con p
@@ -271,17 +266,18 @@ In future: Con p
 desugarP :: P.E -> De Pat
 desugarP = go
   where go = \case
-          P.Struct _ -> todo
-          P.EmptyTuple -> return $ PTup []
-          P.Tuple p ps -> PTup <$> mapM go (p:ps)
+          P.EmptyTuple -> return $ PCon "Unit" []
+          P.Tuple p ps ->
+            foldr (\p1 p2 -> PCon "Pair" [p1,p2]) (PCon "Unit" [])
+            <$> mapM go (p:ps)
           P.Var (Ident nm) -> return $ PVar nm
           P.Wild -> return PWild
           P.Index arr ix -> PIndex <$> desugarE arr <*> desugarE ix
-          P.Dot p (Ident nm) -> PDot <$> go p <*> return nm
-          P.Hash p ix -> PHash <$> go p <*> return (fromInteger ix)
+          P.Dot p (Ident nm) -> (:.) <$> go p <*> return nm
           P.Deref e -> Deref <$> desugarE e
           e -> throwE $ MalformedPattern e
         todo = error "todo"
+{-
 --Fields in patterns should never contain pad or align pragmas, so they cause
 --an error
 desugarFieldP :: P.EField -> De (Maybe Name, Pat)
@@ -294,6 +290,7 @@ desugarFieldP (P.EF1 (P.EF2 f)) =
       p <- desugarP e
       return (Nothing, p)
     f -> throwE $ MalformedPatternField f
+-}
 
 desugarS :: P.S -> De S
 desugarS = \case
@@ -321,7 +318,8 @@ desugarCase (P.C pe ps) =
 --For now I'll leave desugarE in De for simplicity
 desugarE :: P.E -> De E
 desugarE = go
-  where
+  where go = error "todo"
+    {-
     go = \case
       P.AnonStaticData pt pe -> do
         let t = desugarT pt
@@ -374,9 +372,6 @@ desugarE = go
         e <- go pe
         return $ Dots e [Left nm]
       P.Arrow pe field -> go $ P.Deref pe `P.Dot` field
-      P.Hash pe ix -> do
-        e <- go pe
-        return $ Dots e [Right $ fromInteger ix]
       --Can now no longer be confused with primfun applications, modulo
       --prefix ident primfuns
       P.App (P.Var (Ident nm)) pe
@@ -392,7 +387,7 @@ desugarE = go
       --block {
       -- x += 1;
       -- localReturn 0 x
-      --}
+      -- }
       --Todo deduplicate
       P.PlusPlusPre pe -> do
         pat <- incLRDepthP 0 <$> desugarP pe
@@ -446,7 +441,7 @@ desugarE = go
       -- if a
       -- then localReturn 0 truthy b
       -- else localReturn 0 0
-      --}
+      -- }
       --Note a and b may contain explicit local returns, so their return
       --index needs to be incremented.
       P.And a b -> do
@@ -492,6 +487,8 @@ desugarE = go
       P.TypeIs e t -> TypeIs (desugarT t) <$> go e
       P.UnsafeCoerce e t -> UnsafeCoerce (desugarT t) <$> go e
     po nm es = PrimOp nm <$> mapM go es
+-}
+{-
 desugarFieldE :: P.EField -> De (Field E)
 desugarFieldE = go1
   where go1 = \case
@@ -507,6 +504,7 @@ desugarFieldE = go1
           P.EAnon pe -> do
             e <- desugarE pe
             return ((pad,al),Nothing,e)
+-}
 --So primops can use the type information of one argument to inform the
 --desired type of another. This means the argument of a prefix primop
 --application has different semantics: for an ordinary function application
@@ -542,49 +540,3 @@ In theory arbitrary expressions could be permitted, but something like
 limitations explicit and leave it to the programmer to implement their own
 custom creation script logic when necessary.
 -}
-
---handleStaticDataExpr allocates the accompanying decl and returns newname
-handleStaticDataExpr :: T -> E -> De E
-handleStaticDataExpr t e = do
-  nm <- newAnonStaticName
-  handleStaticData t nm e
-  return $ Var nm
---Handles staticData (t) nm = e;
---e : t is placed in code; nm : Ptr Code t points to it
---Note constructor applications, staticData exprs and strings create nested
---static data/type references.
---Strings and staticData/type exprs are handled when desugaring the e, but
---constructor applications are not. However, they can't be handled until after
---type checking so we just record the mapping nm => (Ptr Code t, e) here.
-handleStaticData :: T -> Name -> E -> De ()
-handleStaticData t nm e = do
-  s <- get
-  checkForDuplicates nm
-  put s{static = M.insert nm (Ptr Code t, e) $ static s}
-
---Like staticData, but for datatypes (which are boxed).
---staticDatatype (tycon args) nm = Con arg
---places {tag_Con,arg} in code, nm : tycon args Code points to it.
---Note the top-level Con is mandatory, and only tycon args (a datatype without
---the region applied) is an acceptable t parameter.
---That's checked in the type-checking phase.
-handleStaticDatatype t nm e = do
-  s <- get
-  checkForDuplicates nm
-  put s{static = M.insert nm (t, e) $ static s}
-
---Allocates $prefix<n> off anonStaticCtr; need a generic version because I
---also need to allocate vars for the desugaring of x++ to
---block {
--- temp = x;
--- x = x + 1;
--- localReturn 0 temp
--- }
---The $ ensures it won't be confused with user variables
-newDeName :: String -> De Name
-newDeName prefix = do
-  s <- get
-  let n = anonStaticCtr s
-  put s{anonStaticCtr = n + 1}
-  return $ "$" ++ prefix ++ show n
-newAnonStaticName = newDeName "static"

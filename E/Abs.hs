@@ -20,11 +20,9 @@ data D
     | TySig Ident T
     | TySyn ConArgs T
     | Import ModuleName
-    | Global GlobalRegion Ident T
-    | Data ConLHS [DataCon]
-    | Enum UIdent [EnumCon]
-    | StaticData T Ident E
-    | StaticDatatype T Ident E
+    | Global GlobalRegion Ident
+    | Data ConArgs DataRHS
+    | StaticData Ident E
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -36,13 +34,19 @@ data ModuleName = MNil UIdent | MCons UIdent ModuleName
 data GlobalRegion = Memory | Storage | TStorage
   deriving (Eq, Ord, Show, Read)
 
-data ConLHS = CLNil UIdent Ident | CLCons ConLHS Ident
+data DataRHS = Unboxed UnboxedRHS
   deriving (Eq, Ord, Show, Read)
 
-data DataCon = DC UIdent T
+data UnboxedRHS = URHS [DataCon]
   deriving (Eq, Ord, Show, Read)
 
-data EnumCon = EC Ident
+data DataCon = DCArgs DCA | DCRecord UIdent [RecordField]
+  deriving (Eq, Ord, Show, Read)
+
+data DCA = DCANil UIdent | DCACons DCA T
+  deriving (Eq, Ord, Show, Read)
+
+data RecordField = RF Ident T
   deriving (Eq, Ord, Show, Read)
 
 data S
@@ -61,20 +65,8 @@ data S
 data CASE = C E S
   deriving (Eq, Ord, Show, Read)
 
-data EField
-    = EPad EField
-    | EF1 EField
-    | EAlign EField
-    | EF2 EField
-    | ENamed Ident E
-    | EAnon E
-  deriving (Eq, Ord, Show, Read)
-
 data E
-    = AnonStaticData T E
-    | AnonStaticDatatype T E
-    | Struct [EField]
-    | EmptyTuple
+    = EmptyTuple
     | Tuple E [E]
     | HexInt HexInteger
     | Int Integer
@@ -82,13 +74,11 @@ data E
     | String String
     | Con UIdent
     | Wild
-    | BlockE [S]
     | PlusPlusPost E
     | MinusMinusPost E
     | Index E E
     | Dot E Ident
     | Arrow E Ident
-    | Hash E Integer
     | App E E
     | PlusPlusPre E
     | MinusMinusPre E
@@ -97,7 +87,6 @@ data E
     | BitwiseNot E
     | Deref E
     | AddressOf E
-    | At E E
     | Mul E E
     | Div E E
     | Mod E E
@@ -136,24 +125,14 @@ data AOp
     | OrEq
   deriving (Eq, Ord, Show, Read)
 
-data TField
-    = TPad TField
-    | TF1 TField
-    | TAlign TField
-    | TF2 TField
-    | TNamed Ident T
-    | TAnon T
-  deriving (Eq, Ord, Show, Read)
-
 data T
     = TVar Ident
     | TNat Integer
     | TCon UIdent
-    | TStruct [TField]
     | TEmptyTup
     | TTup T [T]
     | TApp T T
-    | TArray T Integer
+    | TArray T T
     | TArrow T T
   deriving (Eq, Ord, Show, Read)
 

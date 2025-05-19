@@ -105,11 +105,9 @@ instance Print D where
     TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
     TySyn conargs t -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 t])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
-    Global globalregion id t -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id, doc (showString ":"), prt 0 t])
-    Data conlhs datacons -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conlhs, doc (showString "="), doc (showString "{"), prt 0 datacons, doc (showString "}")])
-    Enum uident enumcons -> prPrec i 0 (concatD [doc (showString "enum"), prt 0 uident, doc (showString "{"), prt 0 enumcons, doc (showString "}")])
-    StaticData t id e_ -> prPrec i 0 (concatD [doc (showString "staticData"), doc (showString "("), prt 0 t, doc (showString ")"), prt 0 id, doc (showString "="), prt 0 e_])
-    StaticDatatype t id e_ -> prPrec i 0 (concatD [doc (showString "staticDatatype"), doc (showString "("), prt 0 t, doc (showString ")"), prt 0 id, doc (showString "="), prt 0 e_])
+    Global globalregion id -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id])
+    Data conargs datarhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conargs, doc (showString "="), prt 0 datarhs])
+    StaticData id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":="), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -129,20 +127,29 @@ instance Print GlobalRegion where
     Storage -> prPrec i 0 (concatD [doc (showString "storage")])
     TStorage -> prPrec i 0 (concatD [doc (showString "tstorage")])
 
-instance Print ConLHS where
+instance Print DataRHS where
   prt i e = case e of
-    CLNil uident id -> prPrec i 0 (concatD [prt 0 uident, prt 0 id])
-    CLCons conlhs id -> prPrec i 0 (concatD [prt 0 conlhs, prt 0 id])
+    Unboxed unboxedrhs -> prPrec i 0 (concatD [prt 0 unboxedrhs])
+
+instance Print UnboxedRHS where
+  prt i e = case e of
+    URHS datacons -> prPrec i 0 (concatD [doc (showString "{"), prt 0 datacons, doc (showString "}")])
 
 instance Print DataCon where
   prt i e = case e of
-    DC uident t -> prPrec i 0 (concatD [prt 0 uident, prt 0 t])
+    DCArgs dca -> prPrec i 0 (concatD [prt 0 dca])
+    DCRecord uident recordfields -> prPrec i 0 (concatD [prt 0 uident, doc (showString "{"), prt 0 recordfields, doc (showString "}")])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
-instance Print EnumCon where
+instance Print DCA where
   prt i e = case e of
-    EC id -> prPrec i 0 (concatD [prt 0 id])
+    DCANil uident -> prPrec i 0 (concatD [prt 0 uident])
+    DCACons dca t -> prPrec i 0 (concatD [prt 0 dca, prt 1 t])
+
+instance Print RecordField where
+  prt i e = case e of
+    RF id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
@@ -167,22 +174,8 @@ instance Print CASE where
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
-instance Print EField where
-  prt i e = case e of
-    EPad efield -> prPrec i 0 (concatD [doc (showString "wordpad"), prt 1 efield])
-    EF1 efield -> prPrec i 0 (concatD [prt 1 efield])
-    EAlign efield -> prPrec i 1 (concatD [doc (showString "wordalign"), prt 2 efield])
-    EF2 efield -> prPrec i 1 (concatD [prt 2 efield])
-    ENamed id e_ -> prPrec i 2 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
-    EAnon e_ -> prPrec i 2 (concatD [prt 0 e_])
-  prtList _ [] = (concatD [])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
-    AnonStaticData t e_ -> prPrec i 13 (concatD [doc (showString "staticData"), doc (showString "("), prt 0 t, doc (showString ")"), prt 13 e_])
-    AnonStaticDatatype t e_ -> prPrec i 13 (concatD [doc (showString "staticDatatype"), doc (showString "("), prt 0 t, doc (showString ")"), prt 13 e_])
-    Struct efields -> prPrec i 13 (concatD [doc (showString "{"), prt 0 efields, doc (showString "}")])
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])
     Tuple e_ es -> prPrec i 13 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
     HexInt hexinteger -> prPrec i 13 (concatD [prt 0 hexinteger])
@@ -191,13 +184,11 @@ instance Print E where
     String str -> prPrec i 13 (concatD [prt 0 str])
     Con uident -> prPrec i 13 (concatD [prt 0 uident])
     Wild -> prPrec i 13 (concatD [doc (showString "_")])
-    BlockE ss -> prPrec i 13 (concatD [doc (showString "block"), doc (showString "{"), prt 0 ss, doc (showString "}")])
     PlusPlusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "++")])
     MinusMinusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "--")])
     Index e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
     Dot e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "."), prt 0 id])
     Arrow e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "->"), prt 0 id])
-    Hash e_ n -> prPrec i 12 (concatD [prt 12 e_, doc (showString "#"), prt 0 n])
     App e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, prt 13 e_2])
     PlusPlusPre e_ -> prPrec i 11 (concatD [doc (showString "++"), prt 11 e_])
     MinusMinusPre e_ -> prPrec i 11 (concatD [doc (showString "--"), prt 11 e_])
@@ -244,27 +235,15 @@ instance Print AOp where
     XorEq -> prPrec i 0 (concatD [doc (showString "^=")])
     OrEq -> prPrec i 0 (concatD [doc (showString "|=")])
 
-instance Print TField where
-  prt i e = case e of
-    TPad tfield -> prPrec i 0 (concatD [doc (showString "wordpad"), prt 1 tfield])
-    TF1 tfield -> prPrec i 0 (concatD [prt 1 tfield])
-    TAlign tfield -> prPrec i 1 (concatD [doc (showString "wordalign"), prt 2 tfield])
-    TF2 tfield -> prPrec i 1 (concatD [prt 2 tfield])
-    TNamed id t -> prPrec i 2 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
-    TAnon t -> prPrec i 2 (concatD [prt 0 t])
-  prtList _ [] = (concatD [])
-  prtList _ [x] = (concatD [prt 0 x])
-  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print T where
   prt i e = case e of
     TVar id -> prPrec i 1 (concatD [prt 0 id])
     TNat n -> prPrec i 1 (concatD [prt 0 n])
     TCon uident -> prPrec i 1 (concatD [prt 0 uident])
-    TStruct tfields -> prPrec i 1 (concatD [doc (showString "{"), prt 0 tfields, doc (showString "}")])
     TEmptyTup -> prPrec i 1 (concatD [doc (showString "("), doc (showString ")")])
     TTup t ts -> prPrec i 1 (concatD [doc (showString "("), prt 0 t, doc (showString ","), prt 0 ts, doc (showString ")")])
     TApp t1 t2 -> prPrec i 0 (concatD [prt 0 t1, prt 1 t2])
-    TArray t n -> prPrec i 0 (concatD [prt 0 t, doc (showString "["), prt 0 n, doc (showString "]")])
+    TArray t1 t2 -> prPrec i 0 (concatD [prt 0 t1, doc (showString "["), prt 0 t2, doc (showString "]")])
     TArrow t1 t2 -> prPrec i 0 (concatD [prt 0 t1, doc (showString "->"), prt 1 t2])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])

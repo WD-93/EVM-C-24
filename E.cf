@@ -6,8 +6,6 @@ comment "/*" "*/";
 token UIdent (upper (letter | digit | '_')*);
 --No need to delete = or ., reserved words will handle :=, = and .field.
 token Infix ((["!#@$%&/?+*-^|:=.><"])+);
---token HexNumber ( "0x" (['0'-'9''A'-'F''a'-'f']+) );
---token HexNumber ({"0x"} (["0123456789abcdefABCDEF"]+));
 token HexInteger ({"0x"} ["0123456789abcdefABCDEF"] +) ;
 
 --layout "module";
@@ -15,6 +13,7 @@ Module. M ::= [D];
 separator D ";";
 
 Defun. D ::= Ident E13 ":=" S;
+--Type signatures are now used for globals and static constants as well.
 TySig. D ::= Ident ":" T;
 --type Con args = t
 --t ::= t t | var | Con | t -> t
@@ -25,29 +24,36 @@ Import. D ::= "import" ModuleName;
 MNil. ModuleName ::= UIdent;
 MCons. ModuleName ::= UIdent "." ModuleName;
 --Ex: memory x : UInt 16
-Global. D ::= GlobalRegion Ident ":" T;
+Global. D ::= GlobalRegion Ident;
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
---layout "=";
-Data. D ::= "data" ConLHS "=" "{" [DataCon] "}";
+--Syntax: data TyCon a b c = {Con T1 T2... | Con {field: t,...}; ...}
+-- [region var] --makes the type boxed
+--Unboxed datatypes supersede structs and enums
+--0-parameter datatypes are now permitted.
+Data. D ::= "data" ConArgs "=" DataRHS;
+--Boxed. DataRHS ::= UnboxedRHS "region" Ident;
+Unboxed. DataRHS ::= UnboxedRHS;
+URHS. UnboxedRHS ::= "{" [DataCon] "}";
 separator DataCon ";";
---0-parameter datatypes are now a syntax error
-CLNil. ConLHS ::= UIdent Ident;
-CLCons. ConLHS ::= ConLHS Ident;
---0-parameter constructors are now a syntax error
-DC. DataCon ::= UIdent T;
-Enum. D ::= "enum" UIdent "{" [EnumCon] "}";
-separator EnumCon ",";
-EC. EnumCon ::= Ident;
-StaticData. D ::= "staticData" "(" T ")" Ident "=" E;
-StaticDatatype. D ::= "staticDatatype" "(" T ")" Ident "=" E;
+--Constructors: Con <0 or more ts> | Con {field: t, ...}
+DCArgs. DataCon ::= DCA;
+DCANil. DCA ::= UIdent;
+DCACons. DCA ::= DCA T1;
+--This causes a shift-reduce conflict with DCArgs, but that seems not to be
+--a problem.
+DCRecord. DataCon ::= UIdent "{" [RecordField] "}";
+separator RecordField ","; --Con {} is equivalent to Con
+RF. RecordField ::= Ident ":" T;
+StaticData. D ::= Ident ":=" E;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
 While. S ::= "while" "(" E ")" S;
 Return. S ::= "return" E;
-Do. S ::= "do" "{" [S] "}";
+--Yay, with no anonymous structs I can eliminate the do keyword!
+Do. S ::= "{" [S] "}";
 separator S ";";
 --layout "of";
 Case. S ::= "case" E "of" "{" [CASE] "}";
@@ -60,18 +66,18 @@ LocalReturn. S ::= "localReturn" Integer E;
 --For isnt essential, its a convenience feature
 For. S ::= "for" "(" S ";" E ";" S ")" S;
 
---Anonymous static data exprs... might be useful.
-AnonStaticData. E13 ::= "staticData" "(" T ")" E13;
-AnonStaticDatatype. E13 ::= "staticDatatype" "(" T ")" E13;
-Struct. E13 ::= "{" [EField] "}";
-separator EField ",";
+--Anon static data and structs removed
+--AnonStaticData. E13 ::= "staticData" "(" T ")" E13;
+--AnonStaticDatatype. E13 ::= "staticDatatype" "(" T ")" E13;
+--Struct. E13 ::= "{" [EField] "}";
+--separator EField ",";
 --Order enforced: [pad sz][align sz](e | field: e)
-EPad. EField ::= "wordpad" EField1;
-EF1. EField ::= EField1;
-EAlign. EField1 ::= "wordalign" EField2;
-EF2. EField1 ::= EField2;
-ENamed. EField2 ::= Ident ":" E;
-EAnon. EField2 ::= E;
+--EPad. EField ::= "wordpad" EField1;
+--EF1. EField ::= EField1;
+--EAlign. EField1 ::= "wordalign" EField2;
+--EF2. EField1 ::= EField2;
+--ENamed. EField2 ::= Ident ":" E;
+--EAnon. EField2 ::= E;
 EmptyTuple. E13 ::= "(" ")";
 Tuple. E13 ::= "(" E "," [E] ")";
 separator nonempty E ",";
@@ -81,7 +87,7 @@ Var. E13 ::= Ident;
 String. E13 ::= String;
 Con. E13 ::= UIdent;
 Wild. E13 ::= "_";
-BlockE. E13 ::= "block" "{" [S] "}";
+--BlockE. E13 ::= "block" "{" [S] "}";
 
 --Left-to-right
 --12: _++ _-- call _[_] .field ->field
@@ -90,8 +96,7 @@ MinusMinusPost. E12 ::= E12 "--";
 Index. E12 ::= E12 "[" E "]";
 Dot. E12 ::= E12 "." Ident;
 Arrow. E12 ::= E12 "->" Ident;
---Anonymous struct access
-Hash. E12 ::= E12 "#" Integer;
+--Anonymous struct access (hash operator) removed
 --For s.f x to parse corectly, Haskell-style application needs to be here
 App. E12 ::= E12 E13;
 --Right-to-left
@@ -106,7 +111,7 @@ AddressOf. E11 ::= "&" E11;
 --Left-to-right
 --10: * / %
 --I'll place @ here for now...
-At. E10 ::= E10 "@" E11;
+--At. E10 ::= E10 "@" E11;
 Mul. E10 ::= E10 "*" E11;
 Div. E10 ::= E10 "/" E11;
 Mod. E10 ::= E10 "%" E11;
@@ -121,7 +126,7 @@ MyLT. E7 ::= E7 "<" E8;
 LTE. E7 ::= E7 "<=" E8;
 MyGT. E7 ::= E7 ">" E8;
 GTE. E7 ::= E7 ">=" E8;
---6: eq, new
+--6: eq, neq
 Eq. E6 ::= E6 "==" E7;
 NEq. E6 ::= E6 "!=" E7;
 --Smooth sailing above?
@@ -159,94 +164,21 @@ OrEq. AOp ::= "|=";
 TVar. T1 ::= Ident;
 TNat. T1 ::= Integer;
 TCon. T1 ::= UIdent;
-TStruct. T1 ::= "{" [TField] "}";
-separator TField ",";
+--TStruct. T1 ::= "{" [TField] "}";
+--separator TField ",";
 --Order enforced: [pad sz][align sz](t | field: t)
-TPad. TField ::= "wordpad" TField1;
-TF1. TField ::= TField1;
-TAlign. TField1 ::= "wordalign" TField2;
-TF2. TField1 ::= TField2;
-TNamed. TField2 ::= Ident ":" T;
-TAnon. TField2 ::= T;
+--TPad. TField ::= "wordpad" TField1;
+--TF1. TField ::= TField1;
+--TAlign. TField1 ::= "wordalign" TField2;
+--TF2. TField1 ::= TField2;
+--TNamed. TField2 ::= Ident ":" T;
+--TAnon. TField2 ::= T;
 TEmptyTup. T1 ::= "(" ")";
 TTup. T1 ::= "(" T "," [T] ")";
 separator nonempty T ",";
 --Type application
 TApp. T ::= T T1;
---Fixed-size arrays, used in global decl syntax... todo add as a first-class
---type?
-TArray. T ::= T "[" Integer "]";
+--t[len] is sugar for Array len t
+TArray. T ::= T "[" T "]";
 TArrow. T ::= T "->" T1;
 coercions T 1;
-
---P ::= _, var, Con apps, {p,field: p}, *e, p(.field|#ix)*, e[e]
-{-
-PAT. P3 ::= "PAT";
-P3. P ::= P3;
--}
---Parens. P3 ::= "(" P ")";
-{-
-PVar. P3 ::= Ident;
-PWild. P3 ::= "_";
-PStruct. P3 ::= "{" [PField] "}";
-separator PField ",";
-PFAnon. PField ::= P;
-PFNamed. PField ::= Ident ":" P;
-
-
-PDot. P2 ::= PDots;
-PDNil. PDots ::= P3;
-PDDot. PDots ::= PDots "." Ident;
-PDHash. PDots ::= PDots "#" Integer;
-PCon. P ::= PCon;
-PCNil. PCon ::= UIdent;
-PCCons. PCon ::= PCon P3;
--}
---coercions P 2;
---P3. P ::= P3;
-
-
-
-{-
-Index. E ::= E3 "[" E "]";
-Assign. E ::= E3 "=" E1;
-Ops. E1 ::= E2 Infix OS;
-PrefixOp. E1 ::= Infix E1;
---Ops. E1 ::= E1 Infix E2;
-App. E2 ::= E2 E3;
-Var. E3 ::= Ident;
-Con. E3 ::= UIdent;
-Dot. E3 ::= E3 "." Ident;
-Hash. E3 ::= E3 "#" Integer;
---Since (E) E is identical to application, I need non-C syntax for
---coercion.
---For now Ill use e :: t, though thats a bit misleading: it doesnt inform
---any overloading of e since there is none, nor does it fail if e isnt t.
-Int. E3 ::= Integer;
---HexInt. E3 ::= Integer;
-Str. E3 ::= String;
-EmptyTup. E3 ::= "(" ")";
-Tup. E3 ::= "(" E "," [E] ")";
-separator E ",";
-EmptyStruct. E3 ::= "{" "}";
-EStruct. E3 ::= "{" [Field] "}";
-separator nonempty Field ",";
-Wild. E3 ::= "_";
-coercions E 3;
-
---Op sequence
-OSNil. OS ::= E2;
-OSCons. OS ::= E2 Infix OS;
-
---Struct fields
---May be annotated with pad <info>, align <info>,
---where info ::= bit | byte | word
-AnnotPad. Field ::= "pad" PadInfo Field;
-AnnotAlign. Field ::= "align" PadInfo Field;
-Named. Field ::= Ident ":" E;
-Anon. Field ::= E;
-
-Bit. PadInfo ::= "bit";
-Byte. PadInfo ::= "byte";
-Word. PadInfo ::= "word";
--}

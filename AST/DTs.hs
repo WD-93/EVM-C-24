@@ -17,51 +17,17 @@ import Data.List (intercalate)
 
 --AST, converted from BNFC CST in desugaring stage
 type Name = String
+--E will now be redesigned to fit Hindley-Milner type inference; the
+--distinction between primops and proper functions is handled in FIR
+--(functional IR)
 data E = EInteger Integer
-       --EString is no longer needed because lifting is done in desugar
-       -- | EString String
-       | Var Name --includes overloaded ops
-       | E :$ E --Proper function application; excludes primops
-       --Note && and || are not primops; they're desugared to block exprs
-       | PrimOp Name [E] --primop/primfun application
-       --The second Padding is alignment
-       | EStruct [Field E]
-       -- | E :. Name --struct field access
-       -- | E :# Int --struct field access by index
-       | Dots E [Either Name Int]
-       --tuples are sugar for structs
-       --Hard coercion: zero-pads or truncates e
-       --Doesn't zero internal padding for now; coercing to a struct
-       --is dangerous.
-       | Coerce T E
+       --includes primops, &&, ||, coerce, unsafeCoerce and constructors
+       --(including tuples), *_, _[_] and .field
+       | Var Name 
+       | E :$ E --Function application, including primops
        --Type declaration, not coercion; useful for overloaded exprs
-       --(a,b,c), {a,b,c}, k
-       | TypeIs T E
-       --Unsafe(r) coercion: doesn't do any masking, so it's zero-cost but
-       --can produce corrupt values on stack.
-       | UnsafeCoerce T E
-       -- *e becomes deref(e), so it doesn't need a dedicated constructor
-       --Constructor application is substantially different from function
-       --application...
-       --I'll therefore add a new construct rather than reusing :$
-       --The alloc ptr param is now given by @ (which handles entire expressions
-       --rather than a single constructor), so constructors no longer need a
-       --pattern parameter.
-       | Con Name E
-       --Statically specify the implicit alloc ptr parameter
-       --Ex: Cons 1 (Cons 2 (Nil ())) @ memptr
-       --The pattern parameter must be both a valid pattern and an expression
-       -- :: a mutable byte ptr
-       | E :@ (Pat,E)
-       --Block expressions, which may contain control flow; can be used to
-       --implement short-circuited combinators, ternary expressions and
-       --inlining.
-       --Exited via localReturn <level> e; if you reach the end without a
-       --return a null value (all bits 0) is implicitly returned.
-       -- <level> specifies how many nested block expressions to return out of;
-       --the returned value is softCoerced to the type of the block it's
-       --returning from.
-       | BlockE [S]
+       | E ::: T
+       --Inlining at the FIR level allows block exprs to be eliminated!
        --Assignment moved to E
        | Pat := E
   deriving (Eq,Ord,Read,Show,Data)
@@ -81,14 +47,10 @@ n `roundedUpMod` m = m * ((if (n `mod` m) > 0
 n `padWith` p = n `roundedUpMod` pad2Sz p
 
 tupleE :: [E] -> E
-tupleE = EStruct . tupleF
+tupleE [] = Var "Unit"
+tupleE (e:es) = Var "Pair" :$ e :$ tupleE es
 tupleF :: [e] -> [Field e]
 tupleF = map (\x -> ((Word,Word),Nothing,x))
---The byte-padded equivalent of tupleF; structE [a,b,c] => {a,b,c}
-structF :: [e] -> [Field e]
-structF = map (\x -> (((Byte,Byte),Nothing,x)))
-structE = EStruct . structF
-structT = Struct . structF
 --Design change: generic structure rather than one constructor per type
 instance IsString T where
   fromString = TyCon
@@ -99,18 +61,19 @@ instance Num T where
   (*) = undefined
   abs = undefined
   signum = undefined
-pattern Type n = TyCon "Type" :$$ TyNat n
+pattern Type = TyCon "Type"
 pattern SInt n = Int "Signed" n
 pattern UInt n = Int "Unsigned" n
 pattern Int s n = "Int" :$$ s :$$ TyNat n
 pattern a :-> b = "->" :$$ a :$$ b
 infixr 5 :->
---I should perhaps have separated structs and tuples after all...
-pattern Pair a b = Struct [((Word,Word),Nothing,a),
-                           ((Word,Word),Nothing,b)]
-pattern Triplet a b c = Struct [((Word,Word),Nothing,a),
-                                ((Word,Word),Nothing,b),
-                                ((Word,Word),Nothing,c)]
+pattern Array n a = "Array" :$$ n :$$ a
+
+pattern Unit = TyCon "Unit"
+pattern Pair a b = TyCon "Pair" :$$ a :$$ b
+--(a,b) desugars to Pair a (Pair b Nil), not Pair a b
+pattern Tu2 a b = Pair a (Pair b Unit)
+pattern Tu3 a b c = Pair a (Tu2 b c)
 pattern Memory = TyCon "Memory"
 pattern Storage = TyCon "Storage"
 pattern TStorage = TyCon "TStorage"
@@ -119,13 +82,14 @@ pattern Returndata = TyCon "Returndata"
 pattern Code = TyCon "Code"
 pattern Ptr r a = "Ptr" :$$ r :$$ a
 type Field a = ((Padding,Padding), Maybe Name, a)
+--Anonymous structs now removed; structs are instead in boxed and unboxed
+--datatypes. Padding/alignment data can be in metadata describing the struct;
+--it's not relevant to type checking.
+--Array :: Nat -> Type -> Type is now a primtycon
 data T = TyCon Name
        | TyVar Name --Only for data and tysyn type params initially
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
-       | Struct [Field T]
-       --Invariant: n >= 0; no region specified because it's unboxed (!)
-       | Array T Integer
   deriving (Eq,Ord,Read,Data)
 --Making T show prettier by duplicating Pretty code...
 --TODO move IR1's data decls here so it can import Pretty.hs without a cycle.
@@ -138,16 +102,14 @@ duplicatedShowT = do
     UInt n -> "uint"++show n
     SInt n -> "int"++show n
     a :-> b -> "(" ++ r a ++ " -> " ++ r b ++ ")"
+    Array n t -> "(" ++ r t ++ "[" ++ r n ++ "])"
+    t | Just ts <- unTupleT t ->
+        "(" ++ intercalate ", " (map r ts) ++ ")"
     TyCon nm -> nm
     TyVar nm -> nm
     --TODO reconcile with showT; add smarter paren emission
     tf :$$ tx -> r tf ++ " (" ++ r tx ++ ")"
     TyNat n -> show n
-    tup | Just ts <- unTupleT tup ->
-          "(" ++ intercalate ", " (map showT ts) ++ ")"
-    Struct fields -> "{" ++ intercalate ", "
-      (map duplicatedShowFieldT fields) ++ "}"
-    Array t n -> "(" ++ r t ++ "[" ++ show n ++ "])"
 duplicatedShowFieldT ((pad,al),mnm,t) =
   let p = case pad of
             Byte -> []
@@ -161,14 +123,13 @@ duplicatedShowFieldT ((pad,al),mnm,t) =
   in unwords $ p ++ n ++ [duplicatedShowT t]
 
 unTupleT :: T -> Maybe [T]
-unTupleT = \case
-  Struct padmnmts -> go padmnmts
-  _ -> Nothing
-  where go = \case
-          [] -> Just []
-          ((Word,Word),Nothing,t):padmnmts ->
-            (t:) <$> go padmnmts
-          _ -> Nothing
+unTupleT = go
+  where
+    go :: T -> Maybe [T]
+    go = \case
+      Pair a b -> (a :) <$> go b
+      Unit -> Just []
+      _ -> Nothing
 
 {-
 --Unification is pretty fundamental, so might as well put it in here
@@ -219,81 +180,54 @@ instT m = go
           Struct padnmts -> Struct $ map (\(pad,nm,t) -> (pad,nm,go t)) padnmts
           t -> t
 -}
---Including kinds
-primTyCons :: Set Name
-primTyCons = S.fromList $
-  words $
-  "Type Region Signedness Nat " ++ --the kinds, except ->
-  "Signed Unsigned " ++ --signedness
-  "Memory Storage TStorage Calldata Returndata Code " ++ --region
-  "Int Ptr -> " --the primitive types
---The kinds for the prim tycons which aren't polymorphic
---(i.e. excluding (->) :: a -> b -> Type).
-primTyConKinds :: Map Name T
-primTyConKinds = M.fromList $
+--EVMC does not support support declaring (->) or new kinds in source,
+--so they must be hardcoded instead of in Prim.evmc.
+--(->) is given the kind Type -> Type -> Type just so it can be put in the map,
+--but it's in fact treated as polymorphic during kind check.
+hardcodedTyCons :: Map Name T
+hardcodedTyCons = M.fromList $
   are "Type" "Type Region Signedness Nat" ++
   are "Signedness" "Signed Unsigned" ++
   are "Region" "Memory Storage TStorage Calldata Returndata Code" ++
-  is ("Signedness" :-> "Nat" :-> "Type") "Int" ++
-  is ("Region" :-> "Type" :-> "Type") "Ptr"
+  is ("Type" :-> "Type" :-> "Type") "->"
   where are t = map (\nm -> (nm,t)) . words
         is = are --English lesson of the day
-primTySyns :: Map Name ([Name],T)
-primTySyns = M.fromList [
-  "Byte" =: UInt 8,
-  "Char" =: UInt 8,
-  "Short" =: UInt 16,
-  "Size_T" =: UInt 16,
-  "Long" =: UInt 32,
-  "Half" =: UInt 128, --why not?
-  "Word" =: UInt 256,
-  "UInt" =: ("Int" :$$ "Unsigned"),
-  "SInt" =: ("Int" :$$ "Signed"),
-  ("Pair",(["a"],Pair (TyVar "a") (TyVar "a"))),
-  "MPtr" =: ("Ptr" :$$ "Memory")
-  ]
-  where nm =: t = (nm,([],t))
-
---Should be the full set of primfuns, including infix ones...
-primFuns :: Set Name
-primFuns = S.fromList $ words $
-  --Exiting functions
-  --return1(x) --RETURNs the value x (written to 0)
-  --return2(ptr,len)
-  "stop revert return1 return2" --no reason to add invalid, jump, jumpi?
+--Primitive type synonyms and functions now in Prim.evmc, so they don't need to
+--be hardcoded.
   
 --The kind check can't be done here, you need to defer it to IR.
 tupleT :: [T] -> T
-tupleT = Struct . tupleF
-{-
-data Region = Memory
-            | Calldata
-            | Returndata
-            | Storage
-            | Code
-  deriving (Eq,Ord,Read,Show)
--}
---TODO generic instance
+tupleT [] = Unit
+tupleT (t:ts) = Pair t (tupleT ts) 
+
+--No block expressions, so local return has been removed
 data S = SE E --required because := has been moved to E
        | Return E
        | Ifte E S S
        | While E S
-       | Case E [(Name,Pat,S)]
+       | Case E [(Pat,S)]
        | Block [S] --Standalone do, scopes locals
        | Break Int --break 0 ~ break in C; break n breaks out of n+1 loops
        | Continue Int --analogous
-       | LocalReturn Int E --return out of n+1 nested block expressions
+       | Declare Name E --mandatory variable declaration
   deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment
+--Anonymous structs removed, so no struct patterns or #ix
+--(a,b,c) desugars to (,) a ((,) b c); () desugars to PCon "()"
+--Nice property: with mandatory var declarations, all valid patterns can be
+--converted into exprs in scope (with _ => null())
+-- &_ :: a -> Ptr r a (it may not be compilable even if well-typed ofc)
+--Deref and PIndex are tricky: if their es are of the right form the
+--pattern-matching can be optimized.
+--Ex: *p (.field | unboxed array [ix]) = e =>
+--writePtr (a series of transformations on p) e
 data Pat = PWild
          | PVar Name
-         | PStruct [(Maybe Name, Pat)]
-         | PTup [Pat] --rhs must have exactly that many fields and it
-         --must be a tuple (word-padded with anonymous fields)
-         | PDot Pat Name
-         | PHash Pat Int
+         | PCon Name [Pat]
+         | Pat :. Name
          | Deref E
          | PIndex E E --now required bc arr[ix] /=> *(arr + ix)
+         | Ampersand Pat -- &p = e => p = *e
   deriving (Eq,Ord,Read,Show,Data)
 
 --type Block = [S]
@@ -301,38 +235,58 @@ data Pat = PWild
 
 --Output after desugaring phase:
 data Module = Module {
+  --Used for optional type signatures on funs, globals and statics;
+  --decls order-independent to simplify desugar.
+  --That also means you can put the API at the top of long files :)
+  tysigs :: Map Name T, 
   defuns :: Map Name (T,Pat,S),
   tysyns :: Syns,
-  --T = Ptr Code a | somedatatype Code, i.e. the type is the type of the
-  --name.
-  --String expressions are lifted and become
-  --newname => (Ptr Code Byte[len],{c1,c2,...})
-  --Nested Con args and strings in static data are also lifted and
-  --replaced with the new name.
-  static :: Map Name (T,E),
-  --the first T is a region: memory, t/storage
-  globals :: [(Name,T,T)],
+  --E is restricted to static exprs (f, &global, static, k,
+  --UnboxedCon staticArgs, BoxedCon staticArgs with region Code)
+  --sv := e => sv has e's type, and can be implemented using either a push or
+  --code pointer deref.
+  --Strings become &sv, where sv := a byte array.
+  --With HMTS a type signature is no longer mandatory; note the static value
+  --is subject to the monomorphism restriction.
+  static :: Map Name E,
+  --the T is a region: memory, calldata, returndata, code, storage, tstorage
+  --A type signature is no longer required; note globals are monomorphic.
+  --The relative ordering of globals is arbitrary and users should not rely on
+  --it.
+  globals :: Map Name Region,
+  --Structs and enums have been merged into unboxed datatypes.
+  --For both boxed and unboxed dts, datatypes with only one constructor can
+  --have a 0-size tag; the rest are 1B.
+  unboxedDatatypes :: Map Name --TyCon
+    ([Name], --params (0 or more, all Type)
+     [ConDecl]), --1 or more
   --Used when compiling case
   datatypes :: Map Name --TyCon
-               ([Name], --params (the first is region)
-                [(Name, T)] --constructor; they all have exactly one param
+               ([Name], --params (1 or more; one is Region, the rest Type)
+                Name, --the region param
+                [ConDecl] --1 or more
                ),
-  --Used when compiling allocation
-  --Return type pattern is split into tycon, region param, rest to
-  --make zero-param datatypes nonrepresentable and to simplify allocation
-  constructors :: Map Name (Int,    --tag value
-                            T,      --lhs type pattern
-                            Name,   --tycon
-                            Name,   --first param
-                            [Name]),--remaining params
-  enums :: Map Name [Name],
-  enumValues :: Map Name (Name,Int),
-  --A counter for new names for static data decls $static<n>,
+  --Tag info isn't needed for the TC stage, so it's added later.
+  --The type of Cons is a -> List a -> List a, which is surprising since
+  --EVMC functions are not closures. When compiling, underapplied constructors
+  --are treated as an error in order to simplify the language
+  --(if the programmer wishes to partially apply a constructor they may do
+  --the wizardry themselves).
+  constructors :: Map Name T,
+  --A counter for new names for lifting strings to static byte array decls,
   --inserted as a hack to avoid having to change the desugar monad's type.
   anonStaticCtr :: Int
   }
   deriving (Eq,Ord,Read,Show,Data)
 type Syns = Map Name ([Name],T)
+--todo add pad/alignment and tag value info
+type ConDecl = (Name,Either [T] [(Name,T)])
+--Unfortunate name conflict with the T patterns.
+--Used to make bad global regions non-representable.
+--It's the first two letters so I can convert it using read . take 2 . show
+data Region = Me | St | TS | Ca | Re | Co
+  deriving (Eq,Ord,Read,Show,Data)
+
 
 --Putting this utility function here to make it widely available.
 --TODO update pkgs...
