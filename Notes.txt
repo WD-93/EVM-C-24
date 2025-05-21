@@ -632,7 +632,125 @@ Prim currently depends on tysyns in prelude, so they must be imported together.
 
 Thought: will malloc now allowed, I could more easily support typeclasses where instances have a variable
 number of superclasses... the dict could be a closure that stores its subdicts in memory.
- 
+
+Stages: tysyn subst, kind check, infer types (now all type application is explicit),
+monomorphize (this gives me tree shaking of functions for free).
+Conversion to CPS FIR with state vars, optimization (inlining, tail calls, specialization, var pruning, CE).
+Wordification, word-specific opts (pruning, CE).
+Stack, asm.
+
+Pruning: let {unused = ...} in cont => remove unused.
+f args := let binds in cont, arg in args unused => f args := let {} in f' (args \ arg), opening up for
+inlining f calls to f'.
+Tail call opt:
+f ...ret := let binds in g ...ret
+How is return e expanded in general? The next cont given to e (usually the next stmt or the start of the
+immediately enclosing loop) is instead ret.
+CE:
+Collect bindings into larger opes when a var is used once (in bindings + cont).
+If a shared var is small, duplicate and collect it.
+Simplify bindings: k op k => k if result is small, 0 + ope => ope...
+Size-preserving specialization: if all calls to a f have the same small value k in arg x, specialize x to k.
+That adds it to the bindings of the new specialized f, enabling further CE.
+Need to: look up all funs with cont = f, then the expr for each param.
+How to decide when to inline and specialize as a nontrivial decision? Don't for now.
+If the arg is always x = ope where x is only used in arg, you can pass the vars of ope instead and evaluate
+it in f.
+
+Compiling .field: I have the info all over the place... need to first compute layout of each monomorphized
+datatype instance, then get an offset from that.
+When do I convert s.f = x to s = setField x s or writePtr (offsetField ptr) x? In pre-wordified FIR.
+Or should I wordify immediately on monomorphization...?
+
+Values which are unshared at the FIR stage can be shared again if they happen to be available on stack.
+
+I should break up rewrites and the process for deciding which to apply; that could be run in a monad.
+Breaking rewrites out into an API allows experimentation with and benchmarking of different opt approaches.
+The output from the deterministic stages could be persisted and passed to a longer-running opt searcher.
+To try: backtracking/choice tree opt search across multiple stages.
+
+FIR is very nice... basic block merging reveals itself to be a form of inlining, and interprocedural opt is
+as simple as procedural.
+Specializing a subset of calls to a function ~ copy it, then specialize that.
+Spec isn't restricted to constant arguments, any let var in the body may be specialized. In general, a
+stronger postcond could be verified.
+Opts are related to proof checkers...
+
+Thought: functions in CPS must be polymorphic, since the continuation is a retType -> a. That suggests opts
+should be performed on polymorphic FIR first... perhaps monomorphization could be limited to all args but
+cont. Certainly, instances which differ only in the a should not force creation of two different placed
+functions.
+Alt: a type ReturnA retType which wraps the polymorphism. But conts may be intermediate functions... they
+could be wrapped in MkReturnA.
+A bigger problem: calls to other functions can't be passed an arbitrary additional scope.
+Potential solution: f args => cont args' as a valid continuation expr type. That would solve the f(g(x)) opt
+issue: it becomes g x => f.
+Explicit cont passing means return address elimination can't be done by omitting an argument to g... unless
+you view the => f as a value! A special value that must always be last...
+(>=>) :: AppCell b a -> Expects a -> Expects b
+Base: the ret parameter :: Expects a
+papply :: ((a,b) -> c) -> b -> AppCell a c
+base :: (a -> b) -> AppCell a b
+Expects ret is the final argument passed to f :: (arg,Expects ret) -> ()
+As a param it's treated as a single word, but it requires a stack context to set up...
+A simpler early fix: distinguish intra- and interprocedural calls.
+Proper calls could be opEs; inlining would then take the form of inlining the lets.
+If the callee's cont is divergent (stop, revert, return), set the caller's cont to that. Use a diverge
+capab to force potentially divergent exprs to be tried in source order.
+Ifte must be a callable function. ifte cond th el args
+The callee must receive a fresh cont parameter; it may not be in the final position in the inlined function.
+Call opE: call @label (f params) --one of the params is label.
+What if the call is guaranteed to continue to another stmt, as in f() with no vars in scope?
+Allow proper calls in contEs? f(g(x)) is still unsolved...
+Allowing calls in lets would allow unused calls to be pruned or reordered, which is difficult for contEs.
+A tailcall cont?
+Return is a tail call... whenever you have let x = f y in tailcall g (x,args) | Rest, that can be transformed 
+to tailcall f y | papp g args | Rest.
+
+call @label (f params) ~ let label = here in f params
+I may have to choose between tail call optimization and inlining initially.
+ifte form: ifte cond vs (f1 args1) (f2 args2) --where args1, args2 are from vs?
+ifte cond f1 f2 args --ensures the stack adjustment code is an explicit basic block
+I should get HM working first anyway...
+If I allow calls in lets I can maybe use that for internal labels as well...
+Continuations as closures \ret -> f ret <args> anotherClosure --could let me eliminate let-based calls (which
+are ugly due to @label) and reorder or prune calls by rewriting the continuation.
+Then internal basic blocks and interprocedural calls (dyn or static) needn't be distinguished!
+Newly allocated conts (for e.g. f(g(x)) => g x (\v -> f v cont)) must always be last... for simplicity, require
+the function's return cont is always last despite the fact that you could store the jump addr elsewhere...
+FIR might be simplified if I didn't enforce that rule in FIR itself, but in compilation of it to stack code.
+The linearity of closures and requirement that x in \x -> f x ... cont be passed as the first argument to f 
+could also be external.
+With calls in contE I don't need a divergence capability.
+If the cont makes another call, it must in practice be of the form \x -> f x <args>
+let binds in f x cont --can also be inlined
+What if cont is \_ -> stop <args>?
+The cont param given to f :: A -> B could be of type B -> End, where stop<args> etc are of type End.
+
+Pre-opt translation:
+Scope is all live vars and state. Translate anonymous expr results to vars.
+e => ef scope cont = cont ev scope
+By decomposing lambda construction into let c' = \x -> f args c, each push step can be easy to compile.
+Transform any lambda of the form \x -> f args x c where x is not first to a
+letrec f' args x = x args in \x -> f' args x c
+E form: \x -> e | letrec fdefs in e | let binds in e | var vars | stopExpr?
+letrec is necessary for defining functions, but should not be used to define closures. Distinguish functions
+and closures in AST, but not type system?
+pAppN f <n args> (cont :: a -> <n args> ret) :: a -> ret
+
+Type annotations should be erased during type inference.
+Keep a scope of type vars; e1:: a; e2 :: a should bind e1 and e2 to the same type (without any requirement
+that a be rigid).
+
+Side-effecting opEs such as "writePtr p x" mem are actually fine to duplicate in FIR let opEs, since p and x
+will be constant. But the read-write barrier should remain.
+
+Using user-level template polymorphism, how many primfuns could I implement in source?
+instance plus : (Int la, Int sb lb) -> Int sa la where
+ (a,b) := coerce (add (coerce a, coerce b)) --note the coerce handles signextend
+--writePtr needs to know the number of return words, and to have no aliasing between disjoint words clarified
+Combinators could do that...
+
 -------------------END NEW TYPE DISCUSSION-------------------------------------------------------------------
 
 f x --f :: f a b, st IsFunction f, default f = (->)

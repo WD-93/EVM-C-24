@@ -103,6 +103,7 @@ instance Print D where
   prt i e = case e of
     Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 13 e_, doc (showString ":="), prt 0 s])
     TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
+    KindSig uident t -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 t])
     TySyn conargs t -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 t])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion id -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id])

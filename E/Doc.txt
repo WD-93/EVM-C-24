@@ -80,6 +80,7 @@ All other symbols are terminals.
   |  |  **|**  | //D// ``;`` //[D]// 
   | //D// | -> | //Ident// //E13// ``:=`` //S// 
   |  |  **|**  | //Ident// ``:`` //T// 
+  |  |  **|**  | //UIdent// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
   |  |  **|**  | ``import`` //ModuleName// 
   |  |  **|**  | //GlobalRegion// //Ident// 

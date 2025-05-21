@@ -1,9 +1,30 @@
-//A module used for specifying primitive types and functions in an ergonomic
-//format. This is used for type checking; during compilation special
-//treatment of the primitives takes over.
-//Definitions of the primitives are placeholders a la let x = x in x in
-//GHC.Prim
-//The kinds, regions and -> are hardcoded.
+/*
+A module used for specifying primitive types and functions in an ergonomic
+format. This is used for type checking; during compilation special
+treatment of the primitives takes over.
+Definitions of the primfuns are placeholders a la let x = x in x in GHC.Prim;
+they're required for type inference but overridden in later stages.
+Thanks to kind signatures, every primitive kind but (->) can be declared here.
+*/
+
+//Primitive kinds
+//Required because t :: Type is assumed to be a value
+Kind : Kind;
+//The kind of all value types
+Type : Kind;
+//Regions, used to parameterize pointers
+Region : Kind;
+Memory : Region;
+Storage : Region;
+TStorage : Region;
+Calldata : Region;
+Returndata : Region;
+Code : Region;
+
+//Indicates whether an Int is signed
+Signedness : Kind;
+Signed : Signedness;
+Unsigned : Signedness;
 
 //Primitive types
 Int : Signedness -> Nat -> Type;

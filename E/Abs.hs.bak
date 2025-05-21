@@ -18,6 +18,7 @@ data M = Module [D]
 data D
     = Defun Ident E S
     | TySig Ident T
+    | KindSig UIdent T
     | TySyn ConArgs T
     | Import ModuleName
     | Global GlobalRegion Ident
@@ -66,7 +67,8 @@ data CASE = C E S
   deriving (Eq, Ord, Show, Read)
 
 data E
-    = EmptyTuple
+    = EArray [E]
+    | EmptyTuple
     | Tuple E [E]
     | HexInt HexInteger
     | Int Integer
@@ -74,7 +76,6 @@ data E
     | String String
     | Con UIdent
     | Wild
-    | BlockE [S]
     | PlusPlusPost E
     | MinusMinusPost E
     | Index E E
@@ -88,7 +89,6 @@ data E
     | BitwiseNot E
     | Deref E
     | AddressOf E
-    | At E E
     | Mul E E
     | Div E E
     | Mod E E

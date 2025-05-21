@@ -3,7 +3,7 @@ module Desugar.Desugar where
 --A separate module for desugaring; Compiler should just tie each stage
 --together and handle the IO.
 
-
+import Util (complainIf)
 --import E.Par (pM,myLexer)
 --import E.ErrM (Err(..))
 import E.Abs (Ident(..),UIdent(..))
@@ -47,58 +47,79 @@ data DError = DuplicateDefun Name
             | WildcardInExprContext
             | MalformedPattern P.E
             | DuplicateTySigs Name
+            | DuplicateKindSigs Name
             | UnresolvedImport P.ModuleName
+            | DuplicateTyCons Name
   deriving (Eq,Ord,Read,Show)
 
-desugar :: P.M -> Either DError Module
-desugar (P.Module ds) =
-  case runState (runExceptT $ desugarDs ds) $
-  Module {tysigs = M.empty,
-          defuns = M.empty,
-          tysyns = M.empty,
-          static = M.empty,
-          globals = M.empty,
-          datatypes = M.empty,
-          constructors = M.empty,
-          anonStaticCtr = 0
-         } of
-    (Left derr, _) -> Left derr
-    (Right (), m) -> Right m
-
-type De = ExceptT DError (State Module)
 --Declarations are order-independent, modulo the static names allocated to
 --strings (which should be irrelevant to compilation if it's successful).
-desugarDs :: [P.D] -> De ()
-desugarDs = mapM_ desugarD
+desugar :: P.M -> Either DError Module
+desugar (P.Module ds) =
+  case runState (runExceptT $ mapM_ desugarD ds) emptyModule of
+    (Left derr, _) -> Left derr
+    (Right (), m) -> Right m
+emptyModule =
+  Module {
+  tysigs = M.empty,
+  kindsigs = M.empty,
+  defuns = M.empty,
+  tysyns = M.empty,
+  static = M.empty,
+  globals = M.empty,
+  datatypes = M.empty,
+  datatypeRegions = M.empty,
+  constructors = M.empty,
+  fieldTypes = M.empty,
+  fieldSpecs = M.empty,
+  anonStaticCtr = 0
+  }
 
+type De = ExceptT DError (State Module)
 
+desugarD :: P.D -> De ()
 desugarD = \case
-  P.Defun (Ident f') lhs s -> do
+  P.Defun (Ident f) lhs ps -> do
     checkForDuplicates f
-    let t' = desugarT t
     --Note patterns are a subset of syntactically valid Es
     p <- desugarP lhs
     --Need to add do block support to DTs?
-    s' <- desugarS s
-    insertDefun f (p,s')
-  P.TySig (Ident f) pt -> do
-    let t = desugarT pt
-    mt <- M.lookup f <$> gets tysigs
-    case mt of
-      Nothing -> modify (\m->m{tysigs = M.insert f t m})
-      Just _ -> throwError $ DuplicateTySigs f 
+    s <- desugarS ps
+    modify (\m->m{defuns=M.insert f (p,s) $ defuns m})
+  P.TySig (Ident f) pt ->
+    addSig f pt tysigs (\x m -> m{tysigs=x}) DuplicateTySigs
+  P.KindSig (UIdent tycon) pk -> do
+    addSig tycon pk kindsigs (\x m -> m{kindsigs=x}) DuplicateKindSigs
   P.TySyn conargs te -> do
     let (nm,args) = desugarConArgs conargs
     let t = desugarT te
     modify (\m -> m{tysyns = M.insert nm (args,t) $ tysyns m})
-  P.Import mnm -> throwError $ UnresolvedImport mnm
+  P.Import mnm -> throwE $ UnresolvedImport mnm
   --Decision: fixed-size arrays are now a first-class type; array globals no
   --longer decay to pointers.
   --Catch arr[len > 65536] in desugarT
   P.Global pr (Ident x) -> do
     checkForDuplicates x
     let r = read $ take 2 $ show pr
-    modify (\m->m{globals = M.insert x r $ globals s})
+    modify (\m->m{globals = M.insert x r $ globals m})
+  P.Data conArgs dataRHS -> do
+    let (con,args) = desugarConArgs conArgs
+    error "todo"
+  P.StaticData (Ident nm) pe -> do
+    e <- desugarE pe
+    error "todo"
+
+addSig :: Name -> P.T ->
+          (Module -> Map Name T) ->
+          (Map Name T -> Module -> Module) ->
+          (Name -> DError) ->
+          De ()
+addSig nm pt getField setField err = do
+    let t = desugarT pt
+    map <- gets getField
+    complainIf (M.member nm map)
+      $ err nm
+    modify $ setField $ M.insert nm t map
 {-
   P.Data lhs rhs -> do
   --Duplicate params, duplicate constructors and free tyvars in arg types to
@@ -166,7 +187,7 @@ count as =
 desugarConArgs :: P.ConArgs -> (Name,[Name])
 desugarConArgs = go
   where go = \case
-          P.CANil (UIdent tycon) (Ident rparam) -> (tycon,[rparam])
+          P.CANil (UIdent tycon) -> (tycon,[])
           P.CACons conlhs (Ident param) ->
             let (tycon,params) = go conlhs
             in (tycon,params++[param]) --I know it's quadratic...
@@ -193,19 +214,14 @@ desugarConRHS (tycon,r:params) cons =
 
 --Adds the info of a new constructor to the constructors map; throws an error
 --if there's a duplicate. Constructors do not conflict with tysyns or tycons.
-addConstructor :: Name -> (Int, T, Name, Name, [Name]) -> De ()
-addConstructor con info = do
-  mod <- get
-  let cons = constructors mod
-  if M.member con cons
-    then throwE $ DuplicateConstructors con
-    else put mod{constructors = M.insert con info cons}
+addConstructor :: Name -> T -> De ()
+addConstructor con t = do
+  checkForDuplicates con
+  error "todo"
 
 --The check for duplicate names for dynamic values; datatypes and tysyns have
 --their own namespace.
 --Potential opt: split check for lowercase names and constructors
---Because I've moved decls for most primitives to Prim.evmc, desugar only
---needs to deal with hardcoded primitives.
 checkForDuplicates :: Name -> De ()
 checkForDuplicates nm = do
   m <- get
@@ -214,23 +230,22 @@ checkForDuplicates nm = do
               [M.keysSet $ defuns m,
                M.keysSet $ static m,
                M.keysSet $ globals m,
-               M.keysSet $ constructors m,
-               primFuns,
-               error "Don't forget to add primcons!"])
+               M.keysSet $ constructors m
+              ])
     $ DuplicateDeclsForName nm
+--Kind signatures render hardcoded prim tycons unnecessary!
+--But they also mean datatypes may be mentioned twice: once in a kind
+--signature and once in a data decl.
+--So when desugaring a kind signature, one must check the kind signature map
+--but not this function.
 checkForDupTyCon :: Name -> De ()
 checkForDupTyCon nm = do
   m <- get
   complainIf (S.member nm $ S.unions $
-              [M.keysSet hardcodedTycons, 
-               M.keysSet primTySyns,
-               M.keysSet $ tysyns m,
+              [M.keysSet $ tysyns m,
                M.keysSet $ datatypes m
               ])
     $ DuplicateTyCons nm
-insertDefun :: Name -> (T,Pat,S) -> De ()
-insertDefun f def =
-  modify (\m->m{defuns=M.insert f def $ defuns m})
 
 desugarT :: P.T -> T
 desugarT = go
@@ -241,7 +256,7 @@ desugarT = go
           P.TEmptyTup -> TyCon "Unit"
           P.TTup t ts -> tupleT $ map go $ t:ts
           P.TApp tf tx -> go tf :$$ go tx
-          P.TArray t n -> Array (go t) n
+          P.TArray len a -> Array (go len) (go a)
           P.TArrow a b -> go a :-> go b
 {-
 --The syntax ensures ordering: [wordpad] [wordalign] (fnm: t | t)
@@ -264,6 +279,8 @@ _, x, {p | field:p,...}, (p1,p2,...), *e, e[e], p.field, p#ix
 In future: Con p
 -}
 desugarP :: P.E -> De Pat
+desugarP = desugarE
+{-
 desugarP = go
   where go = \case
           P.EmptyTuple -> return $ PCon "Unit" []
@@ -277,6 +294,7 @@ desugarP = go
           P.Deref e -> Deref <$> desugarE e
           e -> throwE $ MalformedPattern e
         todo = error "todo"
+-}
 {-
 --Fields in patterns should never contain pad or align pragmas, so they cause
 --an error
@@ -299,44 +317,47 @@ desugarS = \case
   P.While e body -> While <$> desugarE e <*> desugarS body
   P.Return e -> Return <$> desugarE e
   P.Do ss -> Block <$> mapM desugarS ss
-    --throwE $ BadDoInDesugarS ss
   P.Case pe pcases -> do
     e <- desugarE pe
     cases <- mapM desugarCase pcases
     return $ Case e cases
 
 --TODO allow _, x patterns in case
-desugarCase :: P.CASE -> De (Name,Pat,S)
-desugarCase (P.C pe ps) =
-  case pe of
-    P.App (P.Con (UIdent con)) ppat -> do
-      pat <- desugarP ppat
-      s <- desugarS ps
-      return (con,pat,s)
-    _ -> throwE $ BadPatternInCase pe
+desugarCase :: P.CASE -> De (Pat,S)
+desugarCase (P.C pe ps) = do
+  p <- desugarP pe
+  s <- desugarS ps
+  return (p,s)
 
---For now I'll leave desugarE in De for simplicity
+--desugarE needs to be in De because strings are translated to
+--(&sv :: Ptr Code Byte[len]), where sv := a fixed-size byte array
 desugarE :: P.E -> De E
 desugarE = go
-  where go = error "todo"
+  where go = \case
+          P.EmptyTuple -> return $ Var "Unit"
+          P.Tuple pe pes -> tupleE <$> mapM go (pe:pes)
+          --Integers are sugar for fromWord #w, where w is :: Word;
+          --all overloading is implemented via function application under the
+          --hood.
+          P.HexInt (P.HexInteger str) -> go $ P.Int $ read str
+          P.Int n -> return $ po1 "fromWord" EInteger n
+          P.Var (Ident nm) -> return $ Var nm
+          P.String str -> handleString str
+          P.Con (UIdent nm) -> return $ Var nm
+          P.Wild -> throwE WildcardInExprContext
+          --Without block exprs this becomes ugly...
+          P.PlusPlusPost pe -> do
+            e <- go pe
+            return $ po2 "minus" (e := (po2 "plus" e (EInteger 1))) (EInteger 1)
+          P.MinusMinusPost pe -> do
+            e <- go pe
+            return $ po2 "plus" (e := (po2 "minus" e (EInteger 1))) (EInteger 1)
+        po1 primop a = Var primop :$ a
+        po2 primop a b =
+          Var primop :$ (Var "Pair" :$ a :$
+                          (Var "Pair" :$ b :$ Var "Unit"))
     {-
     go = \case
-      P.AnonStaticData pt pe -> do
-        let t = desugarT pt
-        e <- desugarE pe
-        handleStaticDataExpr t e
-      P.AnonStaticDatatype pt pe -> do
-        let t = desugarT pt
-        e <- desugarE pe
-        nm <- newAnonStaticName
-        handleStaticDatatype t nm e
-        return $ Var nm
-      P.Struct efields -> EStruct <$> mapM desugarFieldE efields
-      P.EmptyTuple -> return $ EStruct []
-      P.Tuple pe pes -> tupleE <$> mapM go (pe:pes)
-      P.HexInt (P.HexInteger str) -> return $ EInteger $ read str
-      P.Int n -> return $ EInteger n
-      P.Var (Ident nm) -> return $ Var nm
       P.String str -> do
         let len = length str
         handleStaticDataExpr (Array (UInt 8) $ fromIntegral len) $
@@ -488,23 +509,12 @@ desugarE = go
       P.UnsafeCoerce e t -> UnsafeCoerce (desugarT t) <$> go e
     po nm es = PrimOp nm <$> mapM go es
 -}
+
+--"abc" => (&sv :: Ptr Code (Array 3 Byte)) where sv := array (97,98,99)
+handleString :: String -> De E
+handleString = error "todo handle string"
+
 {-
-desugarFieldE :: P.EField -> De (Field E)
-desugarFieldE = go1
-  where go1 = \case
-          P.EPad fld -> go2 Word fld
-          P.EF1 fld -> go2 Byte fld
-        go2 pad = \case
-          P.EAlign fld -> go3 pad Word fld
-          P.EF2 fld -> go3 pad Byte fld
-        go3 pad al = \case
-          P.ENamed (Ident nm) pe -> do
-            e <- desugarE pe
-            return ((pad,al),Just nm,e)
-          P.EAnon pe -> do
-            e <- desugarE pe
-            return ((pad,al),Nothing,e)
--}
 --So primops can use the type information of one argument to inform the
 --desired type of another. This means the argument of a prefix primop
 --application has different semantics: for an ordinary function application
@@ -518,6 +528,7 @@ desugarExplicitTuple = \case
 --Need to keep this in sync with typecheck and codegen... perhaps move to DTs
 prefixPrimfuns :: Set Name
 prefixPrimfuns = S.fromList $ words "stop revert copy"
+-}
 
 --String literals are lifted to staticData decls:
 --"abc" becomes staticData (Byte[3]) {97,98,99};
@@ -529,10 +540,9 @@ prefixPrimfuns = S.fromList $ words "stop revert copy"
 Permitted static exprs:
 k (integer constants),
 -k (negation can be applied statically),
-var: function, enum value, staticdata name
-&global
-struct
-tuple
+var: function, constructor, staticdata name
+&global, &staticdata
+tuple --desugars to con apps
 Con arg
 
 In theory arbitrary expressions could be permitted, but something like

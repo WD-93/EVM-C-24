@@ -30,6 +30,8 @@ data E = EInteger Integer
        --Inlining at the FIR level allows block exprs to be eliminated!
        --Assignment moved to E
        | Pat := E
+       --Perhaps replace with a constructor for each length in future.
+       | EArray [E]
   deriving (Eq,Ord,Read,Show,Data)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
@@ -221,6 +223,8 @@ data S = SE E --required because := has been moved to E
 --pattern-matching can be optimized.
 --Ex: *p (.field | unboxed array [ix]) = e =>
 --writePtr (a series of transformations on p) e
+type Pat = E
+{-
 data Pat = PWild
          | PVar Name
          | PCon Name [Pat]
@@ -229,6 +233,7 @@ data Pat = PWild
          | PIndex E E --now required bc arr[ix] /=> *(arr + ix)
          | Ampersand Pat -- &p = e => p = *e
   deriving (Eq,Ord,Read,Show,Data)
+-}
 
 --type Block = [S]
 --type Program = [D]
@@ -238,8 +243,20 @@ data Module = Module {
   --Used for optional type signatures on funs, globals and statics;
   --decls order-independent to simplify desugar.
   --That also means you can put the API at the top of long files :)
-  tysigs :: Map Name T, 
-  defuns :: Map Name (T,Pat,S),
+  tysigs :: Map Name T,
+  --Allows the user to specify nonstandard kinds for datatypes; otherwise they
+  --default to Type* -> Type for unboxed and Type* -> Region -> Type* -> Type
+  --for boxed datatypes respectively.
+  --It also allows non-value kinds and hierarchies thereof to be introduced;
+  --an example would be Memory :: Region :: Kind in Prim.evmc.
+  --Current rules:
+  --Any tycon of kind returning Type must have an associated
+  --datatype definition (empty in the case of primitive types).
+  --Otherwise, the only restriction is that the rhs must be in scope;
+  --in particular, cycles are permitted.
+  --All tycons are simply kinded; kind polymorphism is disallowed.
+  kindsigs :: Map Name T,
+  defuns :: Map Name (Pat,S),
   tysyns :: Syns,
   --E is restricted to static exprs (f, &global, static, k,
   --UnboxedCon staticArgs, BoxedCon staticArgs with region Code)
@@ -257,15 +274,12 @@ data Module = Module {
   --Structs and enums have been merged into unboxed datatypes.
   --For both boxed and unboxed dts, datatypes with only one constructor can
   --have a 0-size tag; the rest are 1B.
-  unboxedDatatypes :: Map Name --TyCon
-    ([Name], --params (0 or more, all Type)
-     [ConDecl]), --1 or more
-  --Used when compiling case
   datatypes :: Map Name --TyCon
-               ([Name], --params (1 or more; one is Region, the rest Type)
-                Name, --the region param
-                [ConDecl] --1 or more
-               ),
+    ([Name], --params (0 or more, all Type)
+     [ConDecl]), --Primitive datatypes have 0 constructors
+  --Only boxed datatypes have entries; must be one of the params
+  --Irrelevant to type inference
+  datatypeRegions :: Map Name Name,
   --Tag info isn't needed for the TC stage, so it's added later.
   --The type of Cons is a -> List a -> List a, which is surprising since
   --EVMC functions are not closures. When compiling, underapplied constructors
@@ -273,6 +287,12 @@ data Module = Module {
   --(if the programmer wishes to partially apply a constructor they may do
   --the wizardry themselves).
   constructors :: Map Name T,
+  --Fields have their own namespace; during type inference e.foo becomes
+  --Var ".foo" :$ e.
+  --Each field has a type, constructor they deconstruct and index to the
+  --constructor argument they return.
+  fieldTypes :: Map Name T,
+  fieldSpecs :: Map Name (Name,Int),
   --A counter for new names for lifting strings to static byte array decls,
   --inserted as a hack to avoid having to change the desugar monad's type.
   anonStaticCtr :: Int

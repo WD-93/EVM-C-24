@@ -28,6 +28,7 @@ transD :: D -> Result
 transD x = case x of
   Defun ident e s -> failure x
   TySig ident t -> failure x
+  KindSig uident t -> failure x
   TySyn conargs t -> failure x
   Import modulename -> failure x
   Global globalregion ident -> failure x
@@ -80,6 +81,7 @@ transCASE x = case x of
   C e s -> failure x
 transE :: E -> Result
 transE x = case x of
+  EArray es -> failure x
   EmptyTuple -> failure x
   Tuple e es -> failure x
   HexInt hexinteger -> failure x
@@ -88,7 +90,6 @@ transE x = case x of
   String string -> failure x
   Con uident -> failure x
   Wild -> failure x
-  BlockE ss -> failure x
   PlusPlusPost e -> failure x
   MinusMinusPost e -> failure x
   Index e1 e2 -> failure x
@@ -102,7 +103,6 @@ transE x = case x of
   BitwiseNot e -> failure x
   Deref e -> failure x
   AddressOf e -> failure x
-  At e1 e2 -> failure x
   Mul e1 e2 -> failure x
   Div e1 e2 -> failure x
   Mod e1 e2 -> failure x

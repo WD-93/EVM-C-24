@@ -18,6 +18,7 @@ data M = Module [D]
 data D
     = Defun Ident E S
     | TySig Ident T
+    | KindSig UIdent T
     | TySyn ConArgs T
     | Import ModuleName
     | Global GlobalRegion Ident

@@ -143,6 +143,7 @@ ListD : {- empty -} { [] }
 D :: { D }
 D : Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' T { E.Abs.TySig $1 $3 }
+  | UIdent ':' T { E.Abs.KindSig $1 $3 }
   | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion Ident { E.Abs.Global $1 $2 }

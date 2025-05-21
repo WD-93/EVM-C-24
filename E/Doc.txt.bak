@@ -45,25 +45,25 @@ The set of reserved words is the set of terminals appearing in the grammar. Thos
 
 The reserved words used in E are the following:
   | ``break`` | ``case`` | ``continue`` | ``data``
-  | ``do`` | ``else`` | ``end`` | ``for``
-  | ``if`` | ``import`` | ``localReturn`` | ``memory``
-  | ``of`` | ``return`` | ``storage`` | ``then``
-  | ``tstorage`` | ``type`` | ``while`` | 
+  | ``else`` | ``end`` | ``for`` | ``if``
+  | ``import`` | ``localReturn`` | ``memory`` | ``of``
+  | ``return`` | ``storage`` | ``then`` | ``tstorage``
+  | ``type`` | ``while`` |  | 
 
 The symbols used in E are the following:
   | ; | := | : | =
   | . | { | } | ,
-  | ( | ) | => | _
-  | ++ | -- | [ | ]
-  | -> | - | ! | ~
-  | * | & | / | %
-  | + | << | >> | <
-  | <= | > | >= | ==
-  | != | ^ | | | &&
-  | || | :: | =: | :!
-  | += | -= | *= | /=
-  | %= | <<= | >>= | &=
-  | ^= | |= |  | 
+  | ( | ) | => | $
+  | < | > | _ | ++
+  | -- | [ | ] | ->
+  | - | ! | ~ | *
+  | & | / | % | +
+  | << | >> | <= | >=
+  | == | != | ^ | |
+  | && | || | :: | =:
+  | :! | += | -= | *=
+  | /= | %= | <<= | >>=
+  | &= | ^= | |= | 
 
 ===Comments===
 Single-line comments begin with //.Multiple-line comments are  enclosed with /* and */.
@@ -80,6 +80,7 @@ All other symbols are terminals.
   |  |  **|**  | //D// ``;`` //[D]// 
   | //D// | -> | //Ident// //E13// ``:=`` //S// 
   |  |  **|**  | //Ident// ``:`` //T// 
+  |  |  **|**  | //UIdent// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
   |  |  **|**  | ``import`` //ModuleName// 
   |  |  **|**  | //GlobalRegion// //Ident// 
@@ -109,7 +110,7 @@ All other symbols are terminals.
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 
   |  |  **|**  | ``return`` //E// 
-  |  |  **|**  | ``do`` ``{`` //[S]// ``}`` 
+  |  |  **|**  | ``{`` //[S]// ``}`` 
   |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
   |  |  **|**  | ``break`` //Integer// 
   |  |  **|**  | ``continue`` //Integer// 
@@ -122,7 +123,8 @@ All other symbols are terminals.
   |  |  **|**  | //CASE// 
   |  |  **|**  | //CASE// ``;`` //[CASE]// 
   | //CASE// | -> | //E// ``=>`` //S// 
-  | //E13// | -> | ``(`` ``)`` 
+  | //E13// | -> | ``$`` ``<`` //[E]// ``>`` 
+  |  |  **|**  | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
   |  |  **|**  | //HexInteger// 
   |  |  **|**  | //Integer// 
@@ -131,7 +133,10 @@ All other symbols are terminals.
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``_`` 
   |  |  **|**  | ``(`` //E// ``)`` 
-  | //[E]// | -> | //E// 
+  | //[E]// | -> | **eps**
+  |  |  **|**  | //E// 
+  |  |  **|**  | //E// ``,`` //[E]// 
+  |  |  **|**  | //E// 
   |  |  **|**  | //E// ``,`` //[E]// 
   | //E12// | -> | //E12// ``++`` 
   |  |  **|**  | //E12// ``--`` 

@@ -103,6 +103,7 @@ instance Print D where
   prt i e = case e of
     Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 13 e_, doc (showString ":="), prt 0 s])
     TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
+    KindSig uident t -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 t])
     TySyn conargs t -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 t])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion id -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id])
@@ -159,7 +160,7 @@ instance Print S where
     If e_ s1 s2 -> prPrec i 0 (concatD [doc (showString "if"), prt 0 e_, doc (showString "then"), prt 0 s1, doc (showString "else"), prt 0 s2, doc (showString "end")])
     While e_ s -> prPrec i 0 (concatD [doc (showString "while"), doc (showString "("), prt 0 e_, doc (showString ")"), prt 0 s])
     Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
-    Do ss -> prPrec i 0 (concatD [doc (showString "do"), doc (showString "{"), prt 0 ss, doc (showString "}")])
+    Do ss -> prPrec i 0 (concatD [doc (showString "{"), prt 0 ss, doc (showString "}")])
     Case e_ cases -> prPrec i 0 (concatD [doc (showString "case"), prt 0 e_, doc (showString "of"), doc (showString "{"), prt 0 cases, doc (showString "}")])
     Break n -> prPrec i 0 (concatD [doc (showString "break"), prt 0 n])
     Continue n -> prPrec i 0 (concatD [doc (showString "continue"), prt 0 n])
@@ -176,6 +177,7 @@ instance Print CASE where
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
 instance Print E where
   prt i e = case e of
+    EArray es -> prPrec i 13 (concatD [doc (showString "$"), doc (showString "<"), prt 0 es, doc (showString ">")])
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])
     Tuple e_ es -> prPrec i 13 (concatD [doc (showString "("), prt 0 e_, doc (showString ","), prt 0 es, doc (showString ")")])
     HexInt hexinteger -> prPrec i 13 (concatD [prt 0 hexinteger])
@@ -219,7 +221,10 @@ instance Print E where
     Coerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "::"), prt 0 t])
     TypeIs e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "=:"), prt 0 t])
     UnsafeCoerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString ":!"), prt 0 t])
+  prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print AOp where
   prt i e = case e of

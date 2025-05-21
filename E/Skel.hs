@@ -28,6 +28,7 @@ transD :: D -> Result
 transD x = case x of
   Defun ident e s -> failure x
   TySig ident t -> failure x
+  KindSig uident t -> failure x
   TySyn conargs t -> failure x
   Import modulename -> failure x
   Global globalregion ident -> failure x

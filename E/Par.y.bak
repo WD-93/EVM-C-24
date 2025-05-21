@@ -50,53 +50,53 @@ import E.ErrM
 %token
   '!' { PT _ (TS _ 1) }
   '!=' { PT _ (TS _ 2) }
-  '%' { PT _ (TS _ 3) }
-  '%=' { PT _ (TS _ 4) }
-  '&' { PT _ (TS _ 5) }
-  '&&' { PT _ (TS _ 6) }
-  '&=' { PT _ (TS _ 7) }
-  '(' { PT _ (TS _ 8) }
-  ')' { PT _ (TS _ 9) }
-  '*' { PT _ (TS _ 10) }
-  '*=' { PT _ (TS _ 11) }
-  '+' { PT _ (TS _ 12) }
-  '++' { PT _ (TS _ 13) }
-  '+=' { PT _ (TS _ 14) }
-  ',' { PT _ (TS _ 15) }
-  '-' { PT _ (TS _ 16) }
-  '--' { PT _ (TS _ 17) }
-  '-=' { PT _ (TS _ 18) }
-  '->' { PT _ (TS _ 19) }
-  '.' { PT _ (TS _ 20) }
-  '/' { PT _ (TS _ 21) }
-  '/=' { PT _ (TS _ 22) }
-  ':' { PT _ (TS _ 23) }
-  ':!' { PT _ (TS _ 24) }
-  '::' { PT _ (TS _ 25) }
-  ':=' { PT _ (TS _ 26) }
-  ';' { PT _ (TS _ 27) }
-  '<' { PT _ (TS _ 28) }
-  '<<' { PT _ (TS _ 29) }
-  '<<=' { PT _ (TS _ 30) }
-  '<=' { PT _ (TS _ 31) }
-  '=' { PT _ (TS _ 32) }
-  '=:' { PT _ (TS _ 33) }
-  '==' { PT _ (TS _ 34) }
-  '=>' { PT _ (TS _ 35) }
-  '>' { PT _ (TS _ 36) }
-  '>=' { PT _ (TS _ 37) }
-  '>>' { PT _ (TS _ 38) }
-  '>>=' { PT _ (TS _ 39) }
-  '[' { PT _ (TS _ 40) }
-  ']' { PT _ (TS _ 41) }
-  '^' { PT _ (TS _ 42) }
-  '^=' { PT _ (TS _ 43) }
-  '_' { PT _ (TS _ 44) }
-  'break' { PT _ (TS _ 45) }
-  'case' { PT _ (TS _ 46) }
-  'continue' { PT _ (TS _ 47) }
-  'data' { PT _ (TS _ 48) }
-  'do' { PT _ (TS _ 49) }
+  '$' { PT _ (TS _ 3) }
+  '%' { PT _ (TS _ 4) }
+  '%=' { PT _ (TS _ 5) }
+  '&' { PT _ (TS _ 6) }
+  '&&' { PT _ (TS _ 7) }
+  '&=' { PT _ (TS _ 8) }
+  '(' { PT _ (TS _ 9) }
+  ')' { PT _ (TS _ 10) }
+  '*' { PT _ (TS _ 11) }
+  '*=' { PT _ (TS _ 12) }
+  '+' { PT _ (TS _ 13) }
+  '++' { PT _ (TS _ 14) }
+  '+=' { PT _ (TS _ 15) }
+  ',' { PT _ (TS _ 16) }
+  '-' { PT _ (TS _ 17) }
+  '--' { PT _ (TS _ 18) }
+  '-=' { PT _ (TS _ 19) }
+  '->' { PT _ (TS _ 20) }
+  '.' { PT _ (TS _ 21) }
+  '/' { PT _ (TS _ 22) }
+  '/=' { PT _ (TS _ 23) }
+  ':' { PT _ (TS _ 24) }
+  ':!' { PT _ (TS _ 25) }
+  '::' { PT _ (TS _ 26) }
+  ':=' { PT _ (TS _ 27) }
+  ';' { PT _ (TS _ 28) }
+  '<' { PT _ (TS _ 29) }
+  '<<' { PT _ (TS _ 30) }
+  '<<=' { PT _ (TS _ 31) }
+  '<=' { PT _ (TS _ 32) }
+  '=' { PT _ (TS _ 33) }
+  '=:' { PT _ (TS _ 34) }
+  '==' { PT _ (TS _ 35) }
+  '=>' { PT _ (TS _ 36) }
+  '>' { PT _ (TS _ 37) }
+  '>=' { PT _ (TS _ 38) }
+  '>>' { PT _ (TS _ 39) }
+  '>>=' { PT _ (TS _ 40) }
+  '[' { PT _ (TS _ 41) }
+  ']' { PT _ (TS _ 42) }
+  '^' { PT _ (TS _ 43) }
+  '^=' { PT _ (TS _ 44) }
+  '_' { PT _ (TS _ 45) }
+  'break' { PT _ (TS _ 46) }
+  'case' { PT _ (TS _ 47) }
+  'continue' { PT _ (TS _ 48) }
+  'data' { PT _ (TS _ 49) }
   'else' { PT _ (TS _ 50) }
   'end' { PT _ (TS _ 51) }
   'for' { PT _ (TS _ 52) }
@@ -144,6 +144,7 @@ ListD : {- empty -} { [] }
 D :: { D }
 D : Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' T { E.Abs.TySig $1 $3 }
+  | UIdent ':' T { E.Abs.KindSig $1 $3 }
   | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion Ident { E.Abs.Global $1 $2 }
@@ -183,7 +184,7 @@ S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }
   | 'while' '(' E ')' S { E.Abs.While $3 $5 }
   | 'return' E { E.Abs.Return $2 }
-  | 'do' '{' ListS '}' { E.Abs.Do $3 }
+  | '{' ListS '}' { E.Abs.Do $2 }
   | 'case' E 'of' '{' ListCASE '}' { E.Abs.Case $2 $5 }
   | 'break' Integer { E.Abs.Break $2 }
   | 'continue' Integer { E.Abs.Continue $2 }
@@ -200,7 +201,8 @@ ListCASE : {- empty -} { [] }
 CASE :: { CASE }
 CASE : E '=>' S { E.Abs.C $1 $3 }
 E13 :: { E }
-E13 : '(' ')' { E.Abs.EmptyTuple }
+E13 : '$' '<' ListE '>' { E.Abs.EArray $3 }
+    | '(' ')' { E.Abs.EmptyTuple }
     | '(' E ',' ListE ')' { E.Abs.Tuple $2 $4 }
     | HexInteger { E.Abs.HexInt $1 }
     | Integer { E.Abs.Int $1 }
@@ -210,7 +212,11 @@ E13 : '(' ')' { E.Abs.EmptyTuple }
     | '_' { E.Abs.Wild }
     | '(' E ')' { $2 }
 ListE :: { [E] }
-ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
+ListE : {- empty -} { [] }
+      | E { (:[]) $1 }
+      | E ',' ListE { (:) $1 $3 }
+      | E { (:[]) $1 }
+      | E ',' ListE { (:) $1 $3 }
 E12 :: { E }
 E12 : E12 '++' { E.Abs.PlusPlusPost $1 }
     | E12 '--' { E.Abs.MinusMinusPost $1 }

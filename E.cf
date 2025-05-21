@@ -15,6 +15,9 @@ separator D ";";
 Defun. D ::= Ident E13 ":=" S;
 --Type signatures are now used for globals and static constants as well.
 TySig. D ::= Ident ":" T;
+--To give a datatype a nonstandard kind, you need to give it an explicit
+--signature.
+KindSig. D ::= UIdent ":" T;
 --type Con args = t
 --t ::= t t | var | Con | t -> t
 TySyn. D ::= "type" ConArgs "=" T;
@@ -66,6 +69,7 @@ LocalReturn. S ::= "localReturn" Integer E;
 --For isnt essential, its a convenience feature
 For. S ::= "for" "(" S ";" E ";" S ")" S;
 
+--Ugly array expr syntax for now: array (e1,e2,e3,...)
 --Anon static data and structs removed
 --AnonStaticData. E13 ::= "staticData" "(" T ")" E13;
 --AnonStaticDatatype. E13 ::= "staticDatatype" "(" T ")" E13;
