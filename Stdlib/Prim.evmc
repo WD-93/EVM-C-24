@@ -139,7 +139,7 @@ unsafeCoerce _ := ();
 //the EVM copy variants (mcopy, calldatacopy, returndatacopy, codecopy).
 //extcodecopy is not covered because it requires an additional address
 //argument.
-copy : (MPtr a, Ptr r a, Int s l) -> ()
+copy : (MPtr a, Ptr r a, Int s l) -> ();
 copy _ := ();
 
 //RETURNs the given argument, malloc'd into memory
@@ -147,7 +147,7 @@ returnValue : a -> ();
 returnValue _ := ();
 //RETURNs the value pointed to
 returnPtr : MPtr a -> ();
-returnPtr _ := ()
+returnPtr _ := ();
 //RETURN n elements pointed to
 returnPtrLen : (MPtr a, Int s l) -> ();
 returnPtrLen _ := ();

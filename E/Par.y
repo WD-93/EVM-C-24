@@ -41,9 +41,10 @@ import E.ErrM
 %name pE1 E1
 %name pE E
 %name pAOp AOp
-%name pT1 T1
-%name pListT ListT
 %name pT T
+%name pT2 T2
+%name pListT ListT
+%name pT1 T1
 -- no lexer declaration
 %monad { Err } { thenM } { returnM }
 %tokentype {Token}
@@ -71,51 +72,50 @@ import E.ErrM
   '/' { PT _ (TS _ 21) }
   '/=' { PT _ (TS _ 22) }
   ':' { PT _ (TS _ 23) }
-  ':!' { PT _ (TS _ 24) }
-  '::' { PT _ (TS _ 25) }
-  ':=' { PT _ (TS _ 26) }
-  ';' { PT _ (TS _ 27) }
-  '<' { PT _ (TS _ 28) }
-  '<<' { PT _ (TS _ 29) }
-  '<<=' { PT _ (TS _ 30) }
-  '<=' { PT _ (TS _ 31) }
-  '=' { PT _ (TS _ 32) }
-  '=:' { PT _ (TS _ 33) }
-  '==' { PT _ (TS _ 34) }
-  '=>' { PT _ (TS _ 35) }
-  '>' { PT _ (TS _ 36) }
-  '>=' { PT _ (TS _ 37) }
-  '>>' { PT _ (TS _ 38) }
-  '>>=' { PT _ (TS _ 39) }
-  '[' { PT _ (TS _ 40) }
-  ']' { PT _ (TS _ 41) }
-  '^' { PT _ (TS _ 42) }
-  '^=' { PT _ (TS _ 43) }
-  '_' { PT _ (TS _ 44) }
-  'break' { PT _ (TS _ 45) }
-  'case' { PT _ (TS _ 46) }
-  'continue' { PT _ (TS _ 47) }
-  'data' { PT _ (TS _ 48) }
-  'else' { PT _ (TS _ 49) }
-  'end' { PT _ (TS _ 50) }
-  'for' { PT _ (TS _ 51) }
-  'if' { PT _ (TS _ 52) }
-  'import' { PT _ (TS _ 53) }
-  'localReturn' { PT _ (TS _ 54) }
-  'memory' { PT _ (TS _ 55) }
-  'of' { PT _ (TS _ 56) }
-  'return' { PT _ (TS _ 57) }
-  'storage' { PT _ (TS _ 58) }
-  'then' { PT _ (TS _ 59) }
-  'tstorage' { PT _ (TS _ 60) }
-  'type' { PT _ (TS _ 61) }
-  'while' { PT _ (TS _ 62) }
-  '{' { PT _ (TS _ 63) }
-  '|' { PT _ (TS _ 64) }
-  '|=' { PT _ (TS _ 65) }
-  '||' { PT _ (TS _ 66) }
-  '}' { PT _ (TS _ 67) }
-  '~' { PT _ (TS _ 68) }
+  '::' { PT _ (TS _ 24) }
+  ':=' { PT _ (TS _ 25) }
+  ';' { PT _ (TS _ 26) }
+  '<' { PT _ (TS _ 27) }
+  '<<' { PT _ (TS _ 28) }
+  '<<=' { PT _ (TS _ 29) }
+  '<=' { PT _ (TS _ 30) }
+  '=' { PT _ (TS _ 31) }
+  '==' { PT _ (TS _ 32) }
+  '=>' { PT _ (TS _ 33) }
+  '>' { PT _ (TS _ 34) }
+  '>=' { PT _ (TS _ 35) }
+  '>>' { PT _ (TS _ 36) }
+  '>>=' { PT _ (TS _ 37) }
+  '[' { PT _ (TS _ 38) }
+  ']' { PT _ (TS _ 39) }
+  '^' { PT _ (TS _ 40) }
+  '^=' { PT _ (TS _ 41) }
+  '_' { PT _ (TS _ 42) }
+  'break' { PT _ (TS _ 43) }
+  'case' { PT _ (TS _ 44) }
+  'continue' { PT _ (TS _ 45) }
+  'data' { PT _ (TS _ 46) }
+  'else' { PT _ (TS _ 47) }
+  'end' { PT _ (TS _ 48) }
+  'for' { PT _ (TS _ 49) }
+  'if' { PT _ (TS _ 50) }
+  'import' { PT _ (TS _ 51) }
+  'memory' { PT _ (TS _ 52) }
+  'of' { PT _ (TS _ 53) }
+  'region' { PT _ (TS _ 54) }
+  'return' { PT _ (TS _ 55) }
+  'storage' { PT _ (TS _ 56) }
+  'then' { PT _ (TS _ 57) }
+  'tstorage' { PT _ (TS _ 58) }
+  'type' { PT _ (TS _ 59) }
+  'var' { PT _ (TS _ 60) }
+  'while' { PT _ (TS _ 61) }
+  '{' { PT _ (TS _ 62) }
+  '|' { PT _ (TS _ 63) }
+  '|=' { PT _ (TS _ 64) }
+  '||' { PT _ (TS _ 65) }
+  '}' { PT _ (TS _ 66) }
+  '~' { PT _ (TS _ 67) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -160,7 +160,8 @@ GlobalRegion : 'memory' { E.Abs.Memory }
              | 'storage' { E.Abs.Storage }
              | 'tstorage' { E.Abs.TStorage }
 DataRHS :: { DataRHS }
-DataRHS : UnboxedRHS { E.Abs.Unboxed $1 }
+DataRHS : UnboxedRHS 'region' Ident { E.Abs.Boxed $1 $3 }
+        | UnboxedRHS { E.Abs.Unboxed $1 }
 UnboxedRHS :: { UnboxedRHS }
 UnboxedRHS : '{' ListDataCon '}' { E.Abs.URHS $2 }
 ListDataCon :: { [DataCon] }
@@ -185,10 +186,10 @@ S : E { E.Abs.SE $1 }
   | 'return' E { E.Abs.Return $2 }
   | '{' ListS '}' { E.Abs.Do $2 }
   | 'case' E 'of' '{' ListCASE '}' { E.Abs.Case $2 $5 }
-  | 'break' Integer { E.Abs.Break $2 }
-  | 'continue' Integer { E.Abs.Continue $2 }
-  | 'localReturn' Integer E { E.Abs.LocalReturn $2 $3 }
+  | 'break' { E.Abs.Break }
+  | 'continue' { E.Abs.Continue }
   | 'for' '(' S ';' E ';' S ')' S { E.Abs.For $3 $5 $7 $9 }
+  | 'var' Ident '=' E { E.Abs.Declare $2 $4 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
@@ -264,9 +265,7 @@ E1 : E1 '||' E2 { E.Abs.Or $1 $3 } | E2 { $1 }
 E :: { E }
 E : E1 { $1 }
   | E1 AOp E { E.Abs.Assign $1 $2 $3 }
-  | E1 '::' T { E.Abs.Coerce $1 $3 }
-  | E1 '=:' T { E.Abs.TypeIs $1 $3 }
-  | E1 ':!' T { E.Abs.UnsafeCoerce $1 $3 }
+  | E1 '::' T { E.Abs.TypeAnnot $1 $3 }
 AOp :: { AOp }
 AOp : '=' { E.Abs.EqEq }
     | '+=' { E.Abs.PlusEq }
@@ -279,8 +278,12 @@ AOp : '=' { E.Abs.EqEq }
     | '&=' { E.Abs.AndEq }
     | '^=' { E.Abs.XorEq }
     | '|=' { E.Abs.OrEq }
-T1 :: { T }
-T1 : Ident { E.Abs.TVar $1 }
+T :: { T }
+T : T1 '->' T { E.Abs.TArrow $1 $3 }
+  | T1 '[' T ']' { E.Abs.TArray $1 $3 }
+  | T1 { $1 }
+T2 :: { T }
+T2 : Ident { E.Abs.TVar $1 }
    | Integer { E.Abs.TNat $1 }
    | UIdent { E.Abs.TCon $1 }
    | '(' ')' { E.Abs.TEmptyTup }
@@ -288,11 +291,8 @@ T1 : Ident { E.Abs.TVar $1 }
    | '(' T ')' { $2 }
 ListT :: { [T] }
 ListT : T { (:[]) $1 } | T ',' ListT { (:) $1 $3 }
-T :: { T }
-T : T T1 { E.Abs.TApp $1 $2 }
-  | T '[' T ']' { E.Abs.TArray $1 $3 }
-  | T '->' T1 { E.Abs.TArrow $1 $3 }
-  | T1 { $1 }
+T1 :: { T }
+T1 : T1 T2 { E.Abs.TApp $1 $2 } | T2 { $1 }
 {
 
 returnM :: a -> Err a

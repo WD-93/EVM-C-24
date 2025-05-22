@@ -33,40 +33,43 @@ data TySynError = TyConsNotInScope (Set Name)
   deriving (Eq,Ord,Read,Show)
 
 --Tysyns are not kind checked; that allows them to be kind-polymorphic.
---Primitive tysyns and tycons are inserted here; keeping them in the compiler
---rather than in a library file simplifies pure compilation from a string.
+
 substTySyns :: Module -> Either TySynError Module
 substTySyns m = do
   --The set of tycons and tysyn names; used for scope and cycle checking
-  let tycons = S.unions [
-        M.keysSet $ datatypes m,
-        M.keysSet $ enums m,
-        primTyCons
-        ]
-      primsyns = M.keysSet primTySyns
-      usersyns = M.keysSet $ tysyns m
-      syncons = S.union primsyns usersyns
-  syns <- handleTySyns tycons syncons $ M.union primTySyns $ tysyns m
+  let tycons = S.union (M.keysSet $ datatypes m) (M.keysSet $ kindsigs m)
+      syncons = M.keysSet $ tysyns m
+  syns <- handleTySyns tycons syncons $ tysyns m
+  let inM f g = inMap f g syns m
+  tysigs' <- inM "tysig" tysigs
+  kindsigs' <- inM "kindsig" kindsigs
+  defuns' <- inM "defun" defuns
+  static' <- inM "static" static
+  datatypes' <- inM "datatype" datatypes
+  constructors' <- inM "constructor" constructors
+  fieldTypes' <- inM "field type" fieldTypes
+  return m{
+    tysigs = tysigs',
+    kindsigs = kindsigs',
+    defuns = defuns',
+    tysyns = syns,
+    static = static',
+    datatypes = datatypes',
+    constructors = constructors',
+    fieldTypes = fieldTypes'
+    }
   --It might be possible to use everywhereM to just apply the tysyns to
   --everything in one fell swoop... but I don't want to do that since I want
   --to report where any syn error was thrown.
-  let inM f g = inMap f g syns m
-  ds' <- inM "defun" defuns
-  stat' <- inM "static" static
-  dts' <- inM "datatype" datatypes
-  cons' <- inM "constructor" constructors
+  {-
+  
+  
   --Globals are a list, not a map...
   globs' <- mapM (\(g,region,t) -> do
                     t' <- genericApplyTySyns syns t ? In "global" g
                     return (g,region,t')) $ globals m
-  return m{
-    defuns = ds',
-    tysyns = syns,
-    static = stat',
-    globals = globs',
-    datatypes = dts',
-    constructors = cons'
-    }
+  
+-}
 inMap :: Data d => String ->
   (Module -> Map Name d) -> Syns ->
   Module -> Either TySynError (Map Name d)
@@ -140,7 +143,9 @@ handleTySyns tycons syncons syns = do
 
 --Repeated vars in the arg list of a tysyn is an error... I'll report it here
 scopeCheckTySyns tycons syncons syns = do
-  let scope = S.union tycons syncons
+  --Note -> is not in the kind map since it's treated specially (being the
+  --only polymorphic tycon)
+  let scope = S.insert "->" $ S.union tycons syncons
   mapM_ (\(synnm,(args,body)) ->
             (do let vars = tyVars body
                     argset = S.fromList args

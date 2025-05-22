@@ -35,7 +35,7 @@ data ModuleName = MNil UIdent | MCons UIdent ModuleName
 data GlobalRegion = Memory | Storage | TStorage
   deriving (Eq, Ord, Show, Read)
 
-data DataRHS = Unboxed UnboxedRHS
+data DataRHS = Boxed UnboxedRHS Ident | Unboxed UnboxedRHS
   deriving (Eq, Ord, Show, Read)
 
 data UnboxedRHS = URHS [DataCon]
@@ -57,10 +57,10 @@ data S
     | Return E
     | Do [S]
     | Case E [CASE]
-    | Break Integer
-    | Continue Integer
-    | LocalReturn Integer E
+    | Break
+    | Continue
     | For S E S S
+    | Declare Ident E
   deriving (Eq, Ord, Show, Read)
 
 data CASE = C E S
@@ -107,9 +107,7 @@ data E
     | And E E
     | Or E E
     | Assign E AOp E
-    | Coerce E T
-    | TypeIs E T
-    | UnsafeCoerce E T
+    | TypeAnnot E T
   deriving (Eq, Ord, Show, Read)
 
 data AOp
@@ -127,13 +125,13 @@ data AOp
   deriving (Eq, Ord, Show, Read)
 
 data T
-    = TVar Ident
+    = TArrow T T
+    | TVar Ident
     | TNat Integer
     | TCon UIdent
     | TEmptyTup
     | TTup T [T]
     | TApp T T
     | TArray T T
-    | TArrow T T
   deriving (Eq, Ord, Show, Read)
 

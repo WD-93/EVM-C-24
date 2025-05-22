@@ -17,6 +17,8 @@ import qualified Data.Map as M
 import System.Directory (doesPathExist,getCurrentDirectory)
 import Control.Monad.Reader
 import Control.Monad.State
+--The hardcoded modules
+import Stdlib.ImplicitImports (stdlibPrim,stdlibPrelude)
 --CST -> AST
 import AST.DTs (Module(..))
 import Desugar.Desugar (desugar, DError(..))
@@ -35,16 +37,19 @@ data CompilerError = ParserError String
 
 --The compilation process is pure once you have the set of relevant modules...
 --but collecting it requires parsing them.
+--Also inserts Prim and Prelude from Stdlib; there is currently no way to
+--manually import them or prevent their import.
 collectModules :: [FilePath] -> [String] -> IO P.M
 collectModules libpaths modname = do
   cwd <- getCurrentDirectory
   let searchPaths = libpaths ++ [cwd]
   ds <- evalStateT (runReaderT (loadModule modname) searchPaths) S.empty
-  return $ P.Module ds
+  return $ P.Module $ mPrim ++ mPrelude ++ ds
 
 type ModuleLoader = ReaderT [FilePath] (StateT (Set [String]) IO)
 --Loads a module and fills in its imports, recursively importing their
 --imports.
+--The explored set ensures each module's decls are only included once.
 loadModule :: [String] -> ModuleLoader [P.D]
 loadModule modname = do
   explored <- get
@@ -109,8 +114,12 @@ pureParams str = do
   m <- parseModule str ? ParserError
   return CompilerParams{cpModule = m, cpFlags = M.empty}
 -}
+
+--We inject Prim and Prelude here
 pipeline2parse :: String -> Either CompilerError P.M
-pipeline2parse str = parseModule str ? ParserError
+pipeline2parse str = (do
+  P.Module ds <- parseModule str
+  return $ P.Module $ mPrim ++ mPrelude ++ ds) ? ParserError
 pipeline2desugar :: String -> Either CompilerError Module
 pipeline2desugar str = do
   m <- pipeline2parse str
@@ -118,6 +127,18 @@ pipeline2desugar str = do
 pipeline2typechecked str = do
   m <- pipeline2desugar str
   typecheck m ? TypeCheckError
+
+--The prim and prelude modules, parsed and converted into [P.D]. If they fail
+--to parse, that's a compiler error.
+mPrim :: [P.D]
+mPrim = case parseModule stdlibPrim of
+          Right (P.Module ds) -> ds
+          Left err -> error $ "Compiler error: Prim.evmc doesn't parse! " ++ err
+mPrelude :: [P.D]
+mPrelude = case parseModule stdlibPrelude of
+          Right (P.Module ds) -> ds
+          Left err ->
+            error $ "Compiler error: Prelude.evmc doesn't parse! " ++ err
 
 {-
 import DTs

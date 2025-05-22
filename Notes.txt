@@ -474,6 +474,31 @@ treegraph codegen easier, even after wordification messes things up.
 In deref, split the mem for the separate words and then merge it again.
 
 Changes:
+OK, tysyn, fiks and kind check built... now to add prim and prelude to the compiler pipeline.
+The output will be practically unreadable with all the prims included... maybe implement a function to
+delete them from a module for display purposes later.
+What should the kind of K1 -> K2 be? Iff they're both :: Type then it's Type... otherwise default to Kind.
+Proposal: track (->) k1 k2 :: k3 constraints; when k1 and k2 are both unified with Type unify k3 with Type
+and vice versa; when k1 or k2 are unified with a non-Type kind unify k3 with Kind.
+Let's say k3 is unified with Kind and k1, k2 remain flexible... later instantiation of k1 and k2 to Type
+should fail. Don't leak kind constraints, instead error if any kind vars remain unbound. Alt: unify them all
+with Type.
+Can kind and type variables be distinguished in the algorithm?
+Yes: for each type var added to scope, associate it with a kind var. When a type var is unified, also unify
+its kinds. Only kind vars need (->) constraints.
+There are two sources of polymorphism: (->) and tyvars.
+I need to merge the type inference and kind check (now inference) stages.
+A potential source of infinite loops: t ~ Con t. Solution: when a var is unified with a type, check it for
+cycles?
+
+TODO minor opt: cache the set of names in the tycon and runtime value namespaces respectively.
+Simple rules that could be disentangled: require each param is unique in type and data.
+With MkFun and MkPtr (UInt 16), I could give funs and ptrs a concrete repr... only Int would need special
+treatment then.
+addressOf : a -> Ptr r a --parses to (a -> Ptr) r a! I need more levels in T.
+
+First goal: rebuild compiler pipeline with 0 opts (though ensuring FIR *can* be optimized).
+***PLAN
 Syntax:
 data TyCon vars = {
  Con {field :: t}; ...
@@ -741,6 +766,33 @@ pAppN f <n args> (cont :: a -> <n args> ret) :: a -> ret
 Type annotations should be erased during type inference.
 Keep a scope of type vars; e1:: a; e2 :: a should bind e1 and e2 to the same type (without any requirement
 that a be rigid).
+Need kind vars as well... and k1 -> k2 :: k3 constraints.
+When any k in the constraint is Type, it's solved; when k3 is Kind and k1, k2 are non-Types, it's also
+solved. HM involves var->var bindings and trampolining... or a 1-level var->canonical var map.
+On unifying a b, if one is already canonical... no, they might both be; need trampolining.
+Long chains could be simplified incrementally a la thunks.
+If one param is Type, all must be type: Region -> Word or Word -> Region make no sense without dependent
+types.
+Recall: disallow kind cycles expect for Kind :: Kind. Cyclicality can be detected before HM.
+A :: A -> A might otherwise be a problem...
+Q: If I add the machinery to support (->), can I add poly-kinded kinds? Don't tempt fate...
+
+Detecting nested calls:
+return f(g(x)) =>
+e1 scope k = g x (\ret -> e2 ret scope) --the lambda is mandatory because g can't be passed the scope
+e2 ret scope k = f ret k
+Inlining: e1 scope k = g x (\ret -> f ret k) --becomes g x f k on stack
+Since e1 can ignore all of scope but x, it can be converted to e1 scope k = e1' x k, which its callers can
+then inline, propagating the scope pruning.
+Any function with a single call site and no uses as a param should always be inlined - including when it's in 
+a lambda?
+If the resulting lambda is in \ret -> f ret args form, then yes...? The reordering of the args might be
+complex.
+Popping should not be done aggressively if you return... how to model that?
+f scope = stop state
+
+Identifying consumption of linear capabs can't be done by type: deref takes but does not consume mem.
+But perhaps FIR needn't be concerned with that.
 
 Side-effecting opEs such as "writePtr p x" mem are actually fine to duplicate in FIR let opEs, since p and x
 will be constant. But the read-write barrier should remain.

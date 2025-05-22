@@ -8,6 +8,21 @@ import Data.Map (Map(..))
 import qualified Data.Map as M
 import Data.Generics
 
+--Update: datatypes now have an optional kind signature.
+--Iterate over tycons in keys kindsigs U keys datatypes, looking at whether
+--each tycon has a kindsig and datatype def respectively.
+--Unboxed datatypes (those with no entry in datatypeRegions) have default
+--kind Type* -> Type;
+--boxed datatypes have kind Type* -> Region -> Type* -> Type, where the
+--param given by datatypeRegions[tycon] is the one of kind Region.
+--If tycon has both a kind signature k and a datatype def tycon args = ...,
+--k must have arity |args| and return a type.
+--A tycon with a kind signature but no datatype definition may not return Type.
+--End result: the kind of each tycon in scope is given a kind.
+
+--Prim types and kinds have their kind given in Prim.evmc, which has already
+--been imported into the module.
+
 data KindCheckError = UnderappliedArrow
                     | TyNameNotInScope Name
                     | BadTyApp T T T T
@@ -15,35 +30,22 @@ data KindCheckError = UnderappliedArrow
                     | In String Name KindCheckError
   deriving (Eq,Ord,Read,Show)
 
---The universe of kinds is defined in AST.DTs:
---Int :: Signedness -> Nat -> Type
---Ptr :: Region -> Type -> Type
---value types :: Type
---Signed, Unsigned :: Signedness
---the regions :: Region
---Datatypes: Type* -> Region -> Type
---Enums: Type
---Type, a -> b :: Type (this isn't Agda...)
-getKindMap :: Module -> Map Name T
-getKindMap m =
-  --Datatype kind is currently fixed by arity
-  let dtkinds = M.map (\(args,_) ->
-                         foldl  (\t _ -> "Type" :-> t)
-                         ("Region" :-> "Type") $ init args) $ datatypes m
-      enumkinds = M.map (const "Type") $ enums m
-  in M.unions [dtkinds,enumkinds,primTyConKinds]
-
 --defuns: tysigs and all types in exprs must be Type
 --static: all types must be type
---datatypes: all types must be type
+--datatypes: given TyCon : ks -> Type, unify the args with ks and
+--require all constructor params are :: Type.
+--kind sigs do not have the same restriction, but all kinds must be well-kinded.
+--Problem: I must check the kind of tyvars in type annotations and their kind
+--should be consistent across multiple annotations.
+--Must the kind check therefore be entangled with type inference...?
 kindCheck :: Module -> Either KindCheckError ()
 kindCheck m = do
-  let kinds = getKindMap m
+  let kinds = kindsigs m --much simpler now thanks to Prim.evmc and FISK
   --I remove the globals to avoid an erroneous complaint that their regions
   --aren't types:
   --Aha, tysyns need to be emptied as well; tysyn bodies may contain any
   --kind.
-  let m' = m{globals = [], tysyns = M.empty}
+  let m' = m{globals = M., tysyns = M.empty}
   checkTopLevelTypes kinds m'
   --Now to check the globals
   mapM_ (\(nm,_region,t) -> wellkinded kinds t ? In "global" nm) $ globals m
@@ -78,10 +80,6 @@ kind kinds = go
                 | a == kx -> return b
               _ -> Left $ BadTyApp tf kf tx kx
           TyNat _ -> return "Nat"
-          Struct fields -> do
-            let subts = map (\(_,_,t) -> t) fields
-            mapM_ (wellkinded kinds) subts
-            return "Type"
         name = \case
           TyCon nm -> Just nm
           TyVar nm -> Just nm

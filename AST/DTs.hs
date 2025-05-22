@@ -133,6 +133,13 @@ unTupleT = go
       Unit -> Just []
       _ -> Nothing
 
+unTupleE :: E -> Maybe [E]
+unTupleE = go
+  where go = \case
+          Var "Pair" :$ e :$ es ->
+            (e :) <$> go es
+          Var "Unit" -> return []
+
 {-
 --Unification is pretty fundamental, so might as well put it in here
 --Left (mnm,t1,t2) => subtypes t1 and t2 failed to unify
@@ -182,10 +189,12 @@ instT m = go
           Struct padnmts -> Struct $ map (\(pad,nm,t) -> (pad,nm,go t)) padnmts
           t -> t
 -}
+--Now that I have kind signatures I don't need to hardcode kinds!
 --EVMC does not support support declaring (->) or new kinds in source,
 --so they must be hardcoded instead of in Prim.evmc.
 --(->) is given the kind Type -> Type -> Type just so it can be put in the map,
 --but it's in fact treated as polymorphic during kind check.
+{-
 hardcodedTyCons :: Map Name T
 hardcodedTyCons = M.fromList $
   are "Type" "Type Region Signedness Nat" ++
@@ -194,6 +203,7 @@ hardcodedTyCons = M.fromList $
   is ("Type" :-> "Type" :-> "Type") "->"
   where are t = map (\nm -> (nm,t)) . words
         is = are --English lesson of the day
+-}
 --Primitive type synonyms and functions now in Prim.evmc, so they don't need to
 --be hardcoded.
   
@@ -209,8 +219,8 @@ data S = SE E --required because := has been moved to E
        | While E S
        | Case E [(Pat,S)]
        | Block [S] --Standalone do, scopes locals
-       | Break Int --break 0 ~ break in C; break n breaks out of n+1 loops
-       | Continue Int --analogous
+       | Break
+       | Continue
        | Declare Name E --mandatory variable declaration
   deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment

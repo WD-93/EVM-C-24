@@ -1,10 +1,12 @@
 module TypeCheck.TC where
 
 import Util ((?))
-import AST.DTs (Module(..))
+import AST.DTs (Module(..),Name)
 import TypeCheck.TySyn (substTySyns,TySynError())
-import TypeCheck.KindCheck (kindCheck,KindCheckError())
-import TypeCheck.TypeInfer (typeInfer,TypeInferError())
+import TypeCheck.FIKS (fiks,FIKSError())
+--import TypeCheck.KindCheck (kindCheck,KindCheckError())
+--import TypeCheck.TypeInfer (typeInfer,TypeInferError())
+
 --A separate typechecking pass, disentangling it from IR codegen.
 --That allows integer literals, tuples and structs to be overloaded.
 
@@ -43,12 +45,14 @@ import TypeCheck.TypeInfer (typeInfer,TypeInferError())
 --data to anonymous staticdatatypes.
 
 data TCError = TySynError TySynError
-             | KindCheckError KindCheckError
-             | TypeInferError TypeInferError
+             | FIKSError (Name,FIKSError)
+             -- | KindCheckError KindCheckError
+             -- | TypeInferError TypeInferError
   deriving (Eq,Ord,Read,Show)
 typecheck :: Module -> Either TCError Module
 typecheck m = do
   m1 <- substTySyns m ? TySynError
-  kindCheck m1 ? KindCheckError
-  m2 <- typeInfer m1 ? TypeInferError
+  m2 <- fiks m1 ? FIKSError
+  --kindCheck m2 ? KindCheckError
+  --m2 <- typeInfer m1 ? TypeInferError
   return m2

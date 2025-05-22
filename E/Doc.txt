@@ -46,9 +46,9 @@ The set of reserved words is the set of terminals appearing in the grammar. Thos
 The reserved words used in E are the following:
   | ``break`` | ``case`` | ``continue`` | ``data``
   | ``else`` | ``end`` | ``for`` | ``if``
-  | ``import`` | ``localReturn`` | ``memory`` | ``of``
+  | ``import`` | ``memory`` | ``of`` | ``region``
   | ``return`` | ``storage`` | ``then`` | ``tstorage``
-  | ``type`` | ``while`` |  | 
+  | ``type`` | ``var`` | ``while`` | 
 
 The symbols used in E are the following:
   | ; | := | : | =
@@ -60,10 +60,9 @@ The symbols used in E are the following:
   | + | << | >> | <
   | <= | > | >= | ==
   | != | ^ | | | &&
-  | || | :: | =: | :!
-  | += | -= | *= | /=
-  | %= | <<= | >>= | &=
-  | ^= | |= |  | 
+  | || | :: | += | -=
+  | *= | /= | %= | <<=
+  | >>= | &= | ^= | |=
 
 ===Comments===
 Single-line comments begin with //.Multiple-line comments are  enclosed with /* and */.
@@ -93,7 +92,8 @@ All other symbols are terminals.
   | //GlobalRegion// | -> | ``memory`` 
   |  |  **|**  | ``storage`` 
   |  |  **|**  | ``tstorage`` 
-  | //DataRHS// | -> | //UnboxedRHS// 
+  | //DataRHS// | -> | //UnboxedRHS// ``region`` //Ident// 
+  |  |  **|**  | //UnboxedRHS// 
   | //UnboxedRHS// | -> | ``{`` //[DataCon]// ``}`` 
   | //[DataCon]// | -> | **eps**
   |  |  **|**  | //DataCon// 
@@ -112,10 +112,10 @@ All other symbols are terminals.
   |  |  **|**  | ``return`` //E// 
   |  |  **|**  | ``{`` //[S]// ``}`` 
   |  |  **|**  | ``case`` //E// ``of`` ``{`` //[CASE]// ``}`` 
-  |  |  **|**  | ``break`` //Integer// 
-  |  |  **|**  | ``continue`` //Integer// 
-  |  |  **|**  | ``localReturn`` //Integer// //E// 
+  |  |  **|**  | ``break`` 
+  |  |  **|**  | ``continue`` 
   |  |  **|**  | ``for`` ``(`` //S// ``;`` //E// ``;`` //S// ``)`` //S// 
+  |  |  **|**  | ``var`` //Ident// ``=`` //E// 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
@@ -180,8 +180,6 @@ All other symbols are terminals.
   | //E// | -> | //E1// 
   |  |  **|**  | //E1// //AOp// //E// 
   |  |  **|**  | //E1// ``::`` //T// 
-  |  |  **|**  | //E1// ``=:`` //T// 
-  |  |  **|**  | //E1// ``:!`` //T// 
   | //AOp// | -> | ``=`` 
   |  |  **|**  | ``+=`` 
   |  |  **|**  | ``-=`` 
@@ -193,7 +191,10 @@ All other symbols are terminals.
   |  |  **|**  | ``&=`` 
   |  |  **|**  | ``^=`` 
   |  |  **|**  | ``|=`` 
-  | //T1// | -> | //Ident// 
+  | //T// | -> | //T1// ``->`` //T// 
+  |  |  **|**  | //T1// ``[`` //T// ``]`` 
+  |  |  **|**  | //T1// 
+  | //T2// | -> | //Ident// 
   |  |  **|**  | //Integer// 
   |  |  **|**  | //UIdent// 
   |  |  **|**  | ``(`` ``)`` 
@@ -201,9 +202,7 @@ All other symbols are terminals.
   |  |  **|**  | ``(`` //T// ``)`` 
   | //[T]// | -> | //T// 
   |  |  **|**  | //T// ``,`` //[T]// 
-  | //T// | -> | //T// //T1// 
-  |  |  **|**  | //T// ``[`` //T// ``]`` 
-  |  |  **|**  | //T// ``->`` //T1// 
-  |  |  **|**  | //T1// 
+  | //T1// | -> | //T1// //T2// 
+  |  |  **|**  | //T2// 
 
 

@@ -130,6 +130,7 @@ instance Print GlobalRegion where
 
 instance Print DataRHS where
   prt i e = case e of
+    Boxed unboxedrhs id -> prPrec i 0 (concatD [prt 0 unboxedrhs, doc (showString "region"), prt 0 id])
     Unboxed unboxedrhs -> prPrec i 0 (concatD [prt 0 unboxedrhs])
 
 instance Print UnboxedRHS where
@@ -162,10 +163,10 @@ instance Print S where
     Return e_ -> prPrec i 0 (concatD [doc (showString "return"), prt 0 e_])
     Do ss -> prPrec i 0 (concatD [doc (showString "{"), prt 0 ss, doc (showString "}")])
     Case e_ cases -> prPrec i 0 (concatD [doc (showString "case"), prt 0 e_, doc (showString "of"), doc (showString "{"), prt 0 cases, doc (showString "}")])
-    Break n -> prPrec i 0 (concatD [doc (showString "break"), prt 0 n])
-    Continue n -> prPrec i 0 (concatD [doc (showString "continue"), prt 0 n])
-    LocalReturn n e_ -> prPrec i 0 (concatD [doc (showString "localReturn"), prt 0 n, prt 0 e_])
+    Break -> prPrec i 0 (concatD [doc (showString "break")])
+    Continue -> prPrec i 0 (concatD [doc (showString "continue")])
     For s1 e_ s2 s3 -> prPrec i 0 (concatD [doc (showString "for"), doc (showString "("), prt 0 s1, doc (showString ";"), prt 0 e_, doc (showString ";"), prt 0 s2, doc (showString ")"), prt 0 s3])
+    Declare id e_ -> prPrec i 0 (concatD [doc (showString "var"), prt 0 id, doc (showString "="), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -217,9 +218,7 @@ instance Print E where
     And e_1 e_2 -> prPrec i 2 (concatD [prt 2 e_1, doc (showString "&&"), prt 3 e_2])
     Or e_1 e_2 -> prPrec i 1 (concatD [prt 1 e_1, doc (showString "||"), prt 2 e_2])
     Assign e_1 aop e_2 -> prPrec i 0 (concatD [prt 1 e_1, prt 0 aop, prt 0 e_2])
-    Coerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "::"), prt 0 t])
-    TypeIs e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "=:"), prt 0 t])
-    UnsafeCoerce e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString ":!"), prt 0 t])
+    TypeAnnot e_ t -> prPrec i 0 (concatD [prt 1 e_, doc (showString "::"), prt 0 t])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print AOp where
@@ -238,14 +237,14 @@ instance Print AOp where
 
 instance Print T where
   prt i e = case e of
-    TVar id -> prPrec i 1 (concatD [prt 0 id])
-    TNat n -> prPrec i 1 (concatD [prt 0 n])
-    TCon uident -> prPrec i 1 (concatD [prt 0 uident])
-    TEmptyTup -> prPrec i 1 (concatD [doc (showString "("), doc (showString ")")])
-    TTup t ts -> prPrec i 1 (concatD [doc (showString "("), prt 0 t, doc (showString ","), prt 0 ts, doc (showString ")")])
-    TApp t1 t2 -> prPrec i 0 (concatD [prt 0 t1, prt 1 t2])
-    TArray t1 t2 -> prPrec i 0 (concatD [prt 0 t1, doc (showString "["), prt 0 t2, doc (showString "]")])
-    TArrow t1 t2 -> prPrec i 0 (concatD [prt 0 t1, doc (showString "->"), prt 1 t2])
+    TArrow t1 t2 -> prPrec i 0 (concatD [prt 1 t1, doc (showString "->"), prt 0 t2])
+    TVar id -> prPrec i 2 (concatD [prt 0 id])
+    TNat n -> prPrec i 2 (concatD [prt 0 n])
+    TCon uident -> prPrec i 2 (concatD [prt 0 uident])
+    TEmptyTup -> prPrec i 2 (concatD [doc (showString "("), doc (showString ")")])
+    TTup t ts -> prPrec i 2 (concatD [doc (showString "("), prt 0 t, doc (showString ","), prt 0 ts, doc (showString ")")])
+    TApp t1 t2 -> prPrec i 1 (concatD [prt 1 t1, prt 2 t2])
+    TArray t1 t2 -> prPrec i 0 (concatD [prt 1 t1, doc (showString "["), prt 0 t2, doc (showString "]")])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 

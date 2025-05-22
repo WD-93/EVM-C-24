@@ -49,6 +49,7 @@ transGlobalRegion x = case x of
   TStorage -> failure x
 transDataRHS :: DataRHS -> Result
 transDataRHS x = case x of
+  Boxed unboxedrhs ident -> failure x
   Unboxed unboxedrhs -> failure x
 transUnboxedRHS :: UnboxedRHS -> Result
 transUnboxedRHS x = case x of
@@ -72,10 +73,10 @@ transS x = case x of
   Return e -> failure x
   Do ss -> failure x
   Case e cases -> failure x
-  Break integer -> failure x
-  Continue integer -> failure x
-  LocalReturn integer e -> failure x
+  Break -> failure x
+  Continue -> failure x
   For s1 e s2 s3 -> failure x
+  Declare ident e -> failure x
 transCASE :: CASE -> Result
 transCASE x = case x of
   C e s -> failure x
@@ -121,9 +122,7 @@ transE x = case x of
   And e1 e2 -> failure x
   Or e1 e2 -> failure x
   Assign e1 aop e2 -> failure x
-  Coerce e t -> failure x
-  TypeIs e t -> failure x
-  UnsafeCoerce e t -> failure x
+  TypeAnnot e t -> failure x
 transAOp :: AOp -> Result
 transAOp x = case x of
   EqEq -> failure x
@@ -139,6 +138,7 @@ transAOp x = case x of
   OrEq -> failure x
 transT :: T -> Result
 transT x = case x of
+  TArrow t1 t2 -> failure x
   TVar ident -> failure x
   TNat integer -> failure x
   TCon uident -> failure x
@@ -146,5 +146,4 @@ transT x = case x of
   TTup t ts -> failure x
   TApp t1 t2 -> failure x
   TArray t1 t2 -> failure x
-  TArrow t1 t2 -> failure x
 

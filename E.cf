@@ -36,7 +36,7 @@ TStorage. GlobalRegion ::= "tstorage";
 --Unboxed datatypes supersede structs and enums
 --0-parameter datatypes are now permitted.
 Data. D ::= "data" ConArgs "=" DataRHS;
---Boxed. DataRHS ::= UnboxedRHS "region" Ident;
+Boxed. DataRHS ::= UnboxedRHS "region" Ident;
 Unboxed. DataRHS ::= UnboxedRHS;
 URHS. UnboxedRHS ::= "{" [DataCon] "}";
 separator DataCon ";";
@@ -61,13 +61,16 @@ separator S ";";
 --layout "of";
 Case. S ::= "case" E "of" "{" [CASE] "}";
 separator CASE ";";
---TODO add pattern type?
 C. CASE ::= E "=>" S;
-Break. S ::= "break" Integer;
-Continue. S ::= "continue" Integer;
-LocalReturn. S ::= "localReturn" Integer E;
+--Break and continue are now only local
+Break. S ::= "break";
+Continue. S ::= "continue";
+--With no block exprs, local return is no longer relevant
+--LocalReturn. S ::= "localReturn" Integer E;
 --For isnt essential, its a convenience feature
 For. S ::= "for" "(" S ";" E ";" S ")" S;
+--Declaring new locals is mandatory
+Declare. S ::= "var" Ident "=" E;
 
 --Ugly array expr syntax for now: array (e1,e2,e3,...)
 --Anon static data and structs removed
@@ -144,13 +147,9 @@ coercions E 13;
 
 --Right-to-left
 Assign. E ::= E1 AOp E;
---Coerce using ::
-Coerce. E ::= E1 "::" T;
---Type declaration... using =: instead of : to avoid a shift-reduce
-TypeIs. E ::= E1 "=:" T;
---Coercion without masking at runtime
-UnsafeCoerce. E ::= E1 ":!" T;
---E1. E ::= E1;
+--Type annotation
+--coerce and unsafeCoerce are now primfuns, not part of the syntax
+TypeAnnot. E ::= E1 "::" T;
 
 EqEq. AOp ::= "=";
 PlusEq. AOp ::= "+=";
@@ -164,25 +163,37 @@ AndEq. AOp ::= "&=";
 XorEq. AOp ::= "^=";
 OrEq. AOp ::= "|=";
 
+TArrow. T ::= T1 "->" T;
 --Leaf types
-TVar. T1 ::= Ident;
-TNat. T1 ::= Integer;
-TCon. T1 ::= UIdent;
---TStruct. T1 ::= "{" [TField] "}";
---separator TField ",";
---Order enforced: [pad sz][align sz](t | field: t)
---TPad. TField ::= "wordpad" TField1;
---TF1. TField ::= TField1;
---TAlign. TField1 ::= "wordalign" TField2;
---TF2. TField1 ::= TField2;
---TNamed. TField2 ::= Ident ":" T;
---TAnon. TField2 ::= T;
-TEmptyTup. T1 ::= "(" ")";
-TTup. T1 ::= "(" T "," [T] ")";
+TVar. T2 ::= Ident;
+TNat. T2 ::= Integer;
+TCon. T2 ::= UIdent;
+TEmptyTup. T2 ::= "(" ")";
+TTup. T2 ::= "(" T "," [T] ")";
 separator nonempty T ",";
+--TLeaf. T2 ::= Ident;
 --Type application
-TApp. T ::= T T1;
+TApp. T1 ::= T1 T2;
 --t[len] is sugar for Array len t
-TArray. T ::= T "[" T "]";
-TArrow. T ::= T "->" T1;
-coercions T 1;
+--List r a [t] should parse to List r (a[t])
+TArray. T ::= T1 "[" T "]";
+--a -> Ptr r a should parse to a -> (Ptr r a), not (a -> Ptr) r a
+
+coercions T 2;
+
+
+{-
+TAgoo. T ::= "agoo";
+T1Agoo. T1 ::= "aba";
+TArrows. T ::= TLeaf; -- [T1];
+--separator T1 "->";
+TApp. T1 ::= T1 TLeaf;
+TLeaf. T1 ::= TLeaf;
+TVar. TLeaf ::= Ident;
+
+TNat. TLeaf ::= Integer;
+TCon. TLeaf ::= UIdent;
+TEmptyTup. TLeaf ::= "(" ")";
+TTup. TLeaf ::= "(" T "," [T] ")";
+separator nonempty T ",";
+-}

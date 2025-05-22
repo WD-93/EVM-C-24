@@ -22,6 +22,7 @@ import Control.Monad.State
 import Text.Read (readMaybe)
 import Data.List (sort)
 import Data.Char (ord) --for string desugaring
+import Control.Arrow ((***))
 
 data DError = DuplicateDefun Name
             | BadDOrdering [P.D]
@@ -50,6 +51,8 @@ data DError = DuplicateDefun Name
             | DuplicateKindSigs Name
             | UnresolvedImport P.ModuleName
             | DuplicateTyCons Name
+            | NonByteChar String
+            | DuplicateFieldNames Name
   deriving (Eq,Ord,Read,Show)
 
 --Declarations are order-independent, modulo the static names allocated to
@@ -102,12 +105,89 @@ desugarD = \case
     checkForDuplicates x
     let r = read $ take 2 $ show pr
     modify (\m->m{globals = M.insert x r $ globals m})
+  --Relevant:
+  --datatypes: params, conDecls
+  --datatypeRegions: if Just r <- mr insert it
+  --constructors: con : arg1 -> arg2 -> ... -> tycon params
+  --fieldTypes: tycon params -> argN
+  --fieldSpecs: con, n
   P.Data conArgs dataRHS -> do
-    let (con,args) = desugarConArgs conArgs
-    error "todo"
+    let (tycon,args) = desugarConArgs conArgs
+        (condecls,mr) = desugarDataRHS dataRHS
+    checkForDupTyCon tycon
+    --Insert datatype entry
+    modify (\m->m{datatypes = M.insert tycon (args,condecls) $
+                 datatypes m})
+    --If Just r <- mr insert it
+    case mr of
+      Just r -> modify (\m->m{datatypeRegions = M.insert tycon r $
+                               datatypeRegions m})
+      Nothing -> return ()
+    --Add type signatures for constructors
+    --TODO move them to tysigs instead? Need to check they're not underapplied,
+    --so they should be treated differently. But for that I only need arity...
+    let rett :: T --the return type of constructors
+        rett = foldl (:$$) (TyCon tycon) $ map TyVar args
+    let conArgs :: [(Name,[T])]
+        conArgs = map (id *** (\case Left ts -> ts; Right nmts -> map snd nmts))
+                  condecls
+        conTs :: [(Name,T)]
+        conTs = map (id *** (foldr (:->) rett)) conArgs
+    mapM_ (\(con,t) -> do
+              checkForDuplicates con
+              modify (\m->m{constructors=M.insert con t $ constructors m}))
+      conTs
+    --Insert field types
+    let conFields :: [(Name,Name,Int,T)] --(con,field nm,index,field type)
+        conFields = do
+          (con,ei) <- condecls
+          case ei of
+            Left _ -> [] --no fields
+            Right nmts -> do
+              (ix,(nm,t)) <- zip [0..] nmts
+              return (con,'.':nm,ix,t)
+    mapM_ (\(con,nm,ix,t) -> do
+              s <- get
+              let fts = fieldTypes s
+              complainIf (M.member nm fts)
+                $ DuplicateFieldNames nm
+              put s{fieldTypes = M.insert nm (rett :-> t) fts,
+                    fieldSpecs = M.insert nm (con,ix) $ fieldSpecs s}
+          )
+      conFields
   P.StaticData (Ident nm) pe -> do
+    checkForDuplicates nm
     e <- desugarE pe
-    error "todo"
+    modify (\m->m{static=M.insert nm e $ static m})
+    
+
+desugarDataRHS :: P.DataRHS -> ([ConDecl],Maybe Name)
+desugarDataRHS = \case
+  P.Unboxed urhs ->
+    let cons = desugarUnboxedRHS urhs
+    in (cons,Nothing)
+  P.Boxed urhs (Ident r) ->
+    let cons = desugarUnboxedRHS urhs
+    in (cons, Just r)
+desugarUnboxedRHS :: P.UnboxedRHS -> [ConDecl]
+desugarUnboxedRHS (P.URHS dcs) = map desugarDataCon dcs
+desugarDataCon :: P.DataCon -> ConDecl
+desugarDataCon = \case
+  P.DCArgs dca ->
+    let (con,ts) = desugarDCA dca
+    in (con, Left ts)
+  P.DCRecord (UIdent con) rfs ->
+    let nmts = map desugarRecordField rfs
+    in (con, Right nmts)
+desugarDCA :: P.DCA -> (Name,[T])
+desugarDCA = \case
+  P.DCANil (UIdent con) -> (con,[])
+  P.DCACons dca pt ->
+    let t = desugarT pt
+        (con,ts) = desugarDCA dca
+    in (con,ts ++ [t])
+desugarRecordField :: P.RecordField -> (Name,T)
+desugarRecordField (P.RF (Ident nm) pt) = (nm,desugarT pt)
 
 addSig :: Name -> P.T ->
           (Module -> Map Name T) ->
@@ -321,6 +401,11 @@ desugarS = \case
     e <- desugarE pe
     cases <- mapM desugarCase pcases
     return $ Case e cases
+  P.Break -> return Break
+  P.Continue -> return Continue
+  --for (start;cond;each) s => {start;while (cond) {s;each}}
+  P.For {} -> error "todo for loops"
+  P.Declare (Ident nm) e -> Declare nm <$> desugarE e
 
 --TODO allow _, x patterns in case
 desugarCase :: P.CASE -> De (Pat,S)
@@ -340,11 +425,12 @@ desugarE = go
           --all overloading is implemented via function application under the
           --hood.
           P.HexInt (P.HexInteger str) -> go $ P.Int $ read str
-          P.Int n -> return $ po1 "fromWord" EInteger n
+          P.Int n -> return $ po1 "fromWord" $ EInteger n
           P.Var (Ident nm) -> return $ Var nm
           P.String str -> handleString str
           P.Con (UIdent nm) -> return $ Var nm
-          P.Wild -> throwE WildcardInExprContext
+          --Patterns are now exprs...
+          P.Wild -> return $ Var "_"
           --Without block exprs this becomes ugly...
           P.PlusPlusPost pe -> do
             e <- go pe
@@ -352,10 +438,75 @@ desugarE = go
           P.MinusMinusPost pe -> do
             e <- go pe
             return $ po2 "plus" (e := (po2 "minus" e (EInteger 1))) (EInteger 1)
+          P.Index a b -> op2 "index" a b
+          P.Dot e (Ident nm) -> op1 ('.' : nm) e
+          P.Arrow pe (Ident nm) -> do
+            e <- go pe
+            return $ po1 ('.':nm) $ po1 "deref" e
+          --I use array (e1,e2,...) as hacky syntax for array exprs
+          P.App (P.Var (Ident "array")) ptup -> do
+            tup <- go ptup
+            case unTupleE tup of
+              Just es -> return $ EArray es
+              Nothing ->
+                throwE $ GenericDError "Non-tuple passed to array 'function'"
+          P.PlusPlusPre pe -> do
+            e <- go pe
+            return $ e := (po2 "plus" e $ EInteger 1)
+          P.MinusMinusPre pe -> do
+            e <- go pe
+            return $ e := (po2 "minus" e $ EInteger 1)
+          P.Negate a -> op1 "negate" a
+          P.Not a -> op1 "lNot" a
+          P.BitwiseNot a -> op1 "bwNot" a
+          P.Deref a -> op1 "deref" a
+          P.AddressOf a -> op1 "ampersand" a
+          P.Mul a b -> op2 "multiply" a b
+          P.Div a b -> op2 "divide" a b
+          P.Mod a b -> op2 "modulo" a b
+          P.Plus a b -> op2 "plus" a b
+          P.Minus a b -> op2 "minus" a b
+          P.Shl a b -> op2 "shL" a b
+          P.Shr a b -> op2 "shR" a b
+          P.MyLT a b -> op2 "lt_" a b
+          P.LTE a b -> op2 "lte_" a b
+          P.MyGT a b -> op2 "gt_" a b
+          P.GTE a b -> op2 "gte_" a b
+          P.Eq a b -> op2 "eq_" a b
+          P.NEq a b -> op2 "neq_" a b
+          P.BitwiseAnd a b -> op2 "bwAnd" a b
+          P.BitwiseXor a b -> op2 "bwXor" a b
+          P.BitwiseOr a b -> op2 "bwOr" a b
+          P.And a b -> op2 "scAnd" a b
+          P.Or a b -> op2 "scOr" a b
+          P.Assign a aop b -> do
+            a' <- go a
+            b' <- go b
+            return $ a' := aop2op aop a' b'
+          --Coerce need no longer be part of the syntax
+          P.TypeAnnot pe pt -> do
+            let t = desugarT pt
+            e <- go pe
+            return $ e ::: t
         po1 primop a = Var primop :$ a
         po2 primop a b =
           Var primop :$ (Var "Pair" :$ a :$
                           (Var "Pair" :$ b :$ Var "Unit"))
+        op1 :: Name -> P.E -> De E
+        op1 primop a = po1 primop <$> go a
+        op2 primop a b = po2 primop <$> go a <*> go b
+        aop2op = \case
+          P.EqEq -> flip const
+          P.PlusEq -> po2 "plus"
+          P.MinusEq -> po2 "minus"
+          P.MulEq -> po2 "multiply"
+          P.DivEq -> po2 "divide"
+          P.ModEq -> po2 "modulo"
+          P.ShlEq -> po2 "shL"
+          P.ShrEq -> po2 "shR"
+          P.AndEq -> po2 "bwAnd"
+          P.XorEq -> po2 "bwXor"
+          P.OrEq -> po2 "bwOr"
     {-
     go = \case
       P.String str -> do
@@ -512,23 +663,22 @@ desugarE = go
 
 --"abc" => (&sv :: Ptr Code (Array 3 Byte)) where sv := array (97,98,99)
 handleString :: String -> De E
-handleString = error "todo handle string"
-
-{-
---So primops can use the type information of one argument to inform the
---desired type of another. This means the argument of a prefix primop
---application has different semantics: for an ordinary function application
---tup = (a,b); f tup
---is equivalent to f (a,b), but not for primops.
-desugarExplicitTuple :: P.E -> De [E]
-desugarExplicitTuple = \case
-  P.EmptyTuple -> return []
-  P.Tuple pe pes -> mapM desugarE (pe:pes)
-  pe -> (:[]) <$> desugarE pe
---Need to keep this in sync with typecheck and codegen... perhaps move to DTs
-prefixPrimfuns :: Set Name
-prefixPrimfuns = S.fromList $ words "stop revert copy"
--}
+handleString str = do
+  let codes = map ord str
+      len = fromIntegral $ length str
+  --Better than silently truncating...
+  complainIf (any (>255) codes)
+    $ NonByteChar str
+  --sv := array cs
+  let arrayE = EArray $ map (EInteger . fromIntegral) codes
+  s <- get
+  --Alloc new name for sv, insert new sv def
+  let n = anonStaticCtr s
+      svnm = "$static" ++ show n
+  put s{anonStaticCtr = n + 1,
+        static = M.insert svnm arrayE $ static s}
+  return $ (Var "ampersand" :$ Var svnm)
+    ::: Ptr Code (Array (TyNat len) (TyCon "Byte"))
 
 --String literals are lifted to staticData decls:
 --"abc" becomes staticData (Byte[3]) {97,98,99};
