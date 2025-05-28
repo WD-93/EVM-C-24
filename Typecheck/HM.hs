@@ -821,7 +821,7 @@ inferDefs m = go
             case () of
               _ | Just pats <- M.lookup nm $ defuns m -> do
                     (pats',t) <- typeOfFun m pats
-                    unify t <$> tauOf nm
+                    tauOf nm >>= unify t
                     return (M.insert nm pats' funs,stats,globs)
                 | Just e <- M.lookup nm $ static m -> do
                     (e',t) <-  typeOf e
