@@ -106,7 +106,7 @@ instance Print D where
     KindSig uident t -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 t])
     TySyn conargs t -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 t])
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
-    Global globalregion id -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 id])
+    Global globalregion varbind -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 varbind])
     Data conargs datarhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conargs, doc (showString "="), prt 0 datarhs])
     StaticData id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":="), prt 0 e_])
   prtList _ [] = (concatD [])
@@ -166,7 +166,7 @@ instance Print S where
     Break -> prPrec i 0 (concatD [doc (showString "break")])
     Continue -> prPrec i 0 (concatD [doc (showString "continue")])
     For s1 e_ s2 s3 -> prPrec i 0 (concatD [doc (showString "for"), doc (showString "("), prt 0 s1, doc (showString ";"), prt 0 e_, doc (showString ";"), prt 0 s2, doc (showString ")"), prt 0 s3])
-    Declare id e_ -> prPrec i 0 (concatD [doc (showString "var"), prt 0 id, doc (showString "="), prt 0 e_])
+    Declare varbinds -> prPrec i 0 (concatD [doc (showString "var"), prt 0 varbinds])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -176,6 +176,12 @@ instance Print CASE where
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
+instance Print VarBind where
+  prt i e = case e of
+    JustVar id -> prPrec i 0 (concatD [prt 0 id])
+    VarIs id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString "="), prt 0 e_])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])

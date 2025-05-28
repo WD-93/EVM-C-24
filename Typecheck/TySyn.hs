@@ -33,11 +33,14 @@ data TySynError = TyConsNotInScope (Set Name)
   deriving (Eq,Ord,Read,Show)
 
 --Tysyns are not kind checked; that allows them to be kind-polymorphic.
-
 substTySyns :: Module -> Either TySynError Module
 substTySyns m = do
   --The set of tycons and tysyn names; used for scope and cycle checking
-  let tycons = S.union (M.keysSet $ datatypes m) (M.keysSet $ kindsigs m)
+  let tycons = S.unions [
+        M.keysSet $ datatypes m,
+        M.keysSet $ kindsigs m,
+        sorts m
+        ]
       syncons = M.keysSet $ tysyns m
   syns <- handleTySyns tycons syncons $ tysyns m
   let inM f g = inMap f g syns m

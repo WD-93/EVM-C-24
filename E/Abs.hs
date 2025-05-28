@@ -21,7 +21,7 @@ data D
     | KindSig UIdent T
     | TySyn ConArgs T
     | Import ModuleName
-    | Global GlobalRegion Ident
+    | Global GlobalRegion VarBind
     | Data ConArgs DataRHS
     | StaticData Ident E
   deriving (Eq, Ord, Show, Read)
@@ -60,10 +60,13 @@ data S
     | Break
     | Continue
     | For S E S S
-    | Declare Ident E
+    | Declare [VarBind]
   deriving (Eq, Ord, Show, Read)
 
 data CASE = C E S
+  deriving (Eq, Ord, Show, Read)
+
+data VarBind = JustVar Ident | VarIs Ident E
   deriving (Eq, Ord, Show, Read)
 
 data E

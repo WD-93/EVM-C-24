@@ -8,10 +8,11 @@ Thanks to kind signatures, every primitive kind but (->) can be declared here.
 */
 
 //Primitive kinds
-//Required because t :: Type is assumed to be a value
-Kind : Kind;
+//Kind does not itself have a kind, bounding the kind hierarchy to depth 3
 //The kind of all value types
 Type : Kind;
+//Type-level naturals
+Nat : Kind;
 //Regions, used to parameterize pointers
 Region : Kind;
 Memory : Region;
@@ -54,6 +55,7 @@ minus _ := ();
 multiply : (Int a b, Int a b) -> Int a b;
 multiply _ := ();
 divide : (Int a b, Int a b) -> Int a b;
+divide _ := ();
 modulo : (Int a b, Int a b) -> Int a b;
 modulo _ := ();
 
@@ -63,6 +65,7 @@ negate _ := ();
 shL : Int a b -> Int c d -> Int a b;
 shL _ := ();
 shR : Int a b -> Int c d -> Int a b;
+shR _ := ();
 
 //Pointer ops; writePtr isn't necessary here since it appears after type
 //checking.

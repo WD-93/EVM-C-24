@@ -82,7 +82,7 @@ All other symbols are terminals.
   |  |  **|**  | //UIdent// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
   |  |  **|**  | ``import`` //ModuleName// 
-  |  |  **|**  | //GlobalRegion// //Ident// 
+  |  |  **|**  | //GlobalRegion// //VarBind// 
   |  |  **|**  | ``data`` //ConArgs// ``=`` //DataRHS// 
   |  |  **|**  | //Ident// ``:=`` //E// 
   | //ConArgs// | -> | //UIdent// 
@@ -115,7 +115,7 @@ All other symbols are terminals.
   |  |  **|**  | ``break`` 
   |  |  **|**  | ``continue`` 
   |  |  **|**  | ``for`` ``(`` //S// ``;`` //E// ``;`` //S// ``)`` //S// 
-  |  |  **|**  | ``var`` //Ident// ``=`` //E// 
+  |  |  **|**  | ``var`` //[VarBind]// 
   | //[S]// | -> | **eps**
   |  |  **|**  | //S// 
   |  |  **|**  | //S// ``;`` //[S]// 
@@ -123,6 +123,10 @@ All other symbols are terminals.
   |  |  **|**  | //CASE// 
   |  |  **|**  | //CASE// ``;`` //[CASE]// 
   | //CASE// | -> | //E// ``=>`` //S// 
+  | //[VarBind]// | -> | //VarBind// 
+  |  |  **|**  | //VarBind// ``,`` //[VarBind]// 
+  | //VarBind// | -> | //Ident// 
+  |  |  **|**  | //Ident// ``=`` //E// 
   | //E13// | -> | ``(`` ``)`` 
   |  |  **|**  | ``(`` //E// ``,`` //[E]// ``)`` 
   |  |  **|**  | //HexInteger// 

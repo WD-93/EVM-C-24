@@ -31,7 +31,7 @@ transD x = case x of
   KindSig uident t -> failure x
   TySyn conargs t -> failure x
   Import modulename -> failure x
-  Global globalregion ident -> failure x
+  Global globalregion varbind -> failure x
   Data conargs datarhs -> failure x
   StaticData ident e -> failure x
 transConArgs :: ConArgs -> Result
@@ -76,10 +76,14 @@ transS x = case x of
   Break -> failure x
   Continue -> failure x
   For s1 e s2 s3 -> failure x
-  Declare ident e -> failure x
+  Declare varbinds -> failure x
 transCASE :: CASE -> Result
 transCASE x = case x of
   C e s -> failure x
+transVarBind :: VarBind -> Result
+transVarBind x = case x of
+  JustVar ident -> failure x
+  VarIs ident e -> failure x
 transE :: E -> Result
 transE x = case x of
   EmptyTuple -> failure x

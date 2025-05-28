@@ -27,7 +27,7 @@ Import. D ::= "import" ModuleName;
 MNil. ModuleName ::= UIdent;
 MCons. ModuleName ::= UIdent "." ModuleName;
 --Ex: memory x : UInt 16
-Global. D ::= GlobalRegion Ident;
+Global. D ::= GlobalRegion VarBind;
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
@@ -70,7 +70,10 @@ Continue. S ::= "continue";
 --For isnt essential, its a convenience feature
 For. S ::= "for" "(" S ";" E ";" S ")" S;
 --Declaring new locals is mandatory
-Declare. S ::= "var" Ident "=" E;
+Declare. S ::= "var" [VarBind]; --Ident "=" E;
+separator nonempty VarBind ",";
+JustVar. VarBind ::= Ident;
+VarIs. VarBind ::= Ident "=" E;
 
 --Ugly array expr syntax for now: array (e1,e2,e3,...)
 --Anon static data and structs removed

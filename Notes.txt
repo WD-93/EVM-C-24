@@ -30,6 +30,80 @@ At that point maybe I should just go full HM...
 
 -------------------------------------START NEW TYPE DISCUSSION-------------------------------------------------
 
+OK, now I have the beginnings of HM...
+Kind var $_1 unbound in addressOf :: a -> Ptr r a!
+Surprisingly, $a_0 and $r_2 are in the kind map, but they're type metavariables!
+I zonkK'd a :: k and not k...
+Fixed; now Prim and Prelude pass the first stages of type checking.
+
+sizeof : ProxyNat n -> Int s l
+Is nice, but one could go further: generic programming for EVMC!
+Generic GC/deep copy might be possible to implement using a primitive that reveals boxed status.
+
+I now have the dynamic things sorted into SCCs. What do if the same tyvar is mentioned in the zonked type of
+several functions?
+Ex: f x = g x; g x = f x
+Result: f : a -> b; g : a -> b
+It's no problem, just store them as-is. Prettify the tyvars first: a, b, c... a1,b1... in order of occurrence.
+
+Invariant: all function names should be TyApp'd; pass [] for monomorphic types. That simplifies monomorphiz'n.
+Opt: record the kinds of tyvars in type schemes so you can unify with them immediately and not have to
+re-infer them.
+Opt that requires ST: cache kinds in each type cell to avoid recomputing them in each kindOf.
+Module could be parameterized by the type of caches: () pre-HM.
+Note: primfuns should always be given a tysig so they're omitted from inferSCCs.
+Require globals without an initializer are given an explicit type signature; that means only globals with an
+e to type will be in inferSCC.
+If I added lambdas as an E constructor I could handle them uniformly... but I still need to treat functions
+specially since the monomorphism restriction doesn't apply to them. It would also require lambda lifting
+machinery... not worth it.
+
+memOffset : MPtr Byte;
+memOffset := ...?
+Allow coerce in static vals... in theory I could allow any non-side effecting expr, but I won't for now.
+
+When type-applying polymorphic functions, specify the vars in textual order. That requires everywhere
+collection using a list, not a set. TyApp can take a list of types, simplifying monomorphization.
+Collection using a list would also simplify prettify and quantify.
+Need to collect both a list and set to both record ordering and prevent double-inclusion in the list.
+Done.
+
+Patterns: I have yet to support Con {field: p, ...}.
+It could be represented as Con{} {field1: p1} {field2: p2}...
+Con{} would then be a new expr primitive ~ Con (null()) (null()) ...
+Patterns need to be bidirectional, so what does x{f: p} = e mean?
+Intuitively: every field g but f in x is set to e.g; p is set to e.f.
+The semantics of patterns: each subpattern specifies a location reachable from e (if &_ is supported,
+including from *(e.fields)) and either an output location or is rigid.
+Basic pattern constructors: _, k, ->f, <-f (where field is a lens), p1@p2
+Alt that delays having to specify a semantics: convert Con {fields: ps} to Con args form with
+_ for the unspecified fields.
+
+case d of
+ Con1 a1 a2 ... -> s
+ ... =>
+p = coerce d :: BytePtr r
+case *p of
+ 0 -> a1 = {*(coerce (p+off) :: Ptr r tFieldA1); s}
+
+TODO separate out string => &staticValue : Ptr Code (Array n Byte) substitution from desugar, allowing
+desugarE to be pure.
+**************
+
+Globals: allow either region x = e, where e is a static expr.
+No initializer is not equivalent to x = null(); consider storage and tstorage.
+How to treat initialization uniformly with other code, allowing it to use and be used by ordinary opts?
+Add it to the start of main; disallow ordinary calls of main, it's an antipattern anyway.
+That way I can get rid of the prologue...
+Treating global SCC division uniformly with function and static would simplify the type inference rules, but
+means uninitialized globals require a signature. It's worth it...
+Since initializers run in main, it would in theory be simple to have side-effecting exprs. But it would be a
+footgun unless initializers are run in reverse topological order as far as possible.
+And by name otherwise? Still a footgun since global decls are order-independent... only allow static rhses and
+leave explicitly ordered initialization to the user.
+
+---------------------------------------------------------------------------------------------------------------
+
 For functions like typeOf, it would be nice if I could get the alloc pointer; it could be in a constraint/dict.
 That's cleaner than @, allowing me to transparently use an implicit alloc pointer for alloc with no syntactic
 overhead. Con arg :: dat r st HasAllocPtr r
@@ -492,10 +566,20 @@ A potential source of infinite loops: t ~ Con t. Solution: when a var is unified
 cycles?
 
 TODO minor opt: cache the set of names in the tycon and runtime value namespaces respectively.
+
 Simple rules that could be disentangled: require each param is unique in type and data.
+
 With MkFun and MkPtr (UInt 16), I could give funs and ptrs a concrete repr... only Int would need special
 treatment then.
 addressOf : a -> Ptr r a --parses to (a -> Ptr) r a! I need more levels in T.
+
+Need to add TyApp E T to E - that way I can keep post-type inference modules in Module.
+Monomorphization could stay in Module by replacing the defined functions with renamed monomorphic fs.
+What about primfuns? It would be nice to inline them when appropriate...
+Perhaps need to inspect the prim module to recognize which funs are primitive.
+Interaction with EVMC programs via an evmci shell in Haskell land would be nice... at least inspecting the
+types of bindings.
+Seeing how many instances there are of functions would make it easier to diagnose code blowup...
 
 First goal: rebuild compiler pipeline with 0 opts (though ensuring FIR *can* be optimized).
 ***PLAN
@@ -520,6 +604,11 @@ Should tuples be hetlists built from Pair and end in () or a | (a,b)? The former
 Prelude datatype: Pair a b = Pair a b. Separate the tycon and constructor namespaces.
 Bool, Either and Maybe could also be supported!
 FW: specify tag size and values.
+
+Need to convert boxed con allocation to <r>allocPtr accesses before I prune globals.
+Generalization of region r: region T, allowing fixed regions.
+Default unbound region tyvars to Memory for now; default Type vars to Word. Other unbound tyvars cause
+errors.
 
 Opt: when assigning a large static constant to memory, codecopy it directly instead of push-writePtr or
 deref (codecopy into scratch, mload)-writePtr.
@@ -802,6 +891,15 @@ instance plus : (Int la, Int sb lb) -> Int sa la where
  (a,b) := coerce (add (coerce a, coerce b)) --note the coerce handles signextend
 --writePtr needs to know the number of return words, and to have no aliasing between disjoint words clarified
 Combinators could do that...
+
+An interpreter using a memory array (no custom JT support):
+jtSource := array (instr1,instr2,...);
+memory jt;
+main () := {
+jt = jtSource; --should optimize to a codecopy
+};
+dispatch : IState -> (); --or any other return type desired
+dispatch(s) := return jt[s.pc] s --requires tail-call opt; s.pc should be padded and aligned
 
 -------------------END NEW TYPE DISCUSSION-------------------------------------------------------------------
 

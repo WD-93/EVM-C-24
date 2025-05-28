@@ -25,6 +25,8 @@ import E.ErrM
 %name pListS ListS
 %name pListCASE ListCASE
 %name pCASE CASE
+%name pListVarBind ListVarBind
+%name pVarBind VarBind
 %name pE13 E13
 %name pListE ListE
 %name pE12 E12
@@ -146,7 +148,7 @@ D : Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
   | UIdent ':' T { E.Abs.KindSig $1 $3 }
   | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
-  | GlobalRegion Ident { E.Abs.Global $1 $2 }
+  | GlobalRegion VarBind { E.Abs.Global $1 $2 }
   | 'data' ConArgs '=' DataRHS { E.Abs.Data $2 $4 }
   | Ident ':=' E { E.Abs.StaticData $1 $3 }
 ConArgs :: { ConArgs }
@@ -189,7 +191,7 @@ S : E { E.Abs.SE $1 }
   | 'break' { E.Abs.Break }
   | 'continue' { E.Abs.Continue }
   | 'for' '(' S ';' E ';' S ')' S { E.Abs.For $3 $5 $7 $9 }
-  | 'var' Ident '=' E { E.Abs.Declare $2 $4 }
+  | 'var' ListVarBind { E.Abs.Declare $2 }
 ListS :: { [S] }
 ListS : {- empty -} { [] }
       | S { (:[]) $1 }
@@ -200,6 +202,12 @@ ListCASE : {- empty -} { [] }
          | CASE ';' ListCASE { (:) $1 $3 }
 CASE :: { CASE }
 CASE : E '=>' S { E.Abs.C $1 $3 }
+ListVarBind :: { [VarBind] }
+ListVarBind : VarBind { (:[]) $1 }
+            | VarBind ',' ListVarBind { (:) $1 $3 }
+VarBind :: { VarBind }
+VarBind : Ident { E.Abs.JustVar $1 }
+        | Ident '=' E { E.Abs.VarIs $1 $3 }
 E13 :: { E }
 E13 : '(' ')' { E.Abs.EmptyTuple }
     | '(' E ',' ListE ')' { E.Abs.Tuple $2 $4 }

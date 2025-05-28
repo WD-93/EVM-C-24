@@ -1,11 +1,13 @@
 module TypeCheck.TC where
 
-import Util ((?))
+import Util (complainIf,(?))
 import AST.DTs (Module(..),Name)
 import TypeCheck.TySyn (substTySyns,TySynError())
 import TypeCheck.FIKS (fiks,FIKSError())
---import TypeCheck.KindCheck (kindCheck,KindCheckError())
---import TypeCheck.TypeInfer (typeInfer,TypeInferError())
+import TypeCheck.HM (tcModule,TCModuleError())
+
+import qualified Data.Map as M
+import qualified Data.Set as S
 
 --A separate typechecking pass, disentangling it from IR codegen.
 --That allows integer literals, tuples and structs to be overloaded.
@@ -44,15 +46,26 @@ import TypeCheck.FIKS (fiks,FIKSError())
 --Once static data has been typechecked, need to convert Con args in static
 --data to anonymous staticdatatypes.
 
-data TCError = TySynError TySynError
+data TCError = DupParamsTo String [(Name,[Name])]
+             | TySynError TySynError
              | FIKSError (Name,FIKSError)
-             -- | KindCheckError KindCheckError
-             -- | TypeInferError TypeInferError
+             | TCModuleError TCModuleError
   deriving (Eq,Ord,Read,Show)
 typecheck :: Module -> Either TCError Module
 typecheck m = do
+  --Check tysyn and datatype lhses are well-formed
+  checkDupParams "tysyn" (tysyns m)
+  checkDupParams "datatype" (datatypes m)
   m1 <- substTySyns m ? TySynError
   m2 <- fiks m1 ? FIKSError
-  --kindCheck m2 ? KindCheckError
-  --m2 <- typeInfer m1 ? TypeInferError
-  return m2
+  m3 <- tcModule m2 ? TCModuleError
+  return m3
+  where
+    checkDupParams :: String -> M.Map Name ([Name],a) -> Either TCError ()
+    checkDupParams decltype nm2args_m =
+          let nm2args = M.toList $ M.map fst nm2args_m
+              offenders = filter (\(nm,args) ->
+                                    length args > S.size (S.fromList args))
+                          nm2args
+          in complainIf (offenders /= [])
+             $ DupParamsTo decltype offenders

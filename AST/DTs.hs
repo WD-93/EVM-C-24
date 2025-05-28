@@ -32,6 +32,13 @@ data E = EInteger Integer
        | Pat := E
        --Perhaps replace with a constructor for each length in future.
        | EArray [E]
+       --Type application; not currently exposed by the syntax but essential
+       --for performing Hindley-Milner transformation in the Module type
+       --TyApp is only needed for functions, so it might as well just take a
+       --Name.
+       | TyApp Name [T]
+       --Since functions are only defined at the top level (there are no
+       --letrecs, lets or lambdas), I do not need TyLam Name E
   deriving (Eq,Ord,Read,Show,Data)
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
@@ -221,7 +228,9 @@ data S = SE E --required because := has been moved to E
        | Block [S] --Standalone do, scopes locals
        | Break
        | Continue
-       | Declare Name E --mandatory variable declaration
+       --mandatory variable declaration; vars enter scope in textual order,
+       --so var x = 1, y = x + x; is valid
+       | Declare [(Name,E)] 
   deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment
 --Anonymous structs removed, so no struct patterns or #ix
@@ -253,19 +262,24 @@ data Module = Module {
   --Used for optional type signatures on funs, globals and statics;
   --decls order-independent to simplify desugar.
   --That also means you can put the API at the top of long files :)
+  --LEVEL 1: types may only contain level-1 terms such as Memory, Word...
   tysigs :: Map Name T,
   --Allows the user to specify nonstandard kinds for datatypes; otherwise they
   --default to Type* -> Type for unboxed and Type* -> Region -> Type* -> Type
   --for boxed datatypes respectively.
   --It also allows non-value kinds and hierarchies thereof to be introduced;
-  --an example would be Memory :: Region :: Kind in Prim.evmc.
+  --an example would be Memory :: Region in Prim.evmc.
   --Current rules:
   --Any tycon of kind returning Type must have an associated
   --datatype definition (empty in the case of primitive types).
   --Otherwise, the only restriction is that the rhs must be in scope;
   --in particular, cycles are permitted.
   --All tycons are simply kinded; kind polymorphism is disallowed.
+  --LEVEL 2: may only contain level-2 terms such as Region, Type...
   kindsigs :: Map Name T,
+  --LEVEL 3: the top-level kinds, declared as Tycon : Kind.
+  --Kind itself does not have a kind, so hierarchy depth is bounded.
+  sorts :: Set Name,
   defuns :: Map Name (Pat,S),
   tysyns :: Syns,
   --E is restricted to static exprs (f, &global, static, k,
@@ -280,7 +294,7 @@ data Module = Module {
   --A type signature is no longer required; note globals are monomorphic.
   --The relative ordering of globals is arbitrary and users should not rely on
   --it.
-  globals :: Map Name Region,
+  globals :: Map Name (Region,Maybe E),
   --Structs and enums have been merged into unboxed datatypes.
   --For both boxed and unboxed dts, datatypes with only one constructor can
   --have a 0-size tag; the rest are 1B.

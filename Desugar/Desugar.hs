@@ -23,6 +23,7 @@ import Text.Read (readMaybe)
 import Data.List (sort)
 import Data.Char (ord) --for string desugaring
 import Control.Arrow ((***))
+import Data.Maybe (fromMaybe)
 
 data DError = DuplicateDefun Name
             | BadDOrdering [P.D]
@@ -66,6 +67,7 @@ emptyModule =
   Module {
   tysigs = M.empty,
   kindsigs = M.empty,
+  sorts = S.empty,
   defuns = M.empty,
   tysyns = M.empty,
   static = M.empty,
@@ -91,8 +93,21 @@ desugarD = \case
     modify (\m->m{defuns=M.insert f (p,s) $ defuns m})
   P.TySig (Ident f) pt ->
     addSig f pt tysigs (\x m -> m{tysigs=x}) DuplicateTySigs
+  --Now tycons can either be level 1 (a la Memory, Word)
+  --or level 2 (a la Region, Type).
+  --Top-level kinds (level 2) can only be declared as Tycon : Kind
+  --While they could in theory live in different namespaces, we instead check
+  --that level-1 tycons don't collide with level-2 and vice versa.
   P.KindSig (UIdent tycon) pk -> do
-    addSig tycon pk kindsigs (\x m -> m{kindsigs=x}) DuplicateKindSigs
+    let k = desugarT pk
+    ksigs <- gets kindsigs
+    srts <- gets sorts
+    --TODO add more informative error message
+    complainIf (S.member tycon $ S.union srts $ M.keysSet ksigs)
+      $ DuplicateKindSigs tycon
+    if k == TyCon "Kind"
+      then modify(\m->m{sorts = S.insert tycon srts})
+      else modify(\m->m{kindsigs = M.insert tycon k ksigs})
   P.TySyn conargs te -> do
     let (nm,args) = desugarConArgs conargs
     let t = desugarT te
@@ -100,11 +115,12 @@ desugarD = \case
   P.Import mnm -> throwE $ UnresolvedImport mnm
   --Decision: fixed-size arrays are now a first-class type; array globals no
   --longer decay to pointers.
-  --Catch arr[len > 65536] in desugarT
-  P.Global pr (Ident x) -> do
+  --arr[len > 65536] needn't be caught... it's fine if it's an array of ()!
+  P.Global pr varBind -> do
+    (x,me) <- desugarVarBind varBind
     checkForDuplicates x
     let r = read $ take 2 $ show pr
-    modify (\m->m{globals = M.insert x r $ globals m})
+    modify (\m->m{globals = M.insert x (r,me) $ globals m})
   --Relevant:
   --datatypes: params, conDecls
   --datatypeRegions: if Just r <- mr insert it
@@ -405,7 +421,14 @@ desugarS = \case
   P.Continue -> return Continue
   --for (start;cond;each) s => {start;while (cond) {s;each}}
   P.For {} -> error "todo for loops"
-  P.Declare (Ident nm) e -> Declare nm <$> desugarE e
+  P.Declare varBinds ->
+    Declare <$> mapM (((id *** fromMaybe (Var "null" :$ Var "Unit"))<$>) .
+                      desugarVarBind) varBinds
+
+desugarVarBind :: P.VarBind -> De (Name, Maybe E)
+desugarVarBind = \case
+  P.JustVar (Ident nm) -> return (nm, Nothing)
+  P.VarIs (Ident nm) pe -> ((,)nm) <$> Just <$> desugarE pe
 
 --TODO allow _, x patterns in case
 desugarCase :: P.CASE -> De (Pat,S)

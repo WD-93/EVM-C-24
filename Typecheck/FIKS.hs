@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings, LambdaCase #-}
-module TypeCheck.FIKS (fiks,FIKSError()) where
+module TypeCheck.FIKS (fiks,FIKSError(),splitTyFun) where
+
+--TODO move splitTyFun to TypeCheck.Util?
 
 import AST.DTs
 import Util (complainIf, (?))
@@ -20,6 +22,9 @@ import Control.Arrow ((***))
 --D : T
 --data D = {}
 --would wrongly error with the complaint that D is not of kind Type.
+
+--It doesn't know about sorts, but that's fine... if the user declares A : B
+--but doesn't define B to be : Kind it'll fail, either in TySyn or HM.
 
 fiks :: Module -> Either (Name,FIKSError) Module
 fiks m = do
@@ -67,6 +72,7 @@ handleTyCon tycon (Just k) (Just args) mr = do
       complainIf (rk /= "Region")
         $ RegionParamHasWrongKind r rk
       return k
+    Nothing -> return k
 --A kind which just has a kind decl is syntactically guaranteed to not also
 --have a region param
 handleTyCon tycon (Just k) _ _ = do
