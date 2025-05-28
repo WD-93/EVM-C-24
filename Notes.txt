@@ -91,6 +91,13 @@ desugarE to be pure.
 
 TODO use withError to record the stack of locations in HM and redefine (?) as mapError.
 
+A def of nm should have all tyvars not in its signature/inferred type defaulted to Word.
+Its definition may contain tyvars from other exprs in the SCC that aren't in its signature; an example would
+be:
+f _ := {g (null()); return ()}
+g _ := return f()
+That should infer to f : () -> (); g : a -> (). Since f doesn't use g, a is unbound in f.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

@@ -14,7 +14,7 @@ import qualified Data.Set as S
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except
-import Data.Generics (everywhere,everywhereM,mkT,mkQ,mkM,everything)
+import Data.Generics (everywhere,everywhereM,mkT,mkQ,mkM,everything,Data(..))
 import Control.Arrow ((***))
 
 --A new attempt at Hindley-Milner type checking
@@ -190,6 +190,7 @@ data HMError = Can'tConstructTheInfiniteType Name T --t ~ T a
              | MalformedPatternInFunctionParam E
              | ScopeErrorInTypeOf Name
              | NonFunctionMustBeMonomorphic Name T
+             | RigidUnificationError RigidUnificationError
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -205,6 +206,7 @@ data TCModuleError = InCheckTySig Name SigError
                    | TysigsMandatoryForUnitializedGs [Name]
                    | KindMayHaveNoKind
                    | InInferSCC [Name] (HMError,HMS)
+                   | InCheckSignature Name (HMError,HMS)
   deriving (Eq,Ord,Read,Show)
 data SigError = MissingDefinition
               | BadKindInSig T (HMError,HMS)
@@ -622,12 +624,102 @@ inferTypes m = do
   --That involves updating their definitions to add TyApps.
   --Not doing so doesn't explain why "id x := x" infers to a, but
   --"f x := return g x; g x := return f x" types correctly...
-  error "todo"
+  let sigfuns = withSigs defuns
+      sigstats = withSigs static
+      sigglobs = withSigs globals
+  fun2pats <- checkWSigs m' goF defuns sigfuns
+  stat2e <- checkWSigs m' goS static sigstats
+  glob2e <- checkWSigs m' goG globals sigglobs
+  return m'{defuns = M.union fun2pats $ defuns m',
+            static = M.union stat2e $ static m',
+            globals = M.union glob2e $ globals m'
+           }
   where go m = \case
           [] -> return m
           nms:nmss -> do
             m' <- inferSCC nms m ? InInferSCC nms
             go m' nmss
+        withSigs f = S.toList $ S.intersection (M.keysSet $ f m) $
+                     M.keysSet $ tysigs m
+        checkWSigs :: Data def =>
+                      Module ->
+                      (T -> def -> HM def) ->
+                      (Module -> Map Name def) ->
+                      [Name] ->
+                      Either TCModuleError (Map Name def)
+        checkWSigs m' handler field nms =
+          M.fromList <$> mapM (\nm -> do
+                                  let def = field m M.! nm
+                                      sig = tysigs m M.! nm
+                                  case runHM (handler sig def)
+                                       (hmr m') newHMS
+                                    of
+                                    (Left err, s) -> Left $
+                                      InCheckSignature nm (err,s)
+                                    (Right def', _) ->
+                                      return (nm,def')) nms
+        hmr m' = HMR{hmTySigs = tysigs m',
+                  hmKindSigs = kindsigs m, --kinds and sorts not changed
+                  hmSorts = sorts m,
+                  hmTaus = M.empty, --They'll remain empty
+                  hmLocals = M.empty
+                 }
+        goF = goSig (typeOfFun m)
+        goS = goSig typeOf
+        goG = goSig $ \(r,me) ->
+                        case me of
+                          Just e -> do
+                            (e',t) <- typeOf e
+                            return ((r,Just e'),t)
+                          Nothing -> return ((r,Nothing),TyVar "whatever")
+        goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def -> HM def
+        goSig handler sig def = do
+          (def',t) <- handler def
+          --All kinds must be bound at this point
+          allKindsBound
+          --The def may be more general than the sig, but not less general...
+          --First obtain a mapping from tyvars in the inferred type to T's in
+          --the scheme; scheme vars are rigid, so if they're bound that's an
+          --error.
+          --Apply the mapping to each type present in it; vars not present
+          --are unbound by t and should be defaulted instead.
+          let ei_err_inf2sig = execStateT (unifyRigid sig t) M.empty
+          inf2sig <- case ei_err_inf2sig of
+                       Left rue -> throwError $ RigidUnificationError rue
+                       Right inf2sig -> return inf2sig
+          return $ rigidizeAndDefault inf2sig def'
+
+--Replaces inferred tyvars with the rigid type they're bound to;
+--defaults any tyvars not bound to a rigid type to Word
+rigidizeAndDefault :: Data a => Map Name T -> a -> a
+rigidizeAndDefault inf2rigid = everywhere $ mkT $ \case
+  TyVar a ->
+    case M.lookup a inf2rigid of
+      Just t -> t
+      _ -> UInt 256
+  t -> t
+--A single inferred var mapping to two different rigid vars is also an error.
+--Example: a -> a is less general than a -> b.
+type UnifyRigid = StateT (Map Name T) (Either RigidUnificationError)
+unifyRigid :: T -> T -> UnifyRigid ()
+unifyRigid = go
+  where go rt (TyVar a) = bindRigid a rt
+        go (TyVar rv) t = throwError $ RigidVarBoundToNonVar rv t
+        go (rf :$$ rx) (sf :$$ sx) = go rf sf >> go rx sx
+        go rt st = complainIf (rt /= st)
+          $ RigidUnificationFailure rt st
+        bindRigid :: Name -> T -> UnifyRigid ()
+        bindRigid a rt = do
+          mrt' <- gets $ M.lookup a
+          case mrt' of
+            Nothing -> modify $ M.insert a rt
+            Just rt' -> complainIf (rt /= rt')
+                        $ InferredVarMapsToTwoRigidTypes a (rt,rt')
+data RigidUnificationError = RigidVarBoundToNonVar Name T
+                           | InferredVarMapsToTwoRigidTypes Name (T,T)
+                           | RigidUnificationFailure T T
+  deriving (Eq,Ord,Read,Show)
+                                        
 type InferSCC = Either (HMError,HMS)
 --Invariant: every mentioned name but locals and the scc names have already
 --been given type signatures.
@@ -679,14 +771,33 @@ inferSCC nms m =
                                            polymorphic t)
                                  $ NonFunctionMustBeMonomorphic nm t
                                return (nm,t)) nms
-            --Default unbound tyvars to Word
-            defaultUnboundTyVars
-            --Fail if any kind var is unbound
             allKindsBound
             --zonk all tyapps in the defs
             (funs',stats',globs') <- everywhereM (mkM zonk) (funs,stats,globs)
-            return (nm2sig,funs',stats',globs')
+            --Default unbound tyvars to Word *on a per-function basis*
+            let funs'' = applyDefaults funs' nm2sig
+            --stats and globs are monomorphic, so *all* tyvars must be
+            --defaulted. However, it's simpler to use the same function for
+            --that.
+                stats'' = applyDefaults stats' nm2sig
+                globs'' = applyDefaults globs' nm2sig
+            --Fail if any kind var is unbound
+            return (nm2sig,funs'',stats'',globs'')
 
+applyDefaults :: Data a => Map Name a -> Map Name T -> Map Name a
+applyDefaults nm2def nm2t =
+  M.mapWithKey (\nm ->
+                  let scheme = nm2t M.! nm
+                      rigid = tyVars scheme
+                  in everywhere $ mkT $ \case TyVar a
+                                                | S.member a rigid -> TyVar a
+                                                | let -> UInt 256
+                                              t -> t
+               )
+  nm2def
+
+
+{-
 defaultUnboundTyVars :: HM ()
 defaultUnboundTyVars = do
   tyvs <- M.keys <$> gets hmTyVars
@@ -695,6 +806,7 @@ defaultUnboundTyVars = do
             case mt of
               Nothing -> unify (TyVar tyv) (UInt 256)
               Just _ -> return ()) tyvs
+-}
 
 --Returns updated definitions for functions, statics and globals;
 --their type is returned by unifying it with tau
@@ -737,15 +849,17 @@ tauOf nm = do
 typeOfFun :: Module -> (Pat,S) -> HM ((Pat,S),T)
 typeOfFun m (pat,s) = declareArgsAsLocals m pat $ do
   b <- newTyVar --the return type
-  unifyK "Type" <$> kindOf b
+  kindOf b >>= unifyK "Type"
+  k <- kindOf b
   (pat',a) <- typeOf pat
+  kindOf a >>= unifyK "Type"
   s' <- inferS b s
   return ((pat',s'), a :-> b)
 declareArgsAsLocals :: Module -> Pat -> HM a -> HM a
 declareArgsAsLocals m pat hm = do
   vs <- S.toList <$> go pat
   tyvs <- mapM newTyVarNamed vs
-  mapM ((unifyK "Type" <$>) . kindOf) tyvs
+  mapM ((>>= unifyK "Type") . kindOf) tyvs
   let v2tyv = M.fromList $ zip vs tyvs
   withReaderT (\hmr->hmr{hmLocals = v2tyv}) hm
   where

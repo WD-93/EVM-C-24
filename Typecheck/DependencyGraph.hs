@@ -18,11 +18,12 @@ import qualified Data.Map as M
 --Dynamic things with signatures are excluded.
 buildGraph :: Module -> [[Name]]
 buildGraph m =
-  let ks f = M.keysSet $ f m
+  let sigs = M.keysSet $ tysigs m
+      ks f = (M.keysSet $ f m) `S.difference` sigs
       fs = ks defuns
       ss = ks static
       gs = ks globals
-      relevant = S.unions [fs,ss,gs] `S.difference` ks tysigs
+      relevant = S.unions [fs,ss,gs] `S.difference` sigs
       --We do *not* add a reverse edge for globals
       ment x = S.intersection relevant $ mentioned x
       getmen f = M.fromSet (\nm -> ment (f m M.! nm))
