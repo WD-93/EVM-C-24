@@ -155,7 +155,7 @@ data HMR = HMR {
   --The tyvar tau to which each dynamic thing in the SCC is mapped.
   hmTaus :: Map Name Name,
   --Local -> tyvar; unused during kind and sv check
-  hmLocals :: Map Name Name --local -> tyvar
+  hmLocals :: Map Name T --local -> tyvar; inferred from v = e
   }
 data HMS = HMS {
   hmVarCounter :: Int, --used for allocating ty and kind vars
@@ -187,6 +187,9 @@ data HMError = Can'tConstructTheInfiniteType Name T --t ~ T a
              | KindVarUnbound Name
              --The result of looking up the tau of a non-scc name
              | TauOfNonSCCMember Name
+             | MalformedPatternInFunctionParam E
+             | ScopeErrorInTypeOf Name
+             | NonFunctionMustBeMonomorphic Name T
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -228,8 +231,12 @@ tcModule m = do
   complainIf (S.member "Kind" $ S.union (M.keysSet $ kindsigs m)
                (sorts m))
     KindMayHaveNoKind
-  m' <- inferTypes m
-  return m'
+  --Before we infer types, we add constructor and field types to tysigs
+  let m' = addConsAndFieldsToTySigs m
+  m'' <- inferTypes m'
+  return m''
+addConsAndFieldsToTySigs m =
+  m{tysigs = M.unions [constructors m, fieldTypes m, tysigs m]}
 
 --Just checks each global without an initializer has a signature
 tcGlobals :: Module -> Either TCModuleError ()
@@ -417,12 +424,13 @@ typeOf = go
                 | Just scheme <- M.lookup nm $ hmTySigs hmr -> do
                   (vars,t) <- quantify scheme
                   return (TyApp nm $ map TyVar vars, t)
-                | Just v <- M.lookup nm $ hmLocals hmr -> do
-                  t <- zonk $ TyVar v
-                  return (Var nm, t)
+                | Just t <- M.lookup nm $ hmLocals hmr -> do
+                  t' <- zonk t
+                  return (Var nm, t')
                 | Just v <- M.lookup nm $ hmTaus hmr -> do
                     t <- zonk $ TyVar v
                     return (Var nm, t)
+                | let -> throwError $ ScopeErrorInTypeOf nm
 --Associate each tyvar not yet in scopedTyVars with a fresh tyvar.
 --Returns a type containing only allocated tyvars.
 scopeType :: T -> HM T
@@ -608,7 +616,13 @@ allKindsBound = do
 inferTypes :: Module -> Either TCModuleError Module
 inferTypes m = do
   let nmss = buildGraph m
-  go m nmss
+  m' <- go m nmss
+  --Now that everything without an initial tysig has been inferred, we must
+  -- *check* the types of funs, stats and globs which had tysigs from the start.
+  --That involves updating their definitions to add TyApps.
+  --Not doing so doesn't explain why "id x := x" infers to a, but
+  --"f x := return g x; g x := return f x" types correctly...
+  error "todo"
   where go m = \case
           [] -> return m
           nms:nmss -> do
@@ -656,7 +670,31 @@ inferSCC nms m =
             (funs,stats,globs) <- inferDefs m nms
             --Zonk taus; if any static or global is polymorphic fail
             --return nm->zonked and prettified tau and updated defs
-            error "todo"
+            nm2sig <- M.fromList <$>
+                      mapM (\nm -> do
+                               t <- prettifyType <$> (tauOf nm >>= zonk)
+                               complainIf ((S.member nm $ S.union
+                                            (M.keysSet $ static m)
+                                            (M.keysSet $ globals m)) &&
+                                           polymorphic t)
+                                 $ NonFunctionMustBeMonomorphic nm t
+                               return (nm,t)) nms
+            --Default unbound tyvars to Word
+            defaultUnboundTyVars
+            --Fail if any kind var is unbound
+            allKindsBound
+            --zonk all tyapps in the defs
+            (funs',stats',globs') <- everywhereM (mkM zonk) (funs,stats,globs)
+            return (nm2sig,funs',stats',globs')
+
+defaultUnboundTyVars :: HM ()
+defaultUnboundTyVars = do
+  tyvs <- M.keys <$> gets hmTyVars
+  mapM_ (\tyv -> do
+            mt <- M.lookup tyv <$> gets hmTyMap
+            case mt of
+              Nothing -> unify (TyVar tyv) (UInt 256)
+              Just _ -> return ()) tyvs
 
 --Returns updated definitions for functions, statics and globals;
 --their type is returned by unifying it with tau
@@ -670,7 +708,7 @@ inferDefs m = go
             (funs,stats,globs) <- go nms
             case () of
               _ | Just pats <- M.lookup nm $ defuns m -> do
-                    (pats',t) <- typeOfFun pats
+                    (pats',t) <- typeOfFun m pats
                     unify t <$> tauOf nm
                     return (M.insert nm pats' funs,stats,globs)
                 | Just e <- M.lookup nm $ static m -> do
@@ -691,12 +729,88 @@ tauOf nm = do
     Nothing -> throwError $ TauOfNonSCCMember nm
 --First need to declare new locals for the locals in pat
 --Pat structure:
---Con pats, Con {field: p, ...}
+--Con pats (Con{field: p} desugars to that)
 -- .field p
 --global, local, _
-typeOfFun :: (Pat,S) -> HM ((Pat,S),T)
-typeOfFun (pat,s) = error "todo"
+--How to deal with *e and e[e]? Just return S.empty
+--To identify locals, need the module
+typeOfFun :: Module -> (Pat,S) -> HM ((Pat,S),T)
+typeOfFun m (pat,s) = declareArgsAsLocals m pat $ do
+  b <- newTyVar --the return type
+  unifyK "Type" <$> kindOf b
+  (pat',a) <- typeOf pat
+  s' <- inferS b s
+  return ((pat',s'), a :-> b)
+declareArgsAsLocals :: Module -> Pat -> HM a -> HM a
+declareArgsAsLocals m pat hm = do
+  vs <- S.toList <$> go pat
+  tyvs <- mapM newTyVarNamed vs
+  mapM ((unifyK "Type" <$>) . kindOf) tyvs
+  let v2tyv = M.fromList $ zip vs tyvs
+  withReaderT (\hmr->hmr{hmLocals = v2tyv}) hm
+  where
+    go :: Pat -> HM (Set Name)
+    go = \case
+      EInteger _ -> return S.empty
+      Var "_" -> return S.empty
+      Var "deref" :$ _e -> return S.empty
+      Var "index" :$ _arr :$ _ix -> return S.empty
+      Var nm -> return $ if S.member nm staticThings
+                         then S.empty
+                         else S.singleton nm
+      f :$ x -> S.union <$> go f <*> go x
+      p ::: t -> go p
+      EArray ps -> S.unions <$> mapM go ps
+      p -> throwError $ MalformedPatternInFunctionParam p
+    staticThings = S.unions [
+      ks defuns,
+      ks static,
+      ks globals,
+      ks constructors,
+      ks fieldTypes
+      ]
+    ks f = M.keysSet $ f m
 
+--An S can't be inferred by itself because var declaration modifies the locals
+--map via withReaderT.
+inferS :: T -> S -> HM S
+inferS ret s = head <$> inferBlock ret [s]
+inferBlock :: T -> [S] -> HM [S]
+inferBlock ret = \case
+  [] -> return []
+  s:ss -> case s of
+            Declare ves -> withDeclares ves $ inferBlock ret ss
+            _ -> (:) <$> go s <*> inferBlock ret ss
+  --go handles all the cases but declare since they don't modify scope
+  where go = \case
+          SE e -> SE <$> fst <$> typeOf e
+          Return e -> do
+            (e',t) <- typeOf e
+            unify ret t
+            return $ Return e'
+          While e s -> While <$> (fst <$> typeOf e) <*> go s
+          Case e patss -> do
+            (e',t) <- typeOf e
+            patsts <- mapM (\(pat,s) -> do
+                             (pat',t) <- typeOf pat
+                             s' <- go s
+                             return ((pat',s'),t)) patss
+            mapM_ (unify t . snd) patsts
+            return $ Case e' $ map fst patsts
+          Block ss -> Block <$> inferBlock ret ss
+          Break -> return Break
+          Continue -> return Continue
+--var x = a, y = b... is sugar for var x = a; var y = b...
+--The new local name validity check can be deferred until later...
+--A name is invalid if it's one of the statically defined lowercase things:
+--a function, static or global
+--If a local is redeclared it's shadowed
+withDeclares :: [(Name,E)] -> HM [S] -> HM [S]
+withDeclares [] hm = hm
+withDeclares ((v,e):ves) hm = do
+  (e',t) <- typeOf e
+  (Declare [(v,e')] :) <$> withReaderT
+    (\hmr->hmr{hmLocals=M.insert v t $ hmLocals hmr}) (withDeclares ves hm)
 --Assigns a pretty tyvar from a,b..z, a1,b1..z1 for each tyvar in order of
 --occurrence.
 prettifyType :: T -> T

@@ -473,6 +473,7 @@ desugarE = go
               Just es -> return $ EArray es
               Nothing ->
                 throwE $ GenericDError "Non-tuple passed to array 'function'"
+          P.App pf px -> (:$) <$> go pf <*> go px
           P.PlusPlusPre pe -> do
             e <- go pe
             return $ e := (po2 "plus" e $ EInteger 1)
@@ -511,6 +512,7 @@ desugarE = go
             let t = desugarT pt
             e <- go pe
             return $ e ::: t
+          --e -> error $ "Compiler error: missing case in desugarE: " ++ show e
         po1 primop a = Var primop :$ a
         po2 primop a b =
           Var primop :$ (Var "Pair" :$ a :$

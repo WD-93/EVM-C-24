@@ -88,6 +88,9 @@ case *p of
 
 TODO separate out string => &staticValue : Ptr Code (Array n Byte) substitution from desugar, allowing
 desugarE to be pure.
+
+TODO use withError to record the stack of locations in HM and redefine (?) as mapError.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.
