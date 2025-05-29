@@ -98,6 +98,15 @@ f _ := {g (null()); return ()}
 g _ := return f()
 That should infer to f : () -> (); g : a -> (). Since f doesn't use g, a is unbound in f.
 
+TODO define
+withError :: MonadError e m => (e -> e) -> m a -> m a
+withError f action = catchError action (throwError . f)
+as a hack to support an error annot stack in HM. Long-term fix: update transformers/mtl, patch whatever gets
+broken, fix packages used in cabal file.
+
+Bugs: f _ := 3 fails with a kind error (and before that, no case for "->" Word).
+id x := return x now types correctly.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

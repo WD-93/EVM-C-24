@@ -191,6 +191,10 @@ data HMError = Can'tConstructTheInfiniteType Name T --t ~ T a
              | ScopeErrorInTypeOf Name
              | NonFunctionMustBeMonomorphic Name T
              | RigidUnificationError RigidUnificationError
+             | InTypeOfFun Pat S HMError
+             | InInferBlock T [S] HMError
+             | InTypeOf E HMError
+             | InUnify T T HMError
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -378,12 +382,17 @@ newHMS = HMS {hmVarCounter = 0,
 --Returns the expr (updated with tyapps on funs) 
 typeOf :: E -> HM (E,T)
 typeOf = go
-  where go = \case
+  where go e = withError (InTypeOf e) $ (\case
           EInteger n -> return (EInteger n, UInt 256)
           f :$ x -> do
             (f',tf) <- go f
             (x',tx) <- go x
             b <- newTyVar
+            --dbgf <- zonk tf
+            --dbgx <- zonk tx
+            --unsafePrint $ "(tf,tx): " ++ show (dbgf,dbgx)
+            unify ("Unit" :-> "Unit") ("Unit" :-> "Unit")
+            --unsafePrint "Could do that at least"
             unify tf (tx :-> b)
             return (f' :$ x', b)
           --Note the type annotation is erased; it's superfluous after type
@@ -432,7 +441,7 @@ typeOf = go
                 | Just v <- M.lookup nm $ hmTaus hmr -> do
                     t <- zonk $ TyVar v
                     return (Var nm, t)
-                | let -> throwError $ ScopeErrorInTypeOf nm
+                | let -> throwError $ ScopeErrorInTypeOf nm) e
 --Associate each tyvar not yet in scopedTyVars with a fresh tyvar.
 --Returns a type containing only allocated tyvars.
 scopeType :: T -> HM T
@@ -454,6 +463,7 @@ handleScopedVar = \case
 --The kind of a given type
 kindOf :: T -> HM T
 kindOf = \case
+  {-
   --(->) is always Type -> Type -> Type in this context
   --It's also only ever fully applied.
   a :-> b -> do
@@ -462,6 +472,10 @@ kindOf = \case
     kb <- kindOf b
     unifyK kb "Type"
     return "Type"
+  -}
+  --f x := return 3 fails because kindOf encounters (->) Word... but why!?
+  --Hotfix: give (->) a kind
+  TyCon "->" -> return $ "Type" :-> "Type" :-> "Type"
   TyCon nm -> do
     mk <- asks (M.lookup nm . hmKindSigs)
     case mk of
@@ -515,20 +529,21 @@ unify :: T -> T -> HM ()
 unify t1 t2 = do
   t1' <- zonk t1
   t2' <- zonk t2
-  k1 <- kindOf t1'
-  k2 <- kindOf t2'
-  unifyK k1 k2
-  case (t1',t2') of
-    (TyVar a, TyVar b)
-      | a == b -> return ()
-      | let -> bindVar (min a b) $ TyVar $ max a b
-    (TyVar a, t) -> bindVar a t
-    (t, TyVar a) -> bindVar a t
-    (tf :$$ tx, tg :$$ ty) -> do
-      unify tf tg
-      unify tg ty
-    _ -> complainIf (t1' /= t2')
-         $ Can'tUnify t1' t2'
+  withError (InUnify t1' t2') $ do
+    k1 <- kindOf t1'
+    k2 <- kindOf t2'
+    unifyK k1 k2
+    case (t1',t2') of
+      (TyVar a, TyVar b)
+        | a == b -> return ()
+        | let -> bindVar (min a b) $ TyVar $ max a b
+      (TyVar a, t) -> bindVar a t
+      (t, TyVar a) -> bindVar a t
+      (tf :$$ tx, tg :$$ ty) -> do
+        unify tf tg
+        unify tx ty
+      _ -> complainIf (t1' /= t2')
+           $ Can'tUnify t1' t2'
 bindVar :: Name -> T -> HM ()
 bindVar a t = do
   let vs = tyVars t
@@ -756,10 +771,12 @@ inferSCC nms m =
                    k <- kindOf v
                    unifyK k "Type") taus
           let nm2tau = M.fromList $ zip nms $ map (\(TyVar v) -> v) taus
+          --unsafePrint "Got here A"
           withReaderT (\hmr->hmr{hmTaus=nm2tau}) $ do
             --For each nm in nms, infer type to get an updated definition and
             --unify the type with tau
             (funs,stats,globs) <- inferDefs m nms
+            --unsafePrint "Got here B"
             --Zonk taus; if any static or global is polymorphic fail
             --return nm->zonked and prettified tau and updated defs
             nm2sig <- M.fromList <$>
@@ -820,7 +837,9 @@ inferDefs m = go
             (funs,stats,globs) <- go nms
             case () of
               _ | Just pats <- M.lookup nm $ defuns m -> do
+                    --unsafePrint "Got here A2"
                     (pats',t) <- typeOfFun m pats
+                    --unsafePrint "Got here B2"
                     tauOf nm >>= unify t
                     return (M.insert nm pats' funs,stats,globs)
                 | Just e <- M.lookup nm $ static m -> do
@@ -847,13 +866,20 @@ tauOf nm = do
 --How to deal with *e and e[e]? Just return S.empty
 --To identify locals, need the module
 typeOfFun :: Module -> (Pat,S) -> HM ((Pat,S),T)
-typeOfFun m (pat,s) = declareArgsAsLocals m pat $ do
+typeOfFun m (pat,s) =
+  withError (InTypeOfFun pat s) $
+  declareArgsAsLocals m pat $ do
   b <- newTyVar --the return type
   kindOf b >>= unifyK "Type"
   k <- kindOf b
+  --unsafePrint $ "k: " ++ show k
   (pat',a) <- typeOf pat
+  ka <- kindOf b
+  --unsafePrint $ "ka: " ++ show k
   kindOf a >>= unifyK "Type"
+  --unsafePrint $ "Got here C"
   s' <- inferS b s
+  --unsafePrint $ "s': " ++ show s'
   return ((pat',s'), a :-> b)
 declareArgsAsLocals :: Module -> Pat -> HM a -> HM a
 declareArgsAsLocals m pat hm = do
@@ -890,16 +916,20 @@ declareArgsAsLocals m pat hm = do
 inferS :: T -> S -> HM S
 inferS ret s = head <$> inferBlock ret [s]
 inferBlock :: T -> [S] -> HM [S]
-inferBlock ret = \case
-  [] -> return []
-  s:ss -> case s of
-            Declare ves -> withDeclares ves $ inferBlock ret ss
-            _ -> (:) <$> go s <*> inferBlock ret ss
+inferBlock ret ss =
+  withError (InInferBlock ret ss) $
+   (\case
+       [] -> return []
+       s:ss -> case s of
+                 Declare ves -> withDeclares ves $ inferBlock ret ss
+                 _ -> (:) <$> go s <*> inferBlock ret ss) ss
   --go handles all the cases but declare since they don't modify scope
   where go = \case
           SE e -> SE <$> fst <$> typeOf e
           Return e -> do
+            --unsafePrint "Typing return value..."
             (e',t) <- typeOf e
+            --unsafePrint $ "(e',t): " ++ show (e',t)
             unify ret t
             return $ Return e'
           While e s -> While <$> (fst <$> typeOf e) <*> go s

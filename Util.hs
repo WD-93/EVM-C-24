@@ -21,3 +21,7 @@ unsafePrint :: Monad m => String -> m ()
 unsafePrint str
   | debugFlag = unsafePerformIO $ putStrLn str >> return (return ())
   | let = return ()
+
+--TODO update transformers/mtl and fix dependencies in cabal...
+withError :: MonadError e m => (e -> e) -> m a -> m a
+withError f action = catchError action (throwError . f)
