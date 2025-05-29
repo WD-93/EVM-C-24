@@ -46,6 +46,8 @@ substTySyns m = do
   let inM f g = inMap f g syns m
   tysigs' <- inM "tysig" tysigs
   kindsigs' <- inM "kindsig" kindsigs
+  --sorts does not need subst
+  defaults' <- inM "default" defaults
   defuns' <- inM "defun" defuns
   static' <- inM "static" static
   datatypes' <- inM "datatype" datatypes
@@ -54,6 +56,7 @@ substTySyns m = do
   return m{
     tysigs = tysigs',
     kindsigs = kindsigs',
+    defaults = defaults',
     defuns = defuns',
     tysyns = syns,
     static = static',

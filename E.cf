@@ -12,6 +12,11 @@ token HexInteger ({"0x"} ["0123456789abcdefABCDEF"] +) ;
 Module. M ::= [D];
 separator D ";";
 
+--Defines the default type of tyvars of kind k; if unbound after inference,
+--theyre unified with that type. The default must be monomorphic and of the
+--given kind.
+--If a tyvar of kind k is unbound and has no default, thats an error.
+Default. D ::= "default" UIdent "=" T;
 Defun. D ::= Ident E13 ":=" S;
 --Type signatures are now used for globals and static constants as well.
 TySig. D ::= Ident ":" T;

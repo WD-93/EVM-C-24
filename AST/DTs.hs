@@ -280,6 +280,10 @@ data Module = Module {
   --LEVEL 3: the top-level kinds, declared as Tycon : Kind.
   --Kind itself does not have a kind, so hierarchy depth is bounded.
   sorts :: Set Name,
+  --The default values for tyvars of that kind, e.g. Word for Type.
+  --Must be monomorphic and match the given kind. Non-mandatory; a tyvar of
+  --kind k with no default that remains unbound is an error.
+  defaults :: Map Name T,
   defuns :: Map Name (Pat,S),
   tysyns :: Syns,
   --E is restricted to static exprs (f, &global, static, k,

@@ -21,7 +21,7 @@ data D
     | KindSig UIdent T
     | TySyn ConArgs T
     | Import ModuleName
-    | Global GlobalRegion Ident
+    | Global GlobalRegion VarBind
     | Data ConArgs DataRHS
     | StaticData Ident E
   deriving (Eq, Ord, Show, Read)

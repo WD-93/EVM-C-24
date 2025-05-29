@@ -26,6 +26,7 @@ transM x = case x of
   Module ds -> failure x
 transD :: D -> Result
 transD x = case x of
+  Default uident t -> failure x
   Defun ident e s -> failure x
   TySig ident t -> failure x
   KindSig uident t -> failure x

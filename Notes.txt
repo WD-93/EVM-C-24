@@ -104,8 +104,28 @@ withError f action = catchError action (throwError . f)
 as a hack to support an error annot stack in HM. Long-term fix: update transformers/mtl, patch whatever gets
 broken, fix packages used in cabal file.
 
-Bugs: f _ := 3 fails with a kind error (and before that, no case for "->" Word).
+Bugs: f _ := 3 fails with a kind error (and before that, no case for "->" Word). Fixed!
 id x := return x now types correctly.
+Non-Type tyvars are being defaulted to Word, leading to Int Word Word! Solution: look at kind before
+defaulting. default Type, Region, Signedness: Word, Memory, Unsigned. For other kinds, error.
+TODO add a default l2 l1 feature? That would let me put it in Prim instead of hardcoding it...
+f () := return 0 correctly types to () -> Int a b, but its defaulted definition is wrong:
+(TyApp "Unit" [],Return (TyApp "fromWord" [uint256,uint256] :$ EInteger 0))
+Likely cause: in-signature var -> other var, but the other var is not protected from defaulting.
+Or: other var -> in-signature var.
+Solution: generically zonk the definition before substitution? I can do it in the same traversal...
+
+Move Ptr to Prelude? data Ptr r a = Ptr {unPtr : Short}
+
+Code smell: hmDefaults is only needed during the last phase. HM is becoming a god monad... maybe need to split
+it up.
+
+Opt: when a FIR function takes an argument but does not depend on it, you can pass a cheap placeholder value.
+Inlining and specializing is cleaner, modulo code size.
+For writeup: Fermat's last theorem (there exist no integer a,b,c,n st a^n + b^n == c^n) can be 
+straightforwardly converted to an illustration why determining whether a function depends on an argument is
+not straightforward in the general case. Ofc none of the impossibility proofs apply in reality since txns
+have finite gas...
 
 **************
 

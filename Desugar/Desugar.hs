@@ -54,6 +54,7 @@ data DError = DuplicateDefun Name
             | DuplicateTyCons Name
             | NonByteChar String
             | DuplicateFieldNames Name
+            | DuplicateDefaults Name
   deriving (Eq,Ord,Read,Show)
 
 --Declarations are order-independent, modulo the static names allocated to
@@ -68,6 +69,7 @@ emptyModule =
   tysigs = M.empty,
   kindsigs = M.empty,
   sorts = S.empty,
+  defaults = M.empty,
   defuns = M.empty,
   tysyns = M.empty,
   static = M.empty,
@@ -108,6 +110,14 @@ desugarD = \case
     if k == TyCon "Kind"
       then modify(\m->m{sorts = S.insert tycon srts})
       else modify(\m->m{kindsigs = M.insert tycon k ksigs})
+  --Declares the default value for tyvars of kind k; duplicate defaults is a
+  --desugar error.
+  P.Default (UIdent k) pt -> do
+    let t = desugarT pt
+    ds <- gets defaults
+    complainIf (M.member k ds)
+      $ DuplicateDefaults k
+    modify (\m->m{defaults = M.insert k t ds})
   P.TySyn conargs te -> do
     let (nm,args) = desugarConArgs conargs
     let t = desugarT te

@@ -152,6 +152,9 @@ data HMR = HMR {
   hmKindSigs :: Map Name T,
   --The set of level-2 tycons; they're all of kind Kind
   hmSorts :: Set Name,
+  --Default instance for level-2 tycons (non-mandatory); from defaults in
+  --Module.
+  hmDefaults :: Map Name T,
   --The tyvar tau to which each dynamic thing in the SCC is mapped.
   hmTaus :: Map Name Name,
   --Local -> tyvar; unused during kind and sv check
@@ -195,6 +198,8 @@ data HMError = Can'tConstructTheInfiniteType Name T --t ~ T a
              | InInferBlock T [S] HMError
              | InTypeOf E HMError
              | InUnify T T HMError
+             | KindHasNoDefault Name
+             | CompositeKindCannotBeDefaulted T
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -211,6 +216,9 @@ data TCModuleError = InCheckTySig Name SigError
                    | KindMayHaveNoKind
                    | InInferSCC [Name] (HMError,HMS)
                    | InCheckSignature Name (HMError,HMS)
+                   | NonexistentKindDefaulted Name T
+                   | KindDefaultsToPolymorphicType Name T
+                   | KindDefaultMismatch Name HMError
   deriving (Eq,Ord,Read,Show)
 data SigError = MissingDefinition
               | BadKindInSig T (HMError,HMS)
@@ -232,6 +240,7 @@ tcModule :: Module -> Either TCModuleError Module
 tcModule m = do
   tcTysigs m
   tcKindsigs m
+  tcDefaults m
   tcDatatypes m
   tcGlobals m
   complainIf (S.member "Kind" $ S.union (M.keysSet $ kindsigs m)
@@ -243,6 +252,28 @@ tcModule m = do
   return m''
 addConsAndFieldsToTySigs m =
   m{tysigs = M.unions [constructors m, fieldTypes m, tysigs m]}
+
+--Failure modes for default k = t:
+--k is not in sorts (TODO rename to kinds?)
+--t is polymorphic
+--t is not of kind k
+tcDefaults :: Module -> Either TCModuleError ()
+tcDefaults m = do
+  let ds = M.toList $ defaults m
+  mapM_ (\(k,t) -> do
+            complainIf (not $ S.member k $ sorts m)
+              $ NonexistentKindDefaulted k t
+            complainIf (polymorphic t)
+              $ KindDefaultsToPolymorphicType k t
+            let hmr = newHMR{hmKindSigs = kindsigs m,
+                             hmSorts = sorts m
+                            }
+            case runHM (go k t) hmr newHMS of
+              (Left hme, s) -> throwError $ KindDefaultMismatch k hme
+              _ -> return ()) ds
+    where go k t = do
+            k' <- kindOf t
+            unifyK (TyCon k) k'
 
 --Just checks each global without an initializer has a signature
 tcGlobals :: Module -> Either TCModuleError ()
@@ -364,6 +395,7 @@ checkIsType m t = (case runHM go newHMR{hmKindSigs = kindsigs m,
 newHMR = HMR {hmTySigs = e,
               hmKindSigs = e,
               hmSorts = S.empty,
+              hmDefaults = M.empty,
               hmTaus = M.empty,
               hmLocals = e
              }
@@ -676,6 +708,7 @@ inferTypes m = do
         hmr m' = HMR{hmTySigs = tysigs m',
                   hmKindSigs = kindsigs m, --kinds and sorts not changed
                   hmSorts = sorts m,
+                  hmDefaults = defaults m,
                   hmTaus = M.empty, --They'll remain empty
                   hmLocals = M.empty
                  }
@@ -698,21 +731,39 @@ inferTypes m = do
           --error.
           --Apply the mapping to each type present in it; vars not present
           --are unbound by t and should be defaulted instead.
+          t' <- zonk t --Just in case
           let ei_err_inf2sig = execStateT (unifyRigid sig t) M.empty
           inf2sig <- case ei_err_inf2sig of
                        Left rue -> throwError $ RigidUnificationError rue
                        Right inf2sig -> return inf2sig
-          return $ rigidizeAndDefault inf2sig def'
+          rigidizeAndDefault inf2sig def'
 
---Replaces inferred tyvars with the rigid type they're bound to;
---defaults any tyvars not bound to a rigid type to Word
-rigidizeAndDefault :: Data a => Map Name T -> a -> a
-rigidizeAndDefault inf2rigid = everywhere $ mkT $ \case
-  TyVar a ->
-    case M.lookup a inf2rigid of
-      Just t -> t
-      _ -> UInt 256
-  t -> t
+--Replaces inferred tyvars with the rigid type they're bound to.
+--Fix: defaults must be applied on a per-kind basis.
+--If non-rigid a :: k where k lacks a default, fail.
+--If k is polymorphic, that's a compiler error.
+--To look up kinds and defaults, rigidize must be in HM.
+rigidizeAndDefault :: Data a => Map Name T -> a -> HM a
+rigidizeAndDefault inf2rigid = everywhereM $ mkM $
+                               \t -> zonk t >>=
+                                     rigidizeAndDefaultType inf2rigid
+--Invariant: after zonking, all tyvars in the type are unbound.
+--Either they're in inf2rigid or not.
+rigidizeAndDefaultType :: Map Name T -> T -> HM T
+rigidizeAndDefaultType inf2rigid = everywhereM $ mkM $
+  \case TyVar a | Just t <- M.lookup a inf2rigid -> return t
+                | otherwise -> do
+                    k <- kindOf $ TyVar a
+                    ds <- asks hmDefaults
+                    case k of
+                      TyCon kcon ->
+                        case M.lookup kcon ds of
+                          Just dflt -> return dflt
+                          Nothing -> throwError $ KindHasNoDefault kcon
+                      --Can occur if tyvar = m in m a, for example
+                      _ -> throwError $ CompositeKindCannotBeDefaulted k
+        t -> return t
+
 --A single inferred var mapping to two different rigid vars is also an error.
 --Example: a -> a is less general than a -> b.
 type UnifyRigid = StateT (Map Name T) (Either RigidUnificationError)
@@ -761,6 +812,7 @@ inferSCC nms m =
   where hmr = HMR{hmTySigs = tysigs m,
                   hmKindSigs = kindsigs m,
                   hmSorts = sorts m,
+                  hmDefaults = defaults m,
                   hmTaus = M.empty, --We'll set them in shortly
                   hmLocals = M.empty
                  }
@@ -791,7 +843,7 @@ inferSCC nms m =
             allKindsBound
             --zonk all tyapps in the defs
             (funs',stats',globs') <- everywhereM (mkM zonk) (funs,stats,globs)
-            --Default unbound tyvars to Word *on a per-function basis*
+            --Default unbound tyvars *on a per-function basis*
             let funs'' = applyDefaults funs' nm2sig
             --stats and globs are monomorphic, so *all* tyvars must be
             --defaulted. However, it's simpler to use the same function for
@@ -801,6 +853,26 @@ inferSCC nms m =
             --Fail if any kind var is unbound
             return (nm2sig,funs'',stats'',globs'')
 
+--Need to apply rigidizeAndDefault here; the rigid signature is the inferred
+--one (so the inf2rigid map is just an identity map on all the vars in the
+--signature).
+{-
+          --The def may be more general than the sig, but not less general...
+          --First obtain a mapping from tyvars in the inferred type to T's in
+          --the scheme; scheme vars are rigid, so if they're bound that's an
+          --error.
+          --Apply the mapping to each type present in it; vars not present
+          --are unbound by t and should be defaulted instead.
+          t' <- zonk t --Just in case
+          let ei_err_inf2sig = execStateT (unifyRigid sig t) M.empty
+          inf2sig <- case ei_err_inf2sig of
+                       Left rue -> throwError $ RigidUnificationError rue
+                       Right inf2sig -> return inf2sig
+          rigidizeAndDefault inf2sig def'
+-}
+            
+
+--Ah, I've duplicated defaulting here...
 applyDefaults :: Data a => Map Name a -> Map Name T -> Map Name a
 applyDefaults nm2def nm2t =
   M.mapWithKey (\nm ->

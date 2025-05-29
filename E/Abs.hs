@@ -16,7 +16,8 @@ data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
 data D
-    = Defun Ident E S
+    = Default UIdent T
+    | Defun Ident E S
     | TySig Ident T
     | KindSig UIdent T
     | TySyn ConArgs T

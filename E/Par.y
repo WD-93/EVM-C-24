@@ -97,27 +97,28 @@ import E.ErrM
   'case' { PT _ (TS _ 44) }
   'continue' { PT _ (TS _ 45) }
   'data' { PT _ (TS _ 46) }
-  'else' { PT _ (TS _ 47) }
-  'end' { PT _ (TS _ 48) }
-  'for' { PT _ (TS _ 49) }
-  'if' { PT _ (TS _ 50) }
-  'import' { PT _ (TS _ 51) }
-  'memory' { PT _ (TS _ 52) }
-  'of' { PT _ (TS _ 53) }
-  'region' { PT _ (TS _ 54) }
-  'return' { PT _ (TS _ 55) }
-  'storage' { PT _ (TS _ 56) }
-  'then' { PT _ (TS _ 57) }
-  'tstorage' { PT _ (TS _ 58) }
-  'type' { PT _ (TS _ 59) }
-  'var' { PT _ (TS _ 60) }
-  'while' { PT _ (TS _ 61) }
-  '{' { PT _ (TS _ 62) }
-  '|' { PT _ (TS _ 63) }
-  '|=' { PT _ (TS _ 64) }
-  '||' { PT _ (TS _ 65) }
-  '}' { PT _ (TS _ 66) }
-  '~' { PT _ (TS _ 67) }
+  'default' { PT _ (TS _ 47) }
+  'else' { PT _ (TS _ 48) }
+  'end' { PT _ (TS _ 49) }
+  'for' { PT _ (TS _ 50) }
+  'if' { PT _ (TS _ 51) }
+  'import' { PT _ (TS _ 52) }
+  'memory' { PT _ (TS _ 53) }
+  'of' { PT _ (TS _ 54) }
+  'region' { PT _ (TS _ 55) }
+  'return' { PT _ (TS _ 56) }
+  'storage' { PT _ (TS _ 57) }
+  'then' { PT _ (TS _ 58) }
+  'tstorage' { PT _ (TS _ 59) }
+  'type' { PT _ (TS _ 60) }
+  'var' { PT _ (TS _ 61) }
+  'while' { PT _ (TS _ 62) }
+  '{' { PT _ (TS _ 63) }
+  '|' { PT _ (TS _ 64) }
+  '|=' { PT _ (TS _ 65) }
+  '||' { PT _ (TS _ 66) }
+  '}' { PT _ (TS _ 67) }
+  '~' { PT _ (TS _ 68) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -143,7 +144,8 @@ ListD : {- empty -} { [] }
       | D { (:[]) $1 }
       | D ';' ListD { (:) $1 $3 }
 D :: { D }
-D : Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
+D : 'default' UIdent '=' T { E.Abs.Default $2 $4 }
+  | Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
   | Ident ':' T { E.Abs.TySig $1 $3 }
   | UIdent ':' T { E.Abs.KindSig $1 $3 }
   | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }

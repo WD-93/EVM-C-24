@@ -11,10 +11,13 @@ Thanks to kind signatures, every primitive kind but (->) can be declared here.
 //Kind does not itself have a kind, bounding the kind hierarchy to depth 3
 //The kind of all value types
 Type : Kind;
+default Type = Word;
 //Type-level naturals
 Nat : Kind;
-//Regions, used to parameterize pointers
+default Nat = 0;
+//Regions, used to parameterize pointers and boxed datatypes
 Region : Kind;
+default Region = Memory;
 Memory : Region;
 Storage : Region;
 TStorage : Region;
@@ -24,6 +27,7 @@ Code : Region;
 
 //Indicates whether an Int is signed
 Signedness : Kind;
+default Signedness = Unsigned;
 Signed : Signedness;
 Unsigned : Signedness;
 

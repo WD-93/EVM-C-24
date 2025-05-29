@@ -31,7 +31,7 @@ transD x = case x of
   KindSig uident t -> failure x
   TySyn conargs t -> failure x
   Import modulename -> failure x
-  Global globalregion ident -> failure x
+  Global globalregion varbind -> failure x
   Data conargs datarhs -> failure x
   StaticData ident e -> failure x
 transConArgs :: ConArgs -> Result

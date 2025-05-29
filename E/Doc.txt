@@ -45,13 +45,13 @@ The set of reserved words is the set of terminals appearing in the grammar. Thos
 
 The reserved words used in E are the following:
   | ``break`` | ``case`` | ``continue`` | ``data``
-  | ``else`` | ``end`` | ``for`` | ``if``
-  | ``import`` | ``memory`` | ``of`` | ``region``
-  | ``return`` | ``storage`` | ``then`` | ``tstorage``
-  | ``type`` | ``var`` | ``while`` | 
+  | ``default`` | ``else`` | ``end`` | ``for``
+  | ``if`` | ``import`` | ``memory`` | ``of``
+  | ``region`` | ``return`` | ``storage`` | ``then``
+  | ``tstorage`` | ``type`` | ``var`` | ``while``
 
 The symbols used in E are the following:
-  | ; | := | : | =
+  | ; | = | := | :
   | . | { | } | ,
   | ( | ) | => | _
   | ++ | -- | [ | ]
@@ -77,7 +77,8 @@ All other symbols are terminals.
   | //[D]// | -> | **eps**
   |  |  **|**  | //D// 
   |  |  **|**  | //D// ``;`` //[D]// 
-  | //D// | -> | //Ident// //E13// ``:=`` //S// 
+  | //D// | -> | ``default`` //UIdent// ``=`` //T// 
+  |  |  **|**  | //Ident// //E13// ``:=`` //S// 
   |  |  **|**  | //Ident// ``:`` //T// 
   |  |  **|**  | //UIdent// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 

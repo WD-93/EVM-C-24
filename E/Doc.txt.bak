@@ -82,7 +82,7 @@ All other symbols are terminals.
   |  |  **|**  | //UIdent// ``:`` //T// 
   |  |  **|**  | ``type`` //ConArgs// ``=`` //T// 
   |  |  **|**  | ``import`` //ModuleName// 
-  |  |  **|**  | //GlobalRegion// //Ident// 
+  |  |  **|**  | //GlobalRegion// //VarBind// 
   |  |  **|**  | ``data`` //ConArgs// ``=`` //DataRHS// 
   |  |  **|**  | //Ident// ``:=`` //E// 
   | //ConArgs// | -> | //UIdent// 
