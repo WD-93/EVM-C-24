@@ -127,6 +127,11 @@ straightforwardly converted to an illustration why determining whether a functio
 not straightforward in the general case. Ofc none of the impossibility proofs apply in reality since txns
 have finite gas...
 
+TODO: smarter pretty variable selection in inferred tysigs. When a free variable nm is inherited from a
+callee, use nm, nm2, ...
+Example: f uses catchError : a -> Either err a and returns its result; it should also have err in its
+signature.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

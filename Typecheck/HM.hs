@@ -752,18 +752,23 @@ rigidizeAndDefault inf2rigid = everywhereM $ mkM $
 rigidizeAndDefaultType :: Map Name T -> T -> HM T
 rigidizeAndDefaultType inf2rigid = everywhereM $ mkM $
   \case TyVar a | Just t <- M.lookup a inf2rigid -> return t
-                | otherwise -> do
-                    k <- kindOf $ TyVar a
-                    ds <- asks hmDefaults
-                    case k of
-                      TyCon kcon ->
-                        case M.lookup kcon ds of
-                          Just dflt -> return dflt
-                          Nothing -> throwError $ KindHasNoDefault kcon
-                      --Can occur if tyvar = m in m a, for example
-                      _ -> throwError $ CompositeKindCannotBeDefaulted k
+                | otherwise -> defaultFreeTyVar a
         t -> return t
 
+--Attempts to find the default instance for a tyvar that's not bound by the
+--inferred signature.
+--Also used in default logic for defs without signatures.
+defaultFreeTyVar :: Name -> HM T
+defaultFreeTyVar a = do
+  k <- kindOf $ TyVar a
+  ds <- asks hmDefaults
+  case k of
+    TyCon kcon ->
+      case M.lookup kcon ds of
+        Just dflt -> return dflt
+        Nothing -> throwError $ KindHasNoDefault kcon
+    --Can occur if tyvar = m in m a, for example
+    _ -> throwError $ CompositeKindCannotBeDefaulted k
 --A single inferred var mapping to two different rigid vars is also an error.
 --Example: a -> a is less general than a -> b.
 type UnifyRigid = StateT (Map Name T) (Either RigidUnificationError)
@@ -844,12 +849,12 @@ inferSCC nms m =
             --zonk all tyapps in the defs
             (funs',stats',globs') <- everywhereM (mkM zonk) (funs,stats,globs)
             --Default unbound tyvars *on a per-function basis*
-            let funs'' = applyDefaults funs' nm2sig
+            funs'' <- applyDefaults funs' nm2sig
             --stats and globs are monomorphic, so *all* tyvars must be
             --defaulted. However, it's simpler to use the same function for
             --that.
-                stats'' = applyDefaults stats' nm2sig
-                globs'' = applyDefaults globs' nm2sig
+            stats'' <- applyDefaults stats' nm2sig
+            globs'' <- applyDefaults globs' nm2sig
             --Fail if any kind var is unbound
             return (nm2sig,funs'',stats'',globs'')
 
@@ -873,17 +878,25 @@ inferSCC nms m =
             
 
 --Ah, I've duplicated defaulting here...
-applyDefaults :: Data a => Map Name a -> Map Name T -> Map Name a
-applyDefaults nm2def nm2t =
-  M.mapWithKey (\nm ->
-                  let scheme = nm2t M.! nm
-                      rigid = tyVars scheme
-                  in everywhere $ mkT $ \case TyVar a
-                                                | S.member a rigid -> TyVar a
-                                                | let -> UInt 256
-                                              t -> t
-               )
-  nm2def
+--I'll also prettify the types
+applyDefaults :: Data a => Map Name a -> Map Name T -> HM (Map Name a)
+applyDefaults nm2def nm2t = do
+  let nmdefs = M.toList nm2def
+  M.fromList <$> (mapM (\(nm,def) ->
+                        let scheme = nm2t M.! nm
+                            prettyMap = M.fromList $
+                                        zip (tyVarsList scheme) pretties
+                            --Use rigidizeAndApplyDefaults here instead?
+                        in do
+                          def' <- everywhereM (mkM $ \case
+                            TyVar a
+                              | Just p <- M.lookup a prettyMap ->
+                                return $ TyVar p
+                              | let -> defaultFreeTyVar a
+                            t -> return t) def
+                          return (nm,def')
+                       )
+    nmdefs)
 
 
 {-
@@ -1034,11 +1047,13 @@ prettifyType t =
   let vs = tyVarsList t
       v2p = M.fromList $ zip vs pretties
   in substTyVarNames v2p t
-  where pretties = [[c] | c <- ['a'..'z']] ++
-                   (do n <- [1..]
-                       c <- ['a'..'z']
-                       return $ c : show n
-                   )
+--Moved out of the where because it's also used in applyDefaults
+pretties :: [Name]
+pretties = [[c] | c <- ['a'..'z']] ++
+           (do n <- [1..]
+               c <- ['a'..'z']
+               return $ c : show n
+           )
 substTyVarNames :: Map Name Name -> T -> T
 substTyVarNames = substTyVars . M.map TyVar
 substTyVars :: Map Name T -> T -> T
