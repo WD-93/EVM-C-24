@@ -132,6 +132,355 @@ callee, use nm, nm2, ...
 Example: f uses catchError : a -> Either err a and returns its result; it should also have err in its
 signature.
 
+Bugs: map in Source/TestMap.evmc still has tyvars that should be rigid defaulted.
+f x := return g x; g x := return f x
+--The definition of f does not TyApp g! I must tyapp names in the SCC with their tau, then when it's zonked
+I must (purely) unify the type with its generalized scheme to get the real params to pass.
+The type params are unavoidable but a big headache... HM-typing a language without ad hoc polymorphism
+(e.g. Hopper) is much simpler.
+
+Problem exposed by map: (+) is too flexible, defaulting does not take into account that ptr + n should be 
+:: ptr. addPtr is an ugly stopgap; the sustainable solution is to support single-method typeclasses and use
+information gleaned from instantiation to unify.
+instance plus : Ptr r a -> Int s l where (p,n :: Int s l) := return coerce (mask (PN :: ProxyNat l) 
+ add(coerce p, coerce n))
+That would also help move even more of the compiler's logic to Prim.
+Perhaps all of wordification could be moved to the source/Module level? For that need to generate repr code
+for datatypes.
+instance repr : List r a -> ...
+Class logic:
+class f : t => put f : t in tysigs, f in classes
+For each instance f : t' in classes, 1) check the class exists, 2) t' is :: Type, 3) 
+unify t' with rigid t to get the params for t'; record them 4) check t' does not purely unify with any other 
+instance of f. Once all instances are handled, restrict the signature of f to the union of the instance
+schemes.
+After typeOfFun: look up all uses of class funs in the definition and their params. For each instance, attempt
+to unify. If an instance applies, replace f with f<instance>, quantify the instance params and unify them
+with the old params. All functions in the SCC must be narrowed together; if one is narrowed repeat.
+Need a type union operator; an efficient instance lookup trie is FW.
+
+Can coerce be implemented using classes?
+coerce : a -> b; coerce x = fromWords (truncateOrPad (toWords x))
+fromWords, toWords, bitLen
+Alt: toInts or toByteArray? The problem is addition of field sizes, which HM or user-level instances can't
+capture.
+Add a class addNat : ProxyNat n -> ProxyNat m -> ProxyNat o primitive? That requires special handling during
+instantiation...
+class byteSizeof : Proxy a -> Word
+Wait... sizeofProxy : Proxy a -> ProxyNat n!
+For each unboxed datatype, generate an instance = tagsize + max of all sums of field sizes
+Problem: if I want to apply opts on higher-level, pre-instantiation reprs such as dt.field, I risk changing or
+relaxing the type constraints. Maybe that's OK? How to express constraints not present in the expr...?
+if a + b == b + a then () else () end => (), regardless of whether a, b are addable?
+
+Note for writeup: the utility of moving primitives out of the compiler and into the language itself (which
+simplifies the compiler, allowing it to use a smaller set of primitives and allowing you and the compiler to 
+reason about the primitive in terms of the language itself) is closely related to the same concept in
+designing domain-specific logics (e.g. Bazaar): define a construct in terms of lower-level constructs and
+you can replace its more complex axioms with an extensible set of derived theorems.
+That allows you to test and prove those theorems...
+
+Field accesses in a ptr context: (a -> b) -> (Ptr r a -> Ptr r b) --that's liftM1!
+On stack is another context; for an n-byte value, word-padding isn't inherent to it.
+Primitive types under the hood: WordPad, Concat
+WordPad a could be implemented using (-) and mod on Nats... or a roundNat primitive.
+
+When restricting types, a subset of instances may potentially apply; then need to restrict the type to
+the union of them.
+How to express elegantly? f : params . union ts? That doesn't capture instances themselves having
+AHP callee sub-instances.
+
+To use overloading to implement stack ops differently, the instantiator needs to be aware of either words or
+pointers. Solution: make pointer ops (.field, get, set) explicit. Alt: instantiate to make offsets explicit,
+then optimize based on where the data is. Pointer handling opt should consider dataflow (e.g. *out
+ultimately = *in => copy), which is non-local and not suited for instantiation.
+A bytestring model of values fits both the stack and memory view.
+&_ could be implemented in a naive rewrite phase that only considers straight-line code? It should be part of
+TC, since &_ restricts the region of the pointer it returns...
+A problem with addNat etc: though it starts off unbound, m n -> o. o should not be defaulted before the vars
+which may determine it! Solution: explicit type families? That would eliminate the need for a faux
+runtime addNat.
+Sizeof (Concat a b) = AddNat (Sizeof a) (Sizeof b) --using open type families
+sizeof (P :: Proxy a) := return PN :: ProxyNat (Sizeof a)
+Bytestring ops: getSlice, setSlice, bitwise ops. Need primCoerce (does not pad or truncate). Concat and
+bytestring literals could be used for reifying struct construction.
+Opt: deref structLen ptr .slice(off,fieldLen) => deref fieldLen (ptr+off)
+add, mul etc could be considered defined on bytestrings of any length.
+Design consequence: bytestring representation is integrated with the type system. That makes defining a
+semantics easier...
+
+Treat globals of one region as a single struct? It could simplify placing them. Need to be able to treeshake
+unused fields...
+Globals -> named ptrs, uses => deref thereof. That keeps pointer identity while making TC/opt aware of the
+nature of globals.
+Introduce, assume disjoint. malloc as a source of new pointers, disjoint from all others (except BytePtrs?).
+calloc could be useful for parsing calldata... alloc structures access and ensures you don't have to consider
+a single pre-existing region.
+Problem: the assumption that alloc always produces a new ptr is not compatible with ptrs of finite size.
+Solution: exhausting the space (allocating > 2**16 bytes) is UB.
+
+Constructors => wrappers round a single bytestring. Keeping them in the expr language would allow you to
+infer unwrapC (wrapC bs) == bs
+How to model memory? A map malloc'd ptr -> bytestring? That would ensure you can type the Mem state value.
+Guarantee that if ptr -> a bytestring of length n then ptr + (k < n) points into it?
+Do not guarantee mallocs return ptrs in increasing order. Do not guarantee indices remain consistent;
+allow a "GC" step in the semantics where indices are changed and only safe ptrs change to follow them?
+What is a safe pointer in a context where everything is a bytestring...? A slice of a bytestring with the
+right wrapper...
+If pointers are abstract values everything else must be as well... concatenate or constructors would need to
+support non-bytestrings.
+The conflict between the need for an abstract model of pointers and concrete compilation of values as
+bytestrings is a major challenge for the IR design...
+If pointers were bytestrings, that would be simple... but then precisely defining the guarantees offered by
+the memory model is complex.
+If every datatype were ultimately a tree of nested wrappers around bytestrings...
+With scratch mem opt, malloc doesn't guarantee fresh mem each time... only that subsequent calls won't
+interfere to the extent you use pointers "nicely" (not coercing to and from ints, for example).
+Another similar issue: function pointers. Need to specify the abstract model to figure out how it can be
+merged with the concrete one... at least Code isn't mutable.
+Opts that should work: adding and removing globals, lifting mem to stack and vice versa,
+replacing mallocs with scratch.
+Long-term goal: a formal semantics for each level that allows the equivalence of opts to be proven.
+Proposal: the memory model is index -> bytestring (so it can be an abstract value that can be reasoned about
+and passed around), but the guarantees are determined by the types available to the program in globals and on
+the stack. Then if a malloc'd pointer doesn't escape, its index can be freed.
+What does a coercion from int to pointer do then?
+How to express "byte ptrs may alias anything"? Perhaps don't and limit universal aliasing to a special
+pointer type (or function producing a pointer).
+The semantics could include additional origin tracking info (with no runtime effect). For example, if a
+pointer and all its child pointers are garbage, allow GC of their mapped index-bs mapping.
+GC step: map => map', stack => stack' where the same bijection on keys is applied to the map and pointers
+on the stack and all keys on the stack remain live in map'.
+Weaker: the live set of pointers depends on which will actually be dereferenced by the program.
+The program state and stack can be represented as a single f args (\ret -> f' args' (...))
+The semantics should be nondeterministic to allow optimizations that change behavior not fixed by the spec.
+Beware scope creep: a memory model is essential long-term but I don't need a full one for aliasing opts.
+AO isn't even top prio...
+
+Note a type-based rule for reachability (where live = the reachable set given all values on the stack and in
+globals... given no more coercions?) would need to consider bytes in the memory map, not just in stack/globs.
+Every value has a defined repr...
+
+Another opt the GC step would allow: when you've malloc'd a large block but only keep a subset, compact what
+you keep.
+A big Q for the memory model: what does non-nice pointer access do (e.g. coercing from bytes to a ptr)?
+Proposal: its reachable set is everything.
+Opts should be able to ignore it... so just assume it's writing to some new free region for opt purposes?
+
+Should I have defined TC on Core directly, using src spans/refs to higher-level repr to explain errors?
+Note return requires CPS since it's a longjump.
+Could I write straight-line functions that skip the CPS step? That's what primfuns are... but they can
+already be defined as returning and then optimized to lets.
+If I made class constraints (including KnownNat) explicit in type schemes (as opposed to types!) I could
+determine whether a function is QP.
+
+FIR/Core should treat values as (wrapped?) bytestrings, not be aware of word ops on the stack.
+Conversion word -> uint16 then becomes truncate/slice, not mask.
+For now it's not essential to lift field compilation to the language level, or to perform class-based type
+refinement... though the latter would really help with pointer addition. I'll just define addPtr as a
+placeholder fix.
+Perform vanilla HM, then monomorphize and convert to FIR; optimize, wordify, then Stack.
+Well... how difficult would AHP with single-method classes be?
+Need type union, unoptimized method filtering via pure unification.
+Side note: args being ordered in FIR is an improvement on CFG, allowing calls to be a branch rather than op.
+TC after conversion to Core makes sense; then I can detect writes to immutable ptrs by translating
+(*ptr).field = ... to writePtr (fieldPtr ptr) v
+stackvar.field = e => let nuvar = setField e stackvar
+Without an expr-statement distinction, Con args = e becomes case.
+Make mutating the constructor tag UB...
+Storage deref can be treated as an atomic bytestring/value load despite requiring an ifte when compiled.
+Do CE and DCE on the wordified and monomorphized IR. Compute offsets there too; do NOT reduce to bytestrings
+or word ops in FIR.
+Note scratch use is essential to deref (and therefore case) on code and returndata. A memory model would help
+justify it, but for now I can just look at the max size dereferenced and allocate a large enough scratch.
+
+FIR and compilation to it nailed down:
+Explicit ptr handling: setPtr, writePtr, fieldPtr. Globals must be ptrs at this point.
+local.field => getField/setField.
+No word or bytestring-level repr: constructors remain. That allows field access to be reasoned about
+symbolically...
+Boxed constructors => pointer to unboxed struct datatype.
+Functions in CPS.
+A & * ptr => ptr pass. No need to type it?
+Explicit state passing with a simply typed Mem model? At first, a single Mem value.
+That would enable symbolic optimization of memory!
+Target opts: inter- and intraprocedural inlining, specialization, TCO.
+All functions take one arg, a tuple.
+ifte cond contTh contEl --takes two lambdas. Lambdas should be lifted...
+Note both stmts and exprs may diverge thanks to return,continue,break and stop/revert/RETURN.
+Generalize malloc to alloc :: Int s l -> Ptr r a, with instances for every region but code.
+Split sint and uint into data Int l, data Signed l = MkSigned (Int l)? Then I could eliminate the signedness
+kind... but the types of numeric ops would become more complex.
+Con args => allocCon args,
+where allocCon args :=
+ return coerce allocValue(StructCon args)
+alloc should introduce a new mapping; return it only if it remains reachable. That can occur if it's in
+reachable(returned value) or if a value -> it is written to a pointer that remains reachable.
+Separation logic is relevant here:
+m1 | m2 = separating union
+allocList123() --does not take memory; produces a single boxed list with reachable = 4 new list cells.
+alloc1toN's reachable set could be treated symbolically.
+Note: if you can verify by induction that a type doesn't contain pointers of type t, you know a write to ptrt
+won't interfere with it!
+That works even for infinite type sets, e.g. from data T a = T (T [a]). There you should be able to infer that
+all reachable pointers are of type T alpha, and therefore an Int write will not interfere.
+So the pattern of mem maps being passed is known only after typing..? No, one can start with an overapprox
+and optimize from there.
+Ex:
+(ptr,mem) = paf (mem) --where paf is a purely allocating function
+paf mem k :=
+ let (ptr, mapping) = allocating code
+ in (ptr, mapping | mem) --where reachable ptr = mapping
+Recognizing paf doesn't read any memory, pass in mem = {}; it then just returns mapping since {} is the
+identity under separating union.
+Separating union properties: (|) commassoc, {} identity, (k=>v | m) [k] = v
+deref (MkPtr @[Memory,a] k) (k=>v | mem) = deserialize @a v
+Note: multiple reading ops may be passed the same mem, subject to no write first (modulo indistinguishability).
+Symbolic eval could retain values in bytestrings as serialize(v); *(fieldPtr p) where p -> serialize struct =
+p.field if the types match. 
+Invariant: any reading operation is passed the requisite keys; SU arguments never have overlapping keys (if
+they do due to ptr space saturation it's UB).
+malloc can be assumed to return a key (address) that will not interfere with any other existing pointer...
+but that doesn't mean it's unique (?). Consider a pointer in future code that will be written before it's 
+next read... the old value needn't be considered reachable, so you could reuse its space.
+The separating union constraint would be retained by deleting the key before reusing it.
+How to treat pointers created by bad coercion (i.e. field types of result don't map onto types of argument)?
+The same as an alloc...
+
+How to express order-independence of function calls when CPS calls are inherently sequentializing?
+Perhaps (f ||| g) cont, where (|||) :: (a -> b) -> (a -> b) -> (a -> b) and has the constraint it can only
+be passed arguments st f . g and g . f are equivalent. Functions which recursively contain parallelizable
+elements (such as lets?) could be bubbled up.
+Alt: par e1 e2 where par :: a -> b -> (a,b)
+It's not an essential opt for now... local reordering is enough. Start with a basic (mem is all or nothing)
+model, then refine.
+How to identify independent functions?
+Perhaps having both a CPS and a let repr for function calls is the solution...
+let res = call (f args) --less k, cont is implicit in location
+No, that doesn't work! The issue is that functions may diverge.
+Proper solution: a monadic repr of calls:
+do x <- f args
+   y <- g args'
+   ...
+But how to mix with lets? They're just lambdas under the hood... manipulating that repr is just as easy.
+But maybe it is worth distinguishing potentially divergent exprs at the type level...
+Note potential opt: lazy let unlifting. If a let's result is only used in one branch, unlift it into that one.
+Perhaps consumption could be represented using a let-like construct... an explicit barrier consuming x?
+Consumption is mixed with other ops in lets, so marking the argument is necessary... but FIR needn't care
+about ordering, that's a later constraint?
+How to identify independence: f args (\e -> g e args' k) where g is known to pass through e without using it.
+Recognize both unused and passthrough args.
+
+If k is never read before the next write, k=>v | mem at the start is equivalent to mem.
+k=>garbage mappings for new k may be added at any time? k=>garbage means the nondeterministic semantics may
+add any bytestring there.
+
+Compilable form: only opEs in lets, only lifted letrecs with no closed except a \e -> f e args in final
+argument of top-level expr (it may in turn contain another in its own final arg and so on).
+Reordering can be done before conversion to compilable form, but it's the heuristic efficiency of the latter
+which tells you whether it's worth it...
+
+Calldata and external contract state should also be passed in the semantics; that allows the entire
+behavior of the program to be summarized with a single expression (modulo nondet reductions and symbolic
+unknowns).
+Note it's not in general possible to assume two identical staticcalls will have the same result, since the
+gas value differs!
+Assume gas is unknown but finite? What we usually want to reason about if behavior assuming gas is finite but
+sufficient. Pass gas (no pun intended...) into each op?
+
+When restricting an AHP function to yield a more specific type, identify the vars being restricted (let's say
+x, y to C a b, D b a), then quantify a new a, b and unify x and y.
+
+Monomorphized and wordified IR: DCE, CE.
+
+How to support overloading with a single letrec? Class functions given placeholder definitions, then a
+refinement/substitution pass? Case on type params is cleaner, allowing me to keep the full program definition
+in a single Core expr.
+Issue: need to select the order in which I match on typarams?
+Problem: instances may not only restrict types, but also introduce new type params.
+Sol 1: use a different type-level case where the cases may be explicitly polymorphic.
+Sol 2: find all tyvars in AHP case? That doesn't work since AHP functions may polymorphically recurse...
+ex: instance f : [a] -> (b,c) where f [a] := (null(),f a). It could have any number of free tyvars!
+OK, use a different case (with nested rather than single-con patterns), incrementally specialize before the
+typarams for each f are known. Then polymorphically recursive functions shouldn't be a problem since the
+type-level case is a black box.
+Note opts that use theorems for free don't work out of the box: inferred types are in general just an 
+optimistic approximation of the true type.
+
+Why should coercing a pointer into byte data into another byte type not be UB? Because the memory model treats
+pointers as ~ closures with methods get, set and index, where the methods may only take valid actions.
+And modifying bytes in a byte field is valid!
+Special non-byte data: tags, ptrs, function ptrs.
+Indexing by pointer addition is ugly... it means the validity of pointer access depends on information not in
+its type. Can it be eliminated? Not easily with interpretation of bytecode and other use of dynamically sized
+sequences...
+
+Type-level case as sugar for a class hierarchy is intriguing - you could make anonymous subclasses!
+Instance lookup data structure: one var is expanded at a time, so out-edges per node in the decision tree =
+sum (possible cons var | var <- free vars). For now just attempt to unify with each instance.
+Normal defs aren't sugar for single-method classes, since they may also allow no signature.
+
+For writeup: Wadler's argument that DSL's allow you to write domain-specific logic more tersely and with less
+risk for error precisely because they don't allow you to express too much applies to moving language spec from
+compiler into Prim and Prelude.
+More restrictive languages not only prevent unintended behavior, they allow you to reason about and safely
+apply transformations to programs. Example: a + b ~ b + a in Core, where effects are made explicit - but not
+in EVMC source.
+How much to allow to trade off optimizability vs expressive power is a central problem of language design.
+
+From discussion: restrict plus to a -> a -> a, add an addPtr function. That increases the learning curve vs
+C, but so would annotating additions... and it makes better use of EVMC's type system.
+
+*immutablePtr = e, &(*ptr) isn't caught by naive HM. Apply pattern transformations and &_ substitution first?
+Initial pattern combinators:
+_, local, global
+p.field, *e, e[e], Con {field: arg}
+*p .field => *(fieldPtr p)
+Substs: global => *globalPtr --note GC rewrite allows it to be moved!
+p = e => case e of p -> cont?
+case e of BoxedCon {field: arg} -> ...
+UBCon {field: arg} = e =>
+UBCon {field: arg = e.field}
+Exprs and statements can't be unified before conversion to Core since the latter depends on an implicit
+context: the return continuation at least.
+BCon {field: p} = e =>
+let x = e in
+case tag x of
+ Tag_BCon -> StructBCon {sbcField: p} = *(coerce e :: Ptr r structBCon); e
+boxedDT.field => *(coerce boxedDT :: Ptr r structBCon).sbcField
+Need: 
+Tag type and value declaration for datatypes; automatic generation where missing.
+Auto-gen of field names for each constructor argument.
+Auto-gen of tag datatypes for boxed constructors; their tag type and value is given by the decl for the boxed
+datatype. Declaring a tag datatype simplifies matching since you can assume only the tag values are
+possible. Problem: if they're functions you only know the exact value after placement.
+Auto-gen of structs for each boxed datatype constructor.
+
+How to transform patterns while preserving their expr-ness?
+Proposal: side-effecting let (not expr-scoped). Permits stackVar, *p as lhs.
+BCon {field: p} = e =>
+ let x = e
+ case tag x of
+  Tag_BCon -> let p = *(coerce x :: Ptr r structBCon) in x
+Also need expr-level case.
+Decompose composite exprs to let* (op vars)?
+Three types of LHS: local, *ptr, expr-scoped? Alt: pre-declare vars from intermediate exprs.
+No need to decompose except in patterns...
+Problem: you don't know boxed datatype region before HM! But you can obtain it via 
+regionOf :: a -> ProxyRegion r.
+BCon {field: p} = e =>
+let x = e
+    pr = regionOf x
+    pt = tagOf x
+--continue as before, using fix functions:
+case *(fixRegionTag (pr,pt,coerce x)) of
+ ...
+fixRegionTag : (ProxyRegion r, Proxy tag, a) -> Ptr r tag
+
+Reading list:
+Mark Jones (Hugs author), PhD thesis on type classes
+Andrew Appel, CPS
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

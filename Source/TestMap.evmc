@@ -1,0 +1,9 @@
+//Arguments: f, inptr, outptr, len
+map : (a -> b, Ptr r a, Ptr r b, Int s l) -> ();
+map (f,in,out,len) := {
+ var bound = (in :: Ptr r a) + len :: Ptr r a;
+ while (in < bound) {
+  *out = f(*in);
+  in++
+  }
+}
