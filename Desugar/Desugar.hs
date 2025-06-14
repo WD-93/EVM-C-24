@@ -385,8 +385,7 @@ _, x, {p | field:p,...}, (p1,p2,...), *e, e[e], p.field, p#ix
 In future: Con p
 -}
 desugarP :: P.E -> De Pat
-desugarP = desugarE
-{-
+--desugarP = desugarE
 desugarP = go
   where go = \case
           P.EmptyTuple -> return $ PCon "Unit" []
@@ -400,7 +399,6 @@ desugarP = go
           P.Deref e -> Deref <$> desugarE e
           e -> throwE $ MalformedPattern e
         todo = error "todo"
--}
 {-
 --Fields in patterns should never contain pad or align pragmas, so they cause
 --an error
@@ -513,10 +511,15 @@ desugarE = go
           P.BitwiseOr a b -> op2 "bwOr" a b
           P.And a b -> op2 "scAnd" a b
           P.Or a b -> op2 "scOr" a b
+          --Problem: a may be *expensiveExpr
+          -- += et al should only be applicable to infallible patterns
+          --(i.e. not Con)
+          -- *e += 1 should compute the address once
           P.Assign a aop b -> do
+            ap <- desugarP a
             a' <- go a
             b' <- go b
-            return $ a' := aop2op aop a' b'
+            return $ ap := aop2op aop a' b'
           --Coerce need no longer be part of the syntax
           P.TypeAnnot pe pt -> do
             let t = desugarT pt

@@ -16,7 +16,8 @@ data M = Module [D]
   deriving (Eq, Ord, Show, Read)
 
 data D
-    = Defun Ident E S
+    = Default UIdent T
+    | Defun Ident E S
     | TySig Ident T
     | KindSig UIdent T
     | TySyn ConArgs T
@@ -69,6 +70,9 @@ data CASE = C E S
 data VarBind = JustVar Ident | VarIs Ident E
   deriving (Eq, Ord, Show, Read)
 
+data EField = EField Ident E
+  deriving (Eq, Ord, Show, Read)
+
 data E
     = EmptyTuple
     | Tuple E [E]
@@ -76,6 +80,7 @@ data E
     | Int Integer
     | Var Ident
     | String String
+    | ConRecord UIdent [EField]
     | Con UIdent
     | Wild
     | PlusPlusPost E

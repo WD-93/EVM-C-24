@@ -85,6 +85,9 @@ transVarBind :: VarBind -> Result
 transVarBind x = case x of
   JustVar ident -> failure x
   VarIs ident e -> failure x
+transEField :: EField -> Result
+transEField x = case x of
+  EField ident e -> failure x
 transE :: E -> Result
 transE x = case x of
   EmptyTuple -> failure x
@@ -93,12 +96,14 @@ transE x = case x of
   Int integer -> failure x
   Var ident -> failure x
   String string -> failure x
+  ConRecord uident efields -> failure x
   Con uident -> failure x
   Wild -> failure x
   PlusPlusPost e -> failure x
   MinusMinusPost e -> failure x
   Index e1 e2 -> failure x
   Dot e ident -> failure x
+  Bang e1 e2 -> failure x
   Arrow e ident -> failure x
   App e1 e2 -> failure x
   PlusPlusPre e -> failure x

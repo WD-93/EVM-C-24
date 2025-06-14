@@ -39,7 +39,13 @@ data E = EInteger Integer
        | TyApp Name [T]
        --Since functions are only defined at the top level (there are no
        --letrecs, lets or lambdas), I do not need TyLam Name E
+       | Let (Pat,E) E
+       --Essential to decomposition of assignments to complex patterns prior
+       --to HM
+       | CaseE E [(Pat,E)]
+       --Making the lhs a Pat allows incremental decomposition of patterns
   deriving (Eq,Ord,Read,Show,Data)
+
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
 --currently there is no support for bitfields
@@ -242,17 +248,19 @@ data S = SE E --required because := has been moved to E
 --pattern-matching can be optimized.
 --Ex: *p (.field | unboxed array [ix]) = e =>
 --writePtr (a series of transformations on p) e
-type Pat = E
-{-
-data Pat = PWild
-         | PVar Name
-         | PCon Name [Pat]
-         | Pat :. Name
+
+--type Pat = E
+data Pat = PWild --becomes new local
+         --The atomic, infallible patterns
+         | PVar Name --local only by type infer; global g is desugared to *g
          | Deref E
-         | PIndex E E --now required bc arr[ix] /=> *(arr + ix)
-         | Ampersand Pat -- &p = e => p = *e
+         --Converted to assignment of atomic pattern
+         | Pat :. Name
+         | PIndex E E --arr ! ix, distinct from ptr[ix] which is sugar
+         --Non-atomic pattern
+         --[Pat] will be desugared to record form
+         | PCon Name (Either [(Name,Pat)] [Pat])
   deriving (Eq,Ord,Read,Show,Data)
--}
 
 --type Block = [S]
 --type Program = [D]

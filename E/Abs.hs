@@ -70,6 +70,9 @@ data CASE = C E S
 data VarBind = JustVar Ident | VarIs Ident E
   deriving (Eq, Ord, Show, Read)
 
+data EField = EField Ident E
+  deriving (Eq, Ord, Show, Read)
+
 data E
     = EmptyTuple
     | Tuple E [E]
@@ -77,12 +80,14 @@ data E
     | Int Integer
     | Var Ident
     | String String
+    | ConRecord UIdent [EField]
     | Con UIdent
     | Wild
     | PlusPlusPost E
     | MinusMinusPost E
     | Index E E
     | Dot E Ident
+    | Bang E E
     | Arrow E Ident
     | App E E
     | PlusPlusPre E

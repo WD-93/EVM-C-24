@@ -26,6 +26,7 @@ transM x = case x of
   Module ds -> failure x
 transD :: D -> Result
 transD x = case x of
+  Default uident t -> failure x
   Defun ident e s -> failure x
   TySig ident t -> failure x
   KindSig uident t -> failure x
@@ -84,6 +85,9 @@ transVarBind :: VarBind -> Result
 transVarBind x = case x of
   JustVar ident -> failure x
   VarIs ident e -> failure x
+transEField :: EField -> Result
+transEField x = case x of
+  EField ident e -> failure x
 transE :: E -> Result
 transE x = case x of
   EmptyTuple -> failure x
@@ -92,6 +96,7 @@ transE x = case x of
   Int integer -> failure x
   Var ident -> failure x
   String string -> failure x
+  ConRecord uident efields -> failure x
   Con uident -> failure x
   Wild -> failure x
   PlusPlusPost e -> failure x

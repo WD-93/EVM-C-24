@@ -1,0 +1,117 @@
+p = e =>
+let x = e
+in ecase x of
+    p -> x
+
+End result of case compilation:
+atomic ::= local | *e
+p ::= Con {field: atomic} | atomic
+
+Initial pat:
+_, local, *e, e[e]
+p.field, p ! e
+Con {field: p}
+
+_ converted to new local
+ptr[ix] desugared to *(indexPtr ix ptr)
+
+Handling accessors:
+Con {field: p} (.field | !ix) is an error?
+
+let local.field = e => local = setField e local
+local.a.b = e =>
+tmp = local.a.b
+local = local{a=local.a.b{b=e}}
+
+!ix => setIndex ix e
+
+(*ptr).field => *(ptrField ptr)
+(*ptr)!ix => *(indexArrayPtr ix ptr)
+
+Remaining:
+local, *e
+Con {field: p}
+
+Problem:
+case x of
+  ps -> conts
+
+If any p is a Con, convert to
+case x of
+ Con1 locals -> cont1; --here we case on locals
+ ...
+local and *e are infallible, so any pats occurring after one in ps can be dropped
+That can be generalized to a dominates relation, >.
+atomic > Con {}
+atomic >= atomic'
+Con args > Con args' iff one arg > arg' and the rest >=
+Con1 does not >= Con2, they're disjoint. disjoint a b <=> not (a >= b || b >= a)
+Iff Con is the only constructor, Con args is infallible iff all args are.
+
+The state during decision making is es, not e. The choice of which e to case on first is not trivial
+(it influences code size), but I'll just always choose the leftmost relevant one.
+Each leaf is a (ps,cont) pair. That could also be represented using a tuple.
+When is an e relevant? When there is at least one fallible pattern that can be excluded.
+
+Problem: the order of patterns in the source-level case matters. One should case on the leftmost fallible
+pattern of the first case.
+Allocate an enum type for each multi-constructor datatype (boxed or unboxed), case on that and bind the vars
+using let x = dt.field. Consequence: all locals are bound by lets, cases don't bind vars directly.
+Note the es under consideration are locals, so a [Name] can be used.
+
+A consequence of case-bound vars being block-scoped: the same var in different cases must be of one type.
+Make tagOf a universal function?
+
+Result:
+A decision tree of case local of Con1 locals -> ..., with lets on atomic patterns as the leaves.
+Writes to user-visible locals and ptrs are delayed until a particular case succeeds.
+
+Step 1:
+Redefine Pat datatype, desugar to it
+After desugaring (when all globals have been collected), substitute all globals g for *g.
+Con {field: p} must be handled before (x | *e).field = e...
+
+Each Con is associated with a list of fields
+Con args =>
+ require #args == #fields
+ return $ Con $ zip fields args
+
+p = e => let x = e; p = x in x?
+By allowing Pats in let lhs I can incrementally desugar.
+
+Note: with named record types pad/align annotations are not required in expr record fields.
+
+In *e += k, e should be computed only once. That also applies to local ! ixe.
+*e (.field | !ix)* becomes a single ptr... but that can only be detected after all globals have been
+collected!
+Solution:
+Preserve pattern form verbatim in Desugar.Desugar; add constructs for += et al.
+Then: desugar g to *g, Con args to Con {field: p}.
+Then: assignment to ecase, e/case to decision tree on enum tags, &_ desugaring, 
+atomic (.field | !ix)* compilation.
+Does the latter really need to be done before type inference? Yes, because *calldataptr = e should fail the
+type check.
+&_ should be simple and dependent on syntactically verifiable local expression. All it really needs to
+capture is &global and ecase xs of Cons x xs -> &x; do not provide a signature for it in Prim.
+To prevent definition of addressOf, rename it to &_.
+&_ desugaring converts exprs to exprs, so there should be no problem doing it before or after the last stage.
+Forms accepted by &_: *e (.field | !ix)*, local --the atomic patterns.
+Consider only the immediately preceding, definitely occurring assignment to local; do not support
+foo.bar.baz = *ptr; p = &foo.bar.baz.
+Instead, you'd need to do v = *ptr; foo.bar.baz = v; p = &v.
+Don't recompute the expression! Need to decompose exprs into subterms stored in locals before applying &_...
+Note (*foo).bar.baz expressions must be desugared to a single *ptr before &_ desugaring.
+
+For writeup:
+Hindley-Milner type inference allows you to write user-level polymorphic functions, but the tradeoff is that
+you sometimes need to help the inference along: result types can't be an arbitrary function of argument
+types as in my earlier monomorphic type system. That's reflected in the distinction between [ix] (pointer 
+indexing) and  !ix (unboxed array indexing), and in future custom read-write functions for maps.
+Storage maps don't need BigPtr results; you could use the hash word and append a byte to it to make a
+BigPtr.
+*_ : ptr a -> a?
+Infer the class type from the instance types via type scheme union? That would allow BigPtrs as an optional
+extension to deref and writePtr.
+
+Step 1: 
+

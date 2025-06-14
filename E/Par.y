@@ -29,6 +29,8 @@ import E.ErrM
 %name pVarBind VarBind
 %name pE13 E13
 %name pListE ListE
+%name pListEField ListEField
+%name pEField EField
 %name pE12 E12
 %name pE11 E11
 %name pE10 E10
@@ -217,16 +219,24 @@ E13 : '(' ')' { E.Abs.EmptyTuple }
     | Integer { E.Abs.Int $1 }
     | Ident { E.Abs.Var $1 }
     | String { E.Abs.String $1 }
+    | UIdent '{' ListEField '}' { E.Abs.ConRecord $1 $3 }
     | UIdent { E.Abs.Con $1 }
     | '_' { E.Abs.Wild }
     | '(' E ')' { $2 }
 ListE :: { [E] }
 ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
+ListEField :: { [EField] }
+ListEField : {- empty -} { [] }
+           | EField { (:[]) $1 }
+           | EField ',' ListEField { (:) $1 $3 }
+EField :: { EField }
+EField : Ident ':' E { E.Abs.EField $1 $3 }
 E12 :: { E }
 E12 : E12 '++' { E.Abs.PlusPlusPost $1 }
     | E12 '--' { E.Abs.MinusMinusPost $1 }
     | E12 '[' E ']' { E.Abs.Index $1 $3 }
     | E12 '.' Ident { E.Abs.Dot $1 $3 }
+    | E12 '!' E13 { E.Abs.Bang $1 $3 }
     | E12 '->' Ident { E.Abs.Arrow $1 $3 }
     | E12 E13 { E.Abs.App $1 $2 }
     | E13 { $1 }

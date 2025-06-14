@@ -101,6 +101,7 @@ instance Print M where
 
 instance Print D where
   prt i e = case e of
+    Default uident t -> prPrec i 0 (concatD [doc (showString "default"), prt 0 uident, doc (showString "="), prt 0 t])
     Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 13 e_, doc (showString ":="), prt 0 s])
     TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
     KindSig uident t -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 t])
@@ -182,6 +183,12 @@ instance Print VarBind where
     VarIs id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString "="), prt 0 e_])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
+instance Print EField where
+  prt i e = case e of
+    EField id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 e_])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
 instance Print E where
   prt i e = case e of
     EmptyTuple -> prPrec i 13 (concatD [doc (showString "("), doc (showString ")")])
@@ -190,12 +197,14 @@ instance Print E where
     Int n -> prPrec i 13 (concatD [prt 0 n])
     Var id -> prPrec i 13 (concatD [prt 0 id])
     String str -> prPrec i 13 (concatD [prt 0 str])
+    ConRecord uident efields -> prPrec i 13 (concatD [prt 0 uident, doc (showString "{"), prt 0 efields, doc (showString "}")])
     Con uident -> prPrec i 13 (concatD [prt 0 uident])
     Wild -> prPrec i 13 (concatD [doc (showString "_")])
     PlusPlusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "++")])
     MinusMinusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "--")])
     Index e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
     Dot e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "."), prt 0 id])
+    Bang e_1 e_2 -> prPrec i 12 (concatD [prt 13 e_1, doc (showString "!"), prt 12 e_2])
     Arrow e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "->"), prt 0 id])
     App e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, prt 13 e_2])
     PlusPlusPre e_ -> prPrec i 11 (concatD [doc (showString "++"), prt 11 e_])

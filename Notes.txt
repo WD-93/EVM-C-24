@@ -477,6 +477,10 @@ case *(fixRegionTag (pr,pt,coerce x)) of
  ...
 fixRegionTag : (ProxyRegion r, Proxy tag, a) -> Ptr r tag
 
+Where does pattern decomposition belong? It's desugaring but the treatment of constructor patterns depends on
+whether they're boxed or not... I'll keep it in TypeCheck for now.
+Should let allow Pats for incremental decomposition?
+
 Reading list:
 Mark Jones (Hugs author), PhD thesis on type classes
 Andrew Appel, CPS
