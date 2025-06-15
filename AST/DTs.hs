@@ -44,6 +44,20 @@ data E = EInteger Integer
        --to HM
        | CaseE E [(Pat,E)]
        --Making the lhs a Pat allows incremental decomposition of patterns
+       | OPAssign Pat Op E
+       | PPPre Pat
+       | PPPost Pat
+       | MMPre Pat
+       | MMPost Pat
+       --Required because g => *g desugaring and pattern decomposition is done
+       --after initial desugaring; not present by HM.
+       -- ++ and -- are distinct from += because I will restrict + to
+       --(a,a) -> a and use a separate indexPtr function for pointer
+       --"addition". ++ and -- use inc/dec instead of +1/-1 to accomodate that.
+       | ConRecord Name [(Name,E)] --con apps desugar to this;
+       --Note order matters. Unspecified fields are null.
+  deriving (Eq,Ord,Read,Show,Data)
+data Op = PLUS
   deriving (Eq,Ord,Read,Show,Data)
 
 --Tuples are word-padded structs with default field names;
@@ -256,10 +270,15 @@ data Pat = PWild --becomes new local
          | Deref E
          --Converted to assignment of atomic pattern
          | Pat :. Name
-         | PIndex E E --arr ! ix, distinct from ptr[ix] which is sugar
+         | Pat :! E --arr ! ix, distinct from ptr[ix] which is sugar
          --Non-atomic pattern
-         --[Pat] will be desugared to record form
-         | PCon Name (Either [(Name,Pat)] [Pat])
+         --[Pat] will be desugared to record form, with the fields in argument
+         --order.
+         | PConArgs Name [Pat]
+         --Duplicate fields need not be a syntax error: consider
+         --Cons {hd: *p1, hd: *p2}
+         --Order matters because patterns may contain side-effecting exprs
+         | PCon Name [(Name,Pat)]
   deriving (Eq,Ord,Read,Show,Data)
 
 --type Block = [S]
@@ -317,12 +336,13 @@ data Module = Module {
   --Irrelevant to type inference
   datatypeRegions :: Map Name Name,
   --Tag info isn't needed for the TC stage, so it's added later.
-  --The type of Cons is a -> List a -> List a, which is surprising since
-  --EVMC functions are not closures. When compiling, underapplied constructors
+  --Constructors are not given a function type because they're not functions.
+  --When compiling, underapplied constructors
   --are treated as an error in order to simplify the language
   --(if the programmer wishes to partially apply a constructor they may do
   --the wizardry themselves).
-  constructors :: Map Name T,
+  --constructors[Cons] = ([(hd,a),(tl,List a)],List a)
+  constructors :: Map Name ([T],T),
   --Fields have their own namespace; during type inference e.foo becomes
   --Var ".foo" :$ e.
   --Each field has a type, constructor they deconstruct and index to the

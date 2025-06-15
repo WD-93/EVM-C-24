@@ -16,9 +16,11 @@ default Type = Word;
 Nat : Kind;
 //This causes integer literals without a restricted type to default to Word
 //(desirable for perf reasons), but arrays without a set length will default
-//to length 256! TODO: more flexible per-tycon argument and function
+//to length 32! TODO: more flexible per-tycon argument and function
 //tyvar defaults.
-default Nat = 256;
+//The len parameter of Ints is now the number of bytes since that's the
+//minimum granularity and type-level division by 8 is not desirable.
+default Nat = 32;
 //Regions, used to parameterize pointers and boxed datatypes
 Region : Kind;
 default Region = Memory;
@@ -36,11 +38,16 @@ Signed : Signedness;
 Unsigned : Signedness;
 
 //Primitive types
+//Int's structure can't be defined in the language because it's variable-size.
 Int : Signedness -> Nat -> Type;
 data Int s l = {};
 
+//While the structure of Ptr and Fun can be defined in the language, the
+//compiler treats them specially.
 Ptr : Region -> Type -> Type;
-data Ptr r a = {};
+data Ptr r a = {MkPtr (UInt 2)};
+//(->) is desugared to Fun
+data Fun a b = {MkFun (UInt 2)};
 
 //Primfuns; constructs such as + or *_ desugar into prefix names.
 
@@ -52,11 +59,15 @@ data Ptr r a = {};
 fromWord : Word -> Int s len;
 fromWord _ := ();
 
-//(+) and (-) must have this awkward HM type because ptr + n and n + ptr both
-//become pointers.
-plus : (a,b) -> c;
+//Since pointer "addition" is moved to indexPtr, plus and minus can now have
+//nice types.
+//Design principle: sacrifice C-style sugar for better type inference.
+//Arith on distinct int types now disallowed without an explicit coerce.
+//Since they're now quantified polymorphic, perhaps implement using add, and,
+//sizeof.
+plus : (Int s l,Int s l) -> Int s l;
 plus _ := ();
-minus : (a,b) -> c;
+minus : (Int s l, Int s l) -> Int s l;
 minus _ := ();
 
 //Is it OK to make its type more restrictive than C's?

@@ -485,6 +485,18 @@ Reading list:
 Mark Jones (Hugs author), PhD thesis on type classes
 Andrew Appel, CPS
 
+plus : (Int s l, Int s l) -> Int s l
+plus (a,b :: Int s l) :=
+ pn = PN :: ProxyNat l
+ --Problem: signed v unsigned. That can be handled in coerce...
+ mask = shl(knownNat pn << 3, 1) - 1
+ return coerce(and(mask,add(coerce a, coerce b)))
+Coerce: signextend SInt, otherwise just zero-pad or truncate. That could be split into toByteArray and
+fromByteArray; the former can't be implemented using classes unless you make an instance for every type.
+
+I'll add implicit field declaration to Desugar.Desugar. It fits there and that allows the Module datatype to
+be simpler.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

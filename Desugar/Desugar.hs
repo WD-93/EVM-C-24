@@ -381,38 +381,49 @@ desugarFieldT = go1
             ((pad,al),Nothing,desugarT pt)
 -}
 {-
-_, x, {p | field:p,...}, (p1,p2,...), *e, e[e], p.field, p#ix
-In future: Con p
+p ::=
+_, x, *e, p.field, p!e, e[e], Con args, Con {field: p}
 -}
 desugarP :: P.E -> De Pat
 --desugarP = desugarE
 desugarP = go
   where go = \case
-          P.EmptyTuple -> return $ PCon "Unit" []
+          P.EmptyTuple -> return $ PConArgs "Unit" []
           P.Tuple p ps ->
-            foldr (\p1 p2 -> PCon "Pair" [p1,p2]) (PCon "Unit" [])
+            foldr (\p1 p2 -> PConArgs "Pair" [p1,p2]) (PCon "Unit" [])
             <$> mapM go (p:ps)
           P.Var (Ident nm) -> return $ PVar nm
           P.Wild -> return PWild
-          P.Index arr ix -> PIndex <$> desugarE arr <*> desugarE ix
+          --ptr[ix] => *(indexPtr (ptr,ix))
+          P.Index pptr pix -> do
+            ptr <- desugarE pptr
+            ix <- desugarE pix
+            return $ Deref $ Var "indexPtr" :$ (Var "Pair" :$ ptr :$
+                                                (Var "Pair" :$ ix :$
+                                                 Var "Unit"))
           P.Dot p (Ident nm) -> (:.) <$> go p <*> return nm
+          P.Bang pp pe -> (:!) <$> go pp <*> desugarE pe
           P.Deref e -> Deref <$> desugarE e
-          e -> throwE $ MalformedPattern e
-        todo = error "todo"
-{-
---Fields in patterns should never contain pad or align pragmas, so they cause
---an error
-desugarFieldP :: P.EField -> De (Maybe Name, Pat)
-desugarFieldP (P.EF1 (P.EF2 f)) =
-  case f of
-    P.ENamed (Ident nm) e -> do
-      p <- desugarP e
-      return (Just nm, p)
-    P.EAnon e -> do
-      p <- desugarP e
-      return (Nothing, p)
-    f -> throwE $ MalformedPatternField f
--}
+          P.Con (UIdent con) -> return $ PConArgs con []
+          P.ConRecord (UIdent con) fields -> do
+            nmps <- mapM desugarFieldP fields
+            return $ PCon con nmps
+          --All applications in pat must be of the form Con ps
+          P.App pf px -> do
+            let (conp,args) = unroll [px] pf
+                unroll pes = \case
+                  P.App pf px -> unroll (px:pes) pf
+                  pe -> (pe,reverse pes)
+            case conp of
+              P.Con (UIdent con) -> do
+                ps <- mapM desugarP args
+                return $ PConArgs con ps
+              _ -> throwE $ MalformedPattern $ P.App pf px
+          pe -> throwE $ MalformedPattern pe
+        todo = error "todo"        
+
+desugarFieldP :: P.EField -> De (Name, Pat)
+desugarFieldP (P.EField (Ident nm) pp) = ((,) nm) <$> desugarP pp
 
 desugarS :: P.S -> De S
 desugarS = \case
@@ -462,14 +473,16 @@ desugarE = go
           P.Con (UIdent nm) -> return $ Var nm
           --Patterns are now exprs...
           P.Wild -> return $ Var "_"
-          --Without block exprs this becomes ugly...
-          P.PlusPlusPost pe -> do
-            e <- go pe
-            return $ po2 "minus" (e := (po2 "plus" e (EInteger 1))) (EInteger 1)
-          P.MinusMinusPost pe -> do
-            e <- go pe
-            return $ po2 "plus" (e := (po2 "minus" e (EInteger 1))) (EInteger 1)
-          P.Index a b -> op2 "index" a b
+          --The pattern decomposition pass needs verbatim _++ and _-- repr
+          --because we don't yet know which vars are globals.
+          P.PlusPlusPost pp -> PPPost <$> desugarP pp
+          P.MinusMinusPost pp -> MMPost <$> desugarP pp
+          --indexPtr must take the ptr as its first argument to preserve eval
+          --order.
+          P.Index pptr pix -> do
+            ptr <- go pptr
+            ix <- go pix
+            return $ po1 "deref" $ po2 "indexPtr" ptr ix
           P.Dot e (Ident nm) -> op1 ('.' : nm) e
           P.Arrow pe (Ident nm) -> do
             e <- go pe
@@ -482,12 +495,8 @@ desugarE = go
               Nothing ->
                 throwE $ GenericDError "Non-tuple passed to array 'function'"
           P.App pf px -> (:$) <$> go pf <*> go px
-          P.PlusPlusPre pe -> do
-            e <- go pe
-            return $ e := (po2 "plus" e $ EInteger 1)
-          P.MinusMinusPre pe -> do
-            e <- go pe
-            return $ e := (po2 "minus" e $ EInteger 1)
+          P.PlusPlusPre p -> PPPre <$> desugarP p
+          P.MinusMinusPre p -> MMPre <$> desugarP p
           P.Negate a -> op1 "negate" a
           P.Not a -> op1 "lNot" a
           P.BitwiseNot a -> op1 "bwNot" a
