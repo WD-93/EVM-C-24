@@ -18,6 +18,10 @@ separator D ";";
 --If a tyvar of kind k is unbound and has no default, thats an error.
 Default. D ::= "default" UIdent "=" T;
 Defun. D ::= Ident E13 ":=" S;
+--For class functions, where the definition used depends on the type.
+--Ex: instance writePtr : (Ptr Memory a, a) -> () where x :=
+--return (writePtrMem x)
+Instance. D ::= "instance" Ident ":" T "where" E13 ":=" S;
 --Type signatures are now used for globals and static constants as well.
 TySig. D ::= Ident ":" T;
 --To give a datatype a nonstandard kind, you need to give it an explicit

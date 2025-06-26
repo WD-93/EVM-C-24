@@ -103,6 +103,7 @@ transE x = case x of
   MinusMinusPost e -> failure x
   Index e1 e2 -> failure x
   Dot e ident -> failure x
+  Bang e1 e2 -> failure x
   Arrow e ident -> failure x
   App e1 e2 -> failure x
   PlusPlusPre e -> failure x

@@ -204,7 +204,7 @@ instance Print E where
     MinusMinusPost e_ -> prPrec i 12 (concatD [prt 12 e_, doc (showString "--")])
     Index e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, doc (showString "["), prt 0 e_2, doc (showString "]")])
     Dot e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "."), prt 0 id])
-    Bang e_1 e_2 -> prPrec i 12 (concatD [prt 13 e_1, doc (showString "!"), prt 12 e_2])
+    Bang e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, doc (showString "!"), prt 13 e_2])
     Arrow e_ id -> prPrec i 12 (concatD [prt 12 e_, doc (showString "->"), prt 0 id])
     App e_1 e_2 -> prPrec i 12 (concatD [prt 12 e_1, prt 13 e_2])
     PlusPlusPre e_ -> prPrec i 11 (concatD [doc (showString "++"), prt 11 e_])

@@ -18,6 +18,7 @@ data M = Module [D]
 data D
     = Default UIdent T
     | Defun Ident E S
+    | Instance Ident T E S
     | TySig Ident T
     | KindSig UIdent T
     | TySyn ConArgs T

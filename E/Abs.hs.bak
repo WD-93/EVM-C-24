@@ -87,6 +87,7 @@ data E
     | MinusMinusPost E
     | Index E E
     | Dot E Ident
+    | Bang E E
     | Arrow E Ident
     | App E E
     | PlusPlusPre E

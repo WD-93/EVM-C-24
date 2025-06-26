@@ -54,8 +54,9 @@ data E = EInteger Integer
        -- ++ and -- are distinct from += because I will restrict + to
        --(a,a) -> a and use a separate indexPtr function for pointer
        --"addition". ++ and -- use inc/dec instead of +1/-1 to accomodate that.
-       | ConRecord Name [(Name,E)] --con apps desugar to this;
+       | ConRecord Name [(Name,E)]
        --Note order matters. Unspecified fields are null.
+       | Con Name [E] --Con apps and ConRecord desugar to this
   deriving (Eq,Ord,Read,Show,Data)
 data Op = PLUS
   deriving (Eq,Ord,Read,Show,Data)
@@ -94,7 +95,9 @@ pattern Type = TyCon "Type"
 pattern SInt n = Int "Signed" n
 pattern UInt n = Int "Unsigned" n
 pattern Int s n = "Int" :$$ s :$$ TyNat n
-pattern a :-> b = "->" :$$ a :$$ b
+--TyCon Fun is now used instead of -> to allow (->)'s structure to be defined
+--in Prim.evmc
+pattern a :-> b = "Fun" :$$ a :$$ b
 infixr 5 :->
 pattern Array n a = "Array" :$$ n :$$ a
 
@@ -333,7 +336,7 @@ data Module = Module {
     ([Name], --params (0 or more, all Type)
      [ConDecl]), --Primitive datatypes have 0 constructors
   --Only boxed datatypes have entries; must be one of the params
-  --Irrelevant to type inference
+  --Relevant to type inference: calldatalist.hd = x should fail
   datatypeRegions :: Map Name Name,
   --Tag info isn't needed for the TC stage, so it's added later.
   --Constructors are not given a function type because they're not functions.
@@ -356,7 +359,7 @@ data Module = Module {
   deriving (Eq,Ord,Read,Show,Data)
 type Syns = Map Name ([Name],T)
 --todo add pad/alignment and tag value info
-type ConDecl = (Name,Either [T] [(Name,T)])
+type ConDecl = (Name,[(Name,T)])
 --Unfortunate name conflict with the T patterns.
 --Used to make bad global regions non-representable.
 --It's the first two letters so I can convert it using read . take 2 . show

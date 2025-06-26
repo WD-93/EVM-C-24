@@ -3,15 +3,17 @@
 //Unlike Prim, these definitions aren't overridden during compilation.
 
 //Type synonyms
+//Since the language operates at byte granularity, we pass byte length rather
+//than bitlength to Int.
 type UInt = Int Unsigned;
 type SInt = Int Signed;
-type Byte = UInt 8;
+type Byte = UInt 1;
 type Char = Byte;
-type Short = UInt 16;
+type Short = UInt 2;
 type Size_T = Short;
-type Long = UInt 32;
-type Half = UInt 128;
-type Word = UInt 256;
+type Long = UInt 4;
+type Half = UInt 16;
+type Word = UInt 32;
 
 type MPtr = Ptr Memory;
 type SPtr = Ptr Storage;
@@ -31,4 +33,4 @@ data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
 data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
 
 //A newtype wrapper for EVM addresses
-data Addr = {Addr (UInt 160)};
+data Addr = {Addr (UInt 20)};

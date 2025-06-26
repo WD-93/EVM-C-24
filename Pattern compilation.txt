@@ -14,6 +14,7 @@ Con {field: p}
 
 _ converted to new local
 ptr[ix] desugared to *(indexPtr ix ptr)
+...but does that need to be done before type inference?
 
 Handling accessors:
 Con {field: p} (.field | !ix) is an error?
@@ -113,5 +114,111 @@ BigPtr.
 Infer the class type from the instance types via type scheme union? That would allow BigPtrs as an optional
 extension to deref and writePtr.
 
-Step 1: 
+Since *ptr is in lets, writePtr can be defined as
+writePtr (p,*p) := ()
+local (.field | !ix)* need not be defined using local = ..., typecheck and optimize it as-is?
 
+BCon args =>
+ let ptr = alloc 1 :: Ptr r a
+     *ptr = StructBCon TagBCon ...args --here calldata alloc will fail
+ in coerce ptr :: Datatype params --where params includes r
+Need to alloc new tyvars as well as locals.
+
+Each non-union datatype must have an associated union, and each boxed constructor has an associated struct
+datatype.
+Union datatype => no constructor has arguments
+Struct datatype => only one constructor
+FW: associate unions with a value type and values for constructors. Only allow tag decls for union DTs!
+Tag decl structure: type, con => value
+Default: minimal UInt type that fits, values: 0..n.
+Naming convention: data TagDT = TagCon1 ... for non-union datatype DT, 
+StructCons for boxed constructor cons.
+Expose them to the user, allowing them to make a tag decl for Tag<their non-union DT>.
+
+Separating out global, constructor desugaring etc into separate phases after Desugar.Desugar is a mistake...
+Instead group decls first. Desugar.Desugar should be the only Desugar module used by Compiler, and should
+recursively perform all the desugaring stages (including pattern decomposition).
+Dependencies: 
+ g => *g depends on the global decls set. Note affected exprs may exist in globals.
+  Affects: defuns, globals, statics (now deprecated)
+ Con args to Con {field: p/e} depends on datatypes.
+Add a <region>allocPtr global for each region (including immutable ones).
+Allow immutable region globals; staticdata => code global. Staticdatatype => a datatype code global.
+Desugar cons in globals uniformly to static alloc calls.
+
+First:
+Group decl types, desugar g => *g
+Remove static. 
+Overhaul global expr validity rules?
+ Valid: k, -k, unboxed con, &global (string is converted to that), boxed con with region Code,
+ unboxed array, coerce.
+Add type params to Con! Check region (and therefore all global value validity) after type inference.
+Boxed con region could be checked after HM rather than expanding boxed allocation immediately.
+bdt.field assignment must also be checked...
+Alt: desugar .field to *(coerce bdt :: appropriate ptr type).fieldStructCon
+
+Expose default field names? anon<field index>Con
+By doing so I can also expose the field names of the struct datatype of the boxed struct.
+
+Patterns remaining after decomposition:
+*ptr, local (.field | !ix)* in let
+If I allowed (*ptr).field* I could just check ptr's type. bdt.field (in patterns) must either be desugared to
+*ptr or treated specially.
+Enum tags in case
+
+*****************************************************************
+
+case x of
+ Con1 fs -> ...
+
+Each DT (including BDTs) should have a .tagDT field.
+bdt.tagDT => *(coerce (bdt :: DT params) :: Ptr r TagDT)
+bdt.field => *(coerce (bdt :: DT params) :: Ptr r (StructCon params)).structConfield
+So I can apply & to xs.hd, xs.tagList as well.
+Note the tag and ordinary field are treated differently, so desugaring needs to be done on a per-field basis.
+A field is either a UBDT field (no need to distinguish between tag and ordinary), a BDT tag or ordinary BDT
+field.
+
+case x.tagDT of
+ TagCon1 -> ...
+   --the matching for all patterns with that top-level con
+
+Oh, Con {field: p1, field: p2} can be used for as-patterns.
+
+Which cons to inspect first is not a trivial decision, so doing the decomposition in a desugaring phase is
+unfortunate.
+Could I add value region info to HM instead? I can use the generalized pattern idea instead!
+Con {field: p} => Con {fieldPtr . *_ : p}
+Hold up... I can convert each pat -> cont to
+(Cons and locals) -> let binds in cont --without deciding case order.
+I can then associate the locals with additional region info... but it needs to propagate across
+let x = y, .field, !ix.
+Note locals may be reassigned...
+let x = xs.hd --should set x's region.
+The same variable may have different regions/last-assigned exprs in different case branches.
+Every variable is bound to an expr *in the event a match is successful*.
+Con x = e --becomes an ecase with a single case.
+An expr may be assigned to a local only when there is a single branch. What about scope?
+That distinguishes missing cases from _ -> revert(); in the general case f(e), always-reverts can't be
+determined.
+Alt: instead of a case, Con {field:p} = e becomes let x = e; _v = require(x.tagDT == TagCon) in p = x.field.
+Observe that exprs in lets may diverge; they should be strictly evaluated.
+Don't let case-bound vars escape the e/case? Block-scoped mutable locals and &_ really complicate 
+things...
+
+If e.field is converted to *(fieldPtr(e)) in pat and e... that doesn't solve BCon {field: p}...
+A composite pattern (fix ps . Con ps | var)
+
+What if I desugared case on boxed cons to
+let ImplemCon ptr = dt
+in case *ptr of
+    Con1 ... -> ...
+and allow heterogenous-size datatypes in memory?
+
+Maybe & would have a cleaner definition if &bdt was also defined... but what is it a pointer to?
+And what is the meaning of (*xsptr).hd? Desugaring BDT fields to ptr->field makes that obvious.
+
+fieldPtr(bdt) ~ &(bdt.field); it can record the work needed and type info without obscuring info.
+
+Do I need a separate let construct for statements? SE (let bind in e) should be sufficient...
+The fact that lets don't have a local effect or scope is tricky...

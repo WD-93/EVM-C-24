@@ -103,6 +103,7 @@ instance Print D where
   prt i e = case e of
     Default uident t -> prPrec i 0 (concatD [doc (showString "default"), prt 0 uident, doc (showString "="), prt 0 t])
     Defun id e_ s -> prPrec i 0 (concatD [prt 0 id, prt 13 e_, doc (showString ":="), prt 0 s])
+    Instance id t e_ s -> prPrec i 0 (concatD [doc (showString "instance"), prt 0 id, doc (showString ":"), prt 0 t, doc (showString "where"), prt 13 e_, doc (showString ":="), prt 0 s])
     TySig id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
     KindSig uident t -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 t])
     TySyn conargs t -> prPrec i 0 (concatD [doc (showString "type"), prt 0 conargs, doc (showString "="), prt 0 t])

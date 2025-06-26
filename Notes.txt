@@ -497,6 +497,163 @@ fromByteArray; the former can't be implemented using classes unless you make an 
 I'll add implicit field declaration to Desugar.Desugar. It fits there and that allows the Module datatype to
 be simpler.
 
+A way to define a standard lens for field access: given f : struct -> field which returns a subset of bits,
+its complement returns the others in order. Returning a subset of bits ~ a permutation of bit accessors.
+Defining it for memory is less straightforward, consider **ptr.
+
+Unboxed datatypes with con args of different sizes need padding. Place the tag to the left or right of the
+union? Left: always available by shr with no masking. To get the contents, mask. Right: always available by
+mask; contents must be right-shifted, potentially restitched if split across multiple words.
+Left is best.
+Then sizeof = sizeof tag + max (sizeof each field). Note sizeof should return a byte count.
+
+Eliminating var decls: when is a var in scope then?
+Consider Just x = m => let v = m in case v of Just x -> v: the x write should be visible.
+Rule: only block scopes; ifte, while and case do not. Default value = null().
+Each statement has a set of vars it brings into scope.
+Assign a unique name for each var newly brought into scope? That would avoid confusion.
+
+
+classes are mandatory for implementing writePtr.
+f : t may be considered to be equivalent to class f : t.
+A non-instance definition f x := s is mutually exclusive with instances and does not require a signature.
+instance f : t where pat := s
+Step one: collect defs/instance list per function. Change defuns to support that.
+Record free vars of signature in order of appearance.
+Functions with an instance list must have a signature.
+TC: all instances must be subtypes of the signature; convert to a binding list.
+Primfuns don't pose a problem because they have a placeholder definition.
+
+An ad hoc function may in turn contain other AHFs; once you instantiate them you need to expand their
+definition. Partially instantiated functions may ultimately become the same...
+A particular instance is specified by a key; a full path to a particular generated monomorphic function
+is a tree Path = Node Key [Path].
+A partially specified tree ends in params.
+Alt: represent class functions as a type-level case expr, eagerly eliminate cases.
+Two rules: exclude subset of cases and convert case with single instance to a lambda!
+That exposes the sub-instances, which can be treated the same way.
+With lambdas I can desugar f p := e to f := \p -> s! That must be desugared to \v -> {let v = p in (); s}
+Substitute class functions for type-level cases (including sub-instances) in an earlier pass?
+Full expansion is not in general possible due to potentially infinite instances... need to keep the class
+function and a subset of instances. When a single instance remaina, replace it with a lambda and only then
+do you consider sub-instances.
+Leave shrinking the code by sharing identical functions for later.
+Instances may also refer to functions and globals; the union of names referenced by each instance is the
+dep set relevant to SCC construction.
+
+Simple approach: ignore classes until monomorphization; error if no matching instance then.
+That makes it impossible to use type info from the instances... but that's an acceptable compromise.
+Treat class functions as their most general type (given by the signature) during HM, then instantiate during
+monomorphization.
+Typecheck each instance separately, using signature types for class functions as normal.
+Monomorphic functions (both class and normal) can be keyed by name and params.
+Instances have a given signature and do not need to be inferred in a SCC; just check their inferred type
+matches the signature.
+Since instances have already been typechecked, funs and cons in them will be tagged with type params in terms
+of the instance's signature. Instances can be represented under the hood as ordinary functions; when
+selected, type params in the function body (incl the pattern) are monomorphized as well.
+Instance lookup on monotypes is trivial: you can just repeatedly attempt to unify (O(n)). FW: use a trie to
+reduce it log n.
+Boxed con alloc does not need to be desugared prior to mono; you can just check the region param during mono.
+What about pattern decomposition? Need to do &_ subst before HM.
+Then need to desugar .boxedfield to *(...). Might as well do full pattern decomp then; it'll simplify HM as
+well.
+
+When monomorphizing f @ params, add a def
+f @ params => t, p := s
+where the definition is the matching instance monomorphized, or the single def if the function is non-class.
+In the monomorphized module, every function has a monomorphic signature.
+
+fromWord : Word -> Int s l;
+fromWord w := return (coerce w)
+--Will that work? fromWord should simply mask...
+coerce @ [a,b] should signextend and pad with the sign bit when coercing from an Int Signed to a longer type, 
+otherwise zero-pad or truncate.
+Alt: signextend only when coercing from an Int Signed to another Int. Valid byte len argument range: 1-32.
+If coerce did not signextend, perhaps it could be defined using classes in terms of to and fromWords.
+Alt foundation: Byte and Array primitive, data Int s l = MkInt (Array l Byte)
+Type-level sizeof needs type-level (+), (*), max and round or (-) and modulo.
+addPN :: (PN a, PN b) -> PN (Add a b) could be made useful to HM by converting it to
+(PN a, PN b) -> PN c, c ~ Add a b. Once unification is done, simplify Add a b and unify it with c.
+sizeof (Pair a b) = sizeof (wordpad a) + sizeof (wordpad b); if a and b are 0-size (e.g. proxies), their
+word-padded size should also be 0.
+
+Add a main : () -> () signature to Prelude, restricting the type of main.
+To better catch type errors not yet relevant to runtime behavior, monomorphization could proceed from every
+monomorphic function and all globals with initializers. Note that deferred instantiation means some type
+errors lurk until monomorphization because they're not visible to HM; best to catch as many as possible.
+After monomorphization, knownNat and similar (sizeof etc) becomes simple.
+
+What's the narrowest pipeline I can complete? BCons don't work without alloc, which doesn't work without 
+globals.
+First: just data decls.
+
+Plan:
+1. Desugar classes. They're keyed by instance type and mutex with normal definitions. A signature with no
+defs or instances is an error.
+
+Do I need PPPre etc? First assemble global set, then convert the P.E g to *g?
+p++, p+=e needs to compute the location of p once.
+In Just x[ix] = e, first convert case to normal form:
+let v = e
+case v.tagMaybe of
+ TagNothing -> 
+ TagJust -> let newlocal = v.fromMaybe in
+             let x[ix] = newlocal
+The con args are bound to new locals.
+Naive nested pattern handling: case on leftmost relevant unknown, if current candidate is excluded go to
+next in list. FW...
+local!ix1!ix2++ =>
+let v1 = ix1
+    v2 = ix2
+    local!v1!v2 = inc (local!v1!v2)
+Infallible pattern normal form: all exprs are locals.
+Note exprs in a pattern should only be evaluated once the con pattern matches.
+
+p++ is always at the top-level and only applies to infallible patterns.
+It can therefore easily be converted to a let locals = es; old = normalPat; new = inc old; normalPat = new in
+(new if ++pat, old if pat++).
+
+On word-padding: implement as sugar using a (WordPad a) primitive datatype.
+Its tag type is (), but it contains internal padding?
+A field of a special zero-valued padding type wouldn't work, since the pad size depends on a.
+(a,b) => {WordPad a, WordPad b}
+{a,b} => Append a (Append b Unit)
+Every type has a repr in terms of other types? Note it's value-dependent: consider boxed and unboxed datatypes
+with arguments and multiple constructors.
+Need a syntax for structs compatible with Con {field: e}... perhaps <a,b,c>.
+
+From iPhone notes: align could desugar to placing subsequent fields in a single word-padded struct.
+Now that I have anonymous structs (but without field names) again, I can use them for the structs in bdts.
+
+Optiming Con :$ to fully applied con desugaring: everywhere with a stop at :$.
+Drop pattern decomposition? Allow nested constructors iff the nesteds are of struct-like datatypes.
+Goal: allow &_ to be applied to boxed datatype fields. &(*e) => e, &local => &(last bound e)
+let Con foo.bar = e in &(foo.bar) should not work, only locals. The last-bound rule need only look within
+lets initially. To proceed stmt by stmt, need to collect definite and possible bindings. A possible binding
+negates a definite one.
+Skip &_ transformation for now, but design for it.
+Case pattern form: atomic | Con {field:atomic}, where atomic includes struct-like cons.
+Result: a one-level case, where each case is associated with a list of binds.
+* Remove static and replace with code globals.
+By not decomposing constructors into alloc, I can serialize boxed datatypes by allocating new code globals.
+bdt serialized becomes coerce &(newglob :: StructCon params).
+Inline small ones; coerce &glob should become a label.
+
+.field and Con need to be tagged with datatype params in patterns as well.
+
+Can I desugar BDT patterns without decomposing case?
+Idea: generalize Con {field: p} to (tagAccessor = value){fieldAccessor -> p}. The (...) is a restricted form
+of cond, the {...} an effect.
+Atomic patterns such as foo.bar have no cond, just an effect.
+All patterns in a case must have the same top-level tag accessor or none.
+Nice insight but I don't need to be that general...
+
+ASAP:
+Remove static
+Ampersand, pattern compilation, update HM, monomorphization, Core, basic opts (inlining and tail calls),
+update Stack.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

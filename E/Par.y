@@ -105,22 +105,24 @@ import E.ErrM
   'for' { PT _ (TS _ 50) }
   'if' { PT _ (TS _ 51) }
   'import' { PT _ (TS _ 52) }
-  'memory' { PT _ (TS _ 53) }
-  'of' { PT _ (TS _ 54) }
-  'region' { PT _ (TS _ 55) }
-  'return' { PT _ (TS _ 56) }
-  'storage' { PT _ (TS _ 57) }
-  'then' { PT _ (TS _ 58) }
-  'tstorage' { PT _ (TS _ 59) }
-  'type' { PT _ (TS _ 60) }
-  'var' { PT _ (TS _ 61) }
-  'while' { PT _ (TS _ 62) }
-  '{' { PT _ (TS _ 63) }
-  '|' { PT _ (TS _ 64) }
-  '|=' { PT _ (TS _ 65) }
-  '||' { PT _ (TS _ 66) }
-  '}' { PT _ (TS _ 67) }
-  '~' { PT _ (TS _ 68) }
+  'instance' { PT _ (TS _ 53) }
+  'memory' { PT _ (TS _ 54) }
+  'of' { PT _ (TS _ 55) }
+  'region' { PT _ (TS _ 56) }
+  'return' { PT _ (TS _ 57) }
+  'storage' { PT _ (TS _ 58) }
+  'then' { PT _ (TS _ 59) }
+  'tstorage' { PT _ (TS _ 60) }
+  'type' { PT _ (TS _ 61) }
+  'var' { PT _ (TS _ 62) }
+  'where' { PT _ (TS _ 63) }
+  'while' { PT _ (TS _ 64) }
+  '{' { PT _ (TS _ 65) }
+  '|' { PT _ (TS _ 66) }
+  '|=' { PT _ (TS _ 67) }
+  '||' { PT _ (TS _ 68) }
+  '}' { PT _ (TS _ 69) }
+  '~' { PT _ (TS _ 70) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -148,6 +150,7 @@ ListD : {- empty -} { [] }
 D :: { D }
 D : 'default' UIdent '=' T { E.Abs.Default $2 $4 }
   | Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
+  | 'instance' Ident ':' T 'where' E13 ':=' S { E.Abs.Instance $2 $4 $6 $8 }
   | Ident ':' T { E.Abs.TySig $1 $3 }
   | UIdent ':' T { E.Abs.KindSig $1 $3 }
   | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }
