@@ -309,25 +309,20 @@ data Module = Module {
   kindsigs :: Map Name T,
   --LEVEL 3: the top-level kinds, declared as Tycon : Kind.
   --Kind itself does not have a kind, so hierarchy depth is bounded.
-  sorts :: Set Name,
+  kinds :: Set Name,
   --The default values for tyvars of that kind, e.g. Word for Type.
   --Must be monomorphic and match the given kind. Non-mandatory; a tyvar of
   --kind k with no default that remains unbound is an error.
   defaults :: Map Name T,
   defuns :: Map Name (Pat,S),
   tysyns :: Syns,
-  --E is restricted to static exprs (f, &global, static, k,
-  --UnboxedCon staticArgs, BoxedCon staticArgs with region Code)
-  --sv := e => sv has e's type, and can be implemented using either a push or
-  --code pointer deref.
-  --Strings become &sv, where sv := a byte array.
-  --With HMTS a type signature is no longer mandatory; note the static value
-  --is subject to the monomorphism restriction.
-  static :: Map Name E,
   --the T is a region: memory, calldata, returndata, code, storage, tstorage
   --A type signature is no longer required; note globals are monomorphic.
   --The relative ordering of globals is arbitrary and users should not rely on
   --it.
+  --E is restricted to static exprs (f, &global, k, -k,
+  --UnboxedCon staticArgs, BoxedCon staticArgs with region Code)
+  --Strings become &g where code g = a byte array.
   globals :: Map Name (Region,Maybe E),
   --Structs and enums have been merged into unboxed datatypes.
   --For both boxed and unboxed dts, datatypes with only one constructor can

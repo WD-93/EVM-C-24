@@ -110,7 +110,6 @@ instance Print D where
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion varbind -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 varbind])
     Data conargs datarhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conargs, doc (showString "="), prt 0 datarhs])
-    StaticData id e_ -> prPrec i 0 (concatD [prt 0 id, doc (showString ":="), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -129,6 +128,7 @@ instance Print GlobalRegion where
     Memory -> prPrec i 0 (concatD [doc (showString "memory")])
     Storage -> prPrec i 0 (concatD [doc (showString "storage")])
     TStorage -> prPrec i 0 (concatD [doc (showString "tstorage")])
+    Code -> prPrec i 0 (concatD [doc (showString "code")])
 
 instance Print DataRHS where
   prt i e = case e of

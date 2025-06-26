@@ -28,6 +28,7 @@ transD :: D -> Result
 transD x = case x of
   Default uident t -> failure x
   Defun ident e s -> failure x
+  Instance ident t e s -> failure x
   TySig ident t -> failure x
   KindSig uident t -> failure x
   TySyn conargs t -> failure x

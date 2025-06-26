@@ -97,32 +97,33 @@ import E.ErrM
   '_' { PT _ (TS _ 42) }
   'break' { PT _ (TS _ 43) }
   'case' { PT _ (TS _ 44) }
-  'continue' { PT _ (TS _ 45) }
-  'data' { PT _ (TS _ 46) }
-  'default' { PT _ (TS _ 47) }
-  'else' { PT _ (TS _ 48) }
-  'end' { PT _ (TS _ 49) }
-  'for' { PT _ (TS _ 50) }
-  'if' { PT _ (TS _ 51) }
-  'import' { PT _ (TS _ 52) }
-  'instance' { PT _ (TS _ 53) }
-  'memory' { PT _ (TS _ 54) }
-  'of' { PT _ (TS _ 55) }
-  'region' { PT _ (TS _ 56) }
-  'return' { PT _ (TS _ 57) }
-  'storage' { PT _ (TS _ 58) }
-  'then' { PT _ (TS _ 59) }
-  'tstorage' { PT _ (TS _ 60) }
-  'type' { PT _ (TS _ 61) }
-  'var' { PT _ (TS _ 62) }
-  'where' { PT _ (TS _ 63) }
-  'while' { PT _ (TS _ 64) }
-  '{' { PT _ (TS _ 65) }
-  '|' { PT _ (TS _ 66) }
-  '|=' { PT _ (TS _ 67) }
-  '||' { PT _ (TS _ 68) }
-  '}' { PT _ (TS _ 69) }
-  '~' { PT _ (TS _ 70) }
+  'code' { PT _ (TS _ 45) }
+  'continue' { PT _ (TS _ 46) }
+  'data' { PT _ (TS _ 47) }
+  'default' { PT _ (TS _ 48) }
+  'else' { PT _ (TS _ 49) }
+  'end' { PT _ (TS _ 50) }
+  'for' { PT _ (TS _ 51) }
+  'if' { PT _ (TS _ 52) }
+  'import' { PT _ (TS _ 53) }
+  'instance' { PT _ (TS _ 54) }
+  'memory' { PT _ (TS _ 55) }
+  'of' { PT _ (TS _ 56) }
+  'region' { PT _ (TS _ 57) }
+  'return' { PT _ (TS _ 58) }
+  'storage' { PT _ (TS _ 59) }
+  'then' { PT _ (TS _ 60) }
+  'tstorage' { PT _ (TS _ 61) }
+  'type' { PT _ (TS _ 62) }
+  'var' { PT _ (TS _ 63) }
+  'where' { PT _ (TS _ 64) }
+  'while' { PT _ (TS _ 65) }
+  '{' { PT _ (TS _ 66) }
+  '|' { PT _ (TS _ 67) }
+  '|=' { PT _ (TS _ 68) }
+  '||' { PT _ (TS _ 69) }
+  '}' { PT _ (TS _ 70) }
+  '~' { PT _ (TS _ 71) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -157,7 +158,6 @@ D : 'default' UIdent '=' T { E.Abs.Default $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion VarBind { E.Abs.Global $1 $2 }
   | 'data' ConArgs '=' DataRHS { E.Abs.Data $2 $4 }
-  | Ident ':=' E { E.Abs.StaticData $1 $3 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
@@ -168,6 +168,7 @@ GlobalRegion :: { GlobalRegion }
 GlobalRegion : 'memory' { E.Abs.Memory }
              | 'storage' { E.Abs.Storage }
              | 'tstorage' { E.Abs.TStorage }
+             | 'code' { E.Abs.Code }
 DataRHS :: { DataRHS }
 DataRHS : UnboxedRHS 'region' Ident { E.Abs.Boxed $1 $3 }
         | UnboxedRHS { E.Abs.Unboxed $1 }

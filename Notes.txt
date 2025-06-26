@@ -649,8 +649,21 @@ Atomic patterns such as foo.bar have no cond, just an effect.
 All patterns in a case must have the same top-level tag accessor or none.
 Nice insight but I don't need to be that general...
 
++ needs only two instances: Int Signed and Int Unsigned.
+plusSigned/Unsigned are primitive and should work only for len = 1 to 32.
+If I made signed<->unsigned conversion a separate op I could simplify coerce... put that on the back burner,
+it requires deciding on a universal repr for types (either byte array or Int).
+
+What is the meaning of a code var without an initializer? Simple, it's just null. Those can be placed at
+CODESIZE...
+
 ASAP:
+First, group declarations by constructor.
+g => *g
+After that, static exprs = label-valued (global, function), Con, k, -k
 Remove static
+String => &codeg
+Alloc struct and union datatypes for user-created DTs; add con->tag value map.
 Ampersand, pattern compilation, update HM, monomorphization, Core, basic opts (inlining and tail calls),
 update Stack.
 

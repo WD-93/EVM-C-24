@@ -1,9 +1,9 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, StandaloneDeriving, DeriveDataTypeable #-}
 module Desugar.Desugar where
 --A separate module for desugaring; Compiler should just tie each stage
 --together and handle the IO.
 
-import Util (complainIf)
+import Util (complainIf,(?))
 --import E.Par (pM,myLexer)
 --import E.ErrM (Err(..))
 import E.Abs (Ident(..),UIdent(..))
@@ -24,6 +24,20 @@ import Data.List (sort)
 import Data.Char (ord) --for string desugaring
 import Control.Arrow ((***))
 import Data.Maybe (fromMaybe)
+
+import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
+
+--Boilerplate instances... todo recommend BNFC does this
+deriving instance Data P.E
+deriving instance Data P.S
+deriving instance Data P.CASE
+deriving instance Data P.VarBind
+deriving instance Data P.Ident
+deriving instance Data P.HexInteger
+deriving instance Data P.EField
+deriving instance Data UIdent
+deriving instance Data P.AOp
+deriving instance Data P.T
 
 data DError = DuplicateDefun Name
             | BadDOrdering [P.D]
@@ -55,6 +69,8 @@ data DError = DuplicateDefun Name
             | NonByteChar String
             | DuplicateFieldNames Name
             | DuplicateDefaults Name
+            --TODO naming convention: Duplicate<singular>, not plural
+            | DuplicateGlobal Name
   deriving (Eq,Ord,Read,Show)
 
 --Declarations are order-independent, modulo the static names allocated to
@@ -68,11 +84,11 @@ emptyModule =
   Module {
   tysigs = M.empty,
   kindsigs = M.empty,
-  sorts = S.empty,
+  kinds = S.empty,
   defaults = M.empty,
   defuns = M.empty,
   tysyns = M.empty,
-  static = M.empty,
+  --static = M.empty,
   globals = M.empty,
   datatypes = M.empty,
   datatypeRegions = M.empty,
@@ -84,7 +100,114 @@ emptyModule =
 
 type De = ExceptT DError (State Module)
 
+--Grouping declarations by constructor first leads to cleaner code, as I can
+--get an overview of the handling for each decl type in one place.
+--General principle: doing a task all at once in its own traversal is
+--clearer and less bug-prone than the alternative (interspersing it with other
+--code and maintaining invariants that ensures doing so is valid).
+--It also lets me do more in Desugar since I can process decl types separately;
+--in particular, it lets me desugar g => *g because I gather all globals first.
+--I can also use minimal monad capabilities, reducing the risk of bugs.
+--What do I need to do? Allocate new names in let bindings and new globals
+--for strings; throw errors.
+--That just requires StateT Int (Except err), where err can now be specific
+--to each step.
+
+--Groups elements of a showable datatype by top-level constructor.
+--Precondition: it has no infix constructors...
+--It's hacky and inefficient but simple.
+--Unintended consequence: duplicate identical declarations are ignored.
+--That's fine?
+--Note it's no problem the order of decls is reversed since they should be
+--order-independent anyway.
+groupByCon :: Show a => [a] -> Map String [a]
+groupByCon as =
+  let kas = [(head $ words $ show a, a) | a <- as]
+      empty = M.fromSet (const []) $ S.fromList $ words
+        "Default Defun Instance TySig KindSig TySyn Import Global Data"
+  in foldr (\(k,a) m -> M.adjust (a:) k m) empty kas
+
+--New desugar algo:
+--First group decls by constructor
+--Group each type of decl by its key; error on internal duplicates
+-- defuns and instances are grouped together and are mutex
+--Error on external duplicates:
+--Dyn lowercase names: funs, vars
+--Dyn uppercase: constructors
+--Static (uppercase only): datatypes, tysyns, kinds
+desugar2 :: P.M -> Either DError Module
+desugar2 (P.Module ds) = do
+  let nm2d = groupByCon ds
+  gs <- (groupGlobals $ nm2d M.! "Global") ? DuplicateGlobal
+  ds <- (groupDefuns $ nm2d M.! "Defun") ? DuplicateDefun
+  let gset = M.keysSet gs
+  --Expr desugaring
+  --g => *g and string => g are simplest; they can be done on P.E without
+  --issue. Indeed, doing so avoids defining it for both Pat and E.
+  --Note this is done before substituting pointers for new globals
+  let gs' = g2starg gset gs
+      ds' = g2starg gset ds
+  error "todo"
+--Desugars global g to *g (where g is now considered a pointer)
+g2starg :: Data d => Set Name -> d -> d
+g2starg gset = everywhere $ mkT $ \case
+  P.Var (Ident nm) | S.member nm gset -> P.Deref $ P.Var $ Ident nm
+  e -> e
+--Desugarings:
+--g => *g (stateless, can be done on either E or P.E)
+--"abc" => &newg where code newg = array(97,98,99)
+-- Content-based string var naming would make the pretty output unreadable...
+-- instead number them.
+-- 1. Collect the set of strings, then number them.
+-- 2. Create the string global set
+-- 3. Substitute the strings for their corresponding globals (not &g).
+--It's simpler to do on E.
+
+--p += k, p++ => let-bind exprs in p, reuse same location
+--Issue: I also want to convert P.E to E, and that may fail
+--It's awkward to operate on the CST, but the AST E should not have the
+--features being desugared away - that's the whole point!
+--That means I must choose between operating on the CST, adding undesired
+--constructs to E or merging all desugaring steps into a single CST -> AST jump.
+--Long-term solution: first convert to an intermediate AST?
+--Con form standardization: Con {field: p} for patterns, fully applied Con
+--for exprs.
+--bdt.field => *(...).field' in exprs
+--Pattern decomposition is deferred until after monomorphization, but the
+--supporting tag and struct datatypes must be allocated here.
+
+--Only defuns and globals contain exprs; they must be desugared.
+--That involves allocating new code globals for strings and locals for
+--let-based desugaring.
+--It's clearer to do that only on the two relevant fields...
+--But first, the un-desugared decls must be grouped.
+groupExclusive :: Ord k => (a -> (k,v)) -> [a] -> Either k (Map k v)
+groupExclusive sel =
+  foldM (\m a -> do
+           let (k,v) = sel a
+           complainIf (M.member k m) k
+           return $ M.insert k v m) M.empty
+  
+groupGlobals :: [P.D] -> Either Name (Map Name (Region, Maybe P.E))
+groupGlobals = groupExclusive $ \case
+  P.Global gr vb ->
+            let (g,me) = collectVarBind vb
+                r = desugarRegion gr
+            in (g,(r,me))
+groupDefuns :: [P.D] -> Either Name (Map Name (P.E,P.S))
+groupDefuns = groupExclusive $ \case
+  P.Defun (Ident f) pe ps -> (f,(pe,ps))
+  
+collectVarBind :: P.VarBind -> (Name, Maybe P.E)
+collectVarBind = \case
+  P.JustVar (Ident v) -> (v, Nothing)
+  P.VarIs (Ident v) e -> (v, Just e)
+desugarRegion :: P.GlobalRegion -> Region
+desugarRegion = read . take 2 . show
+  
 desugarD :: P.D -> De ()
+desugarD = error "to remove"
+{-
 desugarD = \case
   P.Defun (Ident f) lhs ps -> do
     checkForDuplicates f
@@ -181,10 +304,12 @@ desugarD = \case
                     fieldSpecs = M.insert nm (con,ix) $ fieldSpecs s}
           )
       conFields
+-}
+      {-
   P.StaticData (Ident nm) pe -> do
     checkForDuplicates nm
     e <- desugarE pe
-    modify (\m->m{static=M.insert nm e $ static m})
+    modify (\m->m{static=M.insert nm e $ static m})-}
     
 
 desugarDataRHS :: P.DataRHS -> ([ConDecl],Maybe Name)
@@ -198,6 +323,8 @@ desugarDataRHS = \case
 desugarUnboxedRHS :: P.UnboxedRHS -> [ConDecl]
 desugarUnboxedRHS (P.URHS dcs) = map desugarDataCon dcs
 desugarDataCon :: P.DataCon -> ConDecl
+desugarDataCon = error "todo"
+{-
 desugarDataCon = \case
   P.DCArgs dca ->
     let (con,ts) = desugarDCA dca
@@ -205,6 +332,7 @@ desugarDataCon = \case
   P.DCRecord (UIdent con) rfs ->
     let nmts = map desugarRecordField rfs
     in (con, Right nmts)
+-}
 desugarDCA :: P.DCA -> (Name,[T])
 desugarDCA = \case
   P.DCANil (UIdent con) -> (con,[])
@@ -334,7 +462,7 @@ checkForDuplicates nm = do
   --TODO give a more informative error message
   complainIf (S.member nm $ S.unions $
               [M.keysSet $ defuns m,
-               M.keysSet $ static m,
+               --M.keysSet $ static m,
                M.keysSet $ globals m,
                M.keysSet $ constructors m
               ])
@@ -710,7 +838,9 @@ desugarE = go
 
 --"abc" => (&sv :: Ptr Code (Array 3 Byte)) where sv := array (97,98,99)
 handleString :: String -> De E
-handleString str = do
+handleString str = error "todo"
+  {-
+  do
   let codes = map ord str
       len = fromIntegral $ length str
   --Better than silently truncating...
@@ -726,6 +856,7 @@ handleString str = do
         static = M.insert svnm arrayE $ static s}
   return $ (Var "ampersand" :$ Var svnm)
     ::: Ptr Code (Array (TyNat len) (TyCon "Byte"))
+-}
 
 --String literals are lifted to staticData decls:
 --"abc" becomes staticData (Byte[3]) {97,98,99};

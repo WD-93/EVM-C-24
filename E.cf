@@ -37,9 +37,11 @@ MNil. ModuleName ::= UIdent;
 MCons. ModuleName ::= UIdent "." ModuleName;
 --Ex: memory x : UInt 16
 Global. D ::= GlobalRegion VarBind;
+--Need to add code at least, since Im converting static to code globals
 Memory. GlobalRegion ::= "memory";
 Storage. GlobalRegion ::= "storage";
 TStorage. GlobalRegion ::= "tstorage";
+Code. GlobalRegion ::= "code";
 --Syntax: data TyCon a b c = {Con T1 T2... | Con {field: t,...}; ...}
 -- [region var] --makes the type boxed
 --Unboxed datatypes supersede structs and enums
@@ -58,7 +60,7 @@ DCACons. DCA ::= DCA T1;
 DCRecord. DataCon ::= UIdent "{" [RecordField] "}";
 separator RecordField ","; --Con {} is equivalent to Con
 RF. RecordField ::= Ident ":" T;
-StaticData. D ::= Ident ":=" E;
+--StaticData. D ::= Ident ":=" E;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
