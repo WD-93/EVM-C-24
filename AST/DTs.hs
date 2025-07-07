@@ -43,22 +43,19 @@ data E = EInteger Integer
        --Essential to decomposition of assignments to complex patterns prior
        --to HM
        | CaseE E [(Pat,E)]
+       {-
        --Making the lhs a Pat allows incremental decomposition of patterns
        | OPAssign Pat Op E
        | PPPre Pat
        | PPPost Pat
        | MMPre Pat
        | MMPost Pat
-       --Required because g => *g desugaring and pattern decomposition is done
-       --after initial desugaring; not present by HM.
+       -}
        -- ++ and -- are distinct from += because I will restrict + to
        --(a,a) -> a and use a separate indexPtr function for pointer
        --"addition". ++ and -- use inc/dec instead of +1/-1 to accomodate that.
-       | ConRecord Name [(Name,E)]
        --Note order matters. Unspecified fields are null.
        | Con Name [E] --Con apps and ConRecord desugar to this
-  deriving (Eq,Ord,Read,Show,Data)
-data Op = PLUS
   deriving (Eq,Ord,Read,Show,Data)
 
 --Tuples are word-padded structs with default field names;
@@ -314,7 +311,9 @@ data Module = Module {
   --Must be monomorphic and match the given kind. Non-mandatory; a tyvar of
   --kind k with no default that remains unbound is an error.
   defaults :: Map Name T,
-  defuns :: Map Name (Pat,S),
+  --Left: an ordinary definition; Right: a set of instances
+  --Note identical duplicate instances will be ignored.
+  defuns :: Map Name (Either (Pat,S) (Set (T,Pat,S))),
   tysyns :: Syns,
   --the T is a region: memory, calldata, returndata, code, storage, tstorage
   --A type signature is no longer required; note globals are monomorphic.

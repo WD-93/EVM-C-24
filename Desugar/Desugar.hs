@@ -56,21 +56,24 @@ data DError = DuplicateDefun Name
             | StandaloneConstructorName String
             | DuplicateConstructors Name
             | BadPatternInCase P.E
-            | MoreThan256EnumNamesInOneEnum
+            -- | MoreThan256EnumNamesInOneEnum
             -- ^A helpful message on the off chance whoever triggers it isn't
             --fuzzing for vulns
-            | DuplicateEnumName Name Name
+            -- | DuplicateEnumName Name Name
             | WildcardInExprContext
             | MalformedPattern P.E
-            | DuplicateTySigs Name
-            | DuplicateKindSigs Name
+            -- | DuplicateTySigs Name
+            -- | DuplicateKindSigs Name
             | UnresolvedImport P.ModuleName
-            | DuplicateTyCons Name
+            -- | DuplicateTyCons Name
             | NonByteChar String
             | DuplicateFieldNames Name
-            | DuplicateDefaults Name
+            -- | DuplicateDefaults Name
             --TODO naming convention: Duplicate<singular>, not plural
-            | DuplicateGlobal Name
+            -- | DuplicateGlobal Name
+            --Duplicate "Decl constructor" nm
+            | Duplicate String Name
+            | DefunInstanceOverlap (Set Name)
   deriving (Eq,Ord,Read,Show)
 
 --Declarations are order-independent, modulo the static names allocated to
@@ -138,9 +141,38 @@ groupByCon as =
 desugar2 :: P.M -> Either DError Module
 desugar2 (P.Module ds) = do
   let nm2d = groupByCon ds
-  gs <- (groupGlobals $ nm2d M.! "Global") ? DuplicateGlobal
-  ds <- (groupDefuns $ nm2d M.! "Defun") ? DuplicateDefun
+  --Group all decl types by key
+  --default
+  dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm,t)) nm2d
+  --defun
+  ds <- groupDefuns nm2d
+  --instance
+  let is = groupInstances $ nm2d M.! "Instance"
+  dis <- combineDefsAndInstances ds is
+  --tysig
+  tsigs <- groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm,t)) nm2d
+  --kindsig
+  ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm,t)) nm2d
+  --tysyn
+  tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
+                              let (nm,args) = desugarConArgs ca
+                              in (nm,(args,t))) nm2d
+  --globals
+  gs <- groupGlobals nm2d
+  --data
+  dts <- groupEx "Data" (\(P.Data ca rhs) ->
+                           let (nm,args) = desugarConArgs ca
+                           in (nm,(args,rhs))) nm2d
+  dtsFull <- processDTs dts
+  
   let gset = M.keysSet gs
+      fset = M.keysSet dis
+  --Require:
+  --No overlap between funs and globals
+  --No overlap between datatypes, tysyns and kinds
+  --All classes must have a signature
+  --All type signatures must correspond to a fun or global
+  
   --Expr desugaring
   --g => *g and string => g are simplest; they can be done on P.E without
   --issue. Indeed, doing so avoids defining it for both Pat and E.
@@ -153,6 +185,7 @@ g2starg :: Data d => Set Name -> d -> d
 g2starg gset = everywhere $ mkT $ \case
   P.Var (Ident nm) | S.member nm gset -> P.Deref $ P.Var $ Ident nm
   e -> e
+--Converts strings to array literals
 --Desugarings:
 --g => *g (stateless, can be done on either E or P.E)
 --"abc" => &newg where code newg = array(97,98,99)
@@ -162,6 +195,10 @@ g2starg gset = everywhere $ mkT $ \case
 -- 2. Create the string global set
 -- 3. Substitute the strings for their corresponding globals (not &g).
 --It's simpler to do on E.
+--Don't apply & to the string global... that way ! can be applied to str
+--directly, and it can be efficiently copied using *ptr = "foo".
+--Ah... then I don't need a global, I can convert to array(1,2,3) directly.
+--Arrays which ultimately never touch the stack should just be *copied.
 
 --p += k, p++ => let-bind exprs in p, reuse same location
 --Issue: I also want to convert P.E to E, and that may fail
@@ -175,12 +212,24 @@ g2starg gset = everywhere $ mkT $ \case
 --bdt.field => *(...).field' in exprs
 --Pattern decomposition is deferred until after monomorphization, but the
 --supporting tag and struct datatypes must be allocated here.
+--I need to do that before bdt.field => *... because tagDT is a field!
+--For boxed datatypes, tagDT is special in that it becomes a desugar of
+--a tag pointer rather than a generated struct.
 
 --Only defuns and globals contain exprs; they must be desugared.
 --That involves allocating new code globals for strings and locals for
 --let-based desugaring.
 --It's clearer to do that only on the two relevant fields...
 --But first, the un-desugared decls must be grouped.
+--TODO: display all collisions and the associated definitions.
+
+--DError-specific function
+groupEx :: String -> (P.D -> (Name,v)) -> Map String [P.D] ->
+  Either DError (Map Name v)
+groupEx decltype sel decls =
+  let ds = decls M.! decltype
+  in groupExclusive sel ds ? Duplicate decltype
+--Generic function
 groupExclusive :: Ord k => (a -> (k,v)) -> [a] -> Either k (Map k v)
 groupExclusive sel =
   foldM (\m a -> do
@@ -188,20 +237,70 @@ groupExclusive sel =
            complainIf (M.member k m) k
            return $ M.insert k v m) M.empty
   
-groupGlobals :: [P.D] -> Either Name (Map Name (Region, Maybe P.E))
-groupGlobals = groupExclusive $ \case
-  P.Global gr vb ->
-            let (g,me) = collectVarBind vb
-                r = desugarRegion gr
-            in (g,(r,me))
-groupDefuns :: [P.D] -> Either Name (Map Name (P.E,P.S))
-groupDefuns = groupExclusive $ \case
-  P.Defun (Ident f) pe ps -> (f,(pe,ps))
+--groupGlobals :: [P.D] -> Either Name (Map Name (Region, Maybe P.E))
+groupGlobals = groupEx "Global " $
+  \(P.Global gr vb) ->
+    let (g,me) = collectVarBind vb
+        r = desugarRegion gr
+    in (g,(r,me))
+--groupDefuns :: [P.D] -> Either Name (Map Name (P.E,P.S))
+groupDefuns = groupEx "Defun" $
+  \(P.Defun (Ident f) pe ps) -> (f,(pe,ps))
+
+--Instances are keyed by function name; it's fine for there to be multiple
+--instances for a single name, they're just collected into a set.
+--groupInstances is pure because it can't fail.
+groupInstances :: [P.D] -> Map Name (Set (P.T,P.E,P.S))
+groupInstances ds =
+  let kelems = [(fnm,(t,e,s)) | P.Instance (Ident fnm) t e s <- ds]
+  in foldr (\(k,elem) m ->
+              case M.lookup k m of
+                Nothing -> M.insert k (S.singleton elem) m
+                Just elems -> M.insert k (S.insert elem elems) m)
+     M.empty kelems
+--Combine ordinary defuns and instances into a single map; they're mutex, so
+--complain if their fnames intersect.
+combineDefsAndInstances :: Map Name (P.E,P.S) ->
+                           Map Name (Set (P.T,P.E,P.S)) ->
+                           Either DError (Map Name
+                                         (Either (P.E,P.S)
+                                          (Set (P.T,P.E,P.S))))
+combineDefsAndInstances ds is = do
+  let fds = M.keysSet ds
+      fis = M.keysSet is
+      conflicts = S.intersection fds fis
+  complainIf (not $ S.null conflicts)
+    $ DefunInstanceOverlap conflicts
+  return $ M.union (M.map Left ds) (M.map Right is)
   
 collectVarBind :: P.VarBind -> (Name, Maybe P.E)
 collectVarBind = \case
   P.JustVar (Ident v) -> (v, Nothing)
   P.VarIs (Ident v) e -> (v, Just e)
+
+
+--Add tagDT field to each con if tag type and values are not specified
+--Repr decl:
+--tag TyCon params is t where {Con: e}
+--It's (UInt 0) if DT is struct-like. Allow 0-sized ints rather than having
+--a no-tag exception for ()-like datatypes!
+--It's UInt <log256 con count> if DT is union-like
+--Note ints shouldn't have any fields, ensuring they're the leaves of the repr.
+--Otherwise it's TagDT; allocate data TagDT = TagCon1 | ..., a union-like
+--datatype.
+--Associate each constructor with a static value.
+--Convert each Con ts => Con {fieldCon<N>: t}
+--Require:
+--No duplicate constructors
+--No duplicate params within same DT
+--No fields of distinct type within same DT
+--No duplicate fields within a constructor
+--No fields shared between two DTs
+processDTs :: Map Name ([Name],P.DataRHS) ->
+              Either DError (Map Name ([Name], [(Name,[(Name,P.T)])]))
+processDTs _ = undefined
+processDT _ = undefined
+  
 desugarRegion :: P.GlobalRegion -> Region
 desugarRegion = read . take 2 . show
   
@@ -473,13 +572,13 @@ checkForDuplicates nm = do
 --So when desugaring a kind signature, one must check the kind signature map
 --but not this function.
 checkForDupTyCon :: Name -> De ()
-checkForDupTyCon nm = do
+checkForDupTyCon nm = error "todo remove" {-do
   m <- get
   complainIf (S.member nm $ S.unions $
               [M.keysSet $ tysyns m,
                M.keysSet $ datatypes m
               ])
-    $ DuplicateTyCons nm
+    $ DuplicateTyCons nm-}
 
 desugarT :: P.T -> T
 desugarT = go
@@ -587,6 +686,8 @@ desugarCase (P.C pe ps) = do
 --desugarE needs to be in De because strings are translated to
 --(&sv :: Ptr Code Byte[len]), where sv := a fixed-size byte array
 desugarE :: P.E -> De E
+desugarE = error "todo"
+{-
 desugarE = go
   where go = \case
           P.EmptyTuple -> return $ Var "Unit"
@@ -682,6 +783,7 @@ desugarE = go
           P.AndEq -> po2 "bwAnd"
           P.XorEq -> po2 "bwXor"
           P.OrEq -> po2 "bwOr"
+-}
     {-
     go = \case
       P.String str -> do

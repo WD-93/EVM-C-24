@@ -657,15 +657,185 @@ it requires deciding on a universal repr for types (either byte array or Int).
 What is the meaning of a code var without an initializer? Simple, it's just null. Those can be placed at
 CODESIZE...
 
+copy is simple, it's just an overloaded frontend to the *copy instructions.
+But what about deepcopy? Behavior: given a BDT r, allocate a BDT r', where r' is a mutable region.
+Recurse on BDTs which always have the same r as the parent. It's fine that it can't deal with cycles.
+Recall: the same field with the same type could occur in multiple constructors of the same datatype.
+If it occurs at different offsets, you need to case to compute it... that could be used for a next field in
+an instruction sequence datatype of unbounded size.
+Accessing a field which doesn't exist in a given constructor is UB, so if it's at a fixed offset in all
+constructors where it's present just use that.
+*script = Push 1 (Push 2 (Add Stop))
+If unboxed datatypes could have variable or unbounded size, local = ubdt needs to allocate an upper bound.
+Note boxed DTs could then be sugar for
+data BDT params = BDTWrapper (Ptr r (UBDT params))
+bdt.field => let BDTWrapper ptr = bdt in *ptr.field'
+Buffer sz a --could store an a iff its size is <= sz. FW...
+
 ASAP:
-First, group declarations by constructor.
-g => *g
+First, group declarations by constructor. --done
+g => *g --done
+
+Do desugaring on CST, make AST as restrictive as possible.
+During P.E -> E/Pat conversion: Con :$, Con {...} => Con [...]. Disallow repeated fields.
+ Special-case Struct and Array pseudo-constructors.
+
+Anonymous struct syntax Struct a b c... requires nested constructors in case patterns, but only for single-con
+datatypes.
+Similar: Array a b c
+
 After that, static exprs = label-valued (global, function), Con, k, -k
-Remove static
+Remove static --done
 String => &codeg
 Alloc struct and union datatypes for user-created DTs; add con->tag value map.
 Ampersand, pattern compilation, update HM, monomorphization, Core, basic opts (inlining and tail calls),
 update Stack.
+
+Eliminate boxed datatypes: Cons a (List r a) => ImplCons (Ptr r (StructCons r a))
+Constructor discrimination should be independent of the params; check statically that each datatype is
+distinguishable.
+A problem for distinguishing: it's not guaranteed that code global pointers and functions with different
+names are unequal. Perhaps permit indistinguishability and match the first pattern; function tags are
+useful to have for interpretation. There's not even a guarantee functions of different type or word arity
+will have different runtime representation - consider \_ -> stop()!
+Goal: a boxed datatype tagged with instruction function, essentially a restricted closure type.
+That can be achieved using a boxed datatype
+data Instr r = Instr1 args1 | ... region r
+tag Instr r = FunctionContainer r where {Instr1: TagInstr1}
+data FunctionContainer r = TagInstr1 (Ptr r args1 -> IResult) | ...
+and using coerce to apply the closure function to the closed pointer.
+Problem: the function in FunctionContainer still isn't fixed.
+Solution: allow heterogenous tags? Problem: how to access tags at the user level then?
+Generalized representations: fixed-value fields marked with {_} brackets as in Agda.
+Core idea: tag fields aren't just for distinguishing, but for hinting.
+That would allow the distinguishing tag to be placed last as well...
+Need to represent true union explicitly in repr? The length of every datatype is fixed, so where you
+put the tag influences where the padding is placed...
+Simplest solution: just use the old approach and implement instructions at the user level; initial
+development will provide a useful guide for further language-level automation.
+Simple distinguishing (works for boxed datatypes): a datatype must be distinguishable, which it is
+iff: its tag values are distinct (with equality undefined for label-valued exprs such as global
+pointers and functions), or each constructor has a field at the same position s.t. the fields are of
+distinct types with fully distinguishable reprs.
+Permitted operations for distinguishing: inspect tag, select field, dereference. The distinguisher
+has a single bytestring as its state; inspect and select slice, deref fetches a new one.
+Deref of a slice is only permitted when each field in that position is a pointer to the same region.
+Con repr: [Byte],[T]
+If all bytes are distinct, you're done.
+All Ts have a size dependent on params: k, s1 + s2, max szs, sizeof t.
+Higher-kinded params pose a problem; restrict comprehensible offsets to k + sum (sizeof a)
+initially.
+Collect all fields shared among all constructors that are at the same offset and size.
+Each such field has types ts; if there's a path to distinguish them you're done.
+Problem: recursive types, esp ones such as
+data Bad a = Con (Ptr r (Bad [a])). Simple solution: use a stack of datatype tycons, disallow loops.
+Tags could be considered fixed-value fields.
+Ints, funs and ptrs may have arbitrary values; ptrs of different types must be distinguished by
+deref.
+It might be simpler to slice across field boundaries... for now the distinguishability check can be
+omitted and distinction left to the mono compilation step.
+Simplification: if I'm compiling case post-mono anyway, might as well distinguish monomorphic types.
+Then every field has a fixed offset.
+After checking tag, get concrete offsets and sizes of field. Select the first distinguishable field
+list.
+Consequence: datatypes such as untagged union will be distinguishable only for a subset of params,
+case compilation may throw errors after type check.
+Consequence 2: you can check for cycles in monomorphic type (tycon + params).
+Note: padded types (WordPad a) have fixed zero bytes.
+Component types can be expanded... but they're unions. With nested Maybes there's an exponential
+blowup in repr alternatives...
+Solution: expand only struct datatypes.
+Fuse adjacent fixed-value bytestrings (e.g. tag and padding) into one.
+Each candidate: [(Either [Byte] T, offset)]
+Favor the shortest, leftmost distinguishing slice; it must be one of n distinct constant values, where
+each identifies a particular constructor.
+Favor slicing before dereferencing. Distinguisher ops: slice and done, get field (there must be a field with
+the right offset and length in the normalized repr of every constructor) and distinguish types.
+Problem: struct expansion may prevent field slicing, so don't do it.
+Distinguishing types by their prefix only works if they're struct-like or have a struct-like field
+(given the restriction distinction must be done by a single slice, with one value per type).
+No matter, distinction doesn't need to be done until codegen.
+
+reprType :: T -> m Repr
+--Memoized, takes a monomorphic type. 
+If datatype: the union of all reprCons of the DT.
+If Int _ n: *^n
+If Ptr r a: IsPtr (Ptr r a)
+reprCons --the tag followed by padding and the normalized concat of the reprs of its argument types
+unionRepr :: Repr^2 -> Repr
+--Takes the least general union of both reprs
+k,k -> k; *,_ -> *; k1,k2 -> *
+distinguishCons :: [Repr] -> Distinguish
+DistinguishCons = Slice off len [ks] | DistinguishPtr off len Distinguish
+DistinguishT
+distinguishTs :: [Repr] -> Distinguish
+Repr ~ [ReprElem]
+ReprElem = k | * | IsPtr T
+--labels become * since they're not assigned yet
+You only ever need to distinguish Ts when you have a pointer to one of them. You can select only from the
+shared prefix, but don't need to fetch everything. Do dist off ptr and of full value need to be different?
+Build a piecewise map elem -> set of candidates?
+You can slice if there exist n contiguous bytes s.t. they disambiguate fully.
+If there are ptrs rs ts with the same region and distinct ts s.t. the ts can be distinguished.
+
+A problem with tag type taking DT params: the tag values need to be well-typed static values for all
+params. Just check staticness after mono...
+
+Nice, my Maybe unboxed datatype avoids the billion-dollar mistake: wherever you have a pointer that you'll
+eventually fill in with a valid (allocated) pointer, use a Maybe instead.
+
+From iPhone notes:
+* Simplification: cons in P and E desugar to fully applied (Con {field: p/e} are implemented with lets).
+.field, .field= as fallible ops is perhaps cleaner if you want to support duplicate fields in the same
+datatype. Desugaring e.field => let x = e in ecase x of Cons which support field -> field requires it...
+note the .foo.bar => offset opt then only works if both foo and bar never fail and are always at the same
+offset.
+x.field = y => x = ecase x of Cons which support field -> the same con, with field set to y
+* Permit datatypes where the tag doesn't directly enable differentiation between each constructor!
+That enables true unions. Note if I generalize case to look at more than the tag such unions can be safe!
+* Boxed datatypes can then be implemented as
+data List r a =
+ Nil (Ptr r TagList)
+ Cons (Ptr r (StructCons r a))
+tag List r a = () where {Nil: (), Cons: ()}
+data StructCons r a = StructCons a (List r a)
+tag StructCons r a = TagList
+data TagList = TagNil | TagCons
+--Nil and Cons can't be distinguished by looking at their tag, but they can be by looking at the first byte
+pointed to!
+Nice, that lets me get rid of boxed datatypes in the IR. The downside is case becomes more complex, but it
+would've needed special logic for BDTs anyway - this just generalizes it.
+However, the new case avoids needing any coercion to pointers!
+* Anonymous struct syntax: Struct (a,b,c), array: Array (a,b,c). Should Array reduce to datatypes?
+An argument against: it must support (!), and new (very large) datatypes would need to be added late in the
+pipeline (after monomorphization).
+
+Is pointer inc and comparison worth it or should I just use fat pointers..?
+That would simplify the invariant of pointers and remove the need for alloc(n). ptr++ (a risky operation)
+would be replaced with vec++. Optimizations which eliminate the overhead for well-behaved vec access such as
+map should be possible...
+{base,len,ptr}
+Fat pointers would need to be a boxed type with a special invariant: for i <- 0..len-1, ptr+i is valid
+(but note I'd remove ptr+i from the language!).
+If this works that would vindicate Wadler's skepticism of a low-level language.
+New container types which enforce stronger invariants on pointers (constraining the language, but making the
+constraints that would otherwise be in the programmer's head visible to the compiler) would simplify the 
+semantics, improve safety and hopefully have a *positive* perf impact by enabling opts.
+However, array-like fat pointers aren't enough... I also want to iterate over buffers of irregular-sized
+objects (instructions, interpreter objects...).
+
+Require constructors are always distinguishable by repr?
+How to represent repr?
+Generalization: fixed-value fields in any position.
+
+Safe, performant and general/composable pointer-wrapper datatypes are an interesting PL RQ, but aiming for a
+research breakthrough before getting v1 out is unrealistic...
+The key problem is invalid pointers. Uninitialized vars/null() already breaks pointer safety, but is
+relatively easy to verify the absence of. Pointer indexing is trickier since the index may be an arbitrary
+expression.
+The question is whether to permit unsafe pointers and require a more complex memory model to apply fewer
+opts, or to pay an up-front cost in terms of safe DTs that can later be optimized.
+Which opts in particular do unsafe pointers mess with?
 
 **************
 
