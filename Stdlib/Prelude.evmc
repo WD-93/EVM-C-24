@@ -32,5 +32,26 @@ data Bool = {False;True};
 data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
 data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
 
+//The proxy types
+data P a = {P};
+PR : Region -> Type;
+data PR r = {PR};
+PN : Nat -> Type;
+data PN = {PN};
+PS : Signedness -> Type;
+data PS = {PS};
+
 //A newtype wrapper for EVM addresses
 data Addr = {Addr (UInt 20)};
+
+//ptr[ix] => *(indexPtr (ptr,ix))
+indexPtr : (Ptr r a, UInt 16) -> Ptr r a;
+indexPtr (ptr,ix) := {
+	 ptr :: Ptr r a;
+	 MkPtr off = ptr;
+	 sz = sizeof (P :: Proxy a);
+	 return MkPtr (off + sz * ix)
+};
+//sizeof takes a proxy a and returns a SizeT (UInt 16)
+sizeof : P a -> UInt 16;
+sizeof p := return knownNat (sizeofP p)

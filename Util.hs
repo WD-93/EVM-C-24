@@ -25,3 +25,13 @@ unsafePrint str
 --TODO update transformers/mtl and fix dependencies in cabal...
 withError :: MonadError e m => (e -> e) -> m a -> m a
 withError f action = catchError action (throwError . f)
+
+--Turns out I need this in Desugar as well.
+--Given a positive integer, returns the minimum number of bytes required to
+--contain it. Treatment of negative numbers (e.g. using signextend to
+--trade exec cost against code size) is left to codegen.
+log256 :: Integer -> Int
+log256 n | n < 0 = error $ "Negative argument to log256: " ++ show n
+         | let = go n
+                 where go 0 = 0
+                       go n = succ $ go $ n `div` 256

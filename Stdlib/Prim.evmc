@@ -93,14 +93,22 @@ shR _ := ();
 deref : Ptr r a -> a;
 deref _ := ();
 //Note the polymorphic result type independent of the argument!
-//malloc n :: MPtr a allocates enough space for n a's
+//alloc n :: Ptr r a allocates enough space for n a's
 //The first word of memory is reserved for the alloc ptr, which is set in the
 //prologue before calling main.
-malloc : Int s l -> MPtr a;
-malloc _ := ();
-//Because index must support both arrays and pointers, its type is flexible
-index : arr a -> Int s l -> a;
-index _ := ();
+alloc : Int s l -> Ptr r a;
+alloc _ := ();
+//Pointer indexing _[_] is now separate from unboxed array indexing _!_.
+//Since indexPtr can be implemented directly in EVMC, it needn't be in Prim.
+//However, its supporting primitive proxy ops need to be.
+
+//Obtains a's size at no runtime cost.
+sizeofP : P a -> PN n;
+sizeofP _ := ();
+//Given a Nat proxy, obtains a runtime integer of any signedness and size
+knownNat : PN n -> Int s l;
+//TODO a region datatype and knownRegion.
+
 //The other primitives are black magic but this one is blacker due to its
 //non-compositional semantics.
 // &e = p if e can be inferred to be *p

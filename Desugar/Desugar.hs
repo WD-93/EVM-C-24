@@ -279,9 +279,30 @@ collectVarBind = \case
   P.VarIs (Ident v) e -> (v, Just e)
 
 
+--Boxed datatype data TyCon params = Con1 args | ... region r =>
+--data TyCon params = ImplCon1 (Ptr r (StructCon1 args)) | ...
+--tag TyCon params = () where {ImplCon1: (); ...}
+--data StructCon1 params = StructCon1 args
+--tag StructCon1 params = TagTyCon where {StructCon1: TagCon1}
+--If a boxed datatype is given a tag declaration, it's applied to the
+--StructConN's in place of TagTyCon.
+--End result: boxed datatypes eliminated.
+
+--E: Con1 args => ImplCon1 (allocValue (StructCon1 args))
+--P: case x of Con1 args -> ... =>
+--case x of ImplCon1 ptr -> let StructCon1 args = *ptr in ...
+--bdt.field =>
+--case bdt of ImplCon p -> (*p).fieldCon --for each con containing field
+--I can eliminate .field, but what about .field=?
+--I won't eliminate either, it's simpler to deal with the fallout of fields
+--shared between constructors during monomorphic compilation.
+-- .tagDT is special in that it's to the left of the padding...
+--It should be accessible to the user to get and set, so might as well keep
+--using the field syntax + naming convention.
+
 --Add tagDT field to each con if tag type and values are not specified
 --Repr decl:
---tag TyCon params is t where {Con: e}
+--tag TyCon params = t where {Con: e}
 --It's (UInt 0) if DT is struct-like. Allow 0-sized ints rather than having
 --a no-tag exception for ()-like datatypes!
 --It's UInt <log256 con count> if DT is union-like
@@ -296,8 +317,18 @@ collectVarBind = \case
 --No fields of distinct type within same DT
 --No duplicate fields within a constructor
 --No fields shared between two DTs
+--Tag decls specify every constructor
 processDTs :: Map Name ([Name],P.DataRHS) ->
-              Either DError (Map Name ([Name], [(Name,[(Name,P.T)])]))
+              Either DError (Map Name --TyCon
+                             ([Name], --params
+                              P.T, --tag type
+                              [(Name, --Con
+                                P.E, --its tag
+                                [(Name,P.T)] --{...,field: t,...}
+                               )]),
+                              Map Name P.T, --fields including tag<DT>
+                              Map Name Name --the tags
+                              )
 processDTs _ = undefined
 processDT _ = undefined
   

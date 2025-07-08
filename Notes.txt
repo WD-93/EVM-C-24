@@ -678,11 +678,31 @@ g => *g --done
 
 Do desugaring on CST, make AST as restrictive as possible.
 During P.E -> E/Pat conversion: Con :$, Con {...} => Con [...]. Disallow repeated fields.
- Special-case Struct and Array pseudo-constructors.
+ Special-case Struct (...) and Array (...) pseudo-constructors.
+Given coercions, (Foo bar) baz cannot be distinguished from Foo bar baz, so it must be
+allowed.
+Array a b c is better than Array (a,b,c) since it allows for everywhere conversion of tuples
+to hetlists.
+Since Array a b c desugars to the E constructor Array [a,b,c], there's no issue with typing it.
 
-Anonymous struct syntax Struct a b c... requires nested constructors in case patterns, but only for single-con
+Anonymous struct syntax Struct (a,b,c)... requires nested constructors in case patterns, but only for single-con
 datatypes.
-Similar: Array a b c
+Similar: Array (a,b,c)
+Tuples desugar to a Pair-Unit hetlist on WordPad ts.
+data WordPad a = WordPad a --is special in that it's word-padded...
+data Fun a b = MkFun (UInt 2)
+data Ptr r a = MkPtr (UInt 2)
+--Fun and Ptr are ordinary datatypes with associated UB rules
+Array isn't a datatype... so Int doesn't need to be either.
+ptr[ix] => *(incPtr (ptr,ix)) --note exprs should be evaluated only once in patterns... but this
+desugaring doesn't break that.
+incPtr : (Ptr r a, UInt 16) -> Ptr r a
+incPtr (p,ix) := {
+ MkPtr off = (p :: Ptr r a);
+ sz = sizeof (P :: Proxy a);
+ return MkPtr (off + sz * ix)
+ }
+Argh, the exprs in tags need to be desugared.
 
 After that, static exprs = label-valued (global, function), Con, k, -k
 Remove static --done
@@ -690,6 +710,8 @@ String => &codeg
 Alloc struct and union datatypes for user-created DTs; add con->tag value map.
 Ampersand, pattern compilation, update HM, monomorphization, Core, basic opts (inlining and tail calls),
 update Stack.
+Tag fields should be in both fields : name -> t, and a tag->tycon set.
+
 
 Eliminate boxed datatypes: Cons a (List r a) => ImplCons (Ptr r (StructCons r a))
 Constructor discrimination should be independent of the params; check statically that each datatype is
@@ -836,6 +858,77 @@ expression.
 The question is whether to permit unsafe pointers and require a more complex memory model to apply fewer
 opts, or to pay an up-front cost in terms of safe DTs that can later be optimized.
 Which opts in particular do unsafe pointers mess with?
+
+Function-tagged isets can be implemented as a tagless boxed DT where the first argument of each constructor
+is a DT that uses the appropriate function (which takes the pointer to the remaining arguments + IState) as
+a tag.
+iset IName (IState: T) (IRet: T) where
+ (iname p := s | branching iname p := s)*
+Generalize region annots to T?
+Can closures be implemented at the user level?
+data Closure r a b = MkClosure ((Ptr r c,a) -> b) (Ptr r c) region r
+--The issue is the hidden c... solution: add the param to CLOSURE r c a b and coerce it?
+Coercion risks confusing the memory model and enabling GC of the malloc'd C ptr...
+A special Any type s.t. ptrs can be coerced to Ptr r Any without getting dropped might fix it...
+Note closure ~ a pair of pointers allows passing preexisting pointers... and mutating them.
+That would allow closures to be unboxed; mkClosure (f,o) ~ o:f in Lua.
+What about a lazy transformation?
+
+Problem for sizeofP :: P a -> PN sz: sz needs to be restricted during type inference.
+
+The context-dependent desugaring, where I must jump from the CST to a narrow AST, is a big problem...
+Patterns don't need to be decomposed at least...
+What context do E,Pat,S,T desugaring depend on? Pass it to a desugar function each and apply it everywhere.
+g=>*g (E,Pat): globals
+Default
+Defun
+Instance
+TySig
+KindSig
+TySyn
+Import
+--Are irrelevant; all that remains is global and data
+Disallow nested fallible constructor patterns in case; disallow any in let. Check that later, but it
+means BoxedCon patterns are easy to desugar.
+Cons x xs as top-level case => ImplCons ptr where let StructCons x xs = *ptr is added to the rhs
+MultiChoiceCon args = e => ecase e of MultiChoiceCon args -> ...
+Do pats containing es mess with &_ analysis?
+&_ is currently a massive PITA which significantly complicates the language... if I required every field to
+be at a particular offset and just had it inspect its argument expression it would be a lot simpler.
+Fields can also be infallible (require .tagDT is the only shared field, .field from a constructor which
+doesn't have it is UB).
+It just needs to be able to handle e ::= *E | e.field | e!ix (ptr[ix] is already desugared out)
+Note type inference doesn't need to care about eval order or anything like that.
+Getting &x in Cons x xs' = xs then requires &(xs.hd)
+pat++ must still have its exprs lifted out: let ... in pat' = inc e. No, just add them to E and TC that...
+the complexity can be left to codegen after mono.
+What about side-effecting exprs in case patterns?
+Requiring case is one-level (and all args are infallible) means I can avoid evaluating the exprs in
+failing cases... but again, TC doesn't need to care.
+
+OK, remaining E/S/P desugaring:
+BoxedCon (E,P) --context: data
+ I could defer desugaring BoxedCon patterns until after TC now that I don't need to type &x;
+ keep the BoxedCon tysig. But then I need to remember the BDTs...
+ Then I can defer desugaring BoxedCon exprs as well.
+ Note desugaring to ImplCon let must be done alongside converting all pats in TopLevelCon ps to locals first.
+bdt.field => *(bdt.thePtrsFieldName).fieldCon (E,P) --context: data
+g => *g --context: globals
+--All adaptation for &_ is now superfluous
+"string" => g :: Array len Byte
+Struct a b c => hetlist (T/E)
+(a,b,c) => word-padded hetlist (T/E)
+Array a b c => Array constructor (E)
+--REMOVED: Con {...}, Con :$ => Con [...] --so I still need let
+for => while
+I can avoid introducing lets by allowing Con {...} in E and adding a case for it in TC... that lets me
+remove Con [...]
+I can keep TC simple but boilerplatey by TCing a high-level repr... that keeps codegen-level details which
+benefit from having full knowledge of the types out of my hair.
+But that's not what GHC does; it TC's a carefully chosen core and desugars to it first! So where does the
+tension come from - a design error or lackluster desugaring on my part or something inherent in the
+language's runtime behavior vs type system?
+No matter... now I can do it all in P.E -> E in one pass.
 
 **************
 
