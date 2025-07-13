@@ -24,13 +24,19 @@ type CoPtr = Ptr Code;
 
 type BytePtr r = Ptr r Byte;
 
-//Datatypes; tuples desugar into Pair and Unit.
-//TODO add padding metadata to make tuples behave correctly at runtime...
+//Datatypes; tuples desugar into hetlists of Pair and Unit.
+//Struct a b c desugars into a hetlist of Append and Unit
 data Unit = {Unit};
-data Pair a b = {Pair {fst: a, snd: b}};
+//data Pair a b = {Pair {fst: a, snd: b}};
+//Bytestring append without padding
+data Append a b = {Append a b};
+type Pair a b = Append (WordPad a) (WordPad b);
 data Bool = {False;True};
 data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
 data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
+
+//Treated specially by the compiler; always word-padded
+data WordPad a = {WordPad a};
 
 //The proxy types
 data P a = {P};

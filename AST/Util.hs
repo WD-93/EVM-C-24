@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module AST.Util where
 
 import AST.DTs
@@ -8,13 +9,13 @@ import AST.DTs
 rollApps :: E -> (E,[E])
 rollApps = roll (\case f :$ x -> Just (f,x)
                        _ -> Nothing)
-unrollApps :: (E,[E]) -> E
+unrollApps :: E -> [E] -> E
 unrollApps = foldl (:$)
 
 rollTyApps :: T -> (T,[T])
 rollTyApps = roll (\case f :$$ x -> Just (f,x)
                          _ -> Nothing)
-unrollTyApps :: (T,[T]) -> T
+unrollTyApps :: T -> [T] -> T
 unrollTyApps = foldl (:$$)
 
 --Generic roll and unroll

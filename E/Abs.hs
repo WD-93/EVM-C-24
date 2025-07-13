@@ -25,6 +25,7 @@ data D
     | Import ModuleName
     | Global GlobalRegion VarBind
     | Data ConArgs DataRHS
+    | Tag ConArgs T [ConTag]
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -49,6 +50,9 @@ data DCA = DCANil UIdent | DCACons DCA T
   deriving (Eq, Ord, Show, Read)
 
 data RecordField = RF Ident T
+  deriving (Eq, Ord, Show, Read)
+
+data ConTag = ConTag UIdent E
   deriving (Eq, Ord, Show, Read)
 
 data S

@@ -25,7 +25,6 @@ data D
     | Import ModuleName
     | Global GlobalRegion VarBind
     | Data ConArgs DataRHS
-    | StaticData Ident E
   deriving (Eq, Ord, Show, Read)
 
 data ConArgs = CANil UIdent | CACons ConArgs Ident
@@ -34,7 +33,7 @@ data ConArgs = CANil UIdent | CACons ConArgs Ident
 data ModuleName = MNil UIdent | MCons UIdent ModuleName
   deriving (Eq, Ord, Show, Read)
 
-data GlobalRegion = Memory | Storage | TStorage
+data GlobalRegion = Memory | Storage | TStorage | Code
   deriving (Eq, Ord, Show, Read)
 
 data DataRHS = Boxed UnboxedRHS Ident | Unboxed UnboxedRHS

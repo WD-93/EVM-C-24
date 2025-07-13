@@ -60,7 +60,11 @@ DCACons. DCA ::= DCA T1;
 DCRecord. DataCon ::= UIdent "{" [RecordField] "}";
 separator RecordField ","; --Con {} is equivalent to Con
 RF. RecordField ::= Ident ":" T;
---StaticData. D ::= Ident ":=" E;
+--Specify the tag type and values of a given datatype
+--tag TyCon params = t where {Con: e, ...}
+Tag. D ::= "tag" ConArgs "=" T "where" "{" [ConTag] "}";
+separator ConTag ","; --because its record-like
+ConTag. ConTag ::= UIdent ":" E;
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";

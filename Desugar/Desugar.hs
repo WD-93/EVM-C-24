@@ -11,6 +11,10 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
+import AST.Util (rollTyApps)
+import Desugar.DTs
+import Desugar.T (desugarT)
+import Desugar.Datatypes (processDTs)
 --AST -> AST
 
 import Data.Map (Map(..))
@@ -27,57 +31,9 @@ import Data.Maybe (fromMaybe)
 
 import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 
---Boilerplate instances... todo recommend BNFC does this
-deriving instance Data P.E
-deriving instance Data P.S
-deriving instance Data P.CASE
-deriving instance Data P.VarBind
-deriving instance Data P.Ident
-deriving instance Data P.HexInteger
-deriving instance Data P.EField
-deriving instance Data UIdent
-deriving instance Data P.AOp
-deriving instance Data P.T
-
-data DError = DuplicateDefun Name
-            | BadDOrdering [P.D]
-            | BadOpInType String
-            | BadEInType P.E --catch-all error for desugarT
-            | BadEInPat P.E --same for desugarP
-            | BadDoInDesugarS [P.S]
-            | AssignIsNotAnE P.E P.E --for now
-            | DuplicateDeclsForName Name
-            -- | CoerceMixedWithOps [Name]
-            | GenericDError String
-            -- | BitPaddingDeprecated
-            --TODO remove bit padding from syntax and compiler
-            | NegativeLengthArray Name Integer
-            | TooLongArray Name Integer
-            | StandaloneConstructorName String
-            | DuplicateConstructors Name
-            | BadPatternInCase P.E
-            -- | MoreThan256EnumNamesInOneEnum
-            -- ^A helpful message on the off chance whoever triggers it isn't
-            --fuzzing for vulns
-            -- | DuplicateEnumName Name Name
-            | WildcardInExprContext
-            | MalformedPattern P.E
-            -- | DuplicateTySigs Name
-            -- | DuplicateKindSigs Name
-            | UnresolvedImport P.ModuleName
-            -- | DuplicateTyCons Name
-            | NonByteChar String
-            | DuplicateFieldNames Name
-            -- | DuplicateDefaults Name
-            --TODO naming convention: Duplicate<singular>, not plural
-            -- | DuplicateGlobal Name
-            --Duplicate "Decl constructor" nm
-            | Duplicate String Name
-            | DefunInstanceOverlap (Set Name)
-  deriving (Eq,Ord,Read,Show)
-
 --Declarations are order-independent, modulo the static names allocated to
 --strings (which should be irrelevant to compilation if it's successful).
+{-
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
   case runState (runExceptT $ mapM_ desugarD ds) emptyModule of
@@ -93,13 +49,14 @@ emptyModule =
   tysyns = M.empty,
   --static = M.empty,
   globals = M.empty,
-  datatypes = M.empty,
-  datatypeRegions = M.empty,
-  constructors = M.empty,
-  fieldTypes = M.empty,
-  fieldSpecs = M.empty,
+  dtsInfo = M.empty,
+  --datatypeRegions = M.empty,
+  --constructors = M.empty,
+  --fieldTypes = M.empty,
+  --fieldSpecs = M.empty,
   anonStaticCtr = 0
   }
+-}
 
 type De = ExceptT DError (State Module)
 
@@ -127,7 +84,7 @@ groupByCon :: Show a => [a] -> Map String [a]
 groupByCon as =
   let kas = [(head $ words $ show a, a) | a <- as]
       empty = M.fromSet (const []) $ S.fromList $ words
-        "Default Defun Instance TySig KindSig TySyn Import Global Data"
+        "Default Defun Instance TySig KindSig TySyn Import Global Data Tag"
   in foldr (\(k,a) m -> M.adjust (a:) k m) empty kas
 
 --New desugar algo:
@@ -141,32 +98,58 @@ groupByCon as =
 desugar2 :: P.M -> Either DError Module
 desugar2 (P.Module ds) = do
   let nm2d = groupByCon ds
-  --Group all decl types by key
-  --default
-  dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm,t)) nm2d
-  --defun
-  ds <- groupDefuns nm2d
-  --instance
-  let is = groupInstances $ nm2d M.! "Instance"
-  dis <- combineDefsAndInstances ds is
-  --tysig
-  tsigs <- groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm,t)) nm2d
-  --kindsig
-  ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm,t)) nm2d
-  --tysyn
-  tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
-                              let (nm,args) = desugarConArgs ca
-                              in (nm,(args,t))) nm2d
+  --Four types need be desugared: STEP (S, T, E, Pat)
+  --T can be desugared independently, but E desugaring relies on context
+  --(and consequently S and Pat which contain Es do as well).
+  --The context required is:
+  --1) the global set (used for g=>*g in P,E)
+  --2) boxed field status (used for bdt.field => *(...).fieldStructCon in E)
+  --3) a string numbering m (used for "str" => *($string++show m["str"]))
+  
   --globals
   gs <- groupGlobals nm2d
   --data
   dts <- groupEx "Data" (\(P.Data ca rhs) ->
                            let (nm,args) = desugarConArgs ca
                            in (nm,(args,rhs))) nm2d
-  dtsFull <- processDTs dts
+  tags <- groupEx "Tag" (\(P.Tag ca pt contags) ->
+                           let (nm,args) = desugarConArgs ca
+                               t = desugarT pt
+                               con2e = M.fromList $
+                                 map (\(P.ConTag (UIdent con) pe) ->
+                                        (con,pe)) contags
+                           in (nm,(args,t,con2e)))  nm2d
+  dtsFull <- processDTs dts tags --Now we have 1)
   
-  let gset = M.keysSet gs
+  let gset = M.keysSet gs --Now we have 2)
       fset = M.keysSet dis
+  --To get the string numbering we need to collect the set of all string
+  --literals in the source. That can be done cleanly by running an everything
+  --on nm2d (which contains every decl).
+  let strings = everything S.union (mkQ $ \case
+                                       P.String str -> S.singleton str
+                                       _ -> S.empty) nm2d
+      string2n = M.fromList $ zip (S.toList strings) [1..]
+  --Now we have 3) and can define the SEP desugaring functions to use
+      
+  --Group all decl types by key
+  --default
+  dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm, desugarT t))
+    nm2d
+  --defun
+  ds <- groupDefuns nm2d
+  --instance
+  let is = groupInstances $ nm2d M.! "Instance"
+  dis <- combineDefsAndInstances ds is
+  --tysig
+  tsigs <- groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
+  --kindsig
+  ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
+    nm2d
+  --tysyn
+  tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
+                              let (nm,args) = desugarConArgs ca
+                              in (nm,(args, desugarT t))) nm2d
   --Require:
   --No overlap between funs and globals
   --No overlap between datatypes, tysyns and kinds
@@ -180,6 +163,7 @@ desugar2 (P.Module ds) = do
   let gs' = g2starg gset gs
       ds' = g2starg gset ds
   error "todo"
+  
 --Desugars global g to *g (where g is now considered a pointer)
 g2starg :: Data d => Set Name -> d -> d
 g2starg gset = everywhere $ mkT $ \case
@@ -277,60 +261,6 @@ collectVarBind :: P.VarBind -> (Name, Maybe P.E)
 collectVarBind = \case
   P.JustVar (Ident v) -> (v, Nothing)
   P.VarIs (Ident v) e -> (v, Just e)
-
-
---Boxed datatype data TyCon params = Con1 args | ... region r =>
---data TyCon params = ImplCon1 (Ptr r (StructCon1 args)) | ...
---tag TyCon params = () where {ImplCon1: (); ...}
---data StructCon1 params = StructCon1 args
---tag StructCon1 params = TagTyCon where {StructCon1: TagCon1}
---If a boxed datatype is given a tag declaration, it's applied to the
---StructConN's in place of TagTyCon.
---End result: boxed datatypes eliminated.
-
---E: Con1 args => ImplCon1 (allocValue (StructCon1 args))
---P: case x of Con1 args -> ... =>
---case x of ImplCon1 ptr -> let StructCon1 args = *ptr in ...
---bdt.field =>
---case bdt of ImplCon p -> (*p).fieldCon --for each con containing field
---I can eliminate .field, but what about .field=?
---I won't eliminate either, it's simpler to deal with the fallout of fields
---shared between constructors during monomorphic compilation.
--- .tagDT is special in that it's to the left of the padding...
---It should be accessible to the user to get and set, so might as well keep
---using the field syntax + naming convention.
-
---Add tagDT field to each con if tag type and values are not specified
---Repr decl:
---tag TyCon params = t where {Con: e}
---It's (UInt 0) if DT is struct-like. Allow 0-sized ints rather than having
---a no-tag exception for ()-like datatypes!
---It's UInt <log256 con count> if DT is union-like
---Note ints shouldn't have any fields, ensuring they're the leaves of the repr.
---Otherwise it's TagDT; allocate data TagDT = TagCon1 | ..., a union-like
---datatype.
---Associate each constructor with a static value.
---Convert each Con ts => Con {fieldCon<N>: t}
---Require:
---No duplicate constructors
---No duplicate params within same DT
---No fields of distinct type within same DT
---No duplicate fields within a constructor
---No fields shared between two DTs
---Tag decls specify every constructor
-processDTs :: Map Name ([Name],P.DataRHS) ->
-              Either DError (Map Name --TyCon
-                             ([Name], --params
-                              P.T, --tag type
-                              [(Name, --Con
-                                P.E, --its tag
-                                [(Name,P.T)] --{...,field: t,...}
-                               )]),
-                              Map Name P.T, --fields including tag<DT>
-                              Map Name Name --the tags
-                              )
-processDTs _ = undefined
-processDT _ = undefined
   
 desugarRegion :: P.GlobalRegion -> Region
 desugarRegion = read . take 2 . show
@@ -576,13 +506,16 @@ desugarConRHS (tycon,r:params) cons =
        ) $ zip [0..] cons
 -}
 
+{-
 --Adds the info of a new constructor to the constructors map; throws an error
 --if there's a duplicate. Constructors do not conflict with tysyns or tycons.
 addConstructor :: Name -> T -> De ()
 addConstructor con t = do
   checkForDuplicates con
   error "todo"
+-}
 
+{-
 --The check for duplicate names for dynamic values; datatypes and tysyns have
 --their own namespace.
 --Potential opt: split check for lowercase names and constructors
@@ -597,6 +530,7 @@ checkForDuplicates nm = do
                M.keysSet $ constructors m
               ])
     $ DuplicateDeclsForName nm
+-}
 --Kind signatures render hardcoded prim tycons unnecessary!
 --But they also mean datatypes may be mentioned twice: once in a kind
 --signature and once in a data decl.
@@ -611,17 +545,7 @@ checkForDupTyCon nm = error "todo remove" {-do
               ])
     $ DuplicateTyCons nm-}
 
-desugarT :: P.T -> T
-desugarT = go
-  where go = \case
-          P.TVar (Ident nm) -> TyVar nm
-          P.TNat n -> TyNat n
-          P.TCon (UIdent nm) -> TyCon nm
-          P.TEmptyTup -> TyCon "Unit"
-          P.TTup t ts -> tupleT $ map go $ t:ts
-          P.TApp tf tx -> go tf :$$ go tx
-          P.TArray len a -> Array (go len) (go a)
-          P.TArrow a b -> go a :-> go b
+
 {-
 --The syntax ensures ordering: [wordpad] [wordalign] (fnm: t | t)
 desugarFieldT :: P.TField -> Field T
@@ -714,9 +638,8 @@ desugarCase (P.C pe ps) = do
   s <- desugarS ps
   return (p,s)
 
---desugarE needs to be in De because strings are translated to
---(&sv :: Ptr Code Byte[len]), where sv := a fixed-size byte array
-desugarE :: P.E -> De E
+--Can desugarE throw any errors?
+desugarE :: DInfo -> P.E -> E
 desugarE = error "todo"
 {-
 desugarE = go

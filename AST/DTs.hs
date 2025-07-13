@@ -39,23 +39,38 @@ data E = EInteger Integer
        | TyApp Name [T]
        --Since functions are only defined at the top level (there are no
        --letrecs, lets or lambdas), I do not need TyLam Name E
-       | Let (Pat,E) E
-       --Essential to decomposition of assignments to complex patterns prior
-       --to HM
+       -- | Let (Pat,E) E
        | CaseE E [(Pat,E)]
-       {-
        --Making the lhs a Pat allows incremental decomposition of patterns
        | OPAssign Pat Op E
        | PPPre Pat
        | PPPost Pat
        | MMPre Pat
        | MMPost Pat
-       -}
        -- ++ and -- are distinct from += because I will restrict + to
        --(a,a) -> a and use a separate indexPtr function for pointer
        --"addition". ++ and -- use inc/dec instead of +1/-1 to accomodate that.
-       --Note order matters. Unspecified fields are null.
-       | Con Name [E] --Con apps and ConRecord desugar to this
+
+       --Without lets in E, desugaring of Con {field: e} must be deferred
+       --until after type inference and monomorphization.
+       --Note eval order matters; unspecified fields are null()
+       | ConRecord Name (Maybe [T]) [(Name,E)]
+       --I'm adding back field access Dot in order to avoid having to
+       --distinguish between ordinary function applications and .field
+       --Note it needs a type annotation.
+       | Dot E (Maybe [T]) Name
+  deriving (Eq,Ord,Read,Show,Data)
+--Isomorphic to P.AOp less Eq, which becomes :=
+data Op = Plus
+        | Minus
+        | Mul
+        | Div
+        | Mod
+        | Shl
+        | Shr
+        | And
+        | Xor
+        | Or
   deriving (Eq,Ord,Read,Show,Data)
 
 --Tuples are word-padded structs with default field names;
@@ -75,7 +90,7 @@ n `padWith` p = n `roundedUpMod` pad2Sz p
 
 tupleE :: [E] -> E
 tupleE [] = Var "Unit"
-tupleE (e:es) = Var "Pair" :$ e :$ tupleE es
+tupleE (e:es) = Var "Append" :$ (Var "WordPad" :$ e) :$ tupleE es
 tupleF :: [e] -> [Field e]
 tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type
@@ -315,45 +330,69 @@ data Module = Module {
   --Note identical duplicate instances will be ignored.
   defuns :: Map Name (Either (Pat,S) (Set (T,Pat,S))),
   tysyns :: Syns,
-  --the T is a region: memory, calldata, returndata, code, storage, tstorage
   --A type signature is no longer required; note globals are monomorphic.
   --The relative ordering of globals is arbitrary and users should not rely on
-  --it.
+  --it (TODO add layout region nms decl to fix it).
   --E is restricted to static exprs (f, &global, k, -k,
   --UnboxedCon staticArgs, BoxedCon staticArgs with region Code)
-  --Strings become &g where code g = a byte array.
+  --Strings become g where code g = a byte array.
   globals :: Map Name (Region,Maybe E),
-  --Structs and enums have been merged into unboxed datatypes.
-  --For both boxed and unboxed dts, datatypes with only one constructor can
-  --have a 0-size tag; the rest are 1B.
-  datatypes :: Map Name --TyCon
-    ([Name], --params (0 or more, all Type)
-     [ConDecl]), --Primitive datatypes have 0 constructors
-  --Only boxed datatypes have entries; must be one of the params
-  --Relevant to type inference: calldatalist.hd = x should fail
-  datatypeRegions :: Map Name Name,
-  --Tag info isn't needed for the TC stage, so it's added later.
+  --All the datatype information merged into a single field; parameterized by
+  --E because data and tag decls are desugared into DTInfo P.E before E
+  --desugaring can be applied.
+  dtsInfo :: DTsInfo E,
   --Constructors are not given a function type because they're not functions.
   --When compiling, underapplied constructors
-  --are treated as an error in order to simplify the language
-  --(if the programmer wishes to partially apply a constructor they may do
-  --the wizardry themselves).
-  --constructors[Cons] = ([(hd,a),(tl,List a)],List a)
-  constructors :: Map Name ([T],T),
+  --are treated as an error in order to simplify the language.
   --Fields have their own namespace; during type inference e.foo becomes
   --Var ".foo" :$ e.
-  --Each field has a type, constructor they deconstruct and index to the
-  --constructor argument they return.
-  fieldTypes :: Map Name T,
-  fieldSpecs :: Map Name (Name,Int),
+
   --A counter for new names for lifting strings to static byte array decls,
   --inserted as a hack to avoid having to change the desugar monad's type.
   anonStaticCtr :: Int
   }
   deriving (Eq,Ord,Read,Show,Data)
+--All the info E desugaring and type checking need about datatypes.
+--TyCon => params, tag type, canonical cons
+--Con => boxed, TyCon, tag value, args: [field: T]
+--field => boxed, Con
+--Cons is ultimately desugared to ImplCons, so it doesn't belong in the
+--constructor list of List.
+--Relevant desugaring:
+--e.f | (boxed,Con) <- info f =>
+--(*e.fieldCon1).fStructCon
+--Cons args => ImplCons (allocValue (StructCons args))
+--Cons {f: e} => ImplCons (allocValue (StructCons {fStructCons: e}))
+data DTsInfo e = DTsInfo {
+  datatypes :: Map Name DTInfo,
+  conInfo :: Map Name (ConInfo e),
+  fieldInfo :: Map Name FieldInfo
+                       }
+  deriving (Eq,Ord,Read,Show,Data)
+data DTInfo = DTInfo {
+  dtParams :: [Name],
+  dtTagType :: T,
+  dtCanonicalCons :: [Name]
+                     }
+  deriving (Eq,Ord,Read,Show,Data)
+data ConInfo e = ConInfo {
+  conBoxed :: Bool,        --boxed status
+  conParent ::Name,        --parent datatype
+  conTag :: e,             --tag value
+  conFields :: [(Name,T)], --fields
+  conRHS :: T              --rhs = TyCon params (cached)
+                    }
+  deriving (Eq,Ord,Read,Show,Data)
+--Issue: all constructors of DT have a tagDT field!
+--A tagDT is never boxed...
+data FieldInfo = IsTag Name --The parent tycon
+               | IsNormal Bool Name --boxed status, parent constructor
+  deriving (Eq,Ord,Read,Show,Data)
 type Syns = Map Name ([Name],T)
---todo add pad/alignment and tag value info
+
+--This is still required in Desugar.Desugar...
 type ConDecl = (Name,[(Name,T)])
+
 --Unfortunate name conflict with the T patterns.
 --Used to make bad global regions non-representable.
 --It's the first two letters so I can convert it using read . take 2 . show

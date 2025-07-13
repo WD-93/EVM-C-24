@@ -875,6 +875,16 @@ That would allow closures to be unboxed; mkClosure (f,o) ~ o:f in Lua.
 What about a lazy transformation?
 
 Problem for sizeofP :: P a -> PN sz: sz needs to be restricted during type inference.
+Ad hoc polymorphism introduces new and useful constraints during monomorphization...
+If I deferred defaulting of tyvars not bound by the inferred tysig until mono... then I could implement
+functions such as addNat : (PN a, PN b) -> PN c and requireLT32 : PN a -> ().
+That causes new unification, but bound tyvars must be rigid at that point.
+
+plus : (Int s l, Int s l) -> Int s l;
+plus (a,b) := coerceInt (add (coerceInt a :: Word, coerceInt b :: Word))
+coerceInt :: Int s1 l1 -> Int s2 l2
+--Using isSigned :: Int s l -> Bool, inlining it and DCEing the if, I can define it as a single function.
+--Also need requireLT32.
 
 The context-dependent desugaring, where I must jump from the CST to a narrow AST, is a big problem...
 Patterns don't need to be decomposed at least...
@@ -912,13 +922,14 @@ BoxedCon (E,P) --context: data
  keep the BoxedCon tysig. But then I need to remember the BDTs...
  Then I can defer desugaring BoxedCon exprs as well.
  Note desugaring to ImplCon let must be done alongside converting all pats in TopLevelCon ps to locals first.
-bdt.field => *(bdt.thePtrsFieldName).fieldCon (E,P) --context: data
+bdt.f => *(bdt.fieldImplCon1).fStructCon (E,P) --context: data
+ Need to map boxed fields to Con
 g => *g --context: globals
 --All adaptation for &_ is now superfluous
-"string" => g :: Array len Byte
+"string" => g :: Array len Byte --modifies globals
 Struct a b c => hetlist (T/E)
-(a,b,c) => word-padded hetlist (T/E)
-Array a b c => Array constructor (E)
+(a,b,c) => word-padded hetlist (PET)
+Array a b c => Array constructor (PE)
 --REMOVED: Con {...}, Con :$ => Con [...] --so I still need let
 for => while
 I can avoid introducing lets by allowing Con {...} in E and adding a case for it in TC... that lets me
@@ -929,6 +940,53 @@ But that's not what GHC does; it TC's a carefully chosen core and desugars to it
 tension come from - a design error or lackluster desugaring on my part or something inherent in the
 language's runtime behavior vs type system?
 No matter... now I can do it all in P.E -> E in one pass.
+First: add ImplCons, StructCons, TagCons to DTs. Add tagDT, anon fields.
+Then desugar STEP in one pass.
+Note T doesn't require any context to desugar.
+ Its sugar:
+ Struct a b c, (a,b,c)
+
+Useful function: mallocCopy :: Ptr r a -> Ptr Memory a
+
+Why not just use Struct for StructCons? Because the latter needs a tag.
+
+Type-checking tags: first perform a HM check that the tag expr fits the given (rigid) tag type.
+Then during mono, map monotypes to tag values. The tag expr never interacts with the external types; it may
+only either accept or reject a monotype.
+With non-monomorphic tags, isets defined over multiple regions become viable...
+
+HM, instantiation and type-level compute primitives: do they combine into a Turing complete system?
+Must I integrate HM and instantiation or can I do them in alternating passes?
+How to trigger refinement? If instances are guaranteed to be mutex you can use a trie, but that restricts the
+kind of type families you can build.
+Closed type families can use ordering of clauses to determine which one applies...
+How are tyfam functions (which you need to call dynamically) weaker than type-level tyfams?
+How to expose constraints that break HM after the fact?
+
+Since I'm not messing around with lets in desugar anymore, I can use string ordering to number the strings:
+first collect the strings into a set, then flip zip [1..], M.fromList, then replace "str" with
+*($string ++ m["str"]).
+
+Typing p++: since it must support both Int and Ptr, its HM type must be a->a.
+I can check whether inc : a -> a is supported during the monomorphization phase, even if I don't expand lets
+at that point.
+
+Datatypes are desugared... now I have the info I need to desugar SEP.
+Since multiple types need to be converted at once, roll mutually recursive funs manually instead of using
+everywhere.
+Globals and datatypes should be processed first, then their Es should be desugared.
+Then the remaining decls can be fully desugared; there's no dataflow in the other direction, or between other
+decl types.
+Except for strings!
+State-dependent desugaring: g=>*g, str=>*($string++m[str]), e.bdtField => *(...).bdtFieldStructCon
+
+For writeup: if you want a concrete example of why DSLs matter, compare the verbosity of the intended expr
+in a compiler with that of its AST expression in a general-purpose language.
+
+Next step: desugar(S,P), put it all together
+2) patch TC
+3) mono and FIR transformation --all opts go here
+4) stack
 
 **************
 

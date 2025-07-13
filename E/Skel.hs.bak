@@ -35,7 +35,6 @@ transD x = case x of
   Import modulename -> failure x
   Global globalregion varbind -> failure x
   Data conargs datarhs -> failure x
-  StaticData ident e -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -49,6 +48,7 @@ transGlobalRegion x = case x of
   Memory -> failure x
   Storage -> failure x
   TStorage -> failure x
+  Code -> failure x
 transDataRHS :: DataRHS -> Result
 transDataRHS x = case x of
   Boxed unboxedrhs ident -> failure x

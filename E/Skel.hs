@@ -35,6 +35,7 @@ transD x = case x of
   Import modulename -> failure x
   Global globalregion varbind -> failure x
   Data conargs datarhs -> failure x
+  Tag conargs t contags -> failure x
 transConArgs :: ConArgs -> Result
 transConArgs x = case x of
   CANil uident -> failure x
@@ -67,6 +68,9 @@ transDCA x = case x of
 transRecordField :: RecordField -> Result
 transRecordField x = case x of
   RF ident t -> failure x
+transConTag :: ConTag -> Result
+transConTag x = case x of
+  ConTag uident e -> failure x
 transS :: S -> Result
 transS x = case x of
   SE e -> failure x
