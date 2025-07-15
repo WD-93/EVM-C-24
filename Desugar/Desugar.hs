@@ -15,6 +15,7 @@ import AST.Util (rollTyApps)
 import Desugar.DTs
 import Desugar.T (desugarT)
 import Desugar.Datatypes (processDTs)
+import Desugar.SEP (desugarS,desugarE,desugarP)
 --AST -> AST
 
 import Data.Map (Map(..))
@@ -58,7 +59,7 @@ emptyModule =
   }
 -}
 
-type De = ExceptT DError (State Module)
+--type De = ExceptT DError (State Module)
 
 --Grouping declarations by constructor first leads to cleaner code, as I can
 --get an overview of the handling for each decl type in one place.
@@ -122,34 +123,60 @@ desugar2 (P.Module ds) = do
   dtsFull <- processDTs dts tags --Now we have 1)
   
   let gset = M.keysSet gs --Now we have 2)
-      fset = M.keysSet dis
+      --fset = M.keysSet dis
   --To get the string numbering we need to collect the set of all string
   --literals in the source. That can be done cleanly by running an everything
   --on nm2d (which contains every decl).
-  let strings = everything S.union (mkQ $ \case
+  let strings :: Set String
+      strings = everything S.union (mkQ S.empty $ \case
                                        P.String str -> S.singleton str
                                        _ -> S.empty) nm2d
       string2n = M.fromList $ zip (S.toList strings) [1..]
-  --Now we have 3) and can define the SEP desugaring functions to use
-      
-  --Group all decl types by key
+      --Now we have 3) and can define the DInfo
+      --bdt.tagBDT is always unit; tag fields are never boxed.
+      field2bcon = M.map (\(IsNormal _ bcon) -> bcon) $
+                   M.filter (\case IsNormal b _ -> b
+                                   _ -> False) $
+                   fieldInfo dtsFull
+      di = (gset,field2bcon,string2n)
+  dtsFinal <- sepDTs di dtsFull
+  gsFinal <- sepGlobals di gs
   --default
   dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm, desugarT t))
     nm2d
-  --defun
-  ds <- groupDefuns nm2d
-  --instance
-  let is = groupInstances $ nm2d M.! "Instance"
-  dis <- combineDefsAndInstances ds is
   --tysig
   tsigs <- groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
   --kindsig
+  --TyCon : Kind must be sorted out and moved to sorts
   ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
     nm2d
+  let ksigsFinal = M.filter (/=TyCon "Kind") ksigs
+  let ks = M.keysSet $ M.filter (==TyCon "Kind") ksigs
   --tysyn
   tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
                               let (nm,args) = desugarConArgs ca
                               in (nm,(args, desugarT t))) nm2d
+  --defun
+  ds <- groupDefuns di nm2d
+  --instance
+  is <- groupInstances di $ nm2d M.! "Instance"
+  defsAndInstances <- combineDefsAndInstances ds is
+  return $ Module {dtsInfo = dtsFinal,
+                   globals = gsFinal,
+                   --the trivial ones
+                   defaults = dflts,
+                   tysigs = tsigs,
+                   kindsigs = ksigsFinal,
+                   kinds = ks,
+                   tysyns = tsyns,
+                   defuns = defsAndInstances
+                   }
+  {-
+  --Group all decl types by key
+  
+  
+  
+  
   --Require:
   --No overlap between funs and globals
   --No overlap between datatypes, tysyns and kinds
@@ -163,6 +190,29 @@ desugar2 (P.Module ds) = do
   let gs' = g2starg gset gs
       ds' = g2starg gset ds
   error "todo"
+-}
+
+--sep as in S,E,Pat, not separation
+--Only conInfo needs to change since that's where the tags are
+sepDTs :: DInfo -> DTsInfo P.E -> Either DError (DTsInfo E)
+sepDTs di dti = do
+  ci <- M.fromList <$> (mapM sepConInfo $ M.toList $ conInfo dti)
+  return $ DTsInfo {datatypes = datatypes dti,
+                    fieldInfo = fieldInfo dti,
+                    conInfo = ci}
+  where sepConInfo (con, ConInfo b p tagPE cfs cr) = do
+          tagE <- desugarE di tagPE
+          return (con, ConInfo b p tagE cfs cr)
+sepGlobals :: DInfo -> Map Name (Region, Maybe P.E) ->
+  Either DError (Map Name (Region, Maybe E))
+sepGlobals di nm2rmpe = do
+  let nm_rmpe = M.toList nm2rmpe
+  nmre <- mapM (\(nm,(r,mpe)) -> do
+                   e <- case mpe of
+                          Just pe -> Just <$> desugarE di pe
+                          Nothing -> return Nothing
+                   return (nm,(r,e))) nm_rmpe
+  return $ M.fromList nmre
   
 --Desugars global g to *g (where g is now considered a pointer)
 g2starg :: Data d => Set Name -> d -> d
@@ -228,27 +278,39 @@ groupGlobals = groupEx "Global " $
         r = desugarRegion gr
     in (g,(r,me))
 --groupDefuns :: [P.D] -> Either Name (Map Name (P.E,P.S))
-groupDefuns = groupEx "Defun" $
-  \(P.Defun (Ident f) pe ps) -> (f,(pe,ps))
+groupDefuns di x = do
+  nm2peps <- groupEx "Defun" 
+    (\(P.Defun (Ident f) pe ps) -> (f,(pe,ps))) x
+  let nmpeps = M.toList nm2peps
+  M.fromList <$> mapM (\(f,(pe,ps)) -> do
+                          p <- desugarP di pe
+                          s <- desugarS di ps
+                          return (f,(p,s))) nmpeps
 
 --Instances are keyed by function name; it's fine for there to be multiple
 --instances for a single name, they're just collected into a set.
---groupInstances is pure because it can't fail.
-groupInstances :: [P.D] -> Map Name (Set (P.T,P.E,P.S))
-groupInstances ds =
+--groupInstances is pure no longer; because it desugars immediately it can
+--fail.
+groupInstances :: DInfo -> [P.D] -> Either DError (Map Name (Set (T,Pat,S)))
+groupInstances di ds =
   let kelems = [(fnm,(t,e,s)) | P.Instance (Ident fnm) t e s <- ds]
-  in foldr (\(k,elem) m ->
-              case M.lookup k m of
-                Nothing -> M.insert k (S.singleton elem) m
-                Just elems -> M.insert k (S.insert elem elems) m)
+  in foldM (\m (fnm,(pt,pe,ps)) -> do 
+              let t = desugarT pt
+              p <- desugarP di pe
+              s <- desugarS di ps
+              return $ putElem fnm (t,p,s) m)
      M.empty kelems
+  where putElem k elem m =
+          case M.lookup k m of
+            Nothing -> M.insert k (S.singleton elem) m
+            Just elems -> M.insert k (S.insert elem elems) m
 --Combine ordinary defuns and instances into a single map; they're mutex, so
 --complain if their fnames intersect.
-combineDefsAndInstances :: Map Name (P.E,P.S) ->
-                           Map Name (Set (P.T,P.E,P.S)) ->
+combineDefsAndInstances :: Map Name (Pat,S) ->
+                           Map Name (Set (T,Pat,S)) ->
                            Either DError (Map Name
-                                         (Either (P.E,P.S)
-                                          (Set (P.T,P.E,P.S))))
+                                         (Either (Pat,S)
+                                          (Set (T,Pat,S))))
 combineDefsAndInstances ds is = do
   let fds = M.keysSet ds
       fis = M.keysSet is
@@ -265,8 +327,8 @@ collectVarBind = \case
 desugarRegion :: P.GlobalRegion -> Region
 desugarRegion = read . take 2 . show
   
-desugarD :: P.D -> De ()
-desugarD = error "to remove"
+--desugarD :: P.D -> De ()
+--desugarD = error "to remove"
 {-
 desugarD = \case
   P.Defun (Ident f) lhs ps -> do
@@ -403,6 +465,7 @@ desugarDCA = \case
 desugarRecordField :: P.RecordField -> (Name,T)
 desugarRecordField (P.RF (Ident nm) pt) = (nm,desugarT pt)
 
+{-
 addSig :: Name -> P.T ->
           (Module -> Map Name T) ->
           (Map Name T -> Module -> Module) ->
@@ -414,6 +477,7 @@ addSig nm pt getField setField err = do
     complainIf (M.member nm map)
       $ err nm
     modify $ setField $ M.insert nm t map
+-}
 {-
   P.Data lhs rhs -> do
   --Duplicate params, duplicate constructors and free tyvars in arg types to
@@ -536,6 +600,7 @@ checkForDuplicates nm = do
 --signature and once in a data decl.
 --So when desugaring a kind signature, one must check the kind signature map
 --but not this function.
+{-
 checkForDupTyCon :: Name -> De ()
 checkForDupTyCon nm = error "todo remove" {-do
   m <- get
@@ -544,7 +609,7 @@ checkForDupTyCon nm = error "todo remove" {-do
                M.keysSet $ datatypes m
               ])
     $ DuplicateTyCons nm-}
-
+-}
 
 {-
 --The syntax ensures ordering: [wordpad] [wordalign] (fnm: t | t)
@@ -566,6 +631,7 @@ desugarFieldT = go1
 p ::=
 _, x, *e, p.field, p!e, e[e], Con args, Con {field: p}
 -}
+{-
 desugarP :: P.E -> De Pat
 --desugarP = desugarE
 desugarP = go
@@ -606,7 +672,9 @@ desugarP = go
 
 desugarFieldP :: P.EField -> De (Name, Pat)
 desugarFieldP (P.EField (Ident nm) pp) = ((,) nm) <$> desugarP pp
+-}
 
+{-
 desugarS :: P.S -> De S
 desugarS = \case
   P.SE e -> SE <$> desugarE e
@@ -625,22 +693,26 @@ desugarS = \case
   P.Declare varBinds ->
     Declare <$> mapM (((id *** fromMaybe (Var "null" :$ Var "Unit"))<$>) .
                       desugarVarBind) varBinds
-
+-}
+{-
 desugarVarBind :: P.VarBind -> De (Name, Maybe E)
 desugarVarBind = \case
   P.JustVar (Ident nm) -> return (nm, Nothing)
   P.VarIs (Ident nm) pe -> ((,)nm) <$> Just <$> desugarE pe
+-}
 
+{-
 --TODO allow _, x patterns in case
 desugarCase :: P.CASE -> De (Pat,S)
 desugarCase (P.C pe ps) = do
   p <- desugarP pe
   s <- desugarS ps
   return (p,s)
+-}
 
 --Can desugarE throw any errors?
-desugarE :: DInfo -> P.E -> E
-desugarE = error "todo"
+--desugarE :: DInfo -> P.E -> E
+--desugarE = error "todo"
 {-
 desugarE = go
   where go = \case
@@ -893,8 +965,9 @@ desugarE = go
 -}
 
 --"abc" => (&sv :: Ptr Code (Array 3 Byte)) where sv := array (97,98,99)
-handleString :: String -> De E
-handleString str = error "todo"
+
+--handleString :: String -> De E
+--handleString str = error "todo"
   {-
   do
   let codes = map ord str

@@ -168,7 +168,7 @@ processDT tycon params cons mr mti = do
       sequence_ [
         do let scon = "Struct" ++ con
            processDT scon params
-             [(scon, Left $ map (\(fld,t) -> (fld++scon,t) fields)]
+             [(scon, Left $ map (\(fld,t) -> (fld++scon,t)) fields)]
              Nothing
              (Just (params,tagT,M.singleton scon $ con2tag M.! con))
            let implfield = "unImpl" ++ con

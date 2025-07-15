@@ -987,6 +987,36 @@ Next step: desugar(S,P), put it all together
 2) patch TC
 3) mono and FIR transformation --all opts go here
 4) stack
+Opts (quoted): Stick to implementing 4 vital optimizations: tail calls, inlining,
+constant expansion (and +0, *1 opt which comes basically for free)/DCE, basic alias handling.
+
+Another nice-to-have that would shave 12 gas off case: direct jump tables.
+It would require clever BB placement, perhaps empty sections.
+Note: once I've computed static values, I can determine whether they contain any PUSH* instructions and thus
+whether they're safe to place in .text.
+Selecting a suitable K to multiply indices by is important... if it's a power of 2 I can shave off another
+2 gas.
+Assuming fallthrough whenever possible, basic blocks would be divided into simple (trivial to place
+greedily), main (must be placed at offset 0) and JT (init + BBs).
+Maximum waste by a direct JT: maximum BB length (excluding the last one) * #cases - total BB length.
+A larger K provides more space for simple BB and safe static value placement. Equal Ks for different JTs
+could reduce interference.
+Opt: when the top or bottom constructor is statically excluded, you can shorten the table...
+Effective inlining and fallthrough opt will lead to very large basic blocks...
+Splitting large blocks is an interesting idea...
+
+More on jump tables: pc << tag would both save 1b and 8 gas, but at the cost of exponentially increasing
+offsets.
+tbl!tag is also an alt
+
+For writeup: I traded off a less-desugared E (with simpler desugaring) for a more boilerplatey TC because
+Desugar already does a lot at once. The key resource problem is the complexity wall that needs to be jumped
+over, not boilerplate.
+
+Desugar remaining:
+Add checks (e.g. no overlap between fs and gs)
+Move desugarRegion
+GC old code
 
 **************
 

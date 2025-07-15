@@ -278,23 +278,25 @@ data S = SE E --required because := has been moved to E
 --Ex: *p (.field | unboxed array [ix]) = e =>
 --writePtr (a series of transformations on p) e
 
---type Pat = E
+--Need to add a Maybe [T] tyannot list to every polymorphic op...
+--TODO add a tyannot param to Module, STEP? Not for now.
 data Pat = PWild --becomes new local
          --The atomic, infallible patterns
          | PVar Name --local only by type infer; global g is desugared to *g
-         | Deref E
+         | Deref (Maybe [T]) E
          --Converted to assignment of atomic pattern
-         | Pat :. Name
-         | Pat :! E --arr ! ix, distinct from ptr[ix] which is sugar
-         --Non-atomic pattern
-         --[Pat] will be desugared to record form, with the fields in argument
-         --order.
-         | PConArgs Name [Pat]
+         | PDot (Maybe [T]) Pat Name
+         | PBang (Maybe [T]) Pat E
+         --arr ! ix, distinct from ptr[ix] which is sugar
+         --Fallible patterns:
+         | PConArgs Name (Maybe [T]) [Pat]
          --Duplicate fields need not be a syntax error: consider
          --Cons {hd: *p1, hd: *p2}
          --Order matters because patterns may contain side-effecting exprs
-         | PCon Name [(Name,Pat)]
+         | PCon Name (Maybe [T]) [(Name,Pat)]
   deriving (Eq,Ord,Read,Show,Data)
+pattern p :. field = PDot Nothing p field
+pattern p :! ix = PBang Nothing p ix
 
 --type Block = [S]
 --type Program = [D]
@@ -340,7 +342,7 @@ data Module = Module {
   --All the datatype information merged into a single field; parameterized by
   --E because data and tag decls are desugared into DTInfo P.E before E
   --desugaring can be applied.
-  dtsInfo :: DTsInfo E,
+  dtsInfo :: DTsInfo E
   --Constructors are not given a function type because they're not functions.
   --When compiling, underapplied constructors
   --are treated as an error in order to simplify the language.
@@ -349,7 +351,8 @@ data Module = Module {
 
   --A counter for new names for lifting strings to static byte array decls,
   --inserted as a hack to avoid having to change the desugar monad's type.
-  anonStaticCtr :: Int
+  --anonStaticCtr :: Int
+  --No longer needed!
   }
   deriving (Eq,Ord,Read,Show,Data)
 --All the info E desugaring and type checking need about datatypes.

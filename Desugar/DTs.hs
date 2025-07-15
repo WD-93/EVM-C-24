@@ -66,6 +66,7 @@ data DError = DuplicateDefun Name
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this
+deriving instance Data P.D
 deriving instance Data P.E
 deriving instance Data P.S
 deriving instance Data P.CASE
@@ -76,6 +77,15 @@ deriving instance Data P.EField
 deriving instance Data UIdent
 deriving instance Data P.AOp
 deriving instance Data P.T
+deriving instance Data P.ConArgs
+deriving instance Data P.ModuleName
+deriving instance Data P.GlobalRegion
+deriving instance Data P.DataRHS
+deriving instance Data P.UnboxedRHS
+deriving instance Data P.DataCon
+deriving instance Data P.DCA
+deriving instance Data P.RecordField
+deriving instance Data P.ConTag
 
 --The module context required for desugaring SEP; passed as a parameter
 --rather than as three parameterized functions. Boxed field status is

@@ -40,6 +40,10 @@ desugarE di@(gs,field2bcon,str2id) = go
           Just id -> return $ Var "deref" :$ (Var $ "$string"++show id)
           Nothing -> error $ "Compiler error: unmapped string " ++ str
       P.Con (UIdent nm) -> return $ Var nm
+      P.ConRecord (UIdent con) efields -> do
+        es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
+              efields
+        return $ ConRecord con Nothing es
       --I'll choose to disallow _ in an expr context for now
       P.Wild -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
@@ -67,6 +71,7 @@ desugarE di@(gs,field2bcon,str2id) = go
         | let -> do
             dt <- go struct
             return $ dt `dot` f
+      P.Bang arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
       P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
       --I use Array (a,b,c) as hacky syntax for array exprs
@@ -134,5 +139,81 @@ desugarE di@(gs,field2bcon,str2id) = go
       b <- go pb
       return $ Var fnm :$ a :$ b
 
+{-
+Valid patterns:
+_, x, *e, p.field, p!e, Con a b c, Con {field: p}
+
+Desugaring:
+Array tup => EArray
+Struct tup => Append a $ Append b ... Unit
+() => Unit
+(a,...) => Append (WordPad a) $ ... Unit
+
+DInfo-dependent:
+bdt.f => *(...).fStructCon
+g => *g
+-}
 desugarP :: DInfo -> P.E -> Either DError Pat
-desugarP = undefined
+desugarP di@(gs,field2bcon,str2id) = go
+  where
+    go = \case
+      P.Wild -> return PWild
+      P.Var (Ident v) ->
+        if S.member v gs
+        then return $ Deref Nothing $ Var v
+        else return $ PVar v
+      P.Deref e -> Deref Nothing <$> desugarE di e
+      P.EmptyTuple -> return unit
+      P.Tuple e es -> mkTup <$> mapM go (e:es)
+      P.Dot struct (Ident field)
+        | Just bcon <- M.lookup field field2bcon -> do
+            e <- desugarE di struct
+            return $ Deref Nothing
+              (Dot e Nothing $ defaultFieldName ("Impl"++bcon) 1)
+              :. (field ++ "Struct" ++ bcon)
+        | let -> do
+            p <- go struct
+            return $ p :. field
+      P.Bang arr ix -> (:!) <$> go arr <*> desugarE di ix
+      P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
+      P.ConRecord (UIdent con) efields -> do
+        es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
+              efields
+        return $ PCon con Nothing es
+      pe -> goCon pe
+    goCon pe = do
+      (con,ps) <- unrollConApps pe
+      return $ PConArgs con Nothing ps
+    unrollConApps = \case
+      P.App pf px -> do
+        x <- go px
+        (con,ps) <- unrollConApps pf
+        return $ (con,x:ps)
+      P.Con (UIdent con) -> return (con,[])
+      pe -> throwError $ GenericDError $ "Invalid pattern: " ++ show pe
+    mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
+    mkStruct = foldl (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
+    unit = PConArgs "Unit" Nothing []
+
+desugarS :: DInfo -> P.S -> Either DError S
+desugarS di = go
+  where go = \case
+          P.SE pe -> SE <$> goe pe
+          P.If i t e -> Ifte <$> goe i <*> go t <*> go e
+          P.While e s -> While <$> goe e <*> go s
+          P.Return e -> Return <$> goe e
+          P.Do ss -> Block <$> mapM go ss
+          P.Case e cases -> Case <$> goe e <*>
+            mapM desugarCase cases
+          P.Break -> return Break
+          P.Continue -> return Continue
+          P.For pre cond post body ->
+            go $ P.Do [pre,P.While cond $ P.Do [body,post]]
+          P.Declare vbs -> Declare <$> mapM desugarVB vbs
+        goe = desugarE di
+        gop = desugarP di
+        desugarCase (P.C p s) = (,) <$> gop p <*> go s
+        desugarVB = \case
+          --var x; => var x = null()
+          P.JustVar (Ident v) -> return (v,Var "null" :$ Var "Unit")
+          P.VarIs (Ident v) e -> (,) v <$> goe e
