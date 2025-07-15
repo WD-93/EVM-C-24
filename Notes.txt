@@ -1014,9 +1014,11 @@ Desugar already does a lot at once. The key resource problem is the complexity w
 over, not boilerplate.
 
 Desugar remaining:
-Add checks (e.g. no overlap between fs and gs)
-Move desugarRegion
+Add checks (e.g. no overlap between fs and gs) --done
+Move desugarRegion --not necessary
 GC old code
+Add string globals to var map! --done, and to tysigs as well
+Rename desugar2 to desugar
 
 **************
 

@@ -63,6 +63,10 @@ data DError = DuplicateDefun Name
             | TagParamDTParamLengthMismatch Name [Name] [Name]
             | FreeVarInTagType Name T Name
             | ConMismatchInTagAndData Name (Set Name) (Set Name)
+            --Final module check errors:
+            | Clash String String (Set Name)
+            | ClassFunctionsLackSignatures (Set Name)
+            | TypeSignaturesLackBindings (Set Name)
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this

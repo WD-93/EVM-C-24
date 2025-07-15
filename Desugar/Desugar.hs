@@ -32,8 +32,7 @@ import Data.Maybe (fromMaybe)
 
 import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 
---Declarations are order-independent, modulo the static names allocated to
---strings (which should be irrelevant to compilation if it's successful).
+
 {-
 desugar :: P.M -> Either DError Module
 desugar (P.Module ds) =
@@ -96,8 +95,8 @@ groupByCon as =
 --Dyn lowercase names: funs, vars
 --Dyn uppercase: constructors
 --Static (uppercase only): datatypes, tysyns, kinds
-desugar2 :: P.M -> Either DError Module
-desugar2 (P.Module ds) = do
+desugar :: P.M -> Either DError Module
+desugar (P.Module ds) = do
   let nm2d = groupByCon ds
   --Four types need be desugared: STEP (S, T, E, Pat)
   --T can be desugared independently, but E desugaring relies on context
@@ -123,7 +122,6 @@ desugar2 (P.Module ds) = do
   dtsFull <- processDTs dts tags --Now we have 1)
   
   let gset = M.keysSet gs --Now we have 2)
-      --fset = M.keysSet dis
   --To get the string numbering we need to collect the set of all string
   --literals in the source. That can be done cleanly by running an everything
   --on nm2d (which contains every decl).
@@ -140,12 +138,15 @@ desugar2 (P.Module ds) = do
                    fieldInfo dtsFull
       di = (gset,field2bcon,string2n)
   dtsFinal <- sepDTs di dtsFull
-  gsFinal <- sepGlobals di gs
+  --Also add string globals to global map
+  gsFinal <- M.union (stringGlobals string2n) <$> sepGlobals di gs
   --default
   dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm, desugarT t))
     nm2d
   --tysig
-  tsigs <- groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
+  --tysigs also need string global tysigs inserted to fix their type
+  tsigs <- M.union (stringTySigs string2n) <$>
+    groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
   --kindsig
   --TyCon : Kind must be sorted out and moved to sorts
   ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
@@ -160,37 +161,66 @@ desugar2 (P.Module ds) = do
   ds <- groupDefuns di nm2d
   --instance
   is <- groupInstances di $ nm2d M.! "Instance"
-  defsAndInstances <- combineDefsAndInstances ds is
-  return $ Module {dtsInfo = dtsFinal,
-                   globals = gsFinal,
-                   --the trivial ones
-                   defaults = dflts,
-                   tysigs = tsigs,
-                   kindsigs = ksigsFinal,
-                   kinds = ks,
-                   tysyns = tsyns,
-                   defuns = defsAndInstances
-                   }
-  {-
-  --Group all decl types by key
-  
-  
-  
-  
-  --Require:
-  --No overlap between funs and globals
-  --No overlap between datatypes, tysyns and kinds
-  --All classes must have a signature
-  --All type signatures must correspond to a fun or global
-  
-  --Expr desugaring
-  --g => *g and string => g are simplest; they can be done on P.E without
-  --issue. Indeed, doing so avoids defining it for both Pat and E.
-  --Note this is done before substituting pointers for new globals
-  let gs' = g2starg gset gs
-      ds' = g2starg gset ds
-  error "todo"
--}
+  dis <- combineDefsAndInstances ds is
+  --The module to return... but only if the checks pass
+  let modul = Module {dtsInfo = dtsFinal,
+                      globals = gsFinal,
+                      defaults = dflts,
+                      tysigs = tsigs,
+                      kindsigs = ksigsFinal,
+                      kinds = ks,
+                      tysyns = tsyns,
+                      defuns = dis
+                     }
+  --Validity checks:
+  --No name clashes:
+  --lowercase names: globals, functions
+  do let fset = M.keysSet dis
+     requireNoClash "Functions" "Globals" fset gset
+     --Constructors have already been checked in Desugar.Datatypes
+     --TyCons: datatypes, tysyns, kinds can clash
+     let dts = M.keysSet $ datatypes dtsFinal
+         syns = M.keysSet tsyns
+     requireNoClash "DTs" "Tysyns" dts syns
+     requireNoClash "DTs and Tysyns" "Kinds" (S.union dts syns) ks
+     --All classes must have a signature
+     let classFs = M.keysSet is
+         sigs = M.keysSet tsigs
+         lacking = S.difference classFs sigs
+     complainIf (not $ S.null lacking)
+       $ ClassFunctionsLackSignatures lacking
+     --All type signatures must correspond to a fun or global
+     let nakedSigs = S.difference sigs (S.union fset gset)
+     complainIf (not $ S.null nakedSigs)
+       $ TypeSignaturesLackBindings nakedSigs
+
+  --Finally return
+  return modul
+
+requireNoClash :: String -> String -> Set Name -> Set Name ->
+  Either DError ()
+requireNoClash t1 t2 s1 s2 = do
+  let conflict = S.intersection s1 s2
+  complainIf (not $ S.null conflict)
+    $ Clash t1 t2 conflict
+
+--Creates the global info map given the string=>id map
+--string2n["abc"] = n => gs[$string<n>] = (Code, Just (Array 97 98 99))
+stringGlobals :: Map String Int -> Map Name (Region, Maybe E)
+stringGlobals string2n =
+  M.fromList $
+  map (\(str,n) -> ("$string" ++ show n,
+                     (Co, Just $ EArray $
+                       map (EInteger . fromIntegral . ord) str))) $
+  M.toList string2n
+--Strings are also of a fixed type: Array len Byte
+--TODO fuse the functions if it matters to perf...
+stringTySigs :: Map String Int -> Map Name T
+stringTySigs string2n =
+  M.fromList $
+  map (\(str,n) -> ("$string" ++ show n,
+                    Array (TyNat $ fromIntegral $ length str) (UInt 1))) $
+  M.toList string2n
 
 --sep as in S,E,Pat, not separation
 --Only conInfo needs to change since that's where the tags are
@@ -215,10 +245,11 @@ sepGlobals di nm2rmpe = do
   return $ M.fromList nmre
   
 --Desugars global g to *g (where g is now considered a pointer)
-g2starg :: Data d => Set Name -> d -> d
-g2starg gset = everywhere $ mkT $ \case
-  P.Var (Ident nm) | S.member nm gset -> P.Deref $ P.Var $ Ident nm
-  e -> e
+--g2starg :: Data d => Set Name -> d -> d
+--g2starg gset = everywhere $ mkT $ \case
+--  P.Var (Ident nm) | S.member nm gset -> P.Deref $ P.Var $ Ident nm
+--  e -> e
+
 --Converts strings to array literals
 --Desugarings:
 --g => *g (stateless, can be done on either E or P.E)
@@ -434,6 +465,7 @@ desugarD = \case
     modify (\m->m{static=M.insert nm e $ static m})-}
     
 
+{-
 desugarDataRHS :: P.DataRHS -> ([ConDecl],Maybe Name)
 desugarDataRHS = \case
   P.Unboxed urhs ->
@@ -444,8 +476,9 @@ desugarDataRHS = \case
     in (cons, Just r)
 desugarUnboxedRHS :: P.UnboxedRHS -> [ConDecl]
 desugarUnboxedRHS (P.URHS dcs) = map desugarDataCon dcs
-desugarDataCon :: P.DataCon -> ConDecl
-desugarDataCon = error "todo"
+-}
+--desugarDataCon :: P.DataCon -> ConDecl
+--desugarDataCon = error "todo"
 {-
 desugarDataCon = \case
   P.DCArgs dca ->
@@ -455,6 +488,7 @@ desugarDataCon = \case
     let nmts = map desugarRecordField rfs
     in (con, Right nmts)
 -}
+{-
 desugarDCA :: P.DCA -> (Name,[T])
 desugarDCA = \case
   P.DCANil (UIdent con) -> (con,[])
@@ -464,6 +498,7 @@ desugarDCA = \case
     in (con,ts ++ [t])
 desugarRecordField :: P.RecordField -> (Name,T)
 desugarRecordField (P.RF (Ident nm) pt) = (nm,desugarT pt)
+-}
 
 {-
 addSig :: Name -> P.T ->
@@ -530,6 +565,7 @@ desugarDs (P.StaticDatatype pt (Ident nm) pe : rest) = do
 desugarDs other = throwE $ BadDOrdering other
 -}
 
+{-
 count :: Ord a => [a] -> [(a,Int)]
 count as =
   case sort as of
@@ -540,6 +576,7 @@ count as =
               a':as
                 | a == a' -> go a (n+1) as
                 | let -> (a,n) : go a' 1 as
+-}
 
 --This can't fail, so there's no need to make it a monad
 desugarConArgs :: P.ConArgs -> (Name,[Name])
