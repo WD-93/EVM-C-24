@@ -183,7 +183,7 @@ data HMS = HMS {
   --They're associated with an allocated tyvar in hmTyVars.
   scopedTyVars :: Map Name Name
   } deriving (Eq,Ord,Read,Show)
-data HMError = Can'tConstructTheInfiniteType Name T --t ~ T a
+data HMError = Can'tConstructTheInfiniteType Name T --a ~ T a
              | Can'tUnify T T
              | NonTypeInArrow T T
              --Only an error after inference:
@@ -244,7 +244,7 @@ tcModule m = do
   tcDatatypes m
   tcGlobals m
   complainIf (S.member "Kind" $ S.union (M.keysSet $ kindsigs m)
-               (sorts m))
+               (kinds m))
     KindMayHaveNoKind
   --Before we infer types, we add constructor and field types to tysigs
   let m' = addConsAndFieldsToTySigs m
@@ -261,12 +261,12 @@ tcDefaults :: Module -> Either TCModuleError ()
 tcDefaults m = do
   let ds = M.toList $ defaults m
   mapM_ (\(k,t) -> do
-            complainIf (not $ S.member k $ sorts m)
+            complainIf (not $ S.member k $ kinds m)
               $ NonexistentKindDefaulted k t
             complainIf (polymorphic t)
               $ KindDefaultsToPolymorphicType k t
             let hmr = newHMR{hmKindSigs = kindsigs m,
-                             hmSorts = sorts m
+                             hmSorts = kinds m
                             }
             case runHM (go k t) hmr newHMS of
               (Left hme, s) -> throwError $ KindDefaultMismatch k hme
@@ -296,7 +296,7 @@ tcDatatypes :: Module -> Either TCModuleError ()
 tcDatatypes m = do
   let dts = M.toList $ datatypes m
       hmr = newHMR{hmKindSigs = kindsigs m,
-                   hmSorts = sorts m
+                   hmSorts = kinds m
                   }
   mapM_ (\(tycon,(params,condecls)) -> (do
            --Note duplicate params have been ruled out earlier
@@ -343,7 +343,7 @@ tcKindsigs m =
           k1 :$$ k2 -> throwError $ KindAppliedToKind k1 k2
           TyNat n -> throwError $ TyNatInL2Context n
           TyCon nm
-            | S.member nm (sorts m) -> return ()
+            | S.member nm (kinds m) -> return ()
             | let -> throwError $ KindOutOfScope nm
           TyVar nm -> throwError $ TyVarInSimplyKindedContext nm
 --For each nm : t, check nm corresponds to a defun, static or global;
@@ -359,8 +359,7 @@ tcTysigs m = do
   let sigs = tysigs m
   mapM_ go $ M.toList sigs
     where go (nm,t) = (case () of
-                         _ | S.member nm $ S.union (M.keysSet $ static m) $
-                             M.keysSet $ globals m -> do
+                         _ | S.member nm $ M.keysSet $ globals m -> do
                                complainIf (polymorphic t)
                                  $ PolymorphicTySigInMonoThing t
                                checkIsType m t
@@ -377,7 +376,7 @@ polymorphic = not . S.null . tyVars
 --Relevant module fields: kindsigs
 checkIsType :: Module -> T -> Either SigError ()
 checkIsType m t = (case runHM go newHMR{hmKindSigs = kindsigs m,
-                                 hmSorts = sorts m
+                                 hmSorts = kinds m
                                 }
                         newHMS
                     of
@@ -474,6 +473,9 @@ typeOf = go
                     t <- zonk $ TyVar v
                     return (Var nm, t)
                 | let -> throwError $ ScopeErrorInTypeOf nm) e
+typeOfPat :: Pat -> HM (Pat,T)
+typeOfPat = error "todo"
+               
 --Associate each tyvar not yet in scopedTyVars with a fresh tyvar.
 --Returns a type containing only allocated tyvars.
 scopeType :: T -> HM T
@@ -672,13 +674,10 @@ inferTypes m = do
   --Not doing so doesn't explain why "id x := x" infers to a, but
   --"f x := return g x; g x := return f x" types correctly...
   let sigfuns = withSigs defuns
-      sigstats = withSigs static
       sigglobs = withSigs globals
   fun2pats <- checkWSigs m' goF defuns sigfuns
-  stat2e <- checkWSigs m' goS static sigstats
   glob2e <- checkWSigs m' goG globals sigglobs
   return m'{defuns = M.union fun2pats $ defuns m',
-            static = M.union stat2e $ static m',
             globals = M.union glob2e $ globals m'
            }
   where go m = \case
@@ -707,7 +706,7 @@ inferTypes m = do
                                       return (nm,def')) nms
         hmr m' = HMR{hmTySigs = tysigs m',
                   hmKindSigs = kindsigs m, --kinds and sorts not changed
-                  hmSorts = sorts m,
+                  hmSorts = kinds m,
                   hmDefaults = defaults m,
                   hmTaus = M.empty, --They'll remain empty
                   hmLocals = M.empty
@@ -720,7 +719,8 @@ inferTypes m = do
                             (e',t) <- typeOf e
                             return ((r,Just e'),t)
                           Nothing -> return ((r,Nothing),TyVar "whatever")
-        goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def -> HM def
+        goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
+          HM def
         goSig handler sig def = do
           (def',t) <- handler def
           --All kinds must be bound at this point
@@ -811,12 +811,11 @@ inferSCC nms m =
     (Right (sigs,funs,stats,globs), _) ->
       return m{tysigs = M.union sigs $ tysigs m,
                defuns = M.union funs $ defuns m,
-               static = M.union stats $ static m,
                globals = M.union globs $ globals m
               }
   where hmr = HMR{hmTySigs = tysigs m,
                   hmKindSigs = kindsigs m,
-                  hmSorts = sorts m,
+                  hmSorts = kinds m,
                   hmDefaults = defaults m,
                   hmTaus = M.empty, --We'll set them in shortly
                   hmLocals = M.empty
@@ -839,9 +838,8 @@ inferSCC nms m =
             nm2sig <- M.fromList <$>
                       mapM (\nm -> do
                                t <- prettifyType <$> (tauOf nm >>= zonk)
-                               complainIf ((S.member nm $ S.union
-                                            (M.keysSet $ static m)
-                                            (M.keysSet $ globals m)) &&
+                               complainIf ((S.member nm $
+                                            M.keysSet $ globals m) &&
                                            polymorphic t)
                                  $ NonFunctionMustBeMonomorphic nm t
                                return (nm,t)) nms
@@ -927,10 +925,12 @@ inferDefs m = go
                     --unsafePrint "Got here B2"
                     tauOf nm >>= unify t
                     return (M.insert nm pats' funs,stats,globs)
+                    {-
                 | Just e <- M.lookup nm $ static m -> do
                     (e',t) <-  typeOf e
                     unify t <$> tauOf nm
                     return (funs,M.insert nm e' stats, globs)
+-}
                 | Just (r,Just e) <- M.lookup nm $ globals m -> do
                   (e',t) <- typeOf e
                   unify t <$> tauOf nm
@@ -943,13 +943,11 @@ tauOf nm = do
   case M.lookup nm nm2v of
     Just v -> return $ TyVar v
     Nothing -> throwError $ TauOfNonSCCMember nm
---First need to declare new locals for the locals in pat
---Pat structure:
---Con pats (Con{field: p} desugars to that)
--- .field p
---global, local, _
---How to deal with *e and e[e]? Just return S.empty
---To identify locals, need the module
+--Need to declare args as locals...
+--Source of confusion: I had a type Pat = E before.
+--p ::= _, x (now only local), *e, p.f, p!e (new), Con ps, Con {field: p}.
+--The latter can't be desugared away yet because E has no lets and field
+--order determines eval order of Es in the pats.
 typeOfFun :: Module -> (Pat,S) -> HM ((Pat,S),T)
 typeOfFun m (pat,s) =
   withError (InTypeOfFun pat s) $
@@ -958,7 +956,7 @@ typeOfFun m (pat,s) =
   kindOf b >>= unifyK "Type"
   k <- kindOf b
   --unsafePrint $ "k: " ++ show k
-  (pat',a) <- typeOf pat
+  (pat',a) <- typeOfPat pat
   ka <- kindOf b
   --unsafePrint $ "ka: " ++ show k
   kindOf a >>= unifyK "Type"
@@ -975,7 +973,9 @@ declareArgsAsLocals m pat hm = do
   withReaderT (\hmr->hmr{hmLocals = v2tyv}) hm
   where
     go :: Pat -> HM (Set Name)
-    go = \case
+    go = error "todo"
+    {-
+      \case
       EInteger _ -> return S.empty
       Var "_" -> return S.empty
       Var "deref" :$ _e -> return S.empty
@@ -989,12 +989,12 @@ declareArgsAsLocals m pat hm = do
       p -> throwError $ MalformedPatternInFunctionParam p
     staticThings = S.unions [
       ks defuns,
-      ks static,
       ks globals,
       ks constructors,
       ks fieldTypes
       ]
     ks f = M.keysSet $ f m
+-}
 
 --An S can't be inferred by itself because var declaration modifies the locals
 --map via withReaderT.
@@ -1021,7 +1021,7 @@ inferBlock ret ss =
           Case e patss -> do
             (e',t) <- typeOf e
             patsts <- mapM (\(pat,s) -> do
-                             (pat',t) <- typeOf pat
+                             (pat',t) <- typeOfPat pat
                              s' <- go s
                              return ((pat',s'),t)) patss
             mapM_ (unify t . snd) patsts

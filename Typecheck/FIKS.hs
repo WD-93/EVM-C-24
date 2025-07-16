@@ -29,12 +29,14 @@ import Control.Arrow ((***))
 fiks :: Module -> Either (Name,FIKSError) Module
 fiks m = do
   let ksigs = kindsigs m
-      dts = M.map fst $ datatypes m --we only care about params
+      dts = M.map dtParams $ datatypes $ dtsInfo m --we only care about params
       tycons = S.toList $ S.union (M.keysSet ksigs) (M.keysSet dts)
   tyconks <- mapM (\tycon -> do
                       kind <- handleTyCon tycon (M.lookup tycon ksigs)
                               (M.lookup tycon dts)
-                              (M.lookup tycon $ datatypeRegions m) ?
+                              (do dti <- M.lookup tycon $ datatypes $ dtsInfo m
+                                  dtRegion dti
+                              ) ?
                               ((,) tycon)
                       return (tycon,kind)) tycons
   return m{kindsigs = M.fromList tyconks}

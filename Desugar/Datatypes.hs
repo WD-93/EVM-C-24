@@ -159,6 +159,7 @@ processDT tycon params cons mr mti = do
     Just rvar -> do
       addDT tycon $ DTInfo {
         dtParams = params,
+        dtRegion = mr,
         dtTagType = TyCon "Unit",
         dtCanonicalCons = map ("Impl"++) connames
         }
@@ -189,6 +190,7 @@ processDT tycon params cons mr mti = do
       --Add DT info
       addDT tycon $ DTInfo {
         dtParams = params,
+        dtRegion = mr,
         dtTagType = tagT,
         dtCanonicalCons = connames
         }

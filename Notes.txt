@@ -1016,9 +1016,30 @@ over, not boilerplate.
 Desugar remaining:
 Add checks (e.g. no overlap between fs and gs) --done
 Move desugarRegion --not necessary
-GC old code
+GC old code --done
 Add string globals to var map! --done, and to tysigs as well
-Rename desugar2 to desugar
+Rename desugar2 to desugar --done
+
+Now what? Adjust the TC pipeline to fit the new Module type.
+Back to DependencyGraph...
+FIKS: I need a to add a dtRegion :: Maybe Name param to DTInfo... or do I?
+ImplCon (Ptr r ...) implies r :: Region, but I don't have kind inference... so I do need to.
+FW: implement kind inference.
+HM: patterns are now Pat, not E. I need to implement typeOfPat and & typing.
+Need to change defun handling to deal with instances...
+Class functions always have a signature, so they're handled after the SCCs.
+Need to check their inferred type is >= as general as the signature.
+I need to relearn the overall structure of HM...
+Split out modules if possible. addConsAndFields might justify that.
+Add field tysigs as .field, Con tysigs as Con.
+Detect underapplied Cons in a later phase.
+Trivial FW: instead of Desugar/Desugar, put Desugar.hs at the top level and its submodules in Desugar/
+
+Boxed Code cons in static data could be added as globals. When is it appropriate to compute static data?
+It needs to be done post-monomorphization.
+Abandon the idea of type-level (+) etc for now; it requires interleaving HM and instantiation.
+Instead sizeof could return a Short (not a type-level PN n) and be defined using a dynamic computation on
+field types (which is then inlined and CE'd).
 
 **************
 

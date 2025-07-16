@@ -37,9 +37,9 @@ substTySyns :: Module -> Either TySynError Module
 substTySyns m = do
   --The set of tycons and tysyn names; used for scope and cycle checking
   let tycons = S.unions [
-        M.keysSet $ datatypes m,
+        M.keysSet $ datatypes $ dtsInfo m,
         M.keysSet $ kindsigs m,
-        sorts m
+        kinds m
         ]
       syncons = M.keysSet $ tysyns m
   syns <- handleTySyns tycons syncons $ tysyns m
@@ -49,20 +49,15 @@ substTySyns m = do
   --sorts does not need subst
   defaults' <- inM "default" defaults
   defuns' <- inM "defun" defuns
-  static' <- inM "static" static
-  datatypes' <- inM "datatype" datatypes
-  constructors' <- inM "constructor" constructors
-  fieldTypes' <- inM "field type" fieldTypes
+  dti <- inM "dtInfo map" $ datatypes . dtsInfo
+  ci <- inM "conInfo map" $ conInfo . dtsInfo
   return m{
     tysigs = tysigs',
     kindsigs = kindsigs',
     defaults = defaults',
     defuns = defuns',
     tysyns = syns,
-    static = static',
-    datatypes = datatypes',
-    constructors = constructors',
-    fieldTypes = fieldTypes'
+    dtsInfo = DTsInfo dti ci $ fieldInfo $ dtsInfo m
     }
   --It might be possible to use everywhereM to just apply the tysyns to
   --everything in one fell swoop... but I don't want to do that since I want

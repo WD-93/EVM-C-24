@@ -374,6 +374,7 @@ data DTsInfo e = DTsInfo {
   deriving (Eq,Ord,Read,Show,Data)
 data DTInfo = DTInfo {
   dtParams :: [Name],
+  dtRegion :: Maybe Name,
   dtTagType :: T,
   dtCanonicalCons :: [Name]
                      }
