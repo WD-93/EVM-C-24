@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, LambdaCase #-}
-module TypeCheck.FIKS (fiks,FIKSError(),splitTyFun) where
+module Typecheck.FIKS (fiks,FIKSError(),splitTyFun) where
 
 --TODO move splitTyFun to TypeCheck.Util?
 

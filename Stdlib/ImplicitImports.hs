@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-} 
 module Stdlib.ImplicitImports where
 
 import Language.Haskell.TH

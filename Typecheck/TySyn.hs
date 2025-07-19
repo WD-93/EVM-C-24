@@ -1,5 +1,5 @@
-{-# LANGUAGE LambdaCase #-}
-module TypeCheck.TySyn where
+{-# LANGUAGE LambdaCase, Rank2Types #-}
+module Typecheck.TySyn where
 
 --The module where the tysyn substitution phase of typechecking is defined.
 
@@ -16,10 +16,11 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Except
 import Control.Arrow ((***))
+import Data.Typeable (cast)
 
 data TySynError = TyConsNotInScope (Set Name)
                 | TyVarsNotInScope (Set Name)
-                | UnderappliedTySyn Name
+                | UnderappliedTySyn Name [T]
                 | TySynCycle [Name] --ex: type A = B; type B = A
                 --Desugar catches this error:
                 -- | TySynsShadowPrimTySyns (Set Name)
@@ -71,7 +72,7 @@ substTySyns m = do
                     return (g,region,t')) $ globals m
   
 -}
-inMap :: Data d => String ->
+inMap :: (Show d, Data d) => String ->
   (Module -> Map Name d) -> Syns ->
   Module -> Either TySynError (Map Name d)
 inMap loctype field syns m = M.fromList <$>
@@ -229,7 +230,7 @@ applyTySyns syns t = do
       | Just (args,body) <- M.lookup con syns ->
         do let arity = length args
            complainIf (arity > length targs2)
-             $ UnderappliedTySyn con
+             $ UnderappliedTySyn con targs2
            let prefix = take arity targs2
                suffix = drop arity targs2
                substMap = M.fromList $ zip args prefix
@@ -252,4 +253,31 @@ unrollTyApps = foldl (:$$)
 
 --Thank you SYB
 genericApplyTySyns :: Data a => Syns -> a -> Either TySynError a
-genericApplyTySyns syns = everywhereM (mkM $ applyTySyns syns)
+genericApplyTySyns syns =
+  everywhereButStopM isT (mkM $ applyTySyns syns)
+  where isT x = return $ (cast x :: Maybe T) /= Nothing
+
+--Monadic everywhere traversal that skips subterms when the predicate is true.
+everywhereButStopM :: (Monad m, Data a)
+               => (forall b. Data b => b -> m Bool)
+               -> (forall b. Data b => b -> m b)
+               -> a
+               -> m a
+everywhereButStopM stop f x = do
+  shouldStop <- stop x
+  if shouldStop
+    then f x --return x
+    else do
+      --x' <- f x
+      gmapM (everywhereButStopM stop f) x --'
+
+{-
+  everywhereButStopM isT (mkM $ applyTySyns syns)
+  where isT x = return $ (cast x :: Maybe T) /= Nothing
+everywhereButStopM :: Monad m => GenericQ Bool -> GenericM m -> GenericM m
+everywhereButStopM cond f = go
+  where
+    go x = if cond x
+           then f x
+           else gmapM go x
+-}

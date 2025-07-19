@@ -3,9 +3,9 @@ module Typecheck.HM where
 
 import Util
 import AST.DTs
-import TypeCheck.TySyn (tyVars,tyCons)
-import TypeCheck.FIKS (splitTyFun)
-import TypeCheck.DependencyGraph (buildGraph)
+import Typecheck.TySyn (tyVars,tyCons)
+import Typecheck.FIKS (splitTyFun)
+import Typecheck.DependencyGraph (buildGraph)
 import Typecheck.HM.AddConsAndFieldsToTySigs (addConsAndFieldsToTySigs)
 
 import Data.Map (Map(..))

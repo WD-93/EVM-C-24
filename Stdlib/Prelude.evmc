@@ -43,9 +43,9 @@ data P a = {P};
 PR : Region -> Type;
 data PR r = {PR};
 PN : Nat -> Type;
-data PN = {PN};
+data PN n = {PN};
 PS : Signedness -> Type;
-data PS = {PS};
+data PS s = {PS};
 
 //A newtype wrapper for EVM addresses
 data Addr = {Addr (UInt 20)};
@@ -58,6 +58,3 @@ indexPtr (ptr,ix) := {
 	 sz = sizeof (P :: Proxy a);
 	 return MkPtr (off + sz * ix)
 };
-//sizeof takes a proxy a and returns a SizeT (UInt 16)
-sizeof : P a -> UInt 16;
-sizeof p := return knownNat (sizeofP p)

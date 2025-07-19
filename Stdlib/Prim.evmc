@@ -51,6 +51,12 @@ data Fun a b = {MkFun (UInt 2)};
 
 //Primfuns; constructs such as + or *_ desugar into prefix names.
 
+//Since no unification occurs during the monomorphization and instantiation
+//phase, sizeOfP : P a -> PN n is not useful.
+//sizeof takes a proxy a and returns a SizeT (UInt 16)
+sizeof : P a -> UInt 16;
+sizeof p := {};
+
 //Numeric ops
 //Important: don't shadow the EVM opcode names! The EVMC ops do additional
 //masking to keep them well-typed; the opcodes are of type Word* -> Word | ()
@@ -107,6 +113,7 @@ sizeofP : P a -> PN n;
 sizeofP _ := ();
 //Given a Nat proxy, obtains a runtime integer of any signedness and size
 knownNat : PN n -> Int s l;
+knownNat pn := ();
 //TODO a region datatype and knownRegion.
 
 //The other primitives are black magic but this one is blacker due to its

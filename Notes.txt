@@ -1041,6 +1041,8 @@ rigid var in t is bound. That's the same procedure for f : t; f p := s! I could 
 its own defun... f<types>.
 Constructor tags must be type-checked vs signatures as well.
 
+I shouldn't have used (M.!)... now I'm paying for it.
+
 Boxed Code cons in static data could be added as globals. When is it appropriate to compute static data?
 It needs to be done post-monomorphization.
 Abandon the idea of type-level (+) etc for now; it requires interleaving HM and instantiation.

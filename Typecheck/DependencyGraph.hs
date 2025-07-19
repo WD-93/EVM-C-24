@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module TypeCheck.DependencyGraph (buildGraph) where
+module Typecheck.DependencyGraph (buildGraph) where
 
 import AST.DTs
 

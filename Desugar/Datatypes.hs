@@ -122,7 +122,8 @@ processDT tycon params cons mr mti = do
                                     case M.lookup nm tag2dtParams of
                                       Nothing -> throwError $
                                         FreeVarInTagType nm tagT tycon
-                                      Just nm' -> return $ TyVar nm') tagT
+                                      Just nm' -> return $ TyVar nm'
+                                  t -> return t) tagT
        -- the map's keys must be exactly the con set
       let conset = S.fromList $ map fst cons'
           specset = M.keysSet con2e

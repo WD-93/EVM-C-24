@@ -1,10 +1,10 @@
-module TypeCheck.TC where
+module Typecheck.TC where
 
 import Util (complainIf,(?))
-import AST.DTs (Module(..),Name)
-import TypeCheck.TySyn (substTySyns,TySynError())
-import TypeCheck.FIKS (fiks,FIKSError())
-import TypeCheck.HM (tcModule,TCModuleError())
+import AST.DTs (Module(..),Name,dtParams,datatypes)
+import Typecheck.TySyn (substTySyns,TySynError())
+import Typecheck.FIKS (fiks,FIKSError())
+import Typecheck.HM (tcModule,TCModuleError())
 
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -55,7 +55,11 @@ typecheck :: Module -> Either TCError Module
 typecheck m = do
   --Check tysyn and datatype lhses are well-formed
   checkDupParams "tysyn" (tysyns m)
-  checkDupParams "datatype" (datatypes m)
+  --checkDupParams "datatype" (datatypes m)
+  let dts = datatypes $ dtsInfo m
+      offenders = M.filter (hasDuplicates . dtParams) dts
+  complainIf (not $ M.null offenders)
+    $ DupParamsTo "datatype" $ M.toList $ M.map dtParams offenders
   m1 <- substTySyns m ? TySynError
   m2 <- fiks m1 ? FIKSError
   m3 <- tcModule m2 ? TCModuleError
@@ -64,8 +68,9 @@ typecheck m = do
     checkDupParams :: String -> M.Map Name ([Name],a) -> Either TCError ()
     checkDupParams decltype nm2args_m =
           let nm2args = M.toList $ M.map fst nm2args_m
-              offenders = filter (\(nm,args) ->
-                                    length args > S.size (S.fromList args))
+              offenders = filter (hasDuplicates . snd)
                           nm2args
           in complainIf (offenders /= [])
              $ DupParamsTo decltype offenders
+
+    hasDuplicates args = length args > S.size (S.fromList args)

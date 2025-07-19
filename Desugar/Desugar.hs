@@ -77,7 +77,7 @@ desugar (P.Module ds) = do
   --1) the global set (used for g=>*g in P,E)
   --2) boxed field status (used for bdt.field => *(...).fieldStructCon in E)
   --3) a string numbering m (used for "str" => *($string++show m["str"]))
-  
+
   --globals
   gs <- groupGlobals nm2d
   --data
@@ -92,7 +92,6 @@ desugar (P.Module ds) = do
                                         (con,pe)) contags
                            in (nm,(args,t,con2e)))  nm2d
   dtsFull <- processDTs dts tags --Now we have 1)
-  
   let gset = M.keysSet gs --Now we have 2)
   --To get the string numbering we need to collect the set of all string
   --literals in the source. That can be done cleanly by running an everything
@@ -118,7 +117,7 @@ desugar (P.Module ds) = do
   --tysig
   --tysigs also need string global tysigs inserted to fix their type
   tsigs <- M.union (stringTySigs string2n) <$>
-    groupEx "Tysig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
+    groupEx "TySig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
   --kindsig
   --TyCon : Kind must be sorted out and moved to sorts
   ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
@@ -258,7 +257,9 @@ sepGlobals di nm2rmpe = do
 groupEx :: String -> (P.D -> (Name,v)) -> Map String [P.D] ->
   Either DError (Map Name v)
 groupEx decltype sel decls =
-  let ds = decls M.! decltype
+  let ds = case M.lookup decltype decls of
+             Just ds -> ds
+             Nothing -> error $ "Compiler error: decls lacks " ++ decltype
   in groupExclusive sel ds ? Duplicate decltype
 --Generic function
 groupExclusive :: Ord k => (a -> (k,v)) -> [a] -> Either k (Map k v)
@@ -268,7 +269,7 @@ groupExclusive sel =
            complainIf (M.member k m) k
            return $ M.insert k v m) M.empty
 
-groupGlobals = groupEx "Global " $
+groupGlobals = groupEx "Global" $
   \(P.Global gr vb) ->
     let (g,me) = collectVarBind vb
         r = desugarRegion gr

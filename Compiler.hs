@@ -21,9 +21,10 @@ import Control.Monad.State
 import Stdlib.ImplicitImports (stdlibPrim,stdlibPrelude)
 --CST -> AST
 import AST.DTs (Module(..))
-import Desugar.Desugar (desugar, DError(..))
+import Desugar.DTs (DError(..))
+import Desugar.Desugar (desugar)
 --Type checking
-import TypeCheck.TC (typecheck, TCError(..))
+import Typecheck.TC (typecheck, TCError(..))
 
 data CompilerError = ParserError String
                    | DesugarError DError
