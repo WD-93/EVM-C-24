@@ -1,11 +1,12 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
-module TypeCheck.HM where
+module Typecheck.HM where
 
 import Util
 import AST.DTs
 import TypeCheck.TySyn (tyVars,tyCons)
 import TypeCheck.FIKS (splitTyFun)
 import TypeCheck.DependencyGraph (buildGraph)
+import Typecheck.HM.AddConsAndFieldsToTySigs (addConsAndFieldsToTySigs)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -250,8 +251,6 @@ tcModule m = do
   let m' = addConsAndFieldsToTySigs m
   m'' <- inferTypes m'
   return m''
-addConsAndFieldsToTySigs m =
-  m{tysigs = M.unions [constructors m, fieldTypes m, tysigs m]}
 
 --Failure modes for default k = t:
 --k is not in sorts (TODO rename to kinds?)
@@ -292,9 +291,23 @@ tcGlobals m = do
 --To maintain the invariant that unify doesn't expect any tyvars not bound
 --to a kind, check for out of scope vars first.
 --As before, check for no unbound kind vars with allKindsBound.
+
+--Change: reuse the same code but extract tycon, params, [(con,ts)] from
+--dtsInfo. condecls is changed from [(con,Either ts nmts)] to [(con,ts)]
+--TODO check con tag as well!
 tcDatatypes :: Module -> Either TCModuleError ()
 tcDatatypes m = do
-  let dts = M.toList $ datatypes m
+  --Adjustment: dts remains mostly the same, we just compute it
+  --differently.
+  let dtsi = dtsInfo m
+      dts = map (\(tycon,dti) ->
+                      (tycon,(dtParams dti,
+                               map (\con ->
+                                      let ci = conInfo dtsi M.! con
+                                      in (con, map snd $ conFields ci)
+                                   ) $ dtCanonicalCons dti))
+                  )
+            $ M.toList $ datatypes dtsi
       hmr = newHMR{hmKindSigs = kindsigs m,
                    hmSorts = kinds m
                   }
@@ -307,10 +320,7 @@ tcDatatypes m = do
                param2kind = M.fromList $ zip params kargs
                paramSet = S.fromList params
                hms = newHMS{hmTyVars = param2kind}
-           mapM_ (\(con, ei_ts_fields) -> (do
-                    let ts = case ei_ts_fields of
-                               Left ts -> ts
-                               Right nmts -> map snd nmts
+           mapM_ (\(con, ts) -> (
                     mapM (\(nth,t) -> (
                              do let outOfScope = S.difference (tyVars t)
                                                  paramSet
@@ -436,7 +446,7 @@ typeOf = go
             unifyK kte "Type" --all value types are of kind Type
             return (e',te)
           p := e -> do
-            (p',tp) <- go p
+            (p',tp) <- typeOfPat p
             (e',te) <- go e
             unify tp te
             return (p' := e', te)
@@ -675,9 +685,17 @@ inferTypes m = do
   --"f x := return g x; g x := return f x" types correctly...
   let sigfuns = withSigs defuns
       sigglobs = withSigs globals
-  fun2pats <- checkWSigs m' goF defuns sigfuns
+  --normal defs and classes have a different shape, so they need different
+  --control flow... I'll check them separately.
+  let isClass = \case
+        Left _ -> False
+        Right _ -> True 
+  fun2def <- checkWSigs m' goF (M.filter (not.isClass) . defuns) sigfuns
+  let classes = M.map (\(Right s) -> s) $
+                M.filter isClass $ defuns m'
+  fun2class <- M.map Right <$> checkClasses m' classes
   glob2e <- checkWSigs m' goG globals sigglobs
-  return m'{defuns = M.union fun2pats $ defuns m',
+  return m'{defuns = M.unions [fun2class,fun2def,defuns m'],
             globals = M.union glob2e $ globals m'
            }
   where go m = \case
@@ -687,6 +705,7 @@ inferTypes m = do
             go m' nmss
         withSigs f = S.toList $ S.intersection (M.keysSet $ f m) $
                      M.keysSet $ tysigs m
+        --Is there any reason I can't use m' instead f m in checkWSigs..?
         checkWSigs :: Data def =>
                       Module ->
                       (T -> def -> HM def) ->
@@ -711,17 +730,20 @@ inferTypes m = do
                   hmTaus = M.empty, --They'll remain empty
                   hmLocals = M.empty
                  }
-        goF = goSig (typeOfFun m)
-        goS = goSig typeOf
+        --Can't use goSig with its current definition... multiple instances
+        --need to be checked for <= generality.
+        goF t (Left pats) = Left <$> goSig (typeOfFun m) t pats
+        --goS = goSig typeOf
         goG = goSig $ \(r,me) ->
                         case me of
                           Just e -> do
                             (e',t) <- typeOf e
                             return ((r,Just e'),t)
                           Nothing -> return ((r,Nothing),TyVar "whatever")
-        goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
+--Moving to top level to be able to use it in checkClasses as well...
+goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
           HM def
-        goSig handler sig def = do
+goSig handler sig def = do
           (def',t) <- handler def
           --All kinds must be bound at this point
           allKindsBound
@@ -732,12 +754,64 @@ inferTypes m = do
           --Apply the mapping to each type present in it; vars not present
           --are unbound by t and should be defaulted instead.
           t' <- zonk t --Just in case
+          {-
           let ei_err_inf2sig = execStateT (unifyRigid sig t) M.empty
           inf2sig <- case ei_err_inf2sig of
                        Left rue -> throwError $ RigidUnificationError rue
                        Right inf2sig -> return inf2sig
+-}
+          inf2sig <- matchWithSig t' sig
           rigidizeAndDefault inf2sig def'
+--Attempts to match t with the rigid type sig; t must be at least as general
+--as sig. Returns inf2sig (t var -> sig type), which is passed to
+--rigidizeAndDefault.
+matchWithSig :: T -> T -> HM (Map Name T)
+matchWithSig t sig = do
+  let e =  execStateT (unifyRigid sig t) M.empty
+  case e of
+    Left rue -> throwError $ RigidUnificationError rue
+    Right inf2sig -> return inf2sig
+--Have the instance types been kind checked yet?
+--For each (f,set), look up f : scheme;
+--for each (t,p,s) in set:
+-- check t is an instance of scheme
+-- check p,s vs t, unify and zonk
+checkClasses :: Module -> Map Name (Set (T,Pat,S)) ->
+  Either TCModuleError (Map Name (Set (T,Pat,S)))
+checkClasses m classes =
+  M.fromList <$> (forM (M.toList classes) $
+                  \(f,set) -> do
+                    let scheme = tysigs m M.! f
+                    set' <- S.fromList <$>
+                       (forM (S.toList set) $ \(t,p,s) -> do
+                           (p',s') <- checkSig m
+                             (\t (p,s) -> do
+                                 matchWithSig t scheme
+                                 goSig (typeOfFun m) t (p,s)
+                             ) f (p,s) t
+                             
+                           return (t,p',s')
+                       )
+                    return (f,set')
+                 )
 
+checkSig :: Data def =>
+              Module ->
+              (T -> def -> HM def) ->
+              Name -> def -> T ->
+              Either TCModuleError def
+checkSig m handler name def sig =
+  case runHM (handler sig def) hmr newHMS of
+    (Left err, s) -> Left $ InCheckSignature name (err,s)
+    (Right def', _) -> return def'
+  where
+    hmr = HMR{hmTySigs = tysigs m,
+              hmKindSigs = kindsigs m, --kinds and sorts not changed
+              hmSorts = kinds m,
+              hmDefaults = defaults m,
+              hmTaus = M.empty, --They'll remain empty
+              hmLocals = M.empty
+             }
 --Replaces inferred tyvars with the rigid type they're bound to.
 --Fix: defaults must be applied on a per-kind basis.
 --If non-rigid a :: k where k lacks a default, fail.
@@ -810,7 +884,7 @@ inferSCC nms m =
     --Updated definitions and new tysigs
     (Right (sigs,funs,stats,globs), _) ->
       return m{tysigs = M.union sigs $ tysigs m,
-               defuns = M.union funs $ defuns m,
+               defuns = M.union (M.map Left funs) $ defuns m,
                globals = M.union globs $ globals m
               }
   where hmr = HMR{hmTySigs = tysigs m,
@@ -919,7 +993,9 @@ inferDefs m = go
           nm:nms -> do
             (funs,stats,globs) <- go nms
             case () of
-              _ | Just pats <- M.lookup nm $ defuns m -> do
+              --Note every class fun has a signature, so we can be certain
+              --it's a Left pats.
+              _ | Just (Left pats) <- M.lookup nm $ defuns m -> do
                     --unsafePrint "Got here A2"
                     (pats',t) <- typeOfFun m pats
                     --unsafePrint "Got here B2"
