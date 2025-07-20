@@ -91,7 +91,13 @@ desugar (P.Module ds) = do
                                  map (\(P.ConTag (UIdent con) pe) ->
                                         (con,pe)) contags
                            in (nm,(args,t,con2e)))  nm2d
-  dtsFull <- processDTs dts tags --Now we have 1)
+  --kindsig
+  --TyCon : Kind must be sorted out and moved to sorts
+  ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
+    nm2d
+  let ksigsForPDTs = M.filter (/=TyCon "Kind") ksigs
+  let ks = M.keysSet $ M.filter (==TyCon "Kind") ksigs
+  (dtsFull,ksigsFinal) <- processDTs dts tags ksigsForPDTs --Now we have 1)
   let gset = M.keysSet gs --Now we have 2)
   --To get the string numbering we need to collect the set of all string
   --literals in the source. That can be done cleanly by running an everything
@@ -118,12 +124,7 @@ desugar (P.Module ds) = do
   --tysigs also need string global tysigs inserted to fix their type
   tsigs <- M.union (stringTySigs string2n) <$>
     groupEx "TySig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
-  --kindsig
-  --TyCon : Kind must be sorted out and moved to sorts
-  ksigs <- groupEx "KindSig" (\(P.KindSig (UIdent nm) t) -> (nm, desugarT t))
-    nm2d
-  let ksigsFinal = M.filter (/=TyCon "Kind") ksigs
-  let ks = M.keysSet $ M.filter (==TyCon "Kind") ksigs
+  
   --tysyn
   tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
                               let (nm,args) = desugarConArgs ca

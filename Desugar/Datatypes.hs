@@ -59,9 +59,10 @@ import Data.Generics (everywhereM,mkM)
 
 processDTs :: Map Name ([Name],P.DataRHS) -> --datatypes
               Map Name ([Name], T, Map Name P.E) -> --tag decls
-              Either DError (DTsInfo P.E)
-processDTs dts tds =
-  runExcept $ execStateT go (DTsInfo M.empty M.empty M.empty)
+              Map Name T -> --kind signatures!
+              Either DError (DTsInfo P.E, Map Name T)
+processDTs dts tds ks =
+  runExcept $ execStateT go (DTsInfo M.empty M.empty M.empty, ks)
   where go = do
           let dts' = M.toList dts
           sequence_ [
@@ -92,7 +93,7 @@ desugarRecordField :: P.RecordField -> (Name,T)
 desugarRecordField (P.RF (Ident field) pt) = (field,desugarT pt)
 
 --Process DTs monad
-type PDT = StateT (DTsInfo P.E) (Except DError)
+type PDT = StateT (DTsInfo P.E, Map Name T) (Except DError)
 processDT :: Name -> --tycon
          [Name] -> --params
          [(Name,Either [(Name,T)] [T])] -> --con specs
@@ -152,6 +153,9 @@ processDT tycon params cons mr mti = do
                                           | con <- connames])
   --Result: T, Map Name P.E (params have been normalized away)
   let conrhs = unrollTyApps (TyCon tycon) $ map TyVar params
+  --Regardless of whether the datatype is boxed or not, we fill in its kind
+  --here. TODO remove FIKS...
+  defaultKindSig tycon params mr
   case mr of
     --The datatype is boxed; its tag is () and the tags are instead moved to
     --StructCon1..StructConN.
@@ -167,8 +171,11 @@ processDT tycon params cons mr mti = do
       --For each Con args, allocate
       --data StructCon params = StructCon args
       --tag StructCon params = tagT where {StructCon: con2tag M.1 con}
+      --Addition: copy the kind signature from the parent TyCon to each
+      --StructCon!
       sequence_ [
         do let scon = "Struct" ++ con
+           scon `copyKindSigFrom` tycon
            processDT scon params
              [(scon, Left $ map (\(fld,t) -> (fld++scon,t)) fields)]
              Nothing
@@ -237,9 +244,42 @@ addThing :: ((DTsInfo P.E) -> Map Name v) -> --getter
             String -> --kind of thing to add
             Name -> v -> PDT ()
 addThing getter setter typ nm v = do
-  s <- get
+  (s,ks) <- get
   let m = getter s
   case M.lookup nm m of
     Just conflict ->
       throwError $ Duplicate typ nm
-    Nothing -> put $ setter (M.insert nm v m) s
+    Nothing -> put (setter (M.insert nm v m) s,ks)
+
+--Boxed datatypes such as List r a must always have an explicit kind
+--signature; the derived tycons StructNil, StructCons must be given the same
+--signature!
+copyKindSigFrom :: Name -> Name -> PDT ()
+copyKindSigFrom to from = do
+  (s,ks) <- get
+  case M.lookup from ks of
+    Nothing -> throwError $ BoxedTyConLacksKindSig from
+    Just k ->
+      case M.lookup to ks of
+        Just k' -> throwError $ StructDTAlreadyGivenKindSig to k'
+        Nothing -> put (s, M.insert to k ks)
+
+--Sets the datatype tycon's kind sig.
+--If it already has one: do nothing.
+--If it's unboxed: Type* -> Type
+--If it's boxed: change r's kind to Region.
+defaultKindSig :: Name -> [Name] -> Maybe Name -> PDT ()
+defaultKindSig tycon params mr = do
+  (s,ks) <- get
+  let ty = TyCon "Type"
+      re = TyCon "Region"
+  if M.member tycon ks
+    then return ()
+    else do
+    let k = foldr (:->) (TyCon "Type")
+                 [if Just param == mr
+                  then re
+                  else ty
+                 | param <- params
+                 ]
+    put (s, M.insert tycon k ks)

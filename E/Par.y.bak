@@ -21,6 +21,8 @@ import E.ErrM
 %name pDCA DCA
 %name pListRecordField ListRecordField
 %name pRecordField RecordField
+%name pListConTag ListConTag
+%name pConTag ConTag
 %name pS S
 %name pListS ListS
 %name pListCASE ListCASE
@@ -112,18 +114,19 @@ import E.ErrM
   'region' { PT _ (TS _ 57) }
   'return' { PT _ (TS _ 58) }
   'storage' { PT _ (TS _ 59) }
-  'then' { PT _ (TS _ 60) }
-  'tstorage' { PT _ (TS _ 61) }
-  'type' { PT _ (TS _ 62) }
-  'var' { PT _ (TS _ 63) }
-  'where' { PT _ (TS _ 64) }
-  'while' { PT _ (TS _ 65) }
-  '{' { PT _ (TS _ 66) }
-  '|' { PT _ (TS _ 67) }
-  '|=' { PT _ (TS _ 68) }
-  '||' { PT _ (TS _ 69) }
-  '}' { PT _ (TS _ 70) }
-  '~' { PT _ (TS _ 71) }
+  'tag' { PT _ (TS _ 60) }
+  'then' { PT _ (TS _ 61) }
+  'tstorage' { PT _ (TS _ 62) }
+  'type' { PT _ (TS _ 63) }
+  'var' { PT _ (TS _ 64) }
+  'where' { PT _ (TS _ 65) }
+  'while' { PT _ (TS _ 66) }
+  '{' { PT _ (TS _ 67) }
+  '|' { PT _ (TS _ 68) }
+  '|=' { PT _ (TS _ 69) }
+  '||' { PT _ (TS _ 70) }
+  '}' { PT _ (TS _ 71) }
+  '~' { PT _ (TS _ 72) }
 
 L_ident  { PT _ (TV $$) }
 L_integ  { PT _ (TI $$) }
@@ -158,6 +161,7 @@ D : 'default' UIdent '=' T { E.Abs.Default $2 $4 }
   | 'import' ModuleName { E.Abs.Import $2 }
   | GlobalRegion VarBind { E.Abs.Global $1 $2 }
   | 'data' ConArgs '=' DataRHS { E.Abs.Data $2 $4 }
+  | 'tag' ConArgs '=' T 'where' '{' ListConTag '}' { E.Abs.Tag $2 $4 $7 }
 ConArgs :: { ConArgs }
 ConArgs : UIdent { E.Abs.CANil $1 }
         | ConArgs Ident { E.Abs.CACons $1 $2 }
@@ -189,6 +193,12 @@ ListRecordField : {- empty -} { [] }
                 | RecordField ',' ListRecordField { (:) $1 $3 }
 RecordField :: { RecordField }
 RecordField : Ident ':' T { E.Abs.RF $1 $3 }
+ListConTag :: { [ConTag] }
+ListConTag : {- empty -} { [] }
+           | ConTag { (:[]) $1 }
+           | ConTag ',' ListConTag { (:) $1 $3 }
+ConTag :: { ConTag }
+ConTag : UIdent ':' E { E.Abs.ConTag $1 $3 }
 S :: { S }
 S : E { E.Abs.SE $1 }
   | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }

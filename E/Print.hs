@@ -150,7 +150,7 @@ instance Print DataCon where
 instance Print DCA where
   prt i e = case e of
     DCANil uident -> prPrec i 0 (concatD [prt 0 uident])
-    DCACons dca t -> prPrec i 0 (concatD [prt 0 dca, prt 1 t])
+    DCACons dca t -> prPrec i 0 (concatD [prt 0 dca, prt 2 t])
 
 instance Print RecordField where
   prt i e = case e of

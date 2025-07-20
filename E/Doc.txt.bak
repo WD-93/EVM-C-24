@@ -48,8 +48,8 @@ The reserved words used in E are the following:
   | ``data`` | ``default`` | ``else`` | ``end``
   | ``for`` | ``if`` | ``import`` | ``instance``
   | ``memory`` | ``of`` | ``region`` | ``return``
-  | ``storage`` | ``then`` | ``tstorage`` | ``type``
-  | ``var`` | ``where`` | ``while`` | 
+  | ``storage`` | ``tag`` | ``then`` | ``tstorage``
+  | ``type`` | ``var`` | ``where`` | ``while``
 
 The symbols used in E are the following:
   | ; | = | := | :
@@ -87,6 +87,7 @@ All other symbols are terminals.
   |  |  **|**  | ``import`` //ModuleName// 
   |  |  **|**  | //GlobalRegion// //VarBind// 
   |  |  **|**  | ``data`` //ConArgs// ``=`` //DataRHS// 
+  |  |  **|**  | ``tag`` //ConArgs// ``=`` //T// ``where`` ``{`` //[ConTag]// ``}`` 
   | //ConArgs// | -> | //UIdent// 
   |  |  **|**  | //ConArgs// //Ident// 
   | //ModuleName// | -> | //UIdent// 
@@ -109,6 +110,10 @@ All other symbols are terminals.
   |  |  **|**  | //RecordField// 
   |  |  **|**  | //RecordField// ``,`` //[RecordField]// 
   | //RecordField// | -> | //Ident// ``:`` //T// 
+  | //[ConTag]// | -> | **eps**
+  |  |  **|**  | //ConTag// 
+  |  |  **|**  | //ConTag// ``,`` //[ConTag]// 
+  | //ConTag// | -> | //UIdent// ``:`` //E// 
   | //S// | -> | //E// 
   |  |  **|**  | ``if`` //E// ``then`` //S// ``else`` //S// ``end`` 
   |  |  **|**  | ``while`` ``(`` //E// ``)`` //S// 

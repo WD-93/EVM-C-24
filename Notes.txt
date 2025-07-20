@@ -1043,6 +1043,21 @@ Constructor tags must be type-checked vs signatures as well.
 
 I shouldn't have used (M.!)... now I'm paying for it.
 
+data Append a b = Append a b
+--parsed to Append (a b)!
+Nice, changing the con syntax to take T2 also fixed the shift-reduce errors in E.cf.
+IC, the kind error in ImplNil (Ptr r (StructNil r a)) is because I didn't copy the kind signature from List
+to StructNil.
+Desugar.Datatypes needs access to kind sigs as well!
+I need to move datatype kind defaulting to Desugar.Datatypes and do it before copying the kind sig.
+
+If I tagged every pattern and E var with its type (and functions with tyannots as before), I could get the
+type of an expr without needing any additional context.
+That's good, because p := e does not involve explicit variable declaration unlike ordinary locals, and
+even for locals getting the context at each point requires a traversal.
+Core doesn't need local type, but stack/wordification does.
+OK, I'll add VarTyped Name (Maybe T) and maybe make Var a pattern.
+
 Boxed Code cons in static data could be added as globals. When is it appropriate to compute static data?
 It needs to be done post-monomorphization.
 Abandon the idea of type-level (+) etc for now; it requires interleaving HM and instantiation.

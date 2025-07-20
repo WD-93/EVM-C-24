@@ -110,6 +110,7 @@ instance Print D where
     Import modulename -> prPrec i 0 (concatD [doc (showString "import"), prt 0 modulename])
     Global globalregion varbind -> prPrec i 0 (concatD [prt 0 globalregion, prt 0 varbind])
     Data conargs datarhs -> prPrec i 0 (concatD [doc (showString "data"), prt 0 conargs, doc (showString "="), prt 0 datarhs])
+    Tag conargs t contags -> prPrec i 0 (concatD [doc (showString "tag"), prt 0 conargs, doc (showString "="), prt 0 t, doc (showString "where"), doc (showString "{"), prt 0 contags, doc (showString "}")])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ";"), prt 0 xs])
@@ -154,6 +155,12 @@ instance Print DCA where
 instance Print RecordField where
   prt i e = case e of
     RF id t -> prPrec i 0 (concatD [prt 0 id, doc (showString ":"), prt 0 t])
+  prtList _ [] = (concatD [])
+  prtList _ [x] = (concatD [prt 0 x])
+  prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])
+instance Print ConTag where
+  prt i e = case e of
+    ConTag uident e_ -> prPrec i 0 (concatD [prt 0 uident, doc (showString ":"), prt 0 e_])
   prtList _ [] = (concatD [])
   prtList _ [x] = (concatD [prt 0 x])
   prtList _ (x:xs) = (concatD [prt 0 x, doc (showString ","), prt 0 xs])

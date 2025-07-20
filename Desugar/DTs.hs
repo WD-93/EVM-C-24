@@ -63,6 +63,8 @@ data DError = DuplicateDefun Name
             | TagParamDTParamLengthMismatch Name [Name] [Name]
             | FreeVarInTagType Name T Name
             | ConMismatchInTagAndData Name (Set Name) (Set Name)
+            | BoxedTyConLacksKindSig Name
+            | StructDTAlreadyGivenKindSig Name T
             --Final module check errors:
             | Clash String String (Set Name)
             | ClassFunctionsLackSignatures (Set Name)

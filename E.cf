@@ -54,7 +54,7 @@ separator DataCon ";";
 --Constructors: Con <0 or more ts> | Con {field: t, ...}
 DCArgs. DataCon ::= DCA;
 DCANil. DCA ::= UIdent;
-DCACons. DCA ::= DCA T1;
+DCACons. DCA ::= DCA T2;
 --This causes a shift-reduce conflict with DCArgs, but that seems not to be
 --a problem.
 DCRecord. DataCon ::= UIdent "{" [RecordField] "}";

@@ -3,6 +3,7 @@ module Typecheck.HM where
 
 import Util
 import AST.DTs
+import AST.Util (freeVarsPat)
 import Typecheck.TySyn (tyVars,tyCons)
 import Typecheck.FIKS (splitTyFun)
 import Typecheck.DependencyGraph (buildGraph)
@@ -201,6 +202,7 @@ data HMError = Can'tConstructTheInfiniteType Name T --a ~ T a
              | InUnify T T HMError
              | KindHasNoDefault Name
              | CompositeKindCannotBeDefaulted T
+             | FunctionPatShadowsStaticNames (Set Name)
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -232,7 +234,7 @@ data KindSigError = KindOutOfScope Name
   deriving (Eq,Ord,Read,Show)
 data DatatypeError = InConstructor Name ConstructorError
   deriving (Eq,Ord,Read,Show)
-data ConstructorError = InNthArgument Int ConstructorArgumentError
+data ConstructorError = InNthArgument Int T ConstructorArgumentError
   deriving (Eq,Ord,Read,Show)
 data ConstructorArgumentError = TyVarsNotInScope (Set Name)
                               | HMErrorInCon (HMError,HMS)
@@ -333,7 +335,7 @@ tcDatatypes m = do
                                   (Left hme, s) -> Left $ HMErrorInCon (hme,s)
                                   (Right _, _) -> return ()
                              )
-                         ? InNthArgument nth) $ zip [1..] ts)
+                         ? InNthArgument nth t) $ zip [1..] ts)
                    ? InConstructor con)
              condecls)
           ? InCheckDatatype tycon) dts
@@ -432,7 +434,7 @@ typeOf = go
             --dbgf <- zonk tf
             --dbgx <- zonk tx
             --unsafePrint $ "(tf,tx): " ++ show (dbgf,dbgx)
-            unify ("Unit" :-> "Unit") ("Unit" :-> "Unit")
+            --unify ("Unit" :-> "Unit") ("Unit" :-> "Unit")
             --unsafePrint "Could do that at least"
             unify tf (tx :-> b)
             return (f' :$ x', b)
@@ -468,6 +470,7 @@ typeOf = go
           Var nm -> do
             hmr <- ask
             case () of
+              --Now deprecated because Pats are once again separate from E.
               _ | nm == "_" -> do
                     v <- newTyVar
                     k <- kindOf v
@@ -483,8 +486,13 @@ typeOf = go
                     t <- zonk $ TyVar v
                     return (Var nm, t)
                 | let -> throwError $ ScopeErrorInTypeOf nm) e
+--Convert _ to a new local here?
+--Do pattern vars need to be tagged with type?
 typeOfPat :: Pat -> HM (Pat,T)
-typeOfPat = error "todo"
+typeOfPat = go
+  where
+    go = \case
+      PWild -> undefined
                
 --Associate each tyvar not yet in scopedTyVars with a fresh tyvar.
 --Returns a type containing only allocated tyvars.
@@ -1042,7 +1050,11 @@ typeOfFun m (pat,s) =
   return ((pat',s'), a :-> b)
 declareArgsAsLocals :: Module -> Pat -> HM a -> HM a
 declareArgsAsLocals m pat hm = do
-  vs <- S.toList <$> go pat
+  let vsSet = freeVarsPat pat
+  let conflict = S.intersection vsSet staticThings
+  complainIf (not $ S.null conflict)
+    $ FunctionPatShadowsStaticNames conflict
+  let vs = S.toList vsSet
   tyvs <- mapM newTyVarNamed vs
   mapM ((>>= unifyK "Type") . kindOf) tyvs
   let v2tyv = M.fromList $ zip vs tyvs
@@ -1063,14 +1075,13 @@ declareArgsAsLocals m pat hm = do
       p ::: t -> go p
       EArray ps -> S.unions <$> mapM go ps
       p -> throwError $ MalformedPatternInFunctionParam p
+-}
     staticThings = S.unions [
       ks defuns,
-      ks globals,
-      ks constructors,
-      ks fieldTypes
+      ks globals
       ]
     ks f = M.keysSet $ f m
--}
+
 
 --An S can't be inferred by itself because var declaration modifies the locals
 --map via withReaderT.

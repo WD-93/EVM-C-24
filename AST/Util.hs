@@ -1,6 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 module AST.Util where
 
+import Data.Set (Set(..))
+import qualified Data.Set as S
+
 import AST.DTs
 
 --Utility functions for manipulating AST DTs; TODO deduplicate
@@ -30,3 +33,17 @@ roll sel a =
             Just (a',b) -> go a' (b:rbs)
             Nothing -> (a,rbs)
 --Generic unroll is just foldl
+
+--The free vars (all of which should be locals in scope) of a pattern.
+--Free vars in subexprs such as in *e are not included.
+--Therefore naive everything won't work.
+freeVarsPat :: Pat -> Set Name
+freeVarsPat = go
+  where go = \case
+          PWild -> S.empty
+          PVar nm -> S.singleton nm
+          Deref _ _ -> S.empty
+          PDot _ p _ -> go p
+          PBang _ p _ -> go p
+          PConArgs _ _ ps -> S.unions $ map go ps
+          PCon _ _ nmps -> S.unions $ map (go . snd) nmps
