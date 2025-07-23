@@ -30,7 +30,7 @@ data Unit = {Unit};
 //data Pair a b = {Pair {fst: a, snd: b}};
 //Bytestring append without padding
 data Append a b = {Append a b};
-type Pair a b = Append (WordPad a) (WordPad b);
+type Pair a b = Append (WordPad a) (Append (WordPad b) Unit);
 data Bool = {False;True};
 data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
 data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
@@ -51,10 +51,19 @@ data PS s = {PS};
 data Addr = {Addr (UInt 20)};
 
 //ptr[ix] => *(indexPtr (ptr,ix))
-indexPtr : (Ptr r a, UInt 16) -> Ptr r a;
+indexPtr : (Ptr re a, UInt 2) -> Ptr re a;
 indexPtr (ptr,ix) := {
 	 ptr :: Ptr r a;
+	 var off;
 	 MkPtr off = ptr;
-	 sz = sizeof (P :: Proxy a);
+	 var sz = sizeof (P :: P a);
 	 return MkPtr (off + sz * ix)
+	 //This generates an incomprehensibly long type error...
 };
+
+//null() :: t returns a value of type t which is all zero bytes;
+//it's used as the default value of uninitialized locals, but may be an
+//invalid value for the type.
+//It's equivalent to coerce ().
+null : () -> a;
+null _ := return coerce();

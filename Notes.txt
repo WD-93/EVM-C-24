@@ -1058,11 +1058,56 @@ even for locals getting the context at each point requires a traversal.
 Core doesn't need local type, but stack/wordification does.
 OK, I'll add VarTyped Name (Maybe T) and maybe make Var a pattern.
 
+Fixing typeOf: don't just add ++ and += et al, also add .field.
+Also Con {field: e}.
+Eliminate FIKS, don't put fields in tysigs; add a separate field type map to HMR?
+Constructors still benefit from being in tysigs...
+To handle Con {field: e}, need to add dtsInfo to HMR. At that point, might as well put field signatures in
+a separate field.
+Need to quantify fields and rhs together... that can be done with (:->). Quantify the con type, then split
+it into fields and rhs.
+I'll just add Con => field names. Note edge case: a -> b has a constructor MkFun, so Con : t may have an
+arity > its number of fields.
+
 Boxed Code cons in static data could be added as globals. When is it appropriate to compute static data?
 It needs to be done post-monomorphization.
 Abandon the idea of type-level (+) etc for now; it requires interleaving HM and instantiation.
 Instead sizeof could return a Short (not a type-level PN n) and be defined using a dynamic computation on
 field types (which is then inlined and CE'd).
+
+The rigid unification error in indexPtr (revealed after commenting out its body which triggers a huge type
+error...) is presumably due to a mismatch between how I represent tuples (i.e. word-padded anonymous
+structs) at the type and expr level.
+I should only wordpad the a and b in (a,b), not the unit at the end. Fixed!
+
+Replaced M.! with Util.! to find missing key error... tyvar r unexpectedly lacks kind var!
+At some point I introduce r but don't associate it with a kind var... I'll use the monadic error mechanism
+to report the compiler error to get the context. Limit use of error "..." in future.
+The problem is in indexPtr as expected; it occurs even if its body is empty.
+Likely code path: checkWSigs => goF => goSig. typeOfFun doesn't receive the sig; its first use is in
+inf2sig <- matchWithSig t' sig. But matchWithSig can only throw a RigidUnificationError... so the fault is
+presumably in rigidizeAndDefault.
+It was indeed in defaultFreeTyVar's kindOf.
+But why is rigidize run on the rigid tyvar r and not on the generated tyvars?
+Does matchWithSig pass args in the wrong order to unifyRigid?
+Could the issue be everywhereM in rigidizeAndDefaultType running its substitution twice?
+Discovered issues: the tyvars for ix and ptr ($ix_0 and $ptr_2) are already bound to rigid vars.
+$ix_0 is incorrectly bound to Append (WordPad (uint16)) (Append (WordPad (())) (()))).
+
+Fixing tuples: (a,...ts) => Append (WordPad a) (tuple ts); () => Unit
+That allows polymorphic class functions to be defined recursively in terms of hetlists.
+Pattern, expr and type desugaring must agree. Fixed, the problem was tupleT and unTupleT incorrectly treated
+Pair as tuple cons (which is now Append . WordPad).
+The problem may be the everywhereM in rigidizeAndDefault... the mkM doesn't just look at one cell, so subtypes
+(containing inferred tyvars) get substituted for types containing rigid tyvars.
+At that point a subsequent traversal will fail, because the rigid tyvars are not in scope.
+I need to everywhereM but stop again... Woo, that fixed it!
+Next is the huge error from indexPtr's body. Preventing repeated InInferBlock shortened it enough to read it...
+The type error correctly identified a bug in the desugaring: a + b => plus a b, not plus(a,b)!
+Fixed. Now the issue is can't unify 2 and 16, an obvious one!
+Woot, HM now succeeds for stdlib + simple programs!
+No doubt bugs lurk... but I'll move on to mono and catch them as they come.
+Beyond ecase (currently lacking syntactic support), one thing remains: &e! Done!!
 
 **************
 

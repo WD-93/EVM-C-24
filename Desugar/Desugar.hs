@@ -3,7 +3,7 @@ module Desugar.Desugar where
 --A separate module for desugaring; Compiler should just tie each stage
 --together and handle the IO.
 
-import Util (complainIf,(?))
+import Util (complainIf,(?),(!))
 --import E.Par (pM,myLexer)
 --import E.ErrM (Err(..))
 import E.Abs (Ident(..),UIdent(..))
@@ -19,7 +19,7 @@ import Desugar.SEP (desugarS,desugarE,desugarP)
 --AST -> AST
 
 import Data.Map (Map(..))
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!))
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.Trans.Except
@@ -132,7 +132,7 @@ desugar (P.Module ds) = do
   --defun
   ds <- groupDefuns di nm2d
   --instance
-  is <- groupInstances di $ nm2d M.! "Instance"
+  is <- groupInstances di $ nm2d ! "Instance"
   dis <- combineDefsAndInstances ds is
   --The module to return... but only if the checks pass
   let modul = Module {dtsInfo = dtsFinal,

@@ -2,6 +2,8 @@ module Util where
 
 import Control.Monad.Except
 import System.IO.Unsafe (unsafePerformIO)
+import Data.Map (Map(..))
+import qualified Data.Map as M
 
 --General utility functions that should be available to any module and don't
 --fit anywhere else.
@@ -9,6 +11,8 @@ import System.IO.Unsafe (unsafePerformIO)
 (?) :: Either localErr a -> (localErr -> globalErr) -> Either globalErr a
 Right b ? _ = Right b
 Left err ? errt = Left $ errt err
+
+
  
 complainIf :: MonadError err m => Bool -> err -> m ()
 complainIf b err
@@ -35,3 +39,11 @@ log256 n | n < 0 = error $ "Negative argument to log256: " ++ show n
          | let = go n
                  where go 0 = 0
                        go n = succ $ go $ n `div` 256
+
+--Using M.! anywhere was a mistake... I'll now replace it with this to get
+--error location info.
+(!) :: (Show k, Show v, Ord k) => Map k v -> k -> v
+m ! k =
+  case M.lookup k m of
+    Just v -> v
+    Nothing -> error $ "Missing key in (!): " ++ show (k,m)

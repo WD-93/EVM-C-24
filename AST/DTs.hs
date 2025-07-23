@@ -23,7 +23,10 @@ type Name = String
 data E = EInteger Integer
        --includes primops, &&, ||, coerce, unsafeCoerce and constructors
        --(including tuples), *_, _[_] and .field
-       | Var Name 
+
+       --Var now has type annotations, enabling one to get the type of a post-HM
+       --E without additional context.
+       | TypedVar (Maybe T) Name
        | E :$ E --Function application, including primops
        --Type declaration, not coercion; useful for overloaded exprs
        | E ::: T
@@ -42,7 +45,9 @@ data E = EInteger Integer
        -- | Let (Pat,E) E
        | CaseE E [(Pat,E)]
        --Making the lhs a Pat allows incremental decomposition of patterns
-       | OPAssign Pat Op E
+       --The Maybe E is for holding the parameterized op function after
+       --Hindley-Milner.
+       | OPAssign (Maybe E) Pat Op E
        | PPPre Pat
        | PPPost Pat
        | MMPre Pat
@@ -91,8 +96,8 @@ n `padWith` p = n `roundedUpMod` pad2Sz p
 tupleE :: [E] -> E
 tupleE [] = Var "Unit"
 tupleE (e:es) = Var "Append" :$ (Var "WordPad" :$ e) :$ tupleE es
-tupleF :: [e] -> [Field e]
-tupleF = map (\x -> ((Word,Word),Nothing,x))
+--tupleF :: [e] -> [Field e]
+--tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type
 instance IsString T where
   fromString = TyCon
@@ -114,7 +119,10 @@ infixr 5 :->
 pattern Array n a = "Array" :$$ n :$$ a
 
 pattern Unit = TyCon "Unit"
+--Note: this is no longer tuple cons
 pattern Pair a b = TyCon "Pair" :$$ a :$$ b
+pattern Append a b = TyCon "Append" :$$ a :$$ b
+pattern WordPad a = TyCon "WordPad" :$$ a
 --(a,b) desugars to Pair a (Pair b Nil), not Pair a b
 pattern Tu2 a b = Pair a (Pair b Unit)
 pattern Tu3 a b c = Pair a (Tu2 b c)
@@ -171,7 +179,7 @@ unTupleT = go
   where
     go :: T -> Maybe [T]
     go = \case
-      Pair a b -> (a :) <$> go b
+      Append (WordPad a) b -> (a :) <$> go b
       Unit -> Just []
       _ -> Nothing
 
@@ -250,9 +258,10 @@ hardcodedTyCons = M.fromList $
 --be hardcoded.
   
 --The kind check can't be done here, you need to defer it to IR.
+--(a,b) => Append (WordPad a) (Append (WordPad b) Unit)
 tupleT :: [T] -> T
 tupleT [] = Unit
-tupleT (t:ts) = Pair t (tupleT ts) 
+tupleT (t:ts) = Append (WordPad t) (tupleT ts) 
 
 --No block expressions, so local return has been removed
 data S = SE E --required because := has been moved to E
@@ -282,7 +291,8 @@ data S = SE E --required because := has been moved to E
 --TODO add a tyannot param to Module, STEP? Not for now.
 data Pat = PWild --becomes new local
          --The atomic, infallible patterns
-         | PVar Name --local only by type infer; global g is desugared to *g
+         | TypedPVar (Maybe T) Name
+           --local only by type infer; global g is desugared to *g
          | Deref (Maybe [T]) E
          --Converted to assignment of atomic pattern
          | PDot (Maybe [T]) Pat Name
@@ -295,6 +305,9 @@ data Pat = PWild --becomes new local
          --Order matters because patterns may contain side-effecting exprs
          | PCon Name (Maybe [T]) [(Name,Pat)]
   deriving (Eq,Ord,Read,Show,Data)
+pattern Var nm = TypedVar Nothing nm
+pattern PVar nm = TypedPVar Nothing nm
+
 pattern p :. field = PDot Nothing p field
 pattern p :! ix = PBang Nothing p ix
 

@@ -48,13 +48,18 @@ Ptr : Region -> Type -> Type;
 data Ptr r a = {MkPtr (UInt 2)};
 //(->) is desugared to Fun
 data Fun a b = {MkFun (UInt 2)};
+//Unboxed arrays
+//It needs to be declared for type inference to pass... but it really
+//shouldn't have a .tagArray field...
+Array : Nat -> Type -> Type;
+data Array len a = {};
 
 //Primfuns; constructs such as + or *_ desugar into prefix names.
 
 //Since no unification occurs during the monomorphization and instantiation
 //phase, sizeOfP : P a -> PN n is not useful.
-//sizeof takes a proxy a and returns a SizeT (UInt 16)
-sizeof : P a -> UInt 16;
+//sizeof takes a proxy a and returns a SizeT (UInt 2)
+sizeof : P a -> UInt 2;
 sizeof p := {};
 
 //Numeric ops
@@ -87,9 +92,9 @@ modulo _ := ();
 negate : Int a b -> Int a b;
 negate _ := ();
 
-shL : Int a b -> Int c d -> Int a b;
+shL : (Int a b, Int c d) -> Int a b;
 shL _ := ();
-shR : Int a b -> Int c d -> Int a b;
+shR : (Int a b, Int c d) -> Int a b;
 shR _ := ();
 
 //Pointer ops; writePtr isn't necessary here since it appears after type
@@ -115,6 +120,11 @@ sizeofP _ := ();
 knownNat : PN n -> Int s l;
 knownNat pn := ();
 //TODO a region datatype and knownRegion.
+
+//_!_ desugars to indexArray
+//I'll restrict the index type to Short for now.
+indexArray : (Array len a,Short) -> a;
+indexArray _ := ();
 
 //The other primitives are black magic but this one is blacker due to its
 //non-compositional semantics.

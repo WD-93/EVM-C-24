@@ -255,7 +255,7 @@ unrollTyApps = foldl (:$$)
 genericApplyTySyns :: Data a => Syns -> a -> Either TySynError a
 genericApplyTySyns syns =
   everywhereButStopM isT (mkM $ applyTySyns syns)
-  where isT x = return $ (cast x :: Maybe T) /= Nothing
+isT x = return $ (cast x :: Maybe T) /= Nothing
 
 --Monadic everywhere traversal that skips subterms when the predicate is true.
 everywhereButStopM :: (Monad m, Data a)

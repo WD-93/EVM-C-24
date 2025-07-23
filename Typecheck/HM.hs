@@ -3,14 +3,17 @@ module Typecheck.HM where
 
 import Util
 import AST.DTs
-import AST.Util (freeVarsPat)
-import Typecheck.TySyn (tyVars,tyCons)
+import AST.Util (freeVarsPat,op2fun)
+import Typecheck.TySyn (tyVars,tyCons,
+                        --TODO move the two functions below to a more
+                        --appropriate module
+                        everywhereButStopM,isT)
 import Typecheck.FIKS (splitTyFun)
 import Typecheck.DependencyGraph (buildGraph)
 import Typecheck.HM.AddConsAndFieldsToTySigs (addConsAndFieldsToTySigs)
 
 import Data.Map (Map(..))
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!))
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.Reader
@@ -150,6 +153,8 @@ Now I can statically pass [Word]s... does that create problems?
 data HMR = HMR {
   --Things with sigs or already typed; includes constructors and fields
   hmTySigs :: Map Name T,
+  --New: dtsInfo from module, using which Con {field: e/p} can be typed
+  hmDTsInfo :: DTsInfo E,
   --The kind of level-1 tycons
   hmKindSigs :: Map Name T,
   --The set of level-2 tycons; they're all of kind Kind
@@ -199,10 +204,21 @@ data HMError = Can'tConstructTheInfiniteType Name T --a ~ T a
              | InTypeOfFun Pat S HMError
              | InInferBlock T [S] HMError
              | InTypeOf E HMError
-             | InUnify T T HMError
+             | InUnify (T,T) HMError
+             --switching to tuple for easier error reading
              | KindHasNoDefault Name
              | CompositeKindCannotBeDefaulted T
              | FunctionPatShadowsStaticNames (Set Name)
+             | Can'tAssignStaticThing Name
+             | NoSuchField Name
+             | NoSuchConstructor Name
+             | PConArgsArityMismatch Name [Pat] Int
+             | NoSuchFieldInCon Name Name --field, con
+             | HMCompilerError String --if this is thrown it's the compiler's
+             --fault, not the programmers. Used for better error reporting.
+             | HMAnnotPath String HMError
+             --A single constructor for debug tracing
+             | InvalidAmpersandExpr E
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -305,7 +321,7 @@ tcDatatypes m = do
       dts = map (\(tycon,dti) ->
                       (tycon,(dtParams dti,
                                map (\con ->
-                                      let ci = conInfo dtsi M.! con
+                                      let ci = conInfo dtsi ! con
                                       in (con, map snd $ conFields ci)
                                    ) $ dtCanonicalCons dti))
                   )
@@ -315,7 +331,7 @@ tcDatatypes m = do
                   }
   mapM_ (\(tycon,(params,condecls)) -> (do
            --Note duplicate params have been ruled out earlier
-           let k = kindsigs m M.! tycon
+           let k = kindsigs m ! tycon
            --FIKS also guarantees tycon is in kindsigs, its arity matches
            --params and the return kind is Type
            let (kargs,_) = splitTyFun k
@@ -404,14 +420,21 @@ checkIsType m t = (case runHM go newHMR{hmKindSigs = kindsigs m,
 
 --Templates to initialize with the fields you need
 newHMR = HMR {hmTySigs = e,
+              hmDTsInfo = newDTsInfo,
               hmKindSigs = e,
               hmSorts = S.empty,
-              hmDefaults = M.empty,
-              hmTaus = M.empty,
+              hmDefaults = e,
+              hmTaus = e,
               hmLocals = e
              }
   where e :: Map k v
         e = M.empty
+        newDTsInfo =
+          DTsInfo {
+          datatypes = e,
+          conInfo = e,
+          fieldInfo = e
+                  }
 newHMS = HMS {hmVarCounter = 0,
               hmTyMap = e,
               hmKindMap = e,
@@ -426,7 +449,9 @@ newHMS = HMS {hmVarCounter = 0,
 typeOf :: E -> HM (E,T)
 typeOf = go
   where go e = withError (InTypeOf e) $ (\case
-          EInteger n -> return (EInteger n, UInt 256)
+          EInteger n -> return (EInteger n, UInt 32)
+          -- &e desugaring
+          Var "addressOf" :$ e -> typeOfAmpersand e
           f :$ x -> do
             (f',tf) <- go f
             (x',tx) <- go x
@@ -461,6 +486,73 @@ typeOf = go
             mapM_ (unify a) ts
             return (EArray e's, Array (TyNat $ fromIntegral len) a)
           TyApp e t -> error "Compiler error: TyApp should not appear yet!"
+          --I don't currently have syntactic support for ecase...
+          CaseE e pates -> error "todo"
+          --Issue: I need to save the type params for the op, but their
+          --number depends on the op (e.g. shL has 4, bwAnd has 1).
+          --I also don't want to repeat the opfun lookup.
+          --Solution: I'll cache the inferred opfun in a Maybe E
+          OPAssign Nothing p op e -> do
+            (p',tp) <- typeOfPat p
+            (e',te) <- go e
+            let opfun = Var $ op2fun op
+            (opfun',top) <- typeOf opfun
+            let Pair a b :-> c = top
+            unify tp a
+            unify te b
+            unify tp c -- p op= e returns the same type as p...
+            c' <- zonk c
+            --opfun' will get zonked eventually... 
+            return (OPAssign (Just opfun') p' op e', c')
+          --p++ uses the inc function which supports both Ptr r a and Int s l.
+          --inc : a -> a
+          PPPre p -> do
+            (p',a) <- typeOfPat p
+            return (PPPre p',a)
+          PPPost p -> do
+            (p',a) <- typeOfPat p
+            return (PPPost p',a)
+          -- (--) uses dec : a -> a 
+          MMPre p -> do
+            (p',a) <- typeOfPat p
+            return (MMPre p',a)
+          MMPost p -> do
+            (p',a) <- typeOfPat p
+            return (MMPost p',a)
+          --The same logic as in PCon: quantify con type, extract its field
+          --types, unify with field es.
+          ConRecord con Nothing fieldes -> do
+            tysigs <- asks hmTySigs
+            scheme <- case M.lookup con tysigs of
+                        Nothing -> throwError $ NoSuchConstructor con
+                        Just t -> return t
+            (vars,tcon) <- quantify scheme
+            fielde'ts <- forM fieldes (\(field,e) -> do
+                                          (e',t) <- go e
+                                          return ((field,e'),t))
+            let fielde's = map fst fielde'ts
+            fields <- fieldsCon con
+            let (rhsT,f2t) = assocFieldsWithTs tcon fields
+            forM fielde'ts (\((field,_),t) ->
+                              case M.lookup field f2t of
+                                Nothing ->
+                                  throwError $ NoSuchFieldInCon field con
+                                Just t' -> unify t t')
+            rhsT' <- zonk rhsT
+            params <- mapM (zonk . TyVar) vars
+            return (ConRecord con (Just params) fielde's, rhsT')
+          Dot e Nothing field -> do
+            tysigs <- asks hmTySigs
+            fieldt <- case M.lookup ('.':field) tysigs of
+                        Nothing -> throwError $ NoSuchField field
+                        Just t -> return t
+            (vars,qt) <- quantify fieldt
+            let a :-> b = qt
+            (e',et) <- go e
+            unify a et
+            params <- mapM (zonk . TyVar) vars
+            b' <- zonk b
+            return (Dot e' (Just params) field, b')
           --Now for the tricky bit...
           --If _, return _ @ a; it's the only polymorphic non-function.
           --If in tysigs, quantify and return that
@@ -470,30 +562,164 @@ typeOf = go
           Var nm -> do
             hmr <- ask
             case () of
+              {-
               --Now deprecated because Pats are once again separate from E.
               _ | nm == "_" -> do
                     v <- newTyVar
                     k <- kindOf v
                     unifyK k "Type"
                     return (TyApp "_" [v], v)
-                | Just scheme <- M.lookup nm $ hmTySigs hmr -> do
+-}
+              _ | Just scheme <- M.lookup nm $ hmTySigs hmr -> do
                   (vars,t) <- quantify scheme
                   return (TyApp nm $ map TyVar vars, t)
                 | Just t <- M.lookup nm $ hmLocals hmr -> do
                   t' <- zonk t
-                  return (Var nm, t')
+                  return (TypedVar (Just t') nm, t')
                 | Just v <- M.lookup nm $ hmTaus hmr -> do
                     t <- zonk $ TyVar v
-                    return (Var nm, t)
+                    return (TypedVar (Just t) nm, t)
                 | let -> throwError $ ScopeErrorInTypeOf nm) e
---Convert _ to a new local here?
---Do pattern vars need to be tagged with type?
+--e ::= *E | e.field | e!ix
+--Hacky approach: first get a from typeOf e, then get the type of the
+--pointer to get the r. Result: Ptr r a
+typeOfAmpersand :: E -> HM (E,T)
+typeOfAmpersand e =
+  case disassembleAmpersandExpr e of
+    Nothing -> throwError $ InvalidAmpersandExpr e
+    Just ptr -> do
+      (e',a) <- typeOf e
+      (_,ptrt) <- typeOf ptr
+      let Ptr r _ = ptrt --This can't fail after typeOf e passes... right?
+      a' <- zonk a
+      r' <- zonk r
+      return (TyApp "addressOf" [a',r'] :$ e', Ptr r' a')
+--Gets the pointer in the expr if it's a valid ampersand expr (pre-HM)
+disassembleAmpersandExpr :: E -> Maybe E
+disassembleAmpersandExpr = go
+  where go = \case
+          Dot e Nothing _field -> go e
+          Var "indexArray" :$ tup
+            | Just [arr,ix] <- unTupleE tup ->
+              go arr
+          Var "deref" :$ ptr -> return ptr
+          _ -> Nothing
+  
+                         
+--Convert _ to a new local here; that lets me avoid tagging _ with type.
 typeOfPat :: Pat -> HM (Pat,T)
 typeOfPat = go
   where
     go = \case
-      PWild -> undefined
-               
+      --Issue: now there'll be $wild<n> names which aren't declared anywhere.
+      PWild -> do
+        wild <- newVarNamed "$wild"
+        t <- newTyVar
+        k <- kindOf t
+        unifyK k "Type"
+        return (TypedPVar (Just t) wild, t)
+      --If the name is a function or global (in hmTySigs or hmTaus), fail -
+      --f and &g can't be assigned.
+      --If it's a local, look it up in hmLocals and zonk the type.
+      PVar v -> do
+        hmr <- ask
+        case () of
+          _ | S.member v $ S.union (M.keysSet $ hmTySigs hmr)
+              (M.keysSet $ hmTaus hmr) ->
+              throwError $ Can'tAssignStaticThing v
+            | Just t <- M.lookup v $ hmLocals hmr -> do
+                  t' <- zonk t
+                  return (TypedPVar (Just t') v, t')
+            --Add a different error type for pattern? Or InTypeOfPat...
+            | let -> throwError $ ScopeErrorInTypeOf v
+      Deref Nothing e -> do
+        (e',t) <- typeOf e
+        r <- newTyVar
+        a <- newTyVar
+        --Do I need to unifyK here?
+        unify t (Ptr r a)
+        r' <- zonk r
+        a' <- zonk a
+        return (Deref (Just [r',a']) e',a')
+      --PDot: look up .field : a -> b in tysigs, treat as application.
+      --Using FIKS to put field types in tysigs avoids the need to modify HMR,
+      --but having a separate map for fields is cleaner...
+      PDot Nothing pstruct field -> do
+        tysigs <- asks hmTySigs
+        case M.lookup ('.':field) tysigs of
+          Nothing -> throwError $ NoSuchField field
+          Just scheme -> do
+            (vars,tfield) <- quantify scheme
+            let a :-> b = tfield
+            (p',tstruct) <- go pstruct
+            unify tstruct a
+            b' <- zonk b
+            return (PDot (Just $ map TyVar vars) p' field, b')
+      --Array len a ! Short : a
+      PBang Nothing parr eix -> do
+        (parr',tarr) <- go parr
+        (eix',tix) <- typeOf eix
+        unify tix (UInt 16)
+        len <- newTyVar
+        a <- newTyVar
+        unify tarr (Array len a)
+        len' <- zonk len
+        a' <- zonk a
+        return (PBang (Just [len',a']) parr' eix', a')
+        --PConArgs: look up con type, treat as application
+      PConArgs con Nothing ps -> do
+        (vars,conT) <- pconPrefix con
+        p'ts <- mapM go ps
+        let p's = map fst p'ts
+            ts = map snd p'ts
+        --The number of ps must match the number of fields of
+        --the constructor. t is guaranteed to have an arity >= #fields.
+        conArity <- length <$> fieldsCon con
+        complainIf (length p'ts /= conArity)
+          $ PConArgsArityMismatch con ps conArity
+        rhsT <- unifyConArgs conT ts
+        typarams <- mapM (zonk . TyVar) vars
+        return (PConArgs con (Just typarams) p's, rhsT)
+      --PCon: look up field types, unify
+      PCon con Nothing fieldps -> do
+        (vars,conT) <- pconPrefix con
+        fs <- fieldsCon con
+        --Each field in fs must be associated with an argument type in conT
+        let (rhsT,f2t) = assocFieldsWithTs conT fs
+        fieldps' <- forM fieldps (\(field,p) ->
+                                    case M.lookup field f2t of
+                                      Nothing -> throwError $
+                                        NoSuchFieldInCon field con
+                                      Just t -> do
+                                        (p',pt) <- go p
+                                        unify pt t
+                                        return (field,p'))
+        typarams <- mapM (zonk . TyVar) vars
+        return (PCon con (Just typarams) fieldps', rhsT)
+                                     
+    --rhsT <- unifyConArgs conT ts
+    unifyConArgs rhsT [] = return rhsT
+    unifyConArgs (argT :-> conT') (t:ts) = do
+      unify t argT
+      unifyConArgs conT' ts
+    --The shared prefix of PConArgs and PCon(record)
+    pconPrefix con = do
+      tysigs <- asks hmTySigs
+      case M.lookup con tysigs of
+        Nothing -> throwError $ NoSuchConstructor con
+        Just scheme ->
+          quantify scheme
+assocFieldsWithTs rhsT [] = (rhsT,M.empty)
+assocFieldsWithTs (argT :-> conT') (f:fs) =
+  let (rhsT,m) = assocFieldsWithTs conT' fs
+  in (rhsT, M.insert f argT m)
+--Get the fields of a Con; precond: the Con exists
+--Also used in typeOf
+fieldsCon :: Name -> HM [Name]
+fieldsCon con = do
+  dtsi <- asks hmDTsInfo
+  let ci = conInfo dtsi ! con
+  return $ map fst $ conFields ci
 --Associate each tyvar not yet in scopedTyVars with a fresh tyvar.
 --Returns a type containing only allocated tyvars.
 scopeType :: T -> HM T
@@ -540,7 +766,13 @@ kindOf = \case
   --If I restrict kind hierarchies to max depth 3 (ending in kind), maybe I
   --can avoid infinite recursion
   TyVar a -> do
-    kv <- (M.! a) <$> gets hmTyVars
+    a2kv <- gets hmTyVars
+    kv <- case M.lookup a a2kv of
+               Just kv -> return kv
+               Nothing ->
+                 throwError $ HMCompilerError $
+                 "Tyvar "++a++" unexpectedly lacks kind var; " ++
+                 "hmTyVars: " ++ show a2kv
     zonkK kv
   TyNat _ -> return "Nat"
   tf :$$ tx -> do
@@ -581,7 +813,7 @@ unify :: T -> T -> HM ()
 unify t1 t2 = do
   t1' <- zonk t1
   t2' <- zonk t2
-  withError (InUnify t1' t2') $ do
+  withError (InUnify (t1',t2')) $ do
     k1 <- kindOf t1'
     k2 <- kindOf t2'
     unifyK k1 k2
@@ -714,7 +946,7 @@ inferTypes m = do
         withSigs f = S.toList $ S.intersection (M.keysSet $ f m) $
                      M.keysSet $ tysigs m
         --Is there any reason I can't use m' instead f m in checkWSigs..?
-        checkWSigs :: Data def =>
+        checkWSigs :: (Show def, Data def) =>
                       Module ->
                       (T -> def -> HM def) ->
                       (Module -> Map Name def) ->
@@ -722,8 +954,8 @@ inferTypes m = do
                       Either TCModuleError (Map Name def)
         checkWSigs m' handler field nms =
           M.fromList <$> mapM (\nm -> do
-                                  let def = field m M.! nm
-                                      sig = tysigs m M.! nm
+                                  let def = field m ! nm
+                                      sig = tysigs m ! nm
                                   case runHM (handler sig def)
                                        (hmr m') newHMS
                                     of
@@ -732,6 +964,7 @@ inferTypes m = do
                                     (Right def', _) ->
                                       return (nm,def')) nms
         hmr m' = HMR{hmTySigs = tysigs m',
+                     hmDTsInfo = dtsInfo m,
                   hmKindSigs = kindsigs m, --kinds and sorts not changed
                   hmSorts = kinds m,
                   hmDefaults = defaults m,
@@ -789,7 +1022,7 @@ checkClasses :: Module -> Map Name (Set (T,Pat,S)) ->
 checkClasses m classes =
   M.fromList <$> (forM (M.toList classes) $
                   \(f,set) -> do
-                    let scheme = tysigs m M.! f
+                    let scheme = tysigs m ! f
                     set' <- S.fromList <$>
                        (forM (S.toList set) $ \(t,p,s) -> do
                            (p',s') <- checkSig m
@@ -803,7 +1036,7 @@ checkClasses m classes =
                     return (f,set')
                  )
 
-checkSig :: Data def =>
+checkSig :: (Show def, Data def) =>
               Module ->
               (T -> def -> HM def) ->
               Name -> def -> T ->
@@ -814,6 +1047,7 @@ checkSig m handler name def sig =
     (Right def', _) -> return def'
   where
     hmr = HMR{hmTySigs = tysigs m,
+              hmDTsInfo = dtsInfo m,
               hmKindSigs = kindsigs m, --kinds and sorts not changed
               hmSorts = kinds m,
               hmDefaults = defaults m,
@@ -825,24 +1059,35 @@ checkSig m handler name def sig =
 --If non-rigid a :: k where k lacks a default, fail.
 --If k is polymorphic, that's a compiler error.
 --To look up kinds and defaults, rigidize must be in HM.
-rigidizeAndDefault :: Data a => Map Name T -> a -> HM a
-rigidizeAndDefault inf2rigid = everywhereM $ mkM $
-                               \t -> zonk t >>=
-                                     rigidizeAndDefaultType inf2rigid
+rigidizeAndDefault :: (Show a, Data a) => Map Name T -> a -> HM a
+rigidizeAndDefault inf2rigid d =
+  withError (HMAnnotPath $ "rad: " ++ show d) $ everywhereButStopM isT (mkM $
+  \t -> withError (HMAnnotPath $ "inrad: " ++ show t) $
+        zonk t >>=
+        rigidizeAndDefaultType inf2rigid) d
 --Invariant: after zonking, all tyvars in the type are unbound.
 --Either they're in inf2rigid or not.
 rigidizeAndDefaultType :: Map Name T -> T -> HM T
-rigidizeAndDefaultType inf2rigid = everywhereM $ mkM $
+rigidizeAndDefaultType inf2rigid t =
+  withError (HMAnnotPath $ "radt: " ++ show (inf2rigid,t)) $ go t
+  where
+    go = \case
+      tf :$$ tx -> (:$$) <$> go tf <*> go tx
+      TyVar a | Just t <- M.lookup a inf2rigid -> return t
+              | otherwise -> defaultFreeTyVar a
+      t -> return t
+
+  {-everywhereM $ mkM $
   \case TyVar a | Just t <- M.lookup a inf2rigid -> return t
                 | otherwise -> defaultFreeTyVar a
-        t -> return t
+        t -> return t-}
 
 --Attempts to find the default instance for a tyvar that's not bound by the
 --inferred signature.
 --Also used in default logic for defs without signatures.
 defaultFreeTyVar :: Name -> HM T
 defaultFreeTyVar a = do
-  k <- kindOf $ TyVar a
+  k <- withError (HMAnnotPath "defaultFreeTyVar kindOf") $ kindOf (TyVar a)
   ds <- asks hmDefaults
   case k of
     TyCon kcon ->
@@ -896,6 +1141,7 @@ inferSCC nms m =
                globals = M.union globs $ globals m
               }
   where hmr = HMR{hmTySigs = tysigs m,
+                  hmDTsInfo = dtsInfo m,
                   hmKindSigs = kindsigs m,
                   hmSorts = kinds m,
                   hmDefaults = defaults m,
@@ -963,7 +1209,7 @@ applyDefaults :: Data a => Map Name a -> Map Name T -> HM (Map Name a)
 applyDefaults nm2def nm2t = do
   let nmdefs = M.toList nm2def
   M.fromList <$> (mapM (\(nm,def) ->
-                        let scheme = nm2t M.! nm
+                        let scheme = nm2t ! nm
                             prettyMap = M.fromList $
                                         zip (tyVarsList scheme) pretties
                             --Use rigidizeAndApplyDefaults here instead?
@@ -1060,8 +1306,8 @@ declareArgsAsLocals m pat hm = do
   let v2tyv = M.fromList $ zip vs tyvs
   withReaderT (\hmr->hmr{hmLocals = v2tyv}) hm
   where
-    go :: Pat -> HM (Set Name)
-    go = error "todo"
+    --go :: Pat -> HM (Set Name)
+    --go = error "todo"
     {-
       \case
       EInteger _ -> return S.empty
@@ -1089,12 +1335,14 @@ inferS :: T -> S -> HM S
 inferS ret s = head <$> inferBlock ret [s]
 inferBlock :: T -> [S] -> HM [S]
 inferBlock ret ss =
-  withError (InInferBlock ret ss) $
+  withError (InInferBlock ret ss) $ inferBlock' ret ss
+inferBlock' :: T -> [S] -> HM [S]
+inferBlock' ret ss =
    (\case
        [] -> return []
        s:ss -> case s of
-                 Declare ves -> withDeclares ves $ inferBlock ret ss
-                 _ -> (:) <$> go s <*> inferBlock ret ss) ss
+                 Declare ves -> withDeclares ves $ inferBlock' ret ss
+                 _ -> (:) <$> go s <*> inferBlock' ret ss) ss
   --go handles all the cases but declare since they don't modify scope
   where go = \case
           SE e -> SE <$> fst <$> typeOf e
@@ -1113,7 +1361,7 @@ inferBlock ret ss =
                              return ((pat',s'),t)) patss
             mapM_ (unify t . snd) patsts
             return $ Case e' $ map fst patsts
-          Block ss -> Block <$> inferBlock ret ss
+          Block ss -> Block <$> inferBlock' ret ss
           Break -> return Break
           Continue -> return Continue
 --var x = a, y = b... is sugar for var x = a; var y = b...

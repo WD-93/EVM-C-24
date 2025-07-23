@@ -4,7 +4,7 @@ module Desugar.Datatypes where
 --A module for processing DT decls: set default tags, allocate tag DTs,
 --desugar boxed DTs.
 
-import Util (complainIf,log256)
+import Util (complainIf,log256,(!))
 import Desugar.DTs
 import Desugar.T (desugarT)
 import qualified E.Abs as P
@@ -13,7 +13,7 @@ import Desugar.Util (defaultFieldName)
 
 import Control.Monad.State
 import Control.Monad.Except
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!))
 import qualified Data.Set as S
 import Data.Generics (everywhereM,mkM)
 
@@ -179,7 +179,7 @@ processDT tycon params cons mr mti = do
            processDT scon params
              [(scon, Left $ map (\(fld,t) -> (fld++scon,t)) fields)]
              Nothing
-             (Just (params,tagT,M.singleton scon $ con2tag M.! con))
+             (Just (params,tagT,M.singleton scon $ con2tag ! con))
            let implfield = "unImpl" ++ con
                implcon = "Impl" ++ con
            addCon implcon $ ConInfo {
@@ -207,7 +207,7 @@ processDT tycon params cons mr mti = do
         addCon con $ ConInfo {
             conBoxed = False,
             conParent = tycon,
-            conTag = con2tag M.! con,
+            conTag = con2tag ! con,
             conFields = fields,
             conRHS = conrhs
             }

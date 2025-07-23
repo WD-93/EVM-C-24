@@ -9,7 +9,7 @@ import Desugar.Util (defaultFieldName)
 import Desugar.T
 
 import qualified Data.Set as S
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!))
 import Control.Monad.Except
 
 --Desugaring functions using DInfo for S, E and Pat respectively.
@@ -101,7 +101,7 @@ desugarE di@(gs,field2bcon,str2id) = go
       P.Not a -> op1 "lNot" a
       P.BitwiseNot a -> op1 "bwNot" a
       P.Deref a -> op1 "deref" a
-      P.AddressOf a -> op1 "ampersand" a
+      P.AddressOf a -> op1 "addressOf" a
       P.Mul a b -> op2 "multiply" a b
       P.Div a b -> op2 "divide" a b
       P.Mod a b -> op2 "modulo" a b
@@ -127,7 +127,7 @@ desugarE di@(gs,field2bcon,str2id) = go
           then return $ p := e
           --Hacky but terse replacement for a big case:
           else let op = read $ drop 2 $ show aop
-               in return $ OPAssign p op e
+               in return $ OPAssign Nothing p op e
       --Coerce need no longer be part of the syntax
       P.TypeAnnot pe pt -> do
         let t = desugarT pt
@@ -137,7 +137,7 @@ desugarE di@(gs,field2bcon,str2id) = go
     op2 fnm pa pb = do
       a <- go pa
       b <- go pb
-      return $ Var fnm :$ a :$ b
+      return $ Var fnm :$ tupleE [a,b]
 
 {-
 Valid patterns:
@@ -192,7 +192,7 @@ desugarP di@(gs,field2bcon,str2id) = go
       P.Con (UIdent con) -> return (con,[])
       pe -> throwError $ GenericDError $ "Invalid pattern: " ++ show pe
     mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
-    mkStruct = foldl (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
+    mkStruct = foldr (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
     unit = PConArgs "Unit" Nothing []
 
 desugarS :: DInfo -> P.S -> Either DError S

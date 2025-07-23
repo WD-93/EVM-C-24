@@ -47,3 +47,17 @@ freeVarsPat = go
           PBang _ p _ -> go p
           PConArgs _ _ ps -> S.unions $ map go ps
           PCon _ _ nmps -> S.unions $ map (go . snd) nmps
+
+--The function name to which each constructor of Op corresponds
+op2fun :: Op -> Name
+op2fun = \case
+  Plus -> "plus"
+  Minus -> "minus"
+  Mul -> "multiply"
+  Div -> "divide"
+  Mod -> "modulo"
+  Shl -> "shL"
+  Shr -> "shR"
+  And -> "bwAnd"
+  Or -> "bwOr"
+  Xor -> "bwXor"

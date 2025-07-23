@@ -7,7 +7,7 @@ import AST.DTs
 import Util (complainIf, (?))
 
 import Data.Map (Map(..))
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!))
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.Except
