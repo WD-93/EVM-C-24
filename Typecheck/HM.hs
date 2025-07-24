@@ -3,7 +3,7 @@ module Typecheck.HM where
 
 import Util
 import AST.DTs
-import AST.Util (freeVarsPat,op2fun)
+import AST.Util (freeVarsPat,op2fun,region2T)
 import Typecheck.TySyn (tyVars,tyCons,
                         --TODO move the two functions below to a more
                         --appropriate module
@@ -266,6 +266,7 @@ tcModule m = do
                (kinds m))
     KindMayHaveNoKind
   --Before we infer types, we add constructor and field types to tysigs
+  --We also modify the signatures of globals with signatures here.
   let m' = addConsAndFieldsToTySigs m
   m'' <- inferTypes m'
   return m''
@@ -297,9 +298,9 @@ tcGlobals :: Module -> Either TCModuleError ()
 tcGlobals m = do
   let offenders = do
         (g,(r,me)) <- M.toList $ globals m
-        if (me /= Nothing) && not (M.member g $ tysigs m)
-          then []
-          else return g
+        if (me == Nothing) && not (M.member g $ tysigs m)
+          then return g
+          else []
   complainIf (not $ null offenders)
     $ TysigsMandatoryForUnitializedGs offenders
 
@@ -1135,7 +1136,7 @@ inferSCC nms m =
   case runHM go hmr newHMS of
     (Left hme, s) -> Left (hme,s)
     --Updated definitions and new tysigs
-    (Right (sigs,funs,stats,globs), _) ->
+    (Right (sigs,funs,globs), _) ->
       return m{tysigs = M.union sigs $ tysigs m,
                defuns = M.union (M.map Left funs) $ defuns m,
                globals = M.union globs $ globals m
@@ -1159,7 +1160,7 @@ inferSCC nms m =
           withReaderT (\hmr->hmr{hmTaus=nm2tau}) $ do
             --For each nm in nms, infer type to get an updated definition and
             --unify the type with tau
-            (funs,stats,globs) <- inferDefs m nms
+            (funs,globs) <- inferDefs m nms
             --unsafePrint "Got here B"
             --Zonk taus; if any static or global is polymorphic fail
             --return nm->zonked and prettified tau and updated defs
@@ -1173,16 +1174,16 @@ inferSCC nms m =
                                return (nm,t)) nms
             allKindsBound
             --zonk all tyapps in the defs
-            (funs',stats',globs') <- everywhereM (mkM zonk) (funs,stats,globs)
+            (funs',globs') <- everywhereM (mkM zonk) (funs,globs)
             --Default unbound tyvars *on a per-function basis*
             funs'' <- applyDefaults funs' nm2sig
             --stats and globs are monomorphic, so *all* tyvars must be
             --defaulted. However, it's simpler to use the same function for
             --that.
-            stats'' <- applyDefaults stats' nm2sig
+            --stats'' <- applyDefaults stats' nm2sig
             globs'' <- applyDefaults globs' nm2sig
             --Fail if any kind var is unbound
-            return (nm2sig,funs'',stats'',globs'')
+            return (nm2sig,funs'',globs'')
 
 --Need to apply rigidizeAndDefault here; the rigid signature is the inferred
 --one (so the inf2rigid map is just an identity map on all the vars in the
@@ -1239,13 +1240,12 @@ defaultUnboundTyVars = do
 --Returns updated definitions for functions, statics and globals;
 --their type is returned by unifying it with tau
 inferDefs :: Module -> [Name] -> HM (Map Name (Pat,S),
-                                     Map Name E,
                                      Map Name (Region, Maybe E))
 inferDefs m = go
   where go = \case
-          [] -> return (M.empty,M.empty,M.empty)
+          [] -> return (M.empty,M.empty)
           nm:nms -> do
-            (funs,stats,globs) <- go nms
+            (funs,globs) <- go nms
             case () of
               --Note every class fun has a signature, so we can be certain
               --it's a Left pats.
@@ -1254,7 +1254,7 @@ inferDefs m = go
                     (pats',t) <- typeOfFun m pats
                     --unsafePrint "Got here B2"
                     tauOf nm >>= unify t
-                    return (M.insert nm pats' funs,stats,globs)
+                    return (M.insert nm pats' funs,globs)
                     {-
                 | Just e <- M.lookup nm $ static m -> do
                     (e',t) <-  typeOf e
@@ -1263,8 +1263,9 @@ inferDefs m = go
 -}
                 | Just (r,Just e) <- M.lookup nm $ globals m -> do
                   (e',t) <- typeOf e
-                  unify t <$> tauOf nm
-                  return (funs,stats,M.insert nm (r,Just e') globs)
+                  --After desugaring g => *g, every g is in fact a pointer!
+                  tauOf nm >>= unify (Ptr (region2T r) t)
+                  return (funs,M.insert nm (r,Just e') globs)
                 | otherwise -> error "This should never happen"
 
 tauOf :: Name -> HM T

@@ -2,7 +2,7 @@ module Typecheck.HM.AddConsAndFieldsToTySigs
   (addConsAndFieldsToTySigs) where
 
 import AST.DTs
-import AST.Util (unrollTyApps)
+import AST.Util (unrollTyApps,region2T)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -10,10 +10,19 @@ import qualified Data.Map as M
 --Splitting up the jumbo HM module bit by bit...
 --field => .field : t
 --Con => Con : t
+--Addition: for x : t; <region> x; we update its tysig to Ptr <region> t
 addConsAndFieldsToTySigs :: Module -> Module
 addConsAndFieldsToTySigs m =
   let di = dtsInfo m in
-  m{tysigs = M.unions [tysigs m, conSigs di, fieldSigs di]}
+  m{tysigs = M.unions [updGlobalSigs m, conSigs di, fieldSigs di, tysigs m]}
+
+updGlobalSigs :: Module -> Map Name T
+updGlobalSigs m =
+  let gs = M.toList $ globals m
+      ts = tysigs m
+  in M.fromList $ map (\(g,(r,_me)) ->
+                         case M.lookup g ts of
+                           Just t -> (g, Ptr (region2T r) t)) gs
 
 --Good thing I cached conRHS!
 conSigs :: DTsInfo e -> Map Name T

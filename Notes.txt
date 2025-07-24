@@ -1109,6 +1109,20 @@ Woot, HM now succeeds for stdlib + simple programs!
 No doubt bugs lurk... but I'll move on to mono and catch them as they come.
 Beyond ecase (currently lacking syntactic support), one thing remains: &e! Done!!
 
+Bug: "memory b = True" fails with non-function must be monomorphic. Fixed; also fixed b :: Bool rather than
+Ptr Memory Bool.
+"b: Bool; memory b" fails with tysigs mandatory for uninitialized b. Fixed.
+Need to modify global signatures to be pointers. Fixed.
+
+Nice-to-have:
+A proper pretty-printer would help tremendously...
+Pretty explanation of error messages; srcspan.
+More compiler flags, e.g. max function # allocated, max depth, execution count for code vs exec opt.
+Extensions:
+Parsing and import of IR, asm.
+Interpreter support, intelligent choice of tags.
+In the phases with nontrivial opt choices: a chooser agent parameter, inspect multiple stages at once.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

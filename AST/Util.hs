@@ -61,3 +61,12 @@ op2fun = \case
   And -> "bwAnd"
   Or -> "bwOr"
   Xor -> "bwXor"
+
+region2T :: Region -> T
+region2T = TyCon . (\case
+                       Me -> "Memory"
+                       St -> "Storage"
+                       TS -> "TStorage"
+                       Ca -> "Calldata"
+                       Re -> "Returndata"
+                       Co -> "Code")
