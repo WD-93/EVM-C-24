@@ -39,3 +39,19 @@ import AST.DTs
 --Funs can mention funs, globals and constructors
 --Globals and tag expressions contain static exprs; those may in turn refer
 --to all three.
+
+--The only thing mono modifies is the set of functions;
+--however, it also prunes the set of relevant globals and constructors.
+type MonoS = (Map (Name,[T]) (Pat,S), --mono'd functions
+              Set Name, --relevant globals
+              Set Name --relevant datatypes
+             )
+monomorphize :: Module -> MonoS
+monomorphize = error "todo"
+
+type Mono = ReaderT Module (StateT MonoS (Except MonoError))
+data MonoError = InMonoFun (Name,[T]) MonoError
+               | InMonoGlobal Name MonoError
+               | InMonoCon (Name,[T]) MonoError
+               | NoInstanceForClass (Name,[T])
+  

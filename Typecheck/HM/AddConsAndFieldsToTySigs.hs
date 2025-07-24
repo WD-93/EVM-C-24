@@ -20,9 +20,11 @@ updGlobalSigs :: Module -> Map Name T
 updGlobalSigs m =
   let gs = M.toList $ globals m
       ts = tysigs m
-  in M.fromList $ map (\(g,(r,_me)) ->
-                         case M.lookup g ts of
-                           Just t -> (g, Ptr (region2T r) t)) gs
+  in M.fromList $ do
+    (g,(r,_me)) <- gs
+    case M.lookup g ts of
+      Just t -> return (g, Ptr (region2T r) t)
+      Nothing -> [] --no signature to modify
 
 --Good thing I cached conRHS!
 conSigs :: DTsInfo e -> Map Name T

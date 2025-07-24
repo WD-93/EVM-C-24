@@ -1123,6 +1123,43 @@ Parsing and import of IR, asm.
 Interpreter support, intelligent choice of tags.
 In the phases with nontrivial opt choices: a chooser agent parameter, inspect multiple stages at once.
 
+Mono:
+When monomorphizing class functions, instantiate the first instance that matches in arbitrary order.
+TODO require all instances be disjoint?
+Output: Map (Name,[T]) S
+State: output, globals explored : Set Name, constructors explored: Set Name
+
+Ah - I need to typecheck the tag exprs as well! And kind check the tag types.
+That can be done after all the other defs have been TC'd.
+Bug exposed by introducing class def for inc/dec: I'd filtered classes out from defuns in withSigs, but not
+from sigfuns. Fixed, but now I get a rigid unification error (Int s l < a).
+Fixed, I was applying matchWithSig in the wrong order.
+An inferred type must be at least as general as its signature, but for an instance type and its class
+signature the relationship is reversed: the class signature must be more general than its instances.
+Something strange in the definition of "dec":
+Return (TyApp "minus" [s,l] :$ 
+ ((TyApp "Append" [WordPad (Int (s) (l)),(Int (s) (l))] :$ 
+   (TyApp "WordPad" [Int (s) (l)] :$ TypedVar (Just Int (s) (l)) "n")) :$ 
+   ((TyApp "Append" [WordPad (Int (s) (l)),()] :$ 
+    (TyApp "WordPad" [Int (s) (l)] :$ (TyApp "fromWord" [s,l] :$ EInteger 1))) :$ 
+    TyApp "Unit" []))))
+That tuple is (n,1) = Append (WordPad n) (Append (WordPad (fromWord 1)) Unit)
+Why is the second type param to the first Append wrong? It should be Append (WordPad (Int s l)) Unit,
+not Int s l. Ah, the issue is in the show instance... the type is correct, but it's recognized as a
+1-element tuple and thus t is shown as (t).
+Another bug: "f _ := return (True,False)" has its $$wild_4 variable defaulted to uint32 despite f's type
+being inferred as a -> (Bool,Bool).
+Similarly, pipeline2typechecked "f _ := return null ()" passes a uint32 parameter to null.
+If f is given a signature a -> b, the type annotations are correct...
+The issue is probably in nm2sig: I prettify the type without remembering the ugly->pretty mapping.
+TODO deduplicate with rigidizeAndDefault.
+applyDefaults does construct a prettyMap, but it seems to be mapping from pretty to pretty because nm2t has
+already been prettified.
+
+*Compiler> pipeline2typechecked "memory x = null()"
+*** Exception: Typecheck\HM\AddConsAndFieldsToTySigs.hs:(24,26)-(25,60): Non-exhaustive patterns in case
+Fixed, added case for when global lacks a tysig.
+
 **************
 
 Globals: allow either region x = e, where e is a static expr.

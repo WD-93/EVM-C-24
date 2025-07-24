@@ -61,6 +61,20 @@ indexPtr (ptr,ix) := {
 	 //This generates an incomprehensibly long type error...
 };
 
+//_++ supports both pointers and integers; to do so it uses the class function
+//inc rather than the more restrictive plus.
+inc : a -> a;
+instance inc : Ptr r a -> Ptr r a where
+ p := return indexPtr (p,1);
+instance inc : Int s l -> Int s l where
+ n := return n+1;
+//dec is the analogous function for _--
+dec : a -> a;
+instance dec : Ptr r a -> Ptr r a where
+ p := return indexPtr (p,65535); //uint addition wraps around...
+instance dec : Int s l -> Int s l where
+ n := return n-1;
+
 //null() :: t returns a value of type t which is all zero bytes;
 //it's used as the default value of uninitialized locals, but may be an
 //invalid value for the type.

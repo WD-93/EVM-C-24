@@ -614,7 +614,7 @@ typeOfPat = go
     go = \case
       --Issue: now there'll be $wild<n> names which aren't declared anywhere.
       PWild -> do
-        wild <- newVarNamed "$wild"
+        wild <- newVarNamed "wild"
         t <- newTyVar
         k <- kindOf t
         unifyK k "Type"
@@ -931,7 +931,11 @@ inferTypes m = do
   let isClass = \case
         Left _ -> False
         Right _ -> True 
-  fun2def <- checkWSigs m' goF (M.filter (not.isClass) . defuns) sigfuns
+  fun2def <- checkWSigs m' goF defuns $ filter (\f ->
+                                                  case M.lookup f (defuns m) of
+                                                    Just (Left _) -> True
+                                                    _ -> False)
+             sigfuns
   let classes = M.map (\(Right s) -> s) $
                 M.filter isClass $ defuns m'
   fun2class <- M.map Right <$> checkClasses m' classes
@@ -1028,7 +1032,12 @@ checkClasses m classes =
                        (forM (S.toList set) $ \(t,p,s) -> do
                            (p',s') <- checkSig m
                              (\t (p,s) -> do
-                                 matchWithSig t scheme
+                                 withError (HMAnnotPath $
+                                            "matching t w/ sig: " ++ show
+                                           (t,scheme)) $
+                                   --The scheme must be more general than the
+                                   --instance!
+                                   matchWithSig scheme t
                                  goSig (typeOfFun m) t (p,s)
                              ) f (p,s) t
                              

@@ -4,6 +4,7 @@ import Control.Monad.Except
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import GHC.Stack
 
 --General utility functions that should be available to any module and don't
 --fit anywhere else.
@@ -42,7 +43,7 @@ log256 n | n < 0 = error $ "Negative argument to log256: " ++ show n
 
 --Using M.! anywhere was a mistake... I'll now replace it with this to get
 --error location info.
-(!) :: (Show k, Show v, Ord k) => Map k v -> k -> v
+(!) :: (HasCallStack, Show k, Show v, Ord k) => Map k v -> k -> v
 m ! k =
   case M.lookup k m of
     Just v -> v
