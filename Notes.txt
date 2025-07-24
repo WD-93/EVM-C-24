@@ -1155,6 +1155,16 @@ The issue is probably in nm2sig: I prettify the type without remembering the ugl
 TODO deduplicate with rigidizeAndDefault.
 applyDefaults does construct a prettyMap, but it seems to be mapping from pretty to pretty because nm2t has
 already been prettified.
+Passing in nm2uglySig fixed the pat's type parameter, but not null's.
+*Compiler> Right m = pipeline2typechecked "f _ := null()"
+*Compiler> defuns m M.! "f"
+*** Exception: Woop: (fromList [("$_2","b"),("$_5","a")],(TypedPVar (Just $_5) "$wild_4",SE (TyApp "null" 
+ [$a_7] :$ TyApp "Unit" [])))
+By injecting an error for f we can see null has typaram $a_7, which isn't present in the pretty map.
+Perhaps the issue is that $_2 zonks to $_7, which isn't recognized.
+I zonk the t's in nm2uglySig... I also zonk the funs before passing them to applyDefaults.
+Ohh... I forgot to *return* null. Yep, that fixed it - good thing I found a real bug while investigating a
+phantom one.
 
 *Compiler> pipeline2typechecked "memory x = null()"
 *** Exception: Typecheck\HM\AddConsAndFieldsToTySigs.hs:(24,26)-(25,60): Non-exhaustive patterns in case

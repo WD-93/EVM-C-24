@@ -1173,24 +1173,25 @@ inferSCC nms m =
             --unsafePrint "Got here B"
             --Zonk taus; if any static or global is polymorphic fail
             --return nm->zonked and prettified tau and updated defs
-            nm2sig <- M.fromList <$>
+            nm2uglySig <- M.fromList <$>
                       mapM (\nm -> do
-                               t <- prettifyType <$> (tauOf nm >>= zonk)
+                               t <- tauOf nm >>= zonk
                                complainIf ((S.member nm $
                                             M.keysSet $ globals m) &&
                                            polymorphic t)
                                  $ NonFunctionMustBeMonomorphic nm t
                                return (nm,t)) nms
+            let nm2sig = M.map prettifyType nm2uglySig
             allKindsBound
             --zonk all tyapps in the defs
             (funs',globs') <- everywhereM (mkM zonk) (funs,globs)
             --Default unbound tyvars *on a per-function basis*
-            funs'' <- applyDefaults funs' nm2sig
+            funs'' <- applyDefaults funs' nm2uglySig
             --stats and globs are monomorphic, so *all* tyvars must be
             --defaulted. However, it's simpler to use the same function for
             --that.
             --stats'' <- applyDefaults stats' nm2sig
-            globs'' <- applyDefaults globs' nm2sig
+            globs'' <- applyDefaults globs' nm2uglySig
             --Fail if any kind var is unbound
             return (nm2sig,funs'',globs'')
 
@@ -1215,7 +1216,7 @@ inferSCC nms m =
 
 --Ah, I've duplicated defaulting here...
 --I'll also prettify the types
-applyDefaults :: Data a => Map Name a -> Map Name T -> HM (Map Name a)
+applyDefaults :: (Show a, Data a) => Map Name a -> Map Name T -> HM (Map Name a)
 applyDefaults nm2def nm2t = do
   let nmdefs = M.toList nm2def
   M.fromList <$> (mapM (\(nm,def) ->
