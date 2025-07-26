@@ -238,6 +238,7 @@ data TCModuleError = InCheckTySig Name SigError
                    | NonexistentKindDefaulted Name T
                    | KindDefaultsToPolymorphicType Name T
                    | KindDefaultMismatch Name HMError
+                   | InCheckConTag Name HMError
   deriving (Eq,Ord,Read,Show)
 data SigError = MissingDefinition
               | BadKindInSig T (HMError,HMS)
@@ -940,8 +941,11 @@ inferTypes m = do
                 M.filter isClass $ defuns m'
   fun2class <- M.map Right <$> checkClasses m' classes
   glob2e <- checkWSigs m' goG globals sigglobs
+  --TODO add DT tag inference here
+  dts <- inferConTags m'
   return m'{defuns = M.unions [fun2class,fun2def,defuns m'],
-            globals = M.union glob2e $ globals m'
+            globals = M.union glob2e $ globals m',
+            dtsInfo = dts
            }
   where go m = \case
           [] -> return m
@@ -986,6 +990,52 @@ inferTypes m = do
                             (e',t) <- typeOf e
                             return ((r,Just e'),t)
                           Nothing -> return ((r,Nothing),TyVar "whatever")
+
+--Given a TC'd module where every global and function already has a tysig:
+--for each datatype DT params:
+-- t<params> = its tag type
+-- for each constructor Con:
+--  e = its tag expr
+--  e',t' <- typeOf e
+--  e'' <- compare and adapt to rigid signature t<params>
+--   as with signed functions, after this e''s tyvars will be in params
+--  update tag to e''
+inferConTags :: Module -> Either TCModuleError (DTsInfo E)
+inferConTags m = do
+  let dtsi = dtsInfo m
+      dts = M.toList $ datatypes dtsi
+  --Result: a list of maps Con => ConInfo E
+  csi's <- forM dts (\(tycon,dti) -> do
+                        let DTInfo {dtParams = params,
+                                    dtTagType = sig,
+                                    dtCanonicalCons = cons
+                                   } = dti
+                            csi = conInfo dtsi
+                        --Result: a map Con => ConInfo E
+                        csi' <- forM cons (\con -> do
+                                              let Just ci = M.lookup con csi
+                                                  e = conTag ci
+                                              e' <- case runHM (go sig e)
+                                                         hmr newHMS of
+                                                (Left hme,_) ->
+                                                  Left $ InCheckConTag con hme
+                                                (Right a, _) -> return a
+                                              return (con,ci{conTag = e'})
+                                          )
+                        return $ M.fromList csi'
+                    )
+  --M.unions that = the new conInfo
+  return dtsi{conInfo = M.unions csi's}
+    where hmr = HMR{
+            hmTySigs = tysigs m,
+            hmDTsInfo = dtsInfo m,
+            hmKindSigs = kindsigs m, 
+            hmSorts = kinds m,
+            hmDefaults = defaults m,
+            hmTaus = M.empty, --They'll remain empty
+            hmLocals = M.empty
+            }
+          go = goSig typeOf
 --Moving to top level to be able to use it in checkClasses as well...
 goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
           HM def
@@ -1400,6 +1450,7 @@ pretties = [[c] | c <- ['a'..'z']] ++
                c <- ['a'..'z']
                return $ c : show n
            )
+--TODO dedup with Mono.Mono.instT
 substTyVarNames :: Map Name Name -> T -> T
 substTyVarNames = substTyVars . M.map TyVar
 substTyVars :: Map Name T -> T -> T
@@ -1408,6 +1459,7 @@ substTyVars v2t = everywhere (mkT $ \case TyVar v
                                           t -> t)
 
 --Gathers all mentioned tyvars and returns them in order of first mention
+--TODO dedup with Typecheck.Tysyn.TyVars and put in AST.Util
 tyVarsList :: T -> [Name]
 tyVarsList = fst . tyVarsListSet
 tyVarsListSet :: T -> ([Name],Set Name)

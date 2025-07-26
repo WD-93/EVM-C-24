@@ -2,6 +2,8 @@
 module Compiler where
 
 --Imports the modules for each step, handles running the pipeline
+import AST.DTs
+--Just so I can :l Compiler and then deconstruct the output of pipeline2*
 
 import Util ((?))
 

@@ -1128,6 +1128,15 @@ When monomorphizing class functions, instantiate the first instance that matches
 TODO require all instances be disjoint?
 Output: Map (Name,[T]) S
 State: output, globals explored : Set Name, constructors explored: Set Name
+Mono f ts:
+ if already explored, return
+ if class, select instance (p,s) ts' scheme
+ else get ordinary def (p,s) ts scheme
+ (vars,_) = prettify scheme
+ m = map vars to ts
+ ps' = substitute m (p,s)
+ recursively explore ps'
+ monodefs[(f,ts)] = ps'
 
 Ah - I need to typecheck the tag exprs as well! And kind check the tag types.
 That can be done after all the other defs have been TC'd.
@@ -1169,6 +1178,23 @@ phantom one.
 *Compiler> pipeline2typechecked "memory x = null()"
 *** Exception: Typecheck\HM\AddConsAndFieldsToTySigs.hs:(24,26)-(25,60): Non-exhaustive patterns in case
 Fixed, added case for when global lacks a tysig.
+
+Before the tag exprs can be monomorphized, they must be inferred using the DT's tag type as a signature.
+Done, and with the existing combinators it was relatively simple!
+Looks like boxed constructors such as Cons have been eliminated; what remains is a boxed flag in coninfo for
+ImplCons. Q: Have I correctly modified Cons x y patterns?
+A: No, "f (Cons x xs) := return xs" fails because it complains there's no such constructor.
+Adding boxed cons and marking them as such + adding their tysigs is fortunately a simple matter.
+A separate ConInfo constructor for boxed cons may be appropriate, as they don't have tags.
+
+Core: potentially divergent function calls can be represented as
+(res,s) <- f args s :: Result a
+data Result a = Invalid | Revert Bytestring | Return Bytestring | Result a
+Only when a function is guaranteed to return can it be converted to a and reordered...
+Treat out of gas as arbitrary, able to strike at any time.
+KEVM is relevant...
+Represent pointers symbolically as mallocValue(n) + offset?
+Assumption: pointers from distinct malloc zones never alias.
 
 **************
 

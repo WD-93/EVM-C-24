@@ -242,6 +242,7 @@ applyTySyns syns t = do
     _ -> return $ unrollTyApps tf targs2
 
 --splits f x y .. z into (f,[x,y .. z])
+--TODO dedup with AST.Util.rollTyApps
 rollTyApps :: T -> (T,[T])
 rollTyApps t = (id *** reverse) $ go t
   where go = \case
