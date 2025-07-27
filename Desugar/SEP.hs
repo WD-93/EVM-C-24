@@ -188,7 +188,7 @@ desugarP di@(gs,field2bcon,str2id) = go
       P.App pf px -> do
         x <- go px
         (con,ps) <- unrollConApps pf
-        return $ (con,x:ps)
+        return $ (con,ps ++ [x]) --TODO fix quadratic
       P.Con (UIdent con) -> return (con,[])
       pe -> throwError $ GenericDError $ "Invalid pattern: " ++ show pe
     mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])

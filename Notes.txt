@@ -1186,6 +1186,8 @@ ImplCons. Q: Have I correctly modified Cons x y patterns?
 A: No, "f (Cons x xs) := return xs" fails because it complains there's no such constructor.
 Adding boxed cons and marking them as such + adding their tysigs is fortunately a simple matter.
 A separate ConInfo constructor for boxed cons may be appropriate, as they don't have tags.
+Weird, added BCon but f (Cons x xs) := return xs types as if Cons' arguments were reversed.
+It's not specific to boxed constructors... must be an error in SEP. Yup, fixed it.
 
 Core: potentially divergent function calls can be represented as
 (res,s) <- f args s :: Result a
@@ -1195,6 +1197,15 @@ Treat out of gas as arbitrary, able to strike at any time.
 KEVM is relevant...
 Represent pointers symbolically as mallocValue(n) + offset?
 Assumption: pointers from distinct malloc zones never alias.
+How to deal with "magic" repr-less datatypes such as Result, memory map, other state values?
+
+MemMap as a datatype where the get/set operations are the "constructors", reasoned about symbolically.
+After symbolic reasoning:
+let mem' = memSet addr val mem --compile memSet to an actual mstore/*copy operation!
+Brilliant!
+Add the underlying MemMap, Return etc datatypes to Prim? That would make it possible to refer to them and
+hint side effect scope in user code...
+Need to look closer at the related lit... it could be a paper.
 
 **************
 

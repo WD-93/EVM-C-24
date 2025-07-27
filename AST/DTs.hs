@@ -392,14 +392,25 @@ data DTInfo = DTInfo {
   dtCanonicalCons :: [Name]
                      }
   deriving (Eq,Ord,Read,Show,Data)
-data ConInfo e = ConInfo {
-  conBoxed :: Bool,        --boxed status
+data ConInfo e = UBCon {
   conParent ::Name,        --parent datatype
   conTag :: e,             --tag value
   conFields :: [(Name,T)], --fields
   conRHS :: T              --rhs = TyCon params (cached)
-                    }
+  }
+  --Boxed cons are fully desugared away after mono, so they have no tag
+  --However, they do still need fields and rhs for type inference of
+  --Con args patterns.
+  | BCon {
+      conParent :: Name,
+      conFields :: [(Name,T)],
+      conRHS :: T
+      }
   deriving (Eq,Ord,Read,Show,Data)
+conBoxed :: ConInfo e -> Bool
+conBoxed = \case
+  BCon {} -> True
+  _ -> False
 --Issue: all constructors of DT have a tagDT field!
 --A tagDT is never boxed...
 data FieldInfo = IsTag Name --The parent tycon

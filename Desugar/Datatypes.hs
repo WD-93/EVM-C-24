@@ -182,8 +182,7 @@ processDT tycon params cons mr mti = do
              (Just (params,tagT,M.singleton scon $ con2tag ! con))
            let implfield = "unImpl" ++ con
                implcon = "Impl" ++ con
-           addCon implcon $ ConInfo {
-             conBoxed = True,
+           addCon implcon $ UBCon {
              conParent = tycon,
              conTag = P.Con (UIdent "Unit"),
              conFields = [(implfield,
@@ -191,7 +190,18 @@ processDT tycon params cons mr mti = do
                            map TyVar params)],
              conRHS = conrhs
              }
-           addField implfield $ IsNormal True implcon
+             --Changed to IsNormal False - is that correct?
+           addField implfield $ IsNormal False implcon
+           --Now we add the boxed con it desugars from
+           addCon con $ BCon {
+             conParent = tycon,
+             conFields = fields,
+             conRHS = conrhs
+             }
+           --xs.hd will not be present in E, but it will in Cons {hd: p}
+           --Q: should it be IsNormal True?
+           forM_ fields $ \(field,t) ->
+             addField field $ IsNormal True con
         | (con,fields) <- cons']
     --The datatype is unboxed
     Nothing -> do
@@ -204,8 +214,7 @@ processDT tycon params cons mr mti = do
         }
       --Add per-con info
       sequence_ [do
-        addCon con $ ConInfo {
-            conBoxed = False,
+        addCon con $ UBCon {
             conParent = tycon,
             conTag = con2tag ! con,
             conFields = fields,

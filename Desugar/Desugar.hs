@@ -202,9 +202,10 @@ sepDTs di dti = do
   return $ DTsInfo {datatypes = datatypes dti,
                     fieldInfo = fieldInfo dti,
                     conInfo = ci}
-  where sepConInfo (con, ConInfo b p tagPE cfs cr) = do
+  where sepConInfo (con, UBCon p tagPE cfs cr) = do
           tagE <- desugarE di tagPE
-          return (con, ConInfo b p tagE cfs cr)
+          return (con, UBCon p tagE cfs cr)
+        sepConInfo (con,BCon a b c) = return (con, BCon a b c)
 sepGlobals :: DInfo -> Map Name (Region, Maybe P.E) ->
   Either DError (Map Name (Region, Maybe E))
 sepGlobals di nm2rmpe = do
