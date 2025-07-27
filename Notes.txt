@@ -1188,6 +1188,12 @@ Adding boxed cons and marking them as such + adding their tysigs is fortunately 
 A separate ConInfo constructor for boxed cons may be appropriate, as they don't have tags.
 Weird, added BCon but f (Cons x xs) := return xs types as if Cons' arguments were reversed.
 It's not specific to boxed constructors... must be an error in SEP. Yup, fixed it.
+Should I add a type annotation to EArray...?
+Completed Mono, discovered problem: Unit has tag Unit. That means calculating its size will loop...
+Unit is a special case in that it's both struct-like and enum-like... the case for enum-like datatypes must
+be handled first in Desugar.Datatypes.
+Swapped the order; fixed.
+No instance for sum : (Word,Word,Word) -> Word... fixed.
 
 Core: potentially divergent function calls can be represented as
 (res,s) <- f args s :: Result a

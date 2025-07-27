@@ -17,7 +17,7 @@ module Mono.Mono where
 --to get the full function instance set.
 
 import AST.DTs
-import Util (complainIf,(!))
+import Util (complainIf,(!),withError)
 import Typecheck.HM (tyVarsList)
 
 import Data.Generics
@@ -61,7 +61,7 @@ import qualified Data.Map as M hiding ((!))
 --however, it also prunes the set of relevant globals and constructors.
 data MonoS = MonoS {
   --We also cache the monomorphic type signature
-  exploredFuns :: Map (Name,[T]) (T,Pat,S),
+  exploredFuns :: Map (Name,[T]) (T,(Pat,S)),
   exploredGlobals :: Set Name,
   --If one constructor is live, all must be (because in the worst case you
   --must do an O(n) scan of arbitrary-valued tags when you case).
@@ -72,7 +72,7 @@ data MonoS = MonoS {
   deriving (Eq,Ord,Read,Show)
 monomorphize :: Module -> Either MonoError MonoS
 monomorphize m = runExcept $ flip execStateT s $ flip runReaderT m go
-  where s = MonoS M.empty S.empty S.empty
+  where s = MonoS M.empty S.empty M.empty
         go :: Mono ()
         go = do
           complainIf (not $ M.member "main" $ defuns m)
@@ -90,14 +90,14 @@ monomorphize m = runExcept $ flip execStateT s $ flip runReaderT m go
 type Mono = ReaderT Module (StateT MonoS (Except MonoError))
 data MonoError = InMonoFun (Name,[T]) MonoError
                | InMonoGlobal Name MonoError
-               | InMonoCon (Name,[T]) MonoError
-               | NoInstanceForClass
+               | InMonoDT (Name,[T]) MonoError
+               | NoInstanceForClass T [T]
                | NoMainFunction --note a global main triggers this
                | IlltypedMainFunction T BindError
   deriving (Eq,Ord,Read,Show)
 
 monoFun :: Name -> [T] -> Mono ()
-monoFun f monoTs = do
+monoFun f monoTs = withError (InMonoFun (f,monoTs)) $ do
   mps <- gets (M.lookup (f,monoTs) . exploredFuns)
   case mps of
     Just _ -> return () --already explored
@@ -119,22 +119,37 @@ monoFun f monoTs = do
               --if class, choose first instance whose sig matches
               --error if none do. Map its tyvars (distinct from those of
               --the class sig) to monomorphic types
-                Right tpss -> error "todo"
+                Right tpsset ->
+                  let tpss = S.toList tpsset
+                  in instClass ft tpss
                 --if normal, you already have the (p,s)
                 Left ps ->
                   let Right ps' = instT v2t ps
                   in return ps'
       --add it to the map; note that must be done before recursive exploration
       --to prevent an infinite loop
-      modify (\ms -> ms{exploredFuns = M.insert (f,monoTs) ps $
+      modify (\ms -> ms{exploredFuns = M.insert (f,monoTs) (ft,ps) $
                          exploredFuns ms})
       --recursively explore it
       explore ps
+
+--Given a monomorphic type, select the first instance that matches it and mono
+--that; error if none do.
+instClass :: T -> [(T,Pat,S)] -> Mono (Pat,S)
+instClass ft tpss = go tpss
+  where go = \case
+          [] -> throwError $ NoInstanceForClass ft $ map (\(t,_,_)->t) tpss
+          (t,p,s):tpss ->
+            case bindT t ft of
+              Right v2t ->
+                let Right ps' = instT v2t (p,s)
+                in return ps'
+              _ -> go tpss
 --monoGlobal g:
 --If it has no initializer, return
 --otherwise recursively explore it
 monoGlobal :: Name -> Mono ()
-monoGlobal g = do
+monoGlobal g = withError (InMonoGlobal g) $ do
   b <- gets $ S.member g . exploredGlobals
   if b
     then return ()
@@ -154,12 +169,108 @@ monoGlobal g = do
 --Most complex scenario: the tag contains a class function
 --TODO use lenses so I can write a clean, shared checkExplored elem field
 monoDT :: Name -> [T] -> Mono ()
-monoDT tycon monoTs = do
+monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
     b <- gets $ M.member (tycon,monoTs) . exploredDTs
     if b
       then return ()
       else do
-      error "todo"
+      dtsi <- asks dtsInfo
+      let Just dsi = M.lookup tycon $ datatypes dtsi
+          params = dtParams dsi
+          v2t = M.fromList $ zip params monoTs
+          cons = dtCanonicalCons dsi
+          cis = conInfo dtsi
+      con2e <- M.fromList <$> forM cons (\con -> do
+                                           let Just (UBCon{conTag=e}) =
+                                                 M.lookup con cis
+                                               Right e' = instT v2t e
+                                           return (con,e'))
+      modify (\ms -> ms{exploredDTs = M.insert (tycon,monoTs) con2e $
+                         exploredDTs ms})
+      explore con2e
+
+--Find all mentions of functions, globals and datatypes that need to be mono'd.
+--Functions: Var f@ts | f in defuns => monoFun f ts
+--Globals: TypedVar nm _ | M.member nm (globals m)
+--Datatypes:
+--Constructors:
+-- E: con@ts | con in conInfo (dtsInfo m)
+-- P: Con args
+-- P: Con {field: p}
+--Fields:
+-- E: e.field
+-- P: Con {field: p} --redundant
+--Note a bunch of redundant empty-bodied defs of primfuns get added.
+--Two separate traversals to avoid weird type error.
+explore :: Data a => a -> Mono ()
+explore a = do
+  everywhereM (mkM $ \e -> do
+                  case e of
+                    --Global
+                    TypedVar mt nm -> do
+                      b <- asks (M.member nm . globals)
+                      if b
+                        then monoGlobal nm
+                        else return ()
+                    --Function or constructor
+                    TyApp nm ts -> do
+                      b <- asks (M.member nm . defuns)
+                      if b
+                        then monoFun nm ts
+                        --It must be a constructor; look up the parent tycon
+                        else exploreCon nm ts
+                    ConRecord con mts _ ->
+                      case mts of
+                        Nothing -> error "Compiler error: ConRecord not HM'd!"
+                        Just ts -> do
+                          exploreCon con ts
+                    Dot _ mts field ->
+                      case mts of
+                        Nothing -> error "Compiler error: Dot not HM'd!"
+                        Just ts -> do
+                          exploreField field ts
+                    _ -> return ()
+                  return e
+                    ) a
+  everywhereM (mkM $ \p -> do
+                  case p of
+                    Deref (Just ts) e -> monoFun "deref" ts
+                    PDot (Just ts) _ field -> do
+                      exploreField field ts
+                    PBang (Just ts) _ _ -> monoFun "indexArray" ts
+                    PConArgs con (Just ts) _ ->
+                      exploreCon con ts
+                    PCon con (Just ts) _ ->
+                      exploreCon con ts
+                    _ -> return ()
+                  return p
+              ) a
+  return ()
+
+exploreCon :: Name -> [T] -> Mono ()
+exploreCon con ts = do
+  tycon <- getConParent con
+  monoDT tycon ts
+exploreField :: Name -> [T] -> Mono ()
+exploreField field ts = do
+  tycon <- getFieldParent field
+  monoDT tycon ts
+--Get the DT which contains the constructor
+getConParent :: Name -> Mono Name
+getConParent con = do
+  dtsi <- asks dtsInfo
+  let Just ci = M.lookup con $ conInfo dtsi
+  return $ conParent ci
+--Ditto for a field
+getFieldParent :: Name -> Mono Name
+getFieldParent field = do
+  dtsi <- asks dtsInfo
+  let Just fi = M.lookup field $ fieldInfo dtsi
+  case fi of
+    IsTag tycon ->
+      return tycon
+    IsNormal _ tycon ->
+      return tycon
 
 --Given a polymorphic type poly with all tysyns expanded
 --and a monomorphic type mono,

@@ -27,10 +27,13 @@ import Desugar.DTs (DError(..))
 import Desugar.Desugar (desugar)
 --Type checking
 import Typecheck.TC (typecheck, TCError(..))
+--Monomorphization
+import Mono.Mono --(monomorphize, MonoError(..))
 
 data CompilerError = ParserError String
                    | DesugarError DError
                    | TypeCheckError TCError
+                   | MonoError MonoError
                    {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
@@ -130,6 +133,9 @@ pipeline2desugar str = do
 pipeline2typechecked str = do
   m <- pipeline2desugar str
   typecheck m ? TypeCheckError
+pipeline2mono str = do
+  m <- pipeline2typechecked str
+  monomorphize m ? MonoError
 
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.

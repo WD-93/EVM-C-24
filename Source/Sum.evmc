@@ -1,0 +1,10 @@
+//Trying out some cool variadic overloading to test monomorphization.
+main:()->();
+main _ := sum(1,2,3);
+
+//Sum should work on any tuple of words
+sum : a -> Word;
+instance sum : () -> Word where
+ _ := return 0;
+instance sum : Append (WordPad Word) a -> Word where
+ (Append (WordPad x) rest) := return x + sum rest;

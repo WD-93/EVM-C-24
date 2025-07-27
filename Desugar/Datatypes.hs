@@ -133,16 +133,19 @@ processDT tycon params cons mr mti = do
       return (tagTNorm,con2e)
     Nothing
       --If unspecified: default
-      --If 0 or 1 constructors: ()
-      | length cons' <= 1 ->
-        return (TyCon "Unit", M.fromList $ zip connames $ repeat $
-                              P.Con $ UIdent "Unit")
       --If union-like: UInt n for minimal n
+      --Note this case must be before the one for 0 or 1 constructors to avoid
+      --Unit being tagged with Unit.
       | all (\(_con,fields) -> null fields) cons' ->
         let numCons = fromIntegral $ length cons'
             bytesz = log256 numCons
         in return (UInt $ fromIntegral bytesz,
                    M.fromList $ zip connames $ map P.Int [0..])
+      --If 0 or 1 constructors: ()
+      | length cons' <= 1 ->
+        return (TyCon "Unit", M.fromList $ zip connames $ repeat $
+                              P.Con $ UIdent "Unit")
+      
       --Otherwise allocate union-like DT TagDT = TagCon1 .. TagConN and use
       --respective constructors as tags.
       | let -> do
