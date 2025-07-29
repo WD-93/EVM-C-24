@@ -1,0 +1,314 @@
+Now I face the hard problem of designing Core...
+
+Phase 1:
+Monomorphized module -> Core (deterministic)
+EVMC is converted into Core variants in multiple stages.
+Rewrites:
+Pattern decomposition:
+pattern Cons x xs => ImplCons ptr st StructCons x xs = *ptr
+Nested patterns => a tree of cases and lets.
+Exprs in patterns (p[ix], *e) must be computed once and bound via a let. They should only be computed once
+the constructor skeleton has been matched.
+
+State-passing transformation: a single S type = a tuple of all the relevant state types:
+each region + ext (the rest of the BC)
+gas(e) --depends only on e and G, an arbitrary series of numbers
+The only guarantee of gas(e) is that it's executed after e and all gas calls are sequentialized.
+
+mallocPtr as a word-padded memory pointer with a guarantee that it points to free memory.
+writeMPtr (MkPtr off) v m = writeMem off lenv (serialize v) m
+if cond then x = 1 else x = 2 end --returns an x?
+
+f :: a -> b => f :: (a,S) -> Return (b,S)
+
+Phase 2:
+Core -> Core optimization (nontrivial, needs chooser parameter that uses choice API)
+If Core functions could be independently compiled down to word ops/Stack, it would be easier to backtrack
+based on feedback from that level.
+
+Nontrivial decision: case ordering.
+
+Memory model:
+The memory map Mem is a type with operations get, set, split and separating union.
+Also new k len?
+The Core semantics could be nondeterministic, allowing an arbitrary value to be given for *ptr in
+ptr = malloc().
+Otherwise, they should be pure; EVM-based context should be passed explicitly.
+Calldata is a wrapper around a bytestring... but what is a bytestring exactly? It's a magic repr-less
+datatype, just like Calldata bs.
+
+data Return a = Revert Bytestring | RETURN Bytestring | Return a
+--Invalid can be considered equivalent to revertValue()
+How to deal with gas? It should not force a sync of all memory ops and it should be possible to reorder code
+around it... within limits.
+while (cond)
+ {g = gas();
+  s
+ }
+--Ideally gas() would not be reordered out of the loop
+
+If alloc :: () -> Ptr r a, that would be much cleaner than alloc n... Ptr r a would imply the reachability of
+an a, with no unknown n parameter.
+Define a separate allocDynArray :: Short -> DynArray r a? Then live data could in principle be inferred from
+the values on the stack.
+ptr[ix] is an unsafe operation... instead use indexDynArray :: (DynArray r a, Short) -> Maybe (Ptr r a)?
+Or unsafeIndexDynArray. Unsafe operations should ideally be generated rather than written by the programmer.
+
+set off len v (m1 ||| m2)
+p-->v :: Mem
+set ptr v (ptr-->_ ||| rest) = (ptr-->v ||| rest) --modulo the side effecting set which should be emitted
+
+Rewrites:
+1) Pass as small a map as possible to any code which uses a map.
+split (ks1,ks2,m) = (m1,m2)
+2) Specialization: if a function takes and returns a value unchanged without using it, specialize to f'
+which doesn't take it.
+If a function is guaranteed to return a particular constructor (e.g. Return a), specialize it to return an a
+and simplify the cases on its result.
+
+Note optimizations which use alloc should be possible.
+Add a bound parameter and exhaustion callback to it to safely use small regions + guarantee no silent
+exhaustion? Optimize away when possible.
+An exhaustion callback would allow auto-generated intelligent management of spare memory. To add per-callback
+state you need a closure...
+How to integrate closures with a sound memory model? Perhaps "OO-style" GC callbacks a la the STG.
+Could I go all the way and actually implement GC while ensuring adequate performance?
+The machine would not be spineless (the EVM stack must be used for unboxed perf); basic blocks would need
+their own GC cont.
+GC would then traverse the stack, copying it into a buffer in memory and then restoring it.
+Restoration could be incremental, with the return cont fetching and restoring a frame before calling it.
+Hey, that gives you coroutines for free!
+Preserving subpointer sharing is tricky...
+Proposal: each pointer includes a pointer to its root alloc entry, which contains a GC callback.
+GC operates at the granularity of mallocs.
+
+Overhead: if each GC'able frame must have a GC cont, it must either be in the code (so any potentially
+exhausting operation may trigger it, at which point you explicitly branch to it) or before the jump address.
+The latter prevents fallback or makes it more costly (min overhead 6: PUSH2 addr, POP), which is undesirable.
+
+Adding full dynamic GC support is unlikely to be worth it given the overhead... but limited, local GCs and a
+static model that has a concept of reachability might be.
+Ex: n = sum([1..n]) --here the list pointer will not escape
+If the alloc ptr is guaranteed to be ascending you could GC freshly allocated values...
+Copying GC with sharing requires replacing values with IND cells... but that conflicts with precise control
+of DS layout.
+When in GC mode, you'd need a write barrier that detects pointer writes of fresh values to old addrs.
+No complex GC for now, just O(1) allocPtr reset for code where no allocated data escapes such as
+sha3 and call.
+
+Real Core body: 
+trueMain () := main(); stop()? 
+Then the continuation can be optimized away if main is guaranteed to diverge.
+If main has only one call site it can be inlined and specialized.
+The allocPtr could also be part of implicit state; modifying it via raw pointer ops is UB ofc.
+Keeping allocPtr in a static address in memory is a reverse form of the stack lifting opt.
+By making malloc's effect on allocPtr and the initial memory map value white-box you could specialize main
+to place static allocs at fixed addresses with known initial values.
+
+Dealing with CALL: each returned returndata could be treated as a separate value a la Mem; reads to it must
+be completed before the next overwriting call.
+Old returndata pointers should not escape that... tag pointer values with reachable scope?
+The Solidity approach is to simply not expose returndata pointers... but that's not efficient if you do
+extended processing of parts of it, e.g. interpretation/copying to disparate locations.
+A static lock of returndata would be easy to implement... any *rptr to be accessed after it's broken must be 
+rescued first.
+
+Typing the CALL boundary: could a RETURNS a monad be efficient? Alt: gather additional data about functions,
+e.g. what type they RETURN (stop ~ returnValue (), or any 0-size type).
+data RETURNS a t = {RETURNS t}; --the t allows further annotations; RETURNS f would check whether the
+property can be inferred for f (easy for a static function; possible using local context for an expr).
+Deconstructing RETURNS@[a,tau] t = e --would add ContainsReturning a t to local context.
+coerce f = e --pass all the props to local context.
+Problem: EVMC types are fixed-size. OR ARE THEY? sizeof is just an overloaded primitive, it needn't determine
+the whole language semantics.
+An UnboxedDynArray could have an undefined sizeof and be referrable to only by pointer; it could still
+support dynsize and *a = *b.
+Similarly, Core could well support case on Return despite its halting values lacking a bytestring
+representation - it's just that only cases that implement bind are compilable.
+Unrepresentable types don't even need a different kind?
+
+Another problem of typing the call boundary: the return type depends on the calldata argument passed... but
+main has a single type. Recall WhatsApp's attempt to type Erlang OTP using GADTs. Fixing a single type for
+calldata is a simple matter.
+With variable-size types supported and an unboxed append for them, complex but efficient memory-safe data 
+structures would be feasible.
+Unboxed append would require dynSize or dynOffset.
+
+For now don't need to worry about the call boundary... but variable-size datatypes would be nice.
+No need to support GC for them.
+
+Critical opts: inlining, tail calls, specialization, CE/DCE, local GC when no pointers escape.
+Bytecode-level: fallthrough, code sharing, string sharing.
+Additional: shared subexpression elimination, symbolic reasoning about memory.
+Drop the additional... I also don't need a full memory model for scratch mem opt... just check no pointer is
+returned or assigned.
+Symbolic reasoning about memory would let me stack-lift the alloc ptr...
+
+To capture aliasing/non-aliasing info I must add tracking of facts to the optimizer.
+Once I do so, Disjoint (p1,p2,p3) could be introduced as data Disjoint t = {Disjoint t}. I'd then need an
+additional "fact check" post-mono where facts are required for construction and produced on deconstruction.
+Could linearity and uniqueness of a pointer be encoded? Uniqueness implies non-aliasing with every other
+pointer.
+A linear value may only be placed in a linear container...
+
+************************************************************
+
+What's the simplest Core I can get away with? Start from there.
+No opt choice parameter, run deterministically. No symbolic memory reasoning, but make get/set operations
+explicit.
+Add primitive functions and types fname#, TName# (not referrable to by source)
+All exprs referred to by var; allow lets to bind infallible patterns such as (arg,S)
+
+return x => Return@[t] x
+Determine whether statements are guaranteed to return (they contain no halting constructor, nor break/
+continue); convert them to lets.
+while cond s => let (scope',S') = f (scope,S) if well-behaved.
+Efficient compilation:
+jump check
+body:
+check:
+...
+jumpi cond body
+--cont
+f (scope,S) =
+ let (c,scope',S') = <cond>
+ in ifte c (scope',S') body (\x -> x)
+body (scope,S) =
+ ...
+ f (scope',S') --if well-behaved
+Efficient compilation ~ simply assuming body -> check has a higher exec count than start -> check and 
+therefore check should be after body rather than start.
+
+A Core program is a single pure expression.
+Constructors:
+letrec, let, case, var@t, lambda
+Con?
+
+Any subexpr may halt, so Con {field: e} must use bind.
+From Haskell Core: constructors become functions (no problem, I can inline them); case remains unexpanded
+(modulo nested pattern decomposition) until STG.
+
+What is the minimal state I can pass?
+Blockchain context: blockhash etc
+Caller, callvalue
+Gas (mutable)
+Regions: memory, storage, tstorage, calldata, returndata, code
+Extstate
+
+Specialization:
+Production spec:
+If a function f : a -> b always returns Con t, you may replace calls to it with Con (f_spec a),
+where f_spec : a -> t.
+Integer literals and symbols may be considered constructors for that purpose.
+Consumption spec:
+case Con e of ... --replace with the let ... in the appropriate branch
+Replace ifte with case on Bool? truthy is most efficient when it returns a word... but
+ifte (truthy x) can be optimized to that.
+truthy could in theory support a dynSize datatype... but I won't.
+
+(range1=>bs1 ||| range2=>bs2) => the fact that range1 and range2 are disjoint.
+p = alloc() --implies p is unique
+So creation as well as destruction imply facts!
+split(range1,range2,m) = select range1 m ||| select range2 m
+
+DynArrays should have their size tag inline rather than in the pointer; that ensures an ordinary Ptr can be
+used to refer to it.
+UnsafeDynArray a --could lack both dynSize and sizeof. Ptr r (UnsafeDynArray a) replaces Ptr r a as the unsafe
+option.
+data Buffer a = Buffer {maxsize: Short, actualsize: Short, content: a}
+dynSizeof pbuf := return pbuf->maxsize
+copyBuffer(from: Ptr r (Buffer a), to: Ptr Memory (Buffer a)) : ()
+
+First just define the operations (including on memory), convert to pre-CPS form.
+
+Could I get away with just using Haskell Core? One difference: my Core is monomorphized.
+I don't have any reason to param by b... yet.
+
+local.field = e => local = set_field# e local
+Local assignment => a let to a new var
+
+Introduce a partial map type Word => Byte?
+Note Storage# needs word indices.
+
+Fateful decision: I'll support nested patterns in Core, deferring determination of one-level case ordering.
+
+Start by supporting a subset...
+Append a return null() to each user function definition; that ensures the Return# a is well-typed.
+Minimal subset: locals, return.
+Each local corresponds to a Core variable.
+x = e => x<n> <- coreE e
+Context: locals : Name -> Id, scope: Expr, lastLoop: f.
+Variables are not inherently on stack...
+copy<r> off len off' <r> m =
+ setMem off len (get<r> off' len <r>) m
+
+*p = 1; *p = 2 --result: mem' = setMemPtr p 2 (setMemPtr p 1 mem)
+That can be simplified to setMemPtr p 2 mem.
+The v_1 and v_2 variables to which 1 and 2 are bound are dead (not live), so they can be removed from scope.
+
+Core eliminates:
+ nonlinear control flow, including stop/revert/evm_return
+ side effects: local assignment, region writes, gas, extstate
+
+Issue: the global variable pointer params can be statically known, so they should be converted to constants.
+If &g occurs in a tag expr, the global must be fixed.
+
+Representing constructors as functions: use Append and coerce#?
+
+From phone notes:
+Return# ret a --is a RWSE monad!
+R: immutable context (blockhash, calldata...)
+W: logs
+S: mutable regions, gas, extstate
+E: revert, RETURN, Return, Expr#
+
+Values represented using coerce#'d Bytestring#s; the consumer in truthy x (where x is a variable because the
+A-normal form transformation has already been applied) can result in different concrete implementing
+operations (still in Core!) based on whether x is on stack or loaded from a region.
+Note: as in System FC, coerce# must preserve representation (but I don't need to check that...)
+
+Globals could be represented as p = alloc()?
+A statically sized buffer would allow alloc() of a buffer to store dynsized DTs.
+Sugar could be used to treat the buffer as an ordinary global...
+Dynsized DTs would be vital for safe parsing off a typed calldata pointer!
+Fixed-size arrays could have bounds checks by default; optimize them away when possible.
+data AtMost n = AM Short --associated fact: AM x => x <= n
+safeIndexArray : (Array len a, AtMost len) -> a
+
+Dynsized DTs can implement grammars.
+Taking a page from Agda:
+data Array : Nat -> (a: Type) -> Type where
+ Z : Array 0 a
+ S : a -> Array n a -> Array (succ n) a
+Better than main: using the GADT trick from typing genservers to expose
+protocol : Implements MyAPI, where MyAPI is a user-created type.
+The calldata type can then be fixed, but what about the return...?
+Problem: monomorphization doesn't currently support that.
+I'd need local type equality constraints (a ~ Int) within the program:
+type Implements api = forall a . Ptr Calldata (api a) -> Ptr Memory a
+--No more arbitrarily typed evm_return or calldata!
+data MyAPI a where MyMethod1 :: Int -> MyAPI ()
+protocol calldata =
+case *calldata of
+ MyMethod1 args1 -> ... --here a is ()
+With protocol + dynsized types, I'm much closer to supporting the Solidity ABI.
+SolArray a becomes WordPad (Ptr Calldata (UBSolArray a))
+UBSolArray a = UBSA {sz: Word, contents: UnsafeDynArray (WordPad a)}
+dynSizeof p = 32 + coerceInt (p->sz) * sizeof (P :: WordPad a)
+
+Should function return be a monad constructor...? I could just use tail calls instead.
+Tradeoff: while with a return in it doesn't become a bind. But that bind introduced complicated control flow
+anyway...
+
+From mail:
+Operations such as *memptr = e; then become (after simplification) something like let mem' = setMem ptr e mem,
+and side effects can be reasoned about symbolically!
+For example, setMem ptr 1 (setMem ptr 2 mem) can be simplified to setMem ptr 1 mem. If no one else reads ptr 
+between the two assignments, the first write can then be eliminated!
+
+Linear data/types such as the mem map support many reads, but only one write at a time.
+Furthermore, reads must be done on a fully evaluated var; that enforces the above rule, as setMem is
+ultimately compiled to side-effecting code and value dependency enforces ordering.
+Note the mem type is not necessarily unique: it can be split, though that consumes it.
+Core itself need not be aware of linearity.
+Could the same rules/check be applied to pointers?

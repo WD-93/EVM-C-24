@@ -34,7 +34,8 @@ data E = EInteger Integer
        --Assignment moved to E
        | Pat := E
        --Perhaps replace with a constructor for each length in future.
-       | EArray [E]
+       --EArray requires a type tag because empty arrays must be typed as well.
+       | EArray (Maybe T) [E]
        --Type application; not currently exposed by the syntax but essential
        --for performing Hindley-Milner transformation in the Module type
        --TyApp is only needed for functions, so it might as well just take a
@@ -92,6 +93,10 @@ n `roundedUpMod` m = m * ((if (n `mod` m) > 0
                           then 1
                           else 0) + (n `div` m))
 n `padWith` p = n `roundedUpMod` pad2Sz p
+
+structT :: [T] -> T
+structT [] = "Unit"
+structT (t:ts) = Append t $ structT ts
 
 tupleE :: [E] -> E
 tupleE [] = Var "Unit"

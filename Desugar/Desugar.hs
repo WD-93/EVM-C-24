@@ -182,7 +182,7 @@ stringGlobals :: Map String Int -> Map Name (Region, Maybe E)
 stringGlobals string2n =
   M.fromList $
   map (\(str,n) -> ("$string" ++ show n,
-                     (Co, Just $ EArray $
+                     (Co, Just $ EArray Nothing $
                        map (EInteger . fromIntegral . ord) str))) $
   M.toList string2n
 --Strings are also of a fixed type: Array len Byte

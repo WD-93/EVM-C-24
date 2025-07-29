@@ -479,14 +479,15 @@ typeOf = go
             (e',te) <- go e
             unify tp te
             return (p' := e', te)
-          EArray es -> do
+          EArray Nothing es -> do
             a <- newTyVar
             e'ts <- mapM go es
             let e's = map fst e'ts
                 ts = map snd e'ts
                 len = length es
             mapM_ (unify a) ts
-            return (EArray e's, Array (TyNat $ fromIntegral len) a)
+            t <- zonk a
+            return (EArray (Just t) e's, Array (TyNat $ fromIntegral len) a)
           TyApp e t -> error "Compiler error: TyApp should not appear yet!"
           --I don't currently have syntactic support for ecase...
           CaseE e pates -> error "todo"

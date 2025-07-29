@@ -80,10 +80,10 @@ desugarE di@(gs,field2bcon,str2id) = go
       --on whether the expr being applied is Array/Struct.
       P.App (P.Con (UIdent "Array")) ptup ->
         case ptup of
-          P.EmptyTuple -> return $ EArray []
+          P.EmptyTuple -> return $ EArray Nothing []
           P.Tuple pe pes -> do
             es <- mapM go $ pe : pes
-            return $ EArray es
+            return $ EArray Nothing es
           _ -> throwError $ GenericDError "malformed array expr"
       P.App (P.Con (UIdent "Struct")) ptup -> do
               let structE [] = Var "Unit"
