@@ -59,10 +59,10 @@ The immediate intended use case of EVMC is implementing a high-level interpreter
 
 ### Key advantages:
 
-- **Volatile memory** could be used for internal interactions (e.g. decrementing a token balance and updating the recipient¡¦s), rather than **persistent storage** (which is much more expensive).  
+- **Volatile memory** could be used for internal interactions (e.g. decrementing a token balance and updating the recipient's), rather than **persistent storage** (which is much more expensive).  
 - **Batching:** Many user transactions could be executed together.  
 - **Compact state:** Persistent state (contract data, balances, etc.) could be stored as a single Merkle root on-chain, enabling major gas savings.  
-- **Alternative authentication:** I am interested in supporting a hash preimage revelation-based protocol, which could provide **80¡V90% compute cost savings** over traditional signature verification.
+- **Alternative authentication:** I am interested in supporting a hash preimage revelation-based protocol, which could provide **80-90% compute cost savings** over traditional signature verification.
 
 ---
 
@@ -76,4 +76,4 @@ Once the compiler pipeline is complete, the highest-priority improvements are:
 
 ---
 
-I¡¦ve also considered additional features from a programming languages research perspective. They¡¦re a bit esoteric, but I¡¦d be happy to discuss them.
+I've also considered additional features from a programming languages research perspective. They're a bit esoteric, but I'd be happy to discuss them.
