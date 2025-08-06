@@ -30,6 +30,7 @@ while (x--) {
  var y = 10;
  while (y--) x--;
 }
+-}
 --Break and continue necessitate CoreError, since occurring outside a loop is
 --malformed.
 

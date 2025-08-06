@@ -29,6 +29,12 @@ data Expr = Var Id T
           | Let Id Expr Expr
           | Case Expr [(P,Expr)]
           --Omitted: Coercion
+          --I need QP for converting EVMC to a CPS monad, but I only need it
+          --for that... so I'll implement it as a type lambda.
+          | TyLam Name Expr
+          | TyApp Expr T
+          --TyApp (TyLam v e) t ~ substitute (TyVar v) for t in e until it's
+          --shadowed.
   deriving (Eq,Ord,Read,Show,Data)
 
 data Id = Mono Name | Poly (Name,[T])

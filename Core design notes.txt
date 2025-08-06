@@ -275,7 +275,8 @@ Fixed-size arrays could have bounds checks by default; optimize them away when p
 data AtMost n = AM Short --associated fact: AM x => x <= n
 safeIndexArray : (Array len a, AtMost len) -> a
 
-Dynsized DTs can implement grammars.
+Dynsized DTs can implement grammars. Note that since it uses a prefix parser, garbage in a buffer won't
+corrupt a new dynsized value written to it!
 Taking a page from Agda:
 data Array : Nat -> (a: Type) -> Type where
  Z : Array 0 a
@@ -312,3 +313,319 @@ ultimately compiled to side-effecting code and value dependency enforces orderin
 Note the mem type is not necessarily unique: it can be split, though that consumes it.
 Core itself need not be aware of linearity.
 Could the same rules/check be applied to pointers?
+
+The mem map must be partial Short->Byte, otherwise it's not possible top split it.
+
+A problem: if Append et al support dynsize types, what to do about padding? The tag can still be in a fixed
+position... when loading to the stack, you load the max size and the padding is last!
+Only when you perform truthy do you need to mask it.
+A type which supports neither size nor dynsize such as UnsafeDynArray prevents access to fields after it...
+
+Idea: instead of manually wiring the control flow, build it from a stack of monad transformers.
+Expr -- RWSE which houses the CALL-global branches: revert and RETURN
+WhileT t m --effects: break, continue... similar to a Memo monad that makes recursion explicit.
+FunCallT ret m --effect: function return
+I can't have curried functions, so extending a -> b with an additional c param must => (c,a) -> b
+I can prototype the transformer stack in Haskell.
+Code can't implement values, only continuations (a,R,S) -> Result (b,[Log],S)...
+So is it an arrow, not a monad? Arrows have rec...
+Must I use CPS from the start?
+x <- m; ... isn't that different from m (\x -> ...)
+Note I can compose functions (e.g. (***)), but only if I can statically evaluate the result to a new lambda.
+Then a monad might be feasible... the bind rhs ultimately gets compiled away, as do the function 
+transformations done in the monad stack (lifting etc).
+
+runWhile :: (m Bool) -> (s -> WhileT s m s) -> s -> m s?
+continue :: s -> WhileT s m s
+break :: s -> WhileT s m s
+lift :: m a -> WhileT s m a
+Should the cond be (s -> m (Bool,s))? There's already a scope which m and the body can access...
+But its type changes, and we want to explicitly bind the result of a while.
+
+Perhaps protocol should be an explicit monad...
+Or the EVMC function type could hide a RETURN parameter.
+A function which doesn't RETURN could be forall a. <returns a>, true quantified polymorphism.
+I can't just fix a particular return type for all functions, since protocol must support several
+different return types.
+Purity and linear control flow by default, explicit effect transformers? That's getting a bit too exotic for
+devs used to Sol...
+
+Recall from notes: lens p.f es = e (where e must be a valid pattern).
+That way I can conveniently assign to indices of Array, DynArray, UnsafeDynArray etc and build them
+in terms of each other.
+data Array len a = Array (UnsafeDynArray a)
+sizeof (arr :: Array len a) = knownNat@len * sizeof a
+Boxed fields => lenses... unboxed fields could be slices.
+Index of a UDA is not necessarily safe...
+lens uda.indexUDA ix = uda.slice (ix*sizeof a) (sizeof a) :: a
+Exprs in patterns make lenses strong...
+
+s;
+*g = garbage() --could explicitly mark g as usable scratch in s.
+
+Closure conversion: compilable Core may contain no closures. HOFs such as (***) applied to static lambdas are 
+simple to eliminate. Values from monadic binds cannot be closed over either; the context passed must be
+extended with them.
+if/case must ultimately be Scott-encoded.
+let x = e
+in if x > 5
+   then x
+   else x+1
+In the initial Scott encoding, the two branches can initially take () and close over x; their argument must
+be extended with their free vars before they become compilable.
+If the monad stack is in CPS, statements such as while explicitly take their cont; the top-level bind 
+evaluates to an expr which contains all the info it needs.
+Nonlocal control flow encoded using function return, break and continue must be eliminated for compilability.
+Do so via specialization? case on a WhileResult passes in continuations; letrec can be converted to a
+fixpoint combinator?
+Since the letrec-defined values are static, the letrec can ultimately be lifted.
+To convert them to function pointers, all closed values (except the letrec functions themselves) must be
+added to params.
+WhileT takes two conts, FunCall one. What about Expr?
+
+If I start with CPS where all state is threaded through every computation, how to reorder within a do? Give a 
+pure def of independence.
+f . g is commutative iff r1 . g . r2 . f . r3 ~ f . g, where r1-3 just perform fixed tuple permutations.
+Note some closures are compilable - the \x -> f x k in nested tail calls has a stack representation:
+f k.
+
+case x of
+ Con1 args -> cont
+=>
+caseN x (args -> cont), then scope is prepended to args.
+Why caseN? Because a subset of the constructors may be excluded.
+
+(a -> b) => forall ret cd . a -> FunCall ret cd b b?
+Calldata could be another type parameter.
+Explicit monads: while as sugar for a monad transformer call that lifts every statement but break and
+continue.
+User-level closures that must be simplified away?
+Still need to support lenses.
+Explicit effects: context read/write are effects. Better to use Eff than trans?
+There isn't a single memory map... you might want to stack several.
+Core parameterized by ret and calldata is preferable to protocol :: Implements MyAPI, since it allows an
+EVM return from deep within the call stack.
+Hmm... all the regions could have typed APIs.
+Memory: a struct of globals + allocPtr : AllocBuffer.
+Could the allocPtr point to an "infinite size" buffer datatype with an alloc operation?
+
+C isn't well-suited to exposing all this type info... but I also want to automate the handling of it, so
+that's not that big a problem.
+However, fixing the calldata and returned type for protocol is highly desirable.
+FW: Ptrs tagged by mem?
+A linear type system using indexed monads?
+Where do lenses fit into the type system? They have a get, set and an m (which may be polymorphic to allow
+for "at least effects eff").
+
+Note it should be possible to return types such as UnsafeDynArray... returnWithSize?
+Does a return monad open up for longjumps, current function returns deep within a nested call? No, the
+unknown depth of the stack gets in the way.
+It might enable non-returning functions which don't take a return address.
+
+Keep main for now... I need a simple prototype before considering extensions. Non-typesafe calldata and
+RETURN is a minor blemish that can be mitigated with a protocol pattern. An explicit single entrypoint,
+allowing shared computation and efficient dispatch, is a consolation prize.
+Implement while and return using letrec and tail calls.
+A single RWSE a monad remains, with REVERT and RETURN as the only control flow constructors.
+With a single monad, lenses become simple again.
+(a -> b) => MkFun ((a,R,S) -> Result# (b,[Log],S))
+CPS: forall t . (a,R,S, Result# (b,[Log],S) -> t) -> t
+data Result# t = REVERT# Bytestring# | RETURN# Bytestring# | Expr# t
+bind res f => (coerce# res) f
+*Every* expr gets converted to CPS, then most functions are optimized away to lets.
+Monad reordering must be done by splitting the input after conversion to lambdas.
+Core doesn't care about eval order, but eventually it must be scheduled.
+An explicit consuming lambda, linear stores? Actions: create, consume, borrow.
+Make a pessimistic approximation of consumes, tag functions with consumption status per argument.
+p->field borrows p...
+A dynamic store for unique pointers would be cool.
+p1 -> Con {field: p2} owns p2 => you can borrow it, but it can't escape once you return Con.
+A Rust-like type system which maintained linearity by construction rather than having to reconstruct it from
+ill-behaved code would be very attractive, but isn't suitable for a prototype.
+More FW: Rust-style unsafe.
+
+add# :: Word -> Word -> Word --no Result# => success guaranteed
+x <- w1 + w2 => let v = add# w1 w2
+
+With closures at the Core level, there's nothing stopping me from currying primfuns... if their partial args
+are constant that'll go through.
+
+Closure conversion: a lambda without any free vars is compilable.
+If it has free vars, it may only be called statically; its context must be passed in and its modified
+locals returned. Proceed depth-first. Note that enables e.g. forArray (\n -> x += n, arr), but you
+must inline the closure's user! Nice, combinators replacing what would be language constructs in e.g.
+JS.
+User functions could be curried, though then they'd face closure elimination failure errors; better to
+just uncurry.
+
+A CPS-converted while statement must take all its potential continuations: the return continuation k
+and the statement end continuation (break).
+The continue continuation is the function itself, which should be in scope via letrec - not passed as
+a parameter.
+Note the Core monad doesn't capture locals.
+It may be simpler to just compile directly; that avoids the need to pass continuations to the next stmt
+rather than just using the letrec f.
+Proceed backward to assign names to fs?
+
+DCE is easier before CPS, though it also has to be done afterward.
+Compilable form:
+letrec {f args = (let varTup = opE in)* branchE} in main
+opE ::= k | f | g | opF varTup
+branchE ::= RETURN# v | REVERT# v | f varTup | case v of alts
+
+.field, .field= need to be functions/primops
+How to distinguish linear application of a single argument, mem? Make it a separate application and add
+LinearFun#.
+
+The memory model could assume tags aren't modified: a Maybe Word and a Byte pointer then won't conflict.
+Instead of special treatment of char*, add a RawPtr type that can alias anything?
+
+*************************
+Scratch memory use is based on two opts: first, reset the mallocPtr after alloc/dynAlloc, then simplify the
+resulting mem' by recognizing writes to the same key.
+
+To support dynSized or size-less datatypes, need dynAlloc.
+To parse multiple instruction scripts (load, user, store), use size-tagged instruction buffers or increment
+a PC?
+next : BDT params -> BDT params
+next(bdt) :=
+ case bdt of
+  ImplC1 p -> coerce (inc p)
+  ...
+Overwriting the tag of a pointer to a struct type is UB, so you can assume the tag remains constant and
+thus next(instr) after/within a case on instr can be optimized.
+coerce 0 :: Ptr Calldata t --asserts that 0 points to a valid t.
+
+Assume no tag overwrites when optimizing (otherwise Byte aliases practically every datatype).
+Then referred types (t) = flattening union of referred-to fields with recursion on pointers.
+Note multiple regions may be referred to!
+Need support for word-sized storage and tstorage slots in semantics.
+**************************
+
+Is *mptr = v for a multi-word, non-wordsize type optimized by using scratch and mcopy?
+Consider *p = short.
+old = mload p & mask --12, code-intensive...
+new = short << 240 --9
+mstore p (old | new) --9, total 30
+
+mstore k short --9 or 8, depending on whether scratch is at 0
+mcopy p 30 2 --15, total 24
+
+The same trick works in reverse: mcopy to scratch, then load off constant offsets (cost 3) rather than ptr+k
+(9).
+The OH of mcopy is 12 + 3/w; even when writing a word-padded value mcopy will be cheaper for #words >= 4.
+This shows how important single-word values are: they're about 3 times cheaper to read and write from the
+stack than a short.
+That's assuming you read the whole value and not just fields.
+
+On-stack field writes are also expensive: (newfield << k) | (struct & mask) --15 in the best case where both
+newfield and struct are consumed.
+Would it be worth scratch mallocing frequently written struct locals?
+
+xs = range(1,n) :: List Memory Word --allocates only new list cells.
+The uniqueness of the reachable set of xs should propagate up the call stack.
+
+****************************
+
+Pre-CPS:
+RWSE monad: use the monad laws to flatten nested dos and propagate return or error.
+The monad does not take a cont, instead it uses constructors.
+
+k => let x = k in Return# k
+f :$ x => do
+ f <- compile f
+ x <- compile x
+ f x
+local => the appropriate Core local
+
+The monad does not handle locals; statements return the local scope. Exprs return the local scope in
+addition to their value! When a var is passed through unchanged, eliminate it. Note they'll be added back
+where appropriate during closure elimination!
+ifte i t e =>
+ locals' <- case truthy i of
+  0 -> compile <locals> e
+  _ -> compile <locals> t
+Note the ifte can be compiled in isolation; breakup into tail calls has not yet been performed.
+truthy can return a Word for efficiency. truthy of a type with no valid falsy bitpatterns can be optimized to
+1.
+case e of 0 -> a; _ -> b --can be compiled to a JUMPI.
+while is analogous but uses an ifte.
+while cond s scope = do
+ (w,scope') <- cond scope
+ case w of
+  0 -> return scope'
+  _ -> do
+   scope'' <- s scope'
+   while cond s scope''
+--Don't actually define a single while function, instead use a letrec whileN.
+
+Patterns are fallible or infallible. case takes at most one-level fallible patterns; convert to
+case x of
+ Con1 locals -> (...).
+Infallible assignment forms: p = e, p += e, p++. Subexprs in p must be let-bound first, as must e.
+Note in case *p of Con1 locals -> ..., the deref of the locals can be deferred; locals are not inherently on
+stack.
+
+Add special support for tuple pats and exprs in Core? x or a nested tuple is the only acceptable arg to a 
+function or lhs of a monad bind.
+
+No expr modifies the scope (dead var elimination comes later); only var x = e or block can modify it.
+(local = x) scope => Return# scope[replace local with x]
+local (.field | !ixvar)* = x becomes local = (...) local x; add an expr construct for (.field|!ixvar)*?
+State: locals, local => core var.
+var x = e --only makes sense in a block; if standalone convert to SE e.
+
+In p->{a,b,c,d}, p->a etc should be known not to alias each other.
+More generally, *p (path1) should be known to be distinct from *p (path2) if they're distinct; both should
+definitely alias all their superiors.
+a ! b: they definitely alias
+a ? b: they maybe alias
+a . b: they do not alias
+How to represent the alias matrix compactly? A tree...
+! is transitive, but is (?)?
+A* ? (A,B)* ? B* --Answer: no.
+
+getNthPointer : List r Byte -> Ptr r Byte
+--If it doesn't unsafely produce a pointer or alloc, the returned pointer must alias one of xs' reachable
+pointers.
+The same is true if the elem type is A st reachable A includes A*.
+
+Pre-CPS compile subset:
+The statements; e ::= (x = e) | x
+return x => return# x?
+Alt: a FunReturn# constructor?
+Recall: pre-CPS Core# ret a ~ (R,S) -> Result# ret a
+Result# ret a = Return# (a,W,S) | FunReturn# (ret,W,S) | revert, RETURN
+The W (log) supports only emptyLog# and appendLog#
+Don't type the log API for now.
+A function call will either diverge or FunReturn; a -> b can then be converted to
+a -> Core# b ()
+call f x =>
+ s <- get
+ r <- ask
+ case (f x) (r,s) of
+  FunReturn#  tup -> Return# tup
+  revert, RETURN -> propagate
+Core cases should be assumed to cover all possible cases; add _ -> revertValue(errmsg) to each EVMC case.
+
+Patterns in the function lhs must be matched in the monad context!
+f p := s =>
+ f = \x -> do 
+  scope <- <match p x>
+  s
+p should support nested fallible patterns, triggering revertValue(errmsg) on failure.
+Disallow (ix,p[ix]); all exprs should be in the null scope.
+Convert nested fallible pattern into a skeleton using only locals.
+Match local pat takes a list of local, pat pairs and matches the leftmost vs the top-level constructor of
+its pat, either failing or producing new local, pat pairs. Once the pat is one level deep, the locals should
+instead be stashed for return.
+case e of
+ (Con ps | k) -> ...
+ _ -> ...
+Can be implemented as ifte v == k; ifte (v == 0) t e can be optimized further to ifte v e t
+
+The monad hides mem etc; get and set ptr become monadic actions.
+The monads should be expanded in a later stage.
+
+For writeup: the tricky part is adapting Core to an imperative context where there are a bunch of inbuilt
+effects + the data repr is low-level (in particular pointers exist and functions are pointers, not closures).
