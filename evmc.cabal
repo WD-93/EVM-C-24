@@ -1,0 +1,54 @@
+cabal-version:       2.4
+name:                evmc
+version:             0.1.0.0
+build-type:          Custom
+--formerly Simple
+custom-setup
+   setup-depends:       base, Cabal, BNFC >= 2.9                                                                   
+
+library
+  exposed-modules:     Compiler
+  other-modules: AST.DTs
+               , AST.Util
+               , Desugar.DTs
+               , Desugar.Datatypes
+               , Desugar.Desugar
+               , Desugar.SEP
+               , Desugar.T
+               , Desugar.Util
+               , E.Abs
+               , E.ErrM
+               , E.Lex
+               , E.Par
+               , Mono.Mono
+               , Parse
+               , Stdlib.ImplicitImports
+               , Typecheck.DependencyGraph
+               , Typecheck.FIKS
+               , Typecheck.HM
+               , Typecheck.HM.AddConsAndFieldsToTySigs
+               , Typecheck.TC
+               , Typecheck.TySyn
+               , Util       
+  autogen-modules: E.Abs
+                 , E.ErrM
+                 , E.Lex
+                 , E.Par
+  hs-source-dirs:      .
+  build-depends:       base ^>= 4.18
+                     , syb
+                     , BNFC
+                     , containers
+                     , mtl
+                     , transformers ^>= 0.6.1.0
+                     , template-haskell >= 2.20.0.0
+                     , array >= 0.5.8.0
+                     , process
+                     , directory
+  build-tool-depends: alex:alex >= 3.2
+                    , happy:happy >= 1.19
+                    , BNFC:bnfc >= 2.9
+
+  default-language:    Haskell2010
+  extra-source-files: Stdlib/Prim.evmc
+                    , Stdlib/Prelude.evmc

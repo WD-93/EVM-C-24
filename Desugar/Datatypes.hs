@@ -11,6 +11,7 @@ import qualified E.Abs as P
 import AST.Util
 import Desugar.Util (defaultFieldName)
 
+import Control.Monad (forM_)
 import Control.Monad.State
 import Control.Monad.Except
 import qualified Data.Map as M hiding ((!))

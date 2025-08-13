@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
 module Typecheck.HM where
 
-import Util
+import Util hiding (withError)
 import AST.DTs
 import AST.Util (freeVarsPat,op2fun,region2T)
 import Typecheck.TySyn (tyVars,tyCons,
