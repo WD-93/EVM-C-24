@@ -17,10 +17,11 @@ module Mono.Mono where
 --to get the full function instance set.
 
 import AST.DTs
-import Util (complainIf,(!),withError)
+import Util (complainIf,(!))
 import Typecheck.HM (tyVarsList)
 
 import Data.Generics
+import Control.Monad (forM)
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Except

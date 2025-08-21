@@ -16,6 +16,7 @@ import Data.Map (Map(..))
 import qualified Data.Map as M hiding ((!))
 import Data.Set (Set(..))
 import qualified Data.Set as S
+import Control.Monad (forM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except

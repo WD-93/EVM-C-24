@@ -629,3 +629,340 @@ The monads should be expanded in a later stage.
 
 For writeup: the tricky part is adapting Core to an imperative context where there are a bunch of inbuilt
 effects + the data repr is low-level (in particular pointers exist and functions are pointers, not closures).
+
+*************************************************************************************************************
+
+Always compile calls to f (args, \ret -> cont). That eliminates the need for a FunReturn constructor in Result.
+Convert f : a -> b to f : (a, b -> Core End) -> Core End; that eliminates the need for reintroduction of polymorphism.
+n => let x = n in …
+return e => x <- compile e; k x
+A let binding is compilable iff its rhs is not of type Core t; that corresponds intuitively to straight-line primops.
+ifte : (Word,a) -> (a -> Core End) -> (a -> Core End) -> Core End
+A closure is compilable if it's of the form \ret -> f (Pair ret rest) and it's the last argument of a call.
+\ret -> f' ret rest can always be converted to compilable form. 
+while loops must take the locals they modify as their recursive argument; additional locals can be added later during closure elimination.
+
+Core takes (R,S), but which parts of state should be returned depends on the Result.
+Result a = Return (a,[Log],S) | RETURN (Bytestring,[Log],S less volatile state) | Revert Bytestring
+Volatile state: memory, calldata, but not gas.
+Is there any pressing reason not to just put [Log] in S? Not optimization; logs are stored in a list rather than a multiset, so logging
+statements cannot be reordered.
+
+Modelling CALLs in the semantics: if programs are assumed to have a single given type ~ main:()->() and the mapping addr=>f is known,
+the Core monad allows you to reason about the callee.
+A CALL will never Return... perhaps the whole program should be modelled as such a CALL rather than just a main invocation.
+The real code is ~ main();stop(). If main is only called there, it can then be inlined. The true main takes no arguments (i.e. just an
+empty tuple) and no continuation.
+Even more concrete: main (\() -> RETURN# emptyBytestring#) :: Core# End#
+Memory initialization can also be made explicit, allowing it to be optimized.
+That requires a concrete implementation of the alloc and writes.
+region g = e => g = alloc(); *g = e
+That allows dynamic allocation in global exprs, e.g.
+arr = dynSizeArray(…)! The global pointers need to be let-bound and ultimately passed into the main expr.
+Note that the actual global addrs can then be subject to GC optimization.
+Implementation of globals in Core allows generalization, e.g.
+let p = dynSizeArray(…), where p doesn't need to be stored in memory.
+You could even access calldata etc!
+Problem: how to deal with unsafe dynsized objects during GC?
+What does alloc() guarantee? No interference from safe code will be
+observed by safe access to the returned pointer.
+Code is assumed to be safe when optimizing; p[ix] and coerce can violate
+safety.
+
+Pointer values from alloc are arbitrary; only &(p->field) and p[ix] force a
+relation between two distinct pointers. That enables reordering of allocs to
+preserve the semantics.
+Assume p[ix] won't overflow p; don't mask it (it's already unsafe...).
+
+The code mapping is fixed; the overall Core expr for a contract is then
+\calldata gas ... ->
+  let codemap = …
+  in letrec fs = …
+  in runCore (main (\() -> stop#)) calldata gas …
+That code map can be represented as setCode p1 v1 ||| …, enabling unused ps
+to be optimized away. If only a field is used, it should also be possible to optimize that. The final optimized expr should be scanned for setCode to
+collect label-bytestring pairs, analogously to setMem (or the lower-level
+functions chosen to implement it) emitting side-effecting instructions.
+
+Code generation:
+Collect letrec bindings, then proceed from the main expr; place bytecode
+there directly.
+Result: a true main BB, a f/lambda->BB map and a codep->v map. The 'main'
+function is treated normally if not inlined.
+Placement: first true main; all offsets assumed to be 16b.
+BB + codep placement is nontrivial due to fallthroughs, case jump tables
+(which can be implemented efficiently using jump tbl + tag << k) and some
+static values being placeable in .text because they contain no PUSH* bytes.
+Containing PUSH* isn't fatal, as long as the bytestring either 1) contains
+enough subsequent bytes, 2) is padded.
+
+Recall: if tags are a multiple of 16, case can be implemented as
+jump ((push tbl >> tag) & 0xffff) --23 gas, not counting tag retrieval
+(another 6 for sub-word tags in unboxed datatypes).
+Default to that in Desugar.Datatypes when there are few enough constructors.
+
+Region model: the memory and code maps are divided into ranges which may be
+freely reordered.
+(p,mem ||| p->initValue) = alloc# mem, where p and initValue are arbitrary.
+Problem: how to reorder if the entire mem map must be passed?
+How to record freeness of p:len?
+Lifetimes for static GC: the lifetime of a pointer written to an object with
+lifetime L is at least L. Consider sum([1..10]); the list should be possible
+to GC, but the Core will turn into a number of sub-funs. How to propagate
+lifetime info across funs?
+Note valuable opt: if a pointer will not be read again, writes to it are a
+noop. Stack lifting can be achieved by symbolic reasoning: p->serialize x
+~ v = x. Memory vs stack is just an implementation choice either way.
+Full-program global lifting is made easier by first let-binding global pointers, passing them as part of defunctionalisation and only replacing them
+with constants if they're given a fixed address. How to do so temporarily?
+HM with template poly can capture (L1 >= L2) if you use concrete nats for
+lifetimes. There's a relation to ST, though I don't have the necessary
+rank-2 polymorphism.
+
+Loop unrolling is inlining. Consider:
+for(var i = 0; i<32; i++) accum += byte(i,word)
+Using constants instead of shuffling both accum and i is much cheaper;
+it also avoids a jumpi.
+
+x.field = e => let x' = setField e x --that doesn't require specifying
+whether it's on stack or in memory
+--Assuming p points to x
+*p = setField e x => p->field = x
+Which is cheaper? If field is sub-word and you have x on the stack...
+
+Core shouldn't care about lower-level details, but opt hints for LL codegen
+would be very useful. Ex:
+pin g/f at k;
+one-byte g/f.
+
+(p, p->arbitrary) = alloc# (allocPtr->v) s.t. p new
+Need to transitively bubble up new so [1..n] refers to fresh memory.
+Should allocPtr be separate from mem?
+Every alloc call should be a distinct expression to prevent sharing opts,
+but it should be possible to eliminate sequential dependencies between them.
+Split the alloc ptr, never consume it or return an updated version?
+(a1,a2) = splitAllocPtr a should be called whenever an alloc is done.
+alloc# and splitAllocPtr consume ap.
+
+Initial simplification: default tags only (0,15..) or (0,16..), support only
+calldata, memory and revert/return.
+Consumes x e --tags e (e.g. mstore, call) with consumption info; disallow
+parallel consumes, schedule any exprs which use x before e.
+
+Treat UB (unexpected aliasing, invalid bitpatterns) as a first-class outcome
+in Result#?
+Q: When should invalid bitpattern be UB? If the tag is invalid on case, when
+jumping to an ill-typed function ptr. Deref of an invalid bitpattern need not
+be UB; it's triggered on use, not creation.
+
+Mem can be a single value initially. Allocs introduce new mems which must be
+merged.
+Note: with a code cost of 0, any while loop will be inlined until space runs
+out.
+case_N :: (tag,a) -> (a -> b) -> … -> b
+
+Do I need to let-bind word constants? That would make replacing
+*memp = *p with *copy p memp len harder.
+
+Should every statement take a continuation rather than bind?
+Perhaps polymorphism can be avoided if the continuation for Core a is
+(a -> Core End), the same as for function calls.
+Indeed, each statement can be treated as an ordinary function; instead of
+the parent function's return cont it's passed a closure usually containing it. Then there's no need for an error monad; CPS is made explicit.
+type Fun a b = ((a,R,S,Cont b) -> End)
+type Cont a = (a,R,S) -> End
+Note the return continuation is not a Fun a b; it takes no return cont.
+data End = Return ([Log],Sto,TSto,Ext,Bytestring) | Revert Bytestring
+R = {calldata,caller,value,code,blockhash,origin...}
+--Also include allocPtr and gas in R?
+S = {mem,sto,tsto,ext,...}
+The Core type of e :: a is then (R,S,Cont a) -> End, ~Fun () a.
+Except assignments must also be passed...
+Locals which might be updated must always be passed; that's related to phi
+vars in SSA.
+
+Current special vars: mem, cd, ret, allocMem
+
+Track all live mem maps, merge them when passing to a non-stmt fun.
+Future refinement: for f (\ret -> …) where f only uses some of the maps,
+pass in their union; the cont lambda can remain closed over the rest. 
+
+Merging the mechanisms is nice... reminiscent of my old approach w/ CFG.
+Algo: for s;rest, next <- the rest cont, then compile s w/ next and return it. Pass the entire scope to next.
+Special cases: 
+var x = e; rest --here the scope is extended
+continue; rest --the next is ignored; the while loop takes a fixed number of
+memory params, so new allocs must be merged into them.
+
+* Allow only x, tup in function LHS, enabling zero-overhead binding.
+Each function is of form 
+f (scope,r,s) = …
+case e of {Con {field: p} => s} @ next =>
+ letrec n = next in
+ e scope @ \v ->
+  let t = v.tagDT
+  in caseTag ((t,v,scope),r,s) {
+   Con1: \((v,scope),r,s) -> {p1 = v.field1; …; s} @ n
+  }
+Semantic footgun:
+case xs of
+ Cons True xs' => … --will revert given Cons False ys
+ _ => …
+
+Since the unboxed repr of BDTs can now be one datatype, require each
+constructor has a unique tag.
+Best case: 0,16... --29
+Second best: 0,1...
+ jump (JT + tag<<3) -> jumpdest, jump k, jumpdest --36
+Worst case: binary search
+jumpi (k < tag), jumpdest --19.5 per branch, less 3 for the final one
+
+ifte i t e (scope,r,s) @ next =>
+ letrec n = next in
+ i scope @ \(v:scope,r,s) ->
+  let w = truthy# v
+  in ifte (w:scope,r,s) (t @ n) (e @ n)
+
+f x (scope,r,s) @ next =>
+ f (scope,r,s) @ \((f,scope),r,s) ->
+ x (scope,r,s) @ \((x,f,scope),r,s) ->
+ f ((x,mkCont next scope),r,s)
+Placing cont in scope ensures the lhs of top-level functions matches those of
+statements.
+Bind cont to $ret.
+
+return e @ _next =>
+  (e @ \((v,scope),r,s) ->
+   scope[$ret] v) --takes (scope,r,s)
+
+Simplification: pass everything (S,R,[Log]) as state.
+Stages:
+1) No effects whatsoever; the final cont \_ -> stop# doesn't need memory.
+2) mem, allocMem
+allocMem should be split at every point where it might be used, but never
+passed on. Ditto for calldata (less the splitting)
+Runtime values (vars in scope) are never consumed; whether an application
+consumes mem must be estimated pessimistically.
+
+Stage 1): Nested tuples as arguments, e ::= f,x,tup,k; p ::= x,tup
+s: if, while, case eliminated
+SSA: x = e => push e, statically rebind x.n (where x.n is the newest x to
+be declared).
+
+alloc@[Memory,t] (((),cont),(ap,mem)) =>
+ let (ap1,ap2) = splitAP ap
+     (p,mem') = alloc#@[Memory,t] (sizeof@[t],ap1)
+ in cont (p,(ap2,mem ||| mem'))
+Treat ||| as an infallible pattern constructor in lhs? Then inlining alloc
+should reveal mem is passed through unchanged.
+Problem: if Nil should allocate no more bytes than necessary, either
+*p = e needs to use dynSize or BDT alloc needs to use unsafe alloc and store
+ops.
+Nil@[Memory,Byte] repr on stack: {TagNil,0x00_00_00}
+Naïve load and store require shifting.
+Disallow types without a fixed sizeof for now, enabling all to reside on stack in principle. That forces reliance on unsafe pointer indexing for
+dealing with dynsized values (e.g. bytecode), restricting when GC can be done.
+data Object = … | OArray {sz: Short, buf: Array 0 Object}
+Restriction: if you do a raw alloc (OArray + content) and coerce the pointer
+to Object* and it escapes, you can't GC the "unused" part.
+coercePtr : Ptr r a -> Ptr r b --Full coerce : a -> b should not be considered a pointer escape, but coercePtr should.
+
+Global allocation: convert all alloc#(n,ap) with fixed ap from root to fixed
+addresses. Constant let bindings outside the defun letrec should be allowed?
+What about static scratch allocations? Inlining of main may expose new static
+allocs.
+
+pointed(p) : Mem <= reachable(p)
+If p[ix] is used, the original allocated pointer must be large enough to fit
+p[ix].
+
+I need to use tuples in Core, but C treats them as Append (WordPad …) … 
+
+x,y,z,ret => ret,x,y,z code:
+swap1: y,x,z,ret
+swap2: z,x,y,ret
+swap3: ret,x,y,z
+Because there's only one cycle, swapping is cheap.
+
+dup1 (x,scope) = (x,(x,scope))? No, values may be multi-word.
+
+Pure primfuns are relatively simple:
+add (((a,b),cont),env) =
+ let x = add# (a,b)
+ in cont (x,env)
+
+Letrec in compilable form should only work for constant expressions.
+Globals need to be converted to constant pointers, but their identity info
+needs to be preserved; letrec solves that.
+
+Local scope is constant within Es, allowing it to be treated as monad state.
+State: scope, env.
+All statements but var x = e; also avoid modifying scope.
+By restricting function lhses to x | tup, the params can be assumed to be on
+stack with the same repr as locals.
+
+How to enable variable calling conventions with Core?
+An obvious one: noreturn. Limited effects: no mem etc.
+How about no halt, guaranteed return?
+GReturn env a b ~ forall c . ((a,(b,env)->c),env) -> c
+With f x implemented as f ((x,cont),env), you could call GReturn Env normally
+in ordinary code.
+For nonstandard env you'd need to overload the effectful operators or use new
+ones.
+Could you overload stack push to use memory instead?
+First things first...
+
+Key opts: inlining, dead var elim, passthrough detection.
+How to detect
+f() := return f() doesn't use $ret? Functions form a call graph that can be
+SCC'd. No return in the subcall implies no return in f... classify fs into
+definitely and maybe returns. If f returns, it must be provable that it can
+from the definitelys (assuming favourable cases/conds).
+
+Tail call opt: f ((x,\(v,env) -> $ret (v,env)),env) => f((x,$ret),env) by
+eta reduction. Which empirical opts fall out naturally from LC opts must be
+documented for the writeup...
+
+Important to note for inlining: the ultimate effect on code size depends on
+the effect of specialization on the inlined body.
+Loop inlining: inlining from the call site differs from inlining in the body;
+the former produces constant indices for for(var i = 0; i<k; i++), the
+latter produces a longer loop body.
+Limit number of nested inlines of a single fun to prevent a 10-iter loop
+from taking arbitrary code size?
+Symbolic eval useful for loop unrolling: commute, assoc of sum to enable
+constant expansion.
+f x = while(cond)s => f ((x,cont),env) = letrec g = … in g ((x,cont),env)
+After lambda lifting of g, that becomes f = \arg -> g arg, which can be
+eta-reduced to f = g. At that point occurrences of f can be replaced with g.
+
+Not making constructors C functions (instead Cons :: (a, List a) -> List a in Core) seems the right call; they're straight-line, pure and don't halt.
+On the deconstruction side, Core sees fields and tuples, and has access to
+case funs. It does not need to be aware of tag values or data reprs, modulo
+optimizations.
+case fun type: (Pair tag scope, Env) -> 
+ [(tag, scope -> End)] -> (scope -> End) -> End
+Constraint: the case tags are constant. The default tag is essential,
+otherwise ifte can't be implemented as a caseTag.
+Special case: case n of 3 -> … should discriminate on n itself, not its unit
+tag. Should every type even have a tag..?
+data Fun a b = Fun (CoreFun ((a,CoreCont b),Env) End)
+
+In case (t,cont) of caseTag tag, it can be assumed tag == t.
+That should enable opt of dynSize xs within a case on xs (relevant for interp) by symbolic eval of mem (if (xs.unImplList)->tagList remains unmodified, the == constraint should propagate to its region of the mem map).
+
+Name info: should I do an initial pass where I replace Name with
+g, f, x.n? Con and index (.field | !ix) could also be tagged with a param to
+SEP. For simplicity, all names could take a [T] type annot after HM -
+including locals.
+Is it worth making that distinction in Core?
+Just use the monomorphized output I have... functions and globals are
+translated directly, locals given an index.
+Invariant: every compiled E has the arg pat (<scope>,<env>); ditto S (though
+var also updates the scope).
+x @ next => ix <- current x version, next x.ix
+Only when an expr has sub-exprs (:$, Con) does arg vary.
+
+When inlining and specializing, a graph of mutually recursive functions can
+be specialized at once; that's necessary to ensure the specialized function(s) can recursively call themselves. The top SCC is the minimum
+recursively specializable set.

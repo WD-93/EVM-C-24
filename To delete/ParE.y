@@ -5,7 +5,7 @@
 {-# OPTIONS_GHC -fno-warn-incomplete-patterns -fno-warn-overlapping-patterns #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module E.Par
+module ParE
   ( happyError
   , myLexer
   , pM
@@ -55,8 +55,8 @@ module E.Par
 
 import Prelude
 
-import qualified E.Abs
-import E.Lex
+import qualified AbsE
+import LexE
 
 }
 
@@ -188,8 +188,8 @@ import E.Lex
 
 %%
 
-Ident :: { E.Abs.Ident }
-Ident  : L_Ident { E.Abs.Ident $1 }
+Ident :: { AbsE.Ident }
+Ident  : L_Ident { AbsE.Ident $1 }
 
 Integer :: { Integer }
 Integer  : L_integ  { (read $1) :: Integer }
@@ -197,256 +197,256 @@ Integer  : L_integ  { (read $1) :: Integer }
 String  :: { String }
 String   : L_quoted { $1 }
 
-UIdent :: { E.Abs.UIdent }
-UIdent  : L_UIdent { E.Abs.UIdent $1 }
+UIdent :: { AbsE.UIdent }
+UIdent  : L_UIdent { AbsE.UIdent $1 }
 
-Infix :: { E.Abs.Infix }
-Infix  : L_Infix { E.Abs.Infix $1 }
+Infix :: { AbsE.Infix }
+Infix  : L_Infix { AbsE.Infix $1 }
 
-HexInteger :: { E.Abs.HexInteger }
-HexInteger  : L_HexInteger { E.Abs.HexInteger $1 }
+HexInteger :: { AbsE.HexInteger }
+HexInteger  : L_HexInteger { AbsE.HexInteger $1 }
 
-M :: { E.Abs.M }
-M : ListD { E.Abs.Module $1 }
+M :: { AbsE.M }
+M : ListD { AbsE.Module $1 }
 
-ListD :: { [E.Abs.D] }
+ListD :: { [AbsE.D] }
 ListD
   : {- empty -} { [] } | D { (:[]) $1 } | D ';' ListD { (:) $1 $3 }
 
-D :: { E.Abs.D }
-D : 'default' UIdent '=' T { E.Abs.Default $2 $4 }
-  | Ident E13 ':=' S { E.Abs.Defun $1 $2 $4 }
-  | 'instance' Ident ':' T 'where' E13 ':=' S { E.Abs.Instance $2 $4 $6 $8 }
-  | Ident ':' T { E.Abs.TySig $1 $3 }
-  | UIdent ':' T { E.Abs.KindSig $1 $3 }
-  | 'type' ConArgs '=' T { E.Abs.TySyn $2 $4 }
-  | 'import' ModuleName { E.Abs.Import $2 }
-  | GlobalRegion VarBind { E.Abs.Global $1 $2 }
-  | 'data' ConArgs '=' DataRHS { E.Abs.Data $2 $4 }
-  | 'tag' ConArgs '=' T 'where' '{' ListConTag '}' { E.Abs.Tag $2 $4 $7 }
+D :: { AbsE.D }
+D : 'default' UIdent '=' T { AbsE.Default $2 $4 }
+  | Ident E13 ':=' S { AbsE.Defun $1 $2 $4 }
+  | 'instance' Ident ':' T 'where' E13 ':=' S { AbsE.Instance $2 $4 $6 $8 }
+  | Ident ':' T { AbsE.TySig $1 $3 }
+  | UIdent ':' T { AbsE.KindSig $1 $3 }
+  | 'type' ConArgs '=' T { AbsE.TySyn $2 $4 }
+  | 'import' ModuleName { AbsE.Import $2 }
+  | GlobalRegion VarBind { AbsE.Global $1 $2 }
+  | 'data' ConArgs '=' DataRHS { AbsE.Data $2 $4 }
+  | 'tag' ConArgs '=' T 'where' '{' ListConTag '}' { AbsE.Tag $2 $4 $7 }
 
-ConArgs :: { E.Abs.ConArgs }
+ConArgs :: { AbsE.ConArgs }
 ConArgs
-  : UIdent { E.Abs.CANil $1 } | ConArgs Ident { E.Abs.CACons $1 $2 }
+  : UIdent { AbsE.CANil $1 } | ConArgs Ident { AbsE.CACons $1 $2 }
 
-ModuleName :: { E.Abs.ModuleName }
+ModuleName :: { AbsE.ModuleName }
 ModuleName
-  : UIdent { E.Abs.MNil $1 }
-  | UIdent '.' ModuleName { E.Abs.MCons $1 $3 }
+  : UIdent { AbsE.MNil $1 }
+  | UIdent '.' ModuleName { AbsE.MCons $1 $3 }
 
-GlobalRegion :: { E.Abs.GlobalRegion }
+GlobalRegion :: { AbsE.GlobalRegion }
 GlobalRegion
-  : 'memory' { E.Abs.Memory }
-  | 'storage' { E.Abs.Storage }
-  | 'tstorage' { E.Abs.TStorage }
-  | 'code' { E.Abs.Code }
+  : 'memory' { AbsE.Memory }
+  | 'storage' { AbsE.Storage }
+  | 'tstorage' { AbsE.TStorage }
+  | 'code' { AbsE.Code }
 
-DataRHS :: { E.Abs.DataRHS }
+DataRHS :: { AbsE.DataRHS }
 DataRHS
-  : UnboxedRHS 'region' Ident { E.Abs.Boxed $1 $3 }
-  | UnboxedRHS { E.Abs.Unboxed $1 }
+  : UnboxedRHS 'region' Ident { AbsE.Boxed $1 $3 }
+  | UnboxedRHS { AbsE.Unboxed $1 }
 
-UnboxedRHS :: { E.Abs.UnboxedRHS }
-UnboxedRHS : '{' ListDataCon '}' { E.Abs.URHS $2 }
+UnboxedRHS :: { AbsE.UnboxedRHS }
+UnboxedRHS : '{' ListDataCon '}' { AbsE.URHS $2 }
 
-ListDataCon :: { [E.Abs.DataCon] }
+ListDataCon :: { [AbsE.DataCon] }
 ListDataCon
   : {- empty -} { [] }
   | DataCon { (:[]) $1 }
   | DataCon ';' ListDataCon { (:) $1 $3 }
 
-DataCon :: { E.Abs.DataCon }
+DataCon :: { AbsE.DataCon }
 DataCon
-  : DCA { E.Abs.DCArgs $1 }
-  | UIdent '{' ListRecordField '}' { E.Abs.DCRecord $1 $3 }
+  : DCA { AbsE.DCArgs $1 }
+  | UIdent '{' ListRecordField '}' { AbsE.DCRecord $1 $3 }
 
-DCA :: { E.Abs.DCA }
-DCA : UIdent { E.Abs.DCANil $1 } | DCA T2 { E.Abs.DCACons $1 $2 }
+DCA :: { AbsE.DCA }
+DCA : UIdent { AbsE.DCANil $1 } | DCA T2 { AbsE.DCACons $1 $2 }
 
-ListRecordField :: { [E.Abs.RecordField] }
+ListRecordField :: { [AbsE.RecordField] }
 ListRecordField
   : {- empty -} { [] }
   | RecordField { (:[]) $1 }
   | RecordField ',' ListRecordField { (:) $1 $3 }
 
-RecordField :: { E.Abs.RecordField }
-RecordField : Ident ':' T { E.Abs.RF $1 $3 }
+RecordField :: { AbsE.RecordField }
+RecordField : Ident ':' T { AbsE.RF $1 $3 }
 
-ListConTag :: { [E.Abs.ConTag] }
+ListConTag :: { [AbsE.ConTag] }
 ListConTag
   : {- empty -} { [] }
   | ConTag { (:[]) $1 }
   | ConTag ',' ListConTag { (:) $1 $3 }
 
-ConTag :: { E.Abs.ConTag }
-ConTag : UIdent ':' E { E.Abs.ConTag $1 $3 }
+ConTag :: { AbsE.ConTag }
+ConTag : UIdent ':' E { AbsE.ConTag $1 $3 }
 
-S :: { E.Abs.S }
-S : E { E.Abs.SE $1 }
-  | 'if' E 'then' S 'else' S 'end' { E.Abs.If $2 $4 $6 }
-  | 'while' '(' E ')' S { E.Abs.While $3 $5 }
-  | 'return' E { E.Abs.Return $2 }
-  | '{' ListS '}' { E.Abs.Do $2 }
-  | 'case' E 'of' '{' ListCASE '}' { E.Abs.Case $2 $5 }
-  | 'break' { E.Abs.Break }
-  | 'continue' { E.Abs.Continue }
-  | 'for' '(' S ';' E ';' S ')' S { E.Abs.For $3 $5 $7 $9 }
-  | 'var' ListVarBind { E.Abs.Declare $2 }
+S :: { AbsE.S }
+S : E { AbsE.SE $1 }
+  | 'if' E 'then' S 'else' S 'end' { AbsE.If $2 $4 $6 }
+  | 'while' '(' E ')' S { AbsE.While $3 $5 }
+  | 'return' E { AbsE.Return $2 }
+  | '{' ListS '}' { AbsE.Do $2 }
+  | 'case' E 'of' '{' ListCASE '}' { AbsE.Case $2 $5 }
+  | 'break' { AbsE.Break }
+  | 'continue' { AbsE.Continue }
+  | 'for' '(' S ';' E ';' S ')' S { AbsE.For $3 $5 $7 $9 }
+  | 'var' ListVarBind { AbsE.Declare $2 }
 
-ListS :: { [E.Abs.S] }
+ListS :: { [AbsE.S] }
 ListS
   : {- empty -} { [] } | S { (:[]) $1 } | S ';' ListS { (:) $1 $3 }
 
-ListCASE :: { [E.Abs.CASE] }
+ListCASE :: { [AbsE.CASE] }
 ListCASE
   : {- empty -} { [] }
   | CASE { (:[]) $1 }
   | CASE ';' ListCASE { (:) $1 $3 }
 
-CASE :: { E.Abs.CASE }
-CASE : E '=>' S { E.Abs.C $1 $3 }
+CASE :: { AbsE.CASE }
+CASE : E '=>' S { AbsE.C $1 $3 }
 
-ListVarBind :: { [E.Abs.VarBind] }
+ListVarBind :: { [AbsE.VarBind] }
 ListVarBind
   : VarBind { (:[]) $1 } | VarBind ',' ListVarBind { (:) $1 $3 }
 
-VarBind :: { E.Abs.VarBind }
+VarBind :: { AbsE.VarBind }
 VarBind
-  : Ident { E.Abs.JustVar $1 } | Ident '=' E { E.Abs.VarIs $1 $3 }
+  : Ident { AbsE.JustVar $1 } | Ident '=' E { AbsE.VarIs $1 $3 }
 
-E13 :: { E.Abs.E }
+E13 :: { AbsE.E }
 E13
-  : '(' ')' { E.Abs.EmptyTuple }
-  | '(' E ',' ListE ')' { E.Abs.Tuple $2 $4 }
-  | HexInteger { E.Abs.HexInt $1 }
-  | Integer { E.Abs.Int $1 }
-  | Ident { E.Abs.Var $1 }
-  | String { E.Abs.String $1 }
-  | UIdent '{' ListEField '}' { E.Abs.ConRecord $1 $3 }
-  | UIdent { E.Abs.Con $1 }
-  | '_' { E.Abs.Wild }
+  : '(' ')' { AbsE.EmptyTuple }
+  | '(' E ',' ListE ')' { AbsE.Tuple $2 $4 }
+  | HexInteger { AbsE.HexInt $1 }
+  | Integer { AbsE.Int $1 }
+  | Ident { AbsE.Var $1 }
+  | String { AbsE.String $1 }
+  | UIdent '{' ListEField '}' { AbsE.ConRecord $1 $3 }
+  | UIdent { AbsE.Con $1 }
+  | '_' { AbsE.Wild }
   | '(' E ')' { $2 }
 
-ListE :: { [E.Abs.E] }
+ListE :: { [AbsE.E] }
 ListE : E { (:[]) $1 } | E ',' ListE { (:) $1 $3 }
 
-ListEField :: { [E.Abs.EField] }
+ListEField :: { [AbsE.EField] }
 ListEField
   : {- empty -} { [] }
   | EField { (:[]) $1 }
   | EField ',' ListEField { (:) $1 $3 }
 
-EField :: { E.Abs.EField }
-EField : Ident ':' E { E.Abs.EField $1 $3 }
+EField :: { AbsE.EField }
+EField : Ident ':' E { AbsE.EField $1 $3 }
 
-E12 :: { E.Abs.E }
+E12 :: { AbsE.E }
 E12
-  : E12 '++' { E.Abs.PlusPlusPost $1 }
-  | E12 '--' { E.Abs.MinusMinusPost $1 }
-  | E12 '[' E ']' { E.Abs.Index $1 $3 }
-  | E12 '.' Ident { E.Abs.Dot $1 $3 }
-  | E12 '!' E13 { E.Abs.Bang $1 $3 }
-  | E12 '->' Ident { E.Abs.Arrow $1 $3 }
-  | E12 E13 { E.Abs.App $1 $2 }
+  : E12 '++' { AbsE.PlusPlusPost $1 }
+  | E12 '--' { AbsE.MinusMinusPost $1 }
+  | E12 '[' E ']' { AbsE.Index $1 $3 }
+  | E12 '.' Ident { AbsE.Dot $1 $3 }
+  | E12 '!' E13 { AbsE.Bang $1 $3 }
+  | E12 '->' Ident { AbsE.Arrow $1 $3 }
+  | E12 E13 { AbsE.App $1 $2 }
   | E13 { $1 }
 
-E11 :: { E.Abs.E }
+E11 :: { AbsE.E }
 E11
-  : '++' E11 { E.Abs.PlusPlusPre $2 }
-  | '--' E11 { E.Abs.MinusMinusPre $2 }
-  | '-' E11 { E.Abs.Negate $2 }
-  | '!' E11 { E.Abs.Not $2 }
-  | '~' E11 { E.Abs.BitwiseNot $2 }
-  | '*' E11 { E.Abs.Deref $2 }
-  | '&' E11 { E.Abs.AddressOf $2 }
+  : '++' E11 { AbsE.PlusPlusPre $2 }
+  | '--' E11 { AbsE.MinusMinusPre $2 }
+  | '-' E11 { AbsE.Negate $2 }
+  | '!' E11 { AbsE.Not $2 }
+  | '~' E11 { AbsE.BitwiseNot $2 }
+  | '*' E11 { AbsE.Deref $2 }
+  | '&' E11 { AbsE.AddressOf $2 }
   | E12 { $1 }
 
-E10 :: { E.Abs.E }
+E10 :: { AbsE.E }
 E10
-  : E10 '*' E11 { E.Abs.Mul $1 $3 }
-  | E10 '/' E11 { E.Abs.Div $1 $3 }
-  | E10 '%' E11 { E.Abs.Mod $1 $3 }
+  : E10 '*' E11 { AbsE.Mul $1 $3 }
+  | E10 '/' E11 { AbsE.Div $1 $3 }
+  | E10 '%' E11 { AbsE.Mod $1 $3 }
   | E11 { $1 }
 
-E9 :: { E.Abs.E }
+E9 :: { AbsE.E }
 E9
-  : E9 '+' E10 { E.Abs.Plus $1 $3 }
-  | E9 '-' E10 { E.Abs.Minus $1 $3 }
+  : E9 '+' E10 { AbsE.Plus $1 $3 }
+  | E9 '-' E10 { AbsE.Minus $1 $3 }
   | E10 { $1 }
 
-E8 :: { E.Abs.E }
+E8 :: { AbsE.E }
 E8
-  : E8 '<<' E9 { E.Abs.Shl $1 $3 }
-  | E8 '>>' E9 { E.Abs.Shr $1 $3 }
+  : E8 '<<' E9 { AbsE.Shl $1 $3 }
+  | E8 '>>' E9 { AbsE.Shr $1 $3 }
   | E9 { $1 }
 
-E7 :: { E.Abs.E }
+E7 :: { AbsE.E }
 E7
-  : E7 '<' E8 { E.Abs.MyLT $1 $3 }
-  | E7 '<=' E8 { E.Abs.LTE $1 $3 }
-  | E7 '>' E8 { E.Abs.MyGT $1 $3 }
-  | E7 '>=' E8 { E.Abs.GTE $1 $3 }
+  : E7 '<' E8 { AbsE.MyLT $1 $3 }
+  | E7 '<=' E8 { AbsE.LTE $1 $3 }
+  | E7 '>' E8 { AbsE.MyGT $1 $3 }
+  | E7 '>=' E8 { AbsE.GTE $1 $3 }
   | E8 { $1 }
 
-E6 :: { E.Abs.E }
+E6 :: { AbsE.E }
 E6
-  : E6 '==' E7 { E.Abs.Eq $1 $3 }
-  | E6 '!=' E7 { E.Abs.NEq $1 $3 }
+  : E6 '==' E7 { AbsE.Eq $1 $3 }
+  | E6 '!=' E7 { AbsE.NEq $1 $3 }
   | E7 { $1 }
 
-E5 :: { E.Abs.E }
-E5 : E5 '&' E6 { E.Abs.BitwiseAnd $1 $3 } | E6 { $1 }
+E5 :: { AbsE.E }
+E5 : E5 '&' E6 { AbsE.BitwiseAnd $1 $3 } | E6 { $1 }
 
-E4 :: { E.Abs.E }
-E4 : E4 '^' E5 { E.Abs.BitwiseXor $1 $3 } | E5 { $1 }
+E4 :: { AbsE.E }
+E4 : E4 '^' E5 { AbsE.BitwiseXor $1 $3 } | E5 { $1 }
 
-E3 :: { E.Abs.E }
-E3 : E3 '|' E4 { E.Abs.BitwiseOr $1 $3 } | E4 { $1 }
+E3 :: { AbsE.E }
+E3 : E3 '|' E4 { AbsE.BitwiseOr $1 $3 } | E4 { $1 }
 
-E2 :: { E.Abs.E }
-E2 : E2 '&&' E3 { E.Abs.And $1 $3 } | E3 { $1 }
+E2 :: { AbsE.E }
+E2 : E2 '&&' E3 { AbsE.And $1 $3 } | E3 { $1 }
 
-E1 :: { E.Abs.E }
-E1 : E1 '||' E2 { E.Abs.Or $1 $3 } | E2 { $1 }
+E1 :: { AbsE.E }
+E1 : E1 '||' E2 { AbsE.Or $1 $3 } | E2 { $1 }
 
-E :: { E.Abs.E }
+E :: { AbsE.E }
 E : E1 { $1 }
-  | E1 AOp E { E.Abs.Assign $1 $2 $3 }
-  | E1 '::' T { E.Abs.TypeAnnot $1 $3 }
+  | E1 AOp E { AbsE.Assign $1 $2 $3 }
+  | E1 '::' T { AbsE.TypeAnnot $1 $3 }
 
-AOp :: { E.Abs.AOp }
+AOp :: { AbsE.AOp }
 AOp
-  : '=' { E.Abs.EqEq }
-  | '+=' { E.Abs.PlusEq }
-  | '-=' { E.Abs.MinusEq }
-  | '*=' { E.Abs.MulEq }
-  | '/=' { E.Abs.DivEq }
-  | '%=' { E.Abs.ModEq }
-  | '<<=' { E.Abs.ShlEq }
-  | '>>=' { E.Abs.ShrEq }
-  | '&=' { E.Abs.AndEq }
-  | '^=' { E.Abs.XorEq }
-  | '|=' { E.Abs.OrEq }
+  : '=' { AbsE.EqEq }
+  | '+=' { AbsE.PlusEq }
+  | '-=' { AbsE.MinusEq }
+  | '*=' { AbsE.MulEq }
+  | '/=' { AbsE.DivEq }
+  | '%=' { AbsE.ModEq }
+  | '<<=' { AbsE.ShlEq }
+  | '>>=' { AbsE.ShrEq }
+  | '&=' { AbsE.AndEq }
+  | '^=' { AbsE.XorEq }
+  | '|=' { AbsE.OrEq }
 
-T :: { E.Abs.T }
-T : T1 '->' T { E.Abs.TArrow $1 $3 }
-  | T1 '[' T ']' { E.Abs.TArray $1 $3 }
+T :: { AbsE.T }
+T : T1 '->' T { AbsE.TArrow $1 $3 }
+  | T1 '[' T ']' { AbsE.TArray $1 $3 }
   | T1 { $1 }
 
-T2 :: { E.Abs.T }
+T2 :: { AbsE.T }
 T2
-  : Ident { E.Abs.TVar $1 }
-  | Integer { E.Abs.TNat $1 }
-  | UIdent { E.Abs.TCon $1 }
-  | '(' ')' { E.Abs.TEmptyTup }
-  | '(' T ',' ListT ')' { E.Abs.TTup $2 $4 }
+  : Ident { AbsE.TVar $1 }
+  | Integer { AbsE.TNat $1 }
+  | UIdent { AbsE.TCon $1 }
+  | '(' ')' { AbsE.TEmptyTup }
+  | '(' T ',' ListT ')' { AbsE.TTup $2 $4 }
   | '(' T ')' { $2 }
 
-ListT :: { [E.Abs.T] }
+ListT :: { [AbsE.T] }
 ListT : T { (:[]) $1 } | T ',' ListT { (:) $1 $3 }
 
-T1 :: { E.Abs.T }
-T1 : T1 T2 { E.Abs.TApp $1 $2 } | T2 { $1 }
+T1 :: { AbsE.T }
+T1 : T1 T2 { AbsE.TApp $1 $2 } | T2 { $1 }
 
 {
 

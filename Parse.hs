@@ -11,6 +11,4 @@ import qualified E.Abs as P
 --Parse a module from string
 parseModule :: String -> Either String P.M
 parseModule str =
-  case pM $ myLexer str of
-    Ok mod -> Right mod
-    Bad errStr -> Left errStr
+  pM $ myLexer str

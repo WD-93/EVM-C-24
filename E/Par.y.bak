@@ -186,7 +186,7 @@ DataCon :: { DataCon }
 DataCon : DCA { E.Abs.DCArgs $1 }
         | UIdent '{' ListRecordField '}' { E.Abs.DCRecord $1 $3 }
 DCA :: { DCA }
-DCA : UIdent { E.Abs.DCANil $1 } | DCA T1 { E.Abs.DCACons $1 $2 }
+DCA : UIdent { E.Abs.DCANil $1 } | DCA T2 { E.Abs.DCACons $1 $2 }
 ListRecordField :: { [RecordField] }
 ListRecordField : {- empty -} { [] }
                 | RecordField { (:[]) $1 }

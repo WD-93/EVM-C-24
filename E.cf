@@ -1,4 +1,4 @@
---Goodbye Haskell-style comments, they dont work with x-- or {--x--}
+--Goodbye Haskell-style comments, they dont work with x-- or {--x--} 
 comment "//";
 comment "/*" "*/";
 

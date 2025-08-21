@@ -4,8 +4,11 @@ version:             0.1.0.0
 build-type:          Custom
 --formerly Simple
 custom-setup
-   setup-depends:       base, Cabal, BNFC >= 2.9                                                                   
-
+   setup-depends:       base
+                      , Cabal
+                      , BNFC >= 2.9                                                                   
+                      , process
+                      , directory
 library
   exposed-modules:     Compiler
   other-modules: AST.DTs
@@ -37,7 +40,7 @@ library
   hs-source-dirs:      .
   build-depends:       base ^>= 4.18
                      , syb
-                     , BNFC
+                     , BNFC >= 2.9
                      , containers
                      , mtl
                      , transformers ^>= 0.6.1.0

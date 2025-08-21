@@ -5,43 +5,61 @@ import AST.DTs
 import Data.Generics
 
 --Monomorphized EVMC modules are converted to a single pure Core expression,
---taking a S# (the EVM state type).
+--taking a Env (the EVM state type).
 --All variables are tagged with type; there are only monomorphic functions.
---f : a -> b => f :: (a,S#) -> Return# (b,S#).
+--f : a -> b => f : ((a,Cont b),Env) -> End
+--type Cont b = (b,Env) -> End
+--type Env = () --for now
+--data End = Return (Bytestring,NonVolEnv) | Revert Bytestring
 --Use Append instead of tuple?
 --Core need not be aware of value representation; Core primitives such as
---Return# a and Memory lack a straightforward bytestring repr.
+--Memory lack a straightforward bytestring repr.
 --Bytestring# is a variable-size value without a size tag; it has meaning only
 --in the language semantics, not in the compiled code.
---Ex: data Return# a = ... | RETURN Bytestring#
 --Bytestring# values can be coerced:
 --getMem off len mem :: Bytestring#
 --derefToStack#@[Memory,a] (MkPtr off) mem =
 -- coerce# (getMem off (sizeof@a P@a) mem)
 
---Global pointers can be passed as parameters; they're assumed to be disjoint
+{-
+Core program structure:
+ \(cd,ap) ->
+  let g1..gn = alloc --global allocation
+      c1..cn = alloc --code pointer allocation?
+      code = c1->v1 ||| ...
+  in letrec fs = ...
+     --initial value assignment?
+  in main (((),\_ -> stop#),env)
+-}
+--Full env: the 6 regions, misc BC state, gas
 
-data Expr = Var Id T
+data Expr = Var Id
           | Lit Integer --a word
           | Arr [Expr]  --Novel; the Array constructor would be variadic
           | App Expr Expr
-          | Lam Id Expr
-          | Let Id Expr Expr
-          | Case Expr [(P,Expr)]
+          | Lam P Expr
+          | Let P Expr Expr
+          --caseTag t {Nil: \((xs,scope),env) -> ...}
+          | CaseTag Expr (Map Name Expr)
+          -- | Case Expr [(P,Expr)]
           --Omitted: Coercion
+          --Every continuation returns End, so I don't need polymorphism
+          {-
           --I need QP for converting EVMC to a CPS monad, but I only need it
           --for that... so I'll implement it as a type lambda.
           | TyLam Name Expr
           | TyApp Expr T
           --TyApp (TyLam v e) t ~ substitute (TyVar v) for t in e until it's
           --shadowed.
+          -}
   deriving (Eq,Ord,Read,Show,Data)
 
-data Id = Mono Name | Poly (Name,[T])
+data Id = Mono Name T | Poly (Name,[T]) T
   deriving (Eq,Ord,Read,Show,Data)
 --Multi-level inspection enabled for infallible patterns (e.g. Append a b)
 --Wild has been eliminated; use a fresh name for ignored fields
-data P = PVar Id T | PCon Id [P]
+--Allow only x, tup in Core ps?
+data P = PVar Id | Tup [P]
   deriving (Eq,Ord,Read,Show,Data)
 evmState :: T
 evmState =
