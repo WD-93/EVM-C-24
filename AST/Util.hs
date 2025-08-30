@@ -37,16 +37,20 @@ roll sel a =
 --The free vars (all of which should be locals in scope) of a pattern.
 --Free vars in subexprs such as in *e are not included.
 --Therefore naive everything won't work.
-freeVarsPat :: Pat -> Set Name
-freeVarsPat = go
+freeVarsPatG :: (a -> a -> a) -> (Name -> a) -> a -> Pat -> a
+freeVarsPatG f2 f1 f0 = go
   where go = \case
-          PWild -> S.empty
-          PVar nm -> S.singleton nm
-          Deref _ _ -> S.empty
+          PWild _ -> f0
+          TypedPVar _ nm -> f1 nm
+          Deref _ _ -> f0
           PDot _ p _ -> go p
           PBang _ p _ -> go p
-          PConArgs _ _ ps -> S.unions $ map go ps
-          PCon _ _ nmps -> S.unions $ map (go . snd) nmps
+          PConArgs _ _ ps -> foldr f2 f0 $ map go ps
+          PCon _ _ nmps -> foldr f2 f0 $ map (go . snd) nmps
+freeVarsPat :: Pat -> Set Name
+freeVarsPat = freeVarsPatG (S.union) S.singleton S.empty
+freeVarsPatList :: Pat -> [Name]
+freeVarsPatList = freeVarsPatG (++) (:[]) []
 
 --The function name to which each constructor of Op corresponds
 op2fun :: Op -> Name

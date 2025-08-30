@@ -962,7 +962,469 @@ Invariant: every compiled E has the arg pat (<scope>,<env>); ditto S (though
 var also updates the scope).
 x @ next => ix <- current x version, next x.ix
 Only when an expr has sub-exprs (:$, Con) does arg vary.
+Prior to optimization, scope always has $ret last.
+
+Top-level function LHS: ((args,$ret),<env>). The args are the C args with index 1.
 
 When inlining and specializing, a graph of mutually recursive functions can
 be specialized at once; that's necessary to ensure the specialized function(s) can recursively call themselves. The top SCC is the minimum
 recursively specializable set.
+Only do simple one-step inlining first; when inlining f = body, rename all vars bound in f except f itself. That should be done after lambda lifting, so everything but the basic block is free in f.
+Invariant during lambda lifting (done after globals have been letrec-bound): no letrec-bound lambdas close over anything but higher-level
+letrecs (including themselves). That ensures naive lifting is safe.
+Use mkCont f scope instead of an explicit return lambda.
+Core primitives such as mkCont do not need to be in the letrec, but e.g. stop should.
+Inlining (\(a,b) -> body) tupvar: \(a',b') -> body' <- rename lambda; let (a',b') = tupvar in body'. Nested tuple let-binds are zero-cost for values on stack, since they just compile to stack word renaming.
+
+Static alloc of globals and static allocs from main: track concrete alloc ptr, replace "leftmost" (alloc#@[Memory,t] len ap) in terms of
+split path with a constant allocated off the ptr. Further inlining of main and its callees may reveal more static allocs, but only if ap
+has a fixed path from root.
+Global alloc should use alloc# directly since there's no return cont set up before the main call.
+writePtr# could also be used directly. Then code is generated outside a lambda...
+
+OK, enough planning; let's go.
+Replace data Fun a b def?
+Pair is now the wordpad primitive, wordpad is Pair Unit.
+Permit arbitrary patterns in C function lhses; implement as
+\x -> {var pv1, pv2, ...; p = x; ...}. That requires scanning p for vars, but
+also optimizing away the dead null()s in the declarations.
+Yet another reason not to have primitives in letrec: they might appear when
+implicit ops in the C are expanded!
+So I need a separate primfun set from Prim, since Mono will prune functions
+not visible in the source.
+It should be possible to inline primitives definable in Core such as
+stop (_,_) = Return# emptyBytestring# --compile to STOP when encountered
+Note any deref of a zero-size type should yield emptyBytestring#, so
+evm_return(0,p) or returnPtr(nullp) should compile to STOP.
+For (scope,env) to get the right runtime repr, env must have a size of zero.
+However, that does not imply that there's only one value of type env, since
+toBS and fromBS should not be defined on it.
+Invariant: for all supported types, (toBS . fromBS) ~ id.
+I'll use 0,16... as the default tag when there are no more than 16
+constructors. Why not 0,15..? Using 16b ensures the case jump addresses are byte-aligned in the code, 
+Bool therefore needs an explicit tag to ensure iszero etc return valid Bools!
+Fortunately there's no runtime overhead to using 0,1 since case should compile to ifte then anyway.
+No... datatypes with 2 constructors should always default to 0,1... no need
+for a tag decl just for Bool.
+TODO fix default tags: 0,1 : Byte for 2 constructors, 0,16.. for 3-16
+(using direct JTs), 0,1.. for >16 (using indirect JTs).
+
+Append a b = <ab> --requires the result of ab be saved on the stack for both
+a = v.fieldAppend1; b = v.fieldAppend2.
+While exprs in the patterns a, b (e.g. a ~ ptr[ix]) should be evaluated before <ab>, if a ~ Nil a binding attempt will involve a deref.
+Keep a single scrutinee TOS during complex pattern-matching?
+Complex => not just x | tup. Unit-like types and enums don't need a scrutinee either, though they could be viewed as having a unit scrutinee.
+Nested fallible patterns require an ifte (tag == k)… but that's fine, it should go after the one-level scrutiny.
+case xs of
+ Nil -> cont1
+ Cons <x> <xs'> -> cont2
+=> v <- eval xs, coerce to Ptr r (ImplList r a)
+--boxed should imply tag = ()
+caseTag (v->tag) {
+ Nil: cont1, 
+ Cons: 
+  ixs <- deref v --scrutinee should remain on stack
+  <x> = ixs.hd
+  <xs'> = ixs.tl
+}
+That should be optimizable if e.g. xs' is _; p->field (the Core op, not C)
+should be convertible to deref# len (p+offset_hd).
+More generally: slice off lenField (deref# lenStruct p) ~ 
+deref# lenField (add# off p) --if lenField <= lenStruct
+mload (p+k) >> k --18;
+(dup << k >> k) --15
+3 gas can be saved by coalescing loads, but a further 6 can be saved if the
+sub-word field starts or ends at one of the word boundaries.
+Should Core be aware of that?
+It would be very nice to back-compile word-level IR to Core to run word-level
+and Core opts in a loop...
+Note x and xs' are patterns; the <x> = v.hd is branching.
+At each scrutinization of a sub-pattern, push the value as a new scrutinee.
+Function: matchAssign p v --not e!
+p should contain only var exprs; eval and push the exprs first.
+case v of
+ Con1 fieldes -> …
+ Con2 fieldes -> …
+--In each ConN case, retrieve the field values and matchAssign them in
+textual order.
+Extension: since I'm already committed to O(n) matching on the fallible
+skeleton, might as well transition to the next case with the same con.
+The exprs in the fallible patterns should then only be evaluated once the
+entire skeleton has been validated; push all their vs and match in order.
+onStackArray[ixVar] can be assigned using a JT, but that's at the word level.
+
+Some datatypes are tuple-equivalent; their explicit let bindings should be
+optimized away to renaming. Important opt: if x1 == x2, no need to keep both
+on stack.
+
+Storage globals can also be alloc'd (their addresses will remain constant,
+after all), but their initial value can't be assumed to be 0.
+The storage alloc pointer should be set on creation rather than on each call;
+if it remains 0 then don't write to it.
+Explicitly store the malloc pointer in memory, with an added assumption that no other pointer aliases it?
+Preserve both identity and exact value info for data and function pointers;
+incrementally place code so that the remainder can use the known offset for
+optimization. Backtracking refinement search for opts could be worth doing; the top few decisions could have a lot of impact.
+Cache exec counts, retain while deciding which basic block to place.
+
+TODO: add a step before Core which converts f generalPat := s to
+f arg := {generalPat = arg; s} in C.
+TODO add a Maybe T type tag to PWild so I can avoid allocating a false local
+while keeping pattern types unambiguous post-HM and mono.
+HM certainly doesn't need the false var, since it only ever gets used in the
+wild itself.
+
+Now that I've replaced WordPad with Pair as the word-padding primitive, type
+checking has ofc been broken... need to redefine AST.DTs .Pair, tupleT,
+tupleE.
+No such constructor WordPad... redefine it as (a,()) instead.
+
+Unlike statement Core funs, expr Core must deal with multiple non-locals on stack.
+Ex: (e1,e2) --while evaluating e2, 1 is already on the stack.
+However, that's not a problem: the local names can remain the same.
+A bigger problem: values are on the stack in reverse eval order, so
+a - b must perform a swap in the general case.
+
+Generalizing static alloc: multiple allocs within the same basic block
+(which can grow quite large thanks to inlining) can be converted to
+p + k, with only one allocPtr store at the end.
+Implementing alloc without an allocPtr global: detect allocation by looking
+at whether the ap parameter changed in the cont vs lhs.
+
+For writeup: using LC and describing EVM effects in terms of pure capab passing enables opts to be grounded in a well-studied theory; opts such as tail call fall out for free. 
+Making the continuation in calls explicit distinguishes between straight-line
+and branching code, as well as enabling opts when a cont is never used.
+
+Now I need to specify exactly how statements behave...
+Compile blocks of stmts?
+The next cont should be a closed lambda; it gets pushed down in
+compile a;rest. a takes rest @ next as cont.
+The next of the body of a while block is the loop function.
+SE e --pops the v, so the cont needs a different lhs… spec only the rhs in
+compile?
+Pattern matching: in Pair p1 p2 = e, split using a let:
+e (\tup -> let (v1,v2) = tup in cont (vs...scope,env))
+Note that has no runtime impact once the intermediate f is eliminated at the word level.
+For both Pair and nontrivial Cons, recursively match on the fields (keeping
+the original scrutinee on stack while doing so).
+Match effect: e:scope => scope.
+Handling boxed cons in Core makes sense, since doing so in C requires
+declaring a number of useless intermediate vars.
+Perhaps not implicitly declaring new vars in case bindings was a mistake...
+
+() => push Unit:()
+Pair e1 e2 => push e1, push e2, \(e2,e1...scope,env) -> Pair es:scope
+--where the order of the es depends on field order; replace missing fields
+--with null#@[t]
+ConRecord con ts nmes => (v1,v2..) <- eval tup es, con@ts (v1,v2,...) …
+letrec tagCon = …
+       Con = \vs -> fromBS (concat $ map toBS $ tagCon:vs)
+Alt: treat Con as a primitive
+Add a Pair constructor to Expr without type tags? That avoids the need to
+track an O(n^2)-sized list of type tags in the scope.
+Invariant: the cont application should be ANF. Letrec-bind each next?
+If ANF includes primfuns, it might as well include integer literals (which are akin to primfuns).
+If mkConf f scope must also be let-bound, that makes stack-compiling calls a
+little more difficult... but it might as well be permitted in ANF since it
+only occurs in conts.
+
+Relevant simplifying combinators:
+pop scope next = \(_:scope,env) -> next (scope,env)
+bindE "$varname" (compileE scope e) (\v -> …)
+Perhaps split out scope effect.
+Also need to track Maybe (break,continue) conts.
+How to do this more elegantly? Monomorphized C expressions and statements are
+polymorphic in scope and break/continue. If $ret were in a separate slot from
+the locals (local,$ret,env), polymorphism in ret would be easy as well.
+I could do an initial traversal which annotated each stmt, expr and pat with
+its scope. Issue: &_.
+
+The next lambda is never a closure, so it should always be letrec-bound to avoid code duplication in e.g. ifte, case. Its scope should also be recorded; it can't always be found from inspecting the block given the next.
+
+Solving the f :$ x circularity conundrum: f knows its own type, so it knows
+the type that should be attached to the next Name to make it an Id.
+Can/should I avoid eDepth using fresh names?
+(e => cont) lhs next =
+ next' <- new name
+ (lam,t) <- e lhs next'
+ v <- new id : t
+ lamCont <- cont (v||lhs) next
+ return $ letrec next':cont lhs t = lamCont
+          in lam
+Aside: ifte@[argsT] (w,t,e,args) is directly stack-implementable.
+
+It should be possible to make a codegen monad for S and E.
+E: locals and version map remain constant. Common pattern:
+x1 <- subExpr1; …; f x1 … xN
+S: only locals on the stack; locals remain constant except in var x = e; rest.
+Every subexpr has a next; it's not necessarily unique, consider a && b.
+continue e, pushScope e.
+letBind id e
+setLocal nm e
+v <- m --pushes v to scope in cont
+
+SE e =>
+v <- subExpr e
+popScope
+Each S/E takes and updates a scope and may call a cont...
+What happens if a substmt doesn't use a continuation? That happens for return, break and continue. 
+Each subExpr adds another layer to a stack of expr transformers... leaf could ignore its >>= f. While loops should still work because ifte
+should catch the leaf.
+letBind can be a within-BB expr transformer. Have a BB submonad?
+For writeup: Armstrong said first make it work, then make it beautiful... but if the problem's too complex it must be made (more)
+beautiful before it can work.
+
+Allowing let x = x + 1 shadowing would simplify setLocal but perhaps necessitate a SSA pass.
+Let's say I don't deal with names in the monad, instead accessing args via index...
+vs <- consume n --modifies scope to remove them
+push (Con vs)   --let anon = e; push anon to scope
+v <- letBind expr t
+
+continue =
+ s <- getScope
+ n <- getNext
+ leaf $ App n s --report next and scope type
+--?
+
+Block:
+s <- getScope
+mapM compile stmts
+setScope s
+continue
+--foldl1 bind stmts `bind` resetScope
+foldl allows you to add statements one at a time
+A compiled stmt should report its next name and resulting scope (if any).
+s1;s2 scope =>
+(mcont,lam) <- compile s1
+case mcont of
+ Just (nm,scope') -> do
+  (mcont',lam') <- compile s2 scope'
+  return (mcont',letrec (nm:contType scope) = lam' in lam)
+ Nothing -> (Nothing,lam)
+Effect: Scope -> Either Expr (Name,Scope,Expr)
+That's a monoid... it doesn't need monad functionality?
+
+ifte could take two monads.
+ifte (w:scope) mon1 mon2:
+ e1 <- mon1 <> fixScope scope
+ e2 <- mon2 <> fixScope scope
+ if neither continue, ifte does not
+ if either do, the next scope is scope
+ assemble into ifte e1 e2 (w:scope)
+Using a single $next (that gets shadowed on each nested letrec) would simplify stitching branches together.
+Alt, for branch ifte th el scope:
+ --with conts th,el = n1,n2
+ --cont ifte = n
+ ifte (letrec n1 = n in th) (letrec n2 = n in th)
+An arbitrary next should be generated for each Core monoid.
+It needs to have access to the pool to give unique nexts to ifte…
+Split the pool to avoid sequentializing it. <*> would fit that, if not for
+the return constraint making it not an applicative.
+
+Call is pretty simple: it still has a next, it's just in a mkCont.
+With the exception of call, Core with opEs and branchEs (desirable to prevent
+let x = stop# in e) will be quite similar to CFG.
+However, the distinction may hamper uniform application of LC-specific opts;
+perhaps two levels of Core would be desirable. OTOH, it should not be possible to break that structure and adding more structure to LC might even
+help optimization...
+
+bindNext exprResult exprBuilder/expr
+
+jump :: (Pair (Cont a) a, Env) -> End
+type Cont a = (a,Env) -># End
+--End fixes the problem of typing jump; all CALLs must end, so that must be
+a continuation's type. C calls are jumps.
+Fun a b ~ Cont (Pair a (Cont b))
+call :: (Fun a b:a:Cont b, Env) -> End
+
+Scope: {e stack: [T], locals: [T], names, vermap}
+pushWord, 
+BB: \vars -> letrec ks = kEs in let vs = opE in branchE
+branchE ::= jump f arg | jumpi f1 f2 arg | caseTag tag2f arg
+
+v <- bindE e --keep v->stack var stable across the continuation boundary...
+A block combinator for the monad to scope anon locals?
+A single monad for both inter and intra-BB code?
+loop <- label --as in Ecomp, but typed!
+Structured patterns => combinators
+call => withCont (\cont -> …)? That cont would become break in while.
+Need to specify the expected scope.
+Exprs continue to cont, but if they branch (call, ecase, &&, ||) then their
+return type is already known.
+With optional branching, stop() could be compiled directly.
+
+TODO for write-up: a succinct, elegant explanation for the distinction between straight-line code (opEs) and branching code (branchEs) and why the
+data structure should enforce it.
+
+There's a correspondence between the low-level representation of the C1/Ecomp
+monad and the high-level representation of Core:
+x <- op v1 v2;
+branchingThing;
+--can be translated to a functional form.
+Optional branching that's transparent to the monad would allow
+x <- compile (EInteger n)
+… --where the compile doesn't force a transition.
+Aha! Pass vars on the stack (in order of decl) iff they cross a branch
+boundary.
+So what does n <- e mean when there's a scope underneath?
+How to detect var liveness? It escapes if it's used or passed.
+Use Ecomp-style monadic combinators that assume valid structure.
+block m...
+val <- e --an immutable value, constant and passed if used across calls
+var <- declare e --a stack variable which may be mutated.
+x <- e --may either branch or be straight-line...
+But both (let v = e in) and (e where next =) are both transformations!
+
+case e of
+ Con ps -> s --the cont for tagCon will have a (Con vs) TOS
+--However, all statements can assume no anonymous es on stack
+
+Need combinators:
+v <- compileE e
+--Should the es necessarily be pushed to scope or should I handle that in a
+defunctionalisation step? Always pushing is simpler, then the cont is always
+a lambda.
+v <- newVar t --not bound yet!
+letBind p v
+v <- op o val
+ifte, while, break, continue
+block, declare nm e, getVar nm, setVar nm
+compileE e --returns a var and pushes it to the scope; it should clean up
+--pushed subexprs.
+assign cPat --pops the scrutinee
+p = e =>
+ v <- compileE e
+ w <- dup v
+ assign p w
+ return v
+assign (Con ps) v:
+ checkTag Con v
+ for fields in Con:
+  assign p_i v.field_i
+--The last .field op can consume the v...
+e always takes a next; specify the type to retrieve it
+n <- next scope
+l <- label scope
+jump l --passes suffix of current scope; only works if expected is a suffix
+placeLabel l
+
+withNext scope --should hide the enclosing next
+
+leaf <> _ = leaf
+branch <> leaf = a leaf
+branch1 <> branch2 = a branch expecting branch2's cont type
+It might be simpler to construct the CFG first, treating calls as ops, then
+CPS the CFG (splitting BBs containing calls).
+Lambda-lift all BBs immediately. As before, liveness analysis can be used to
+determine which vars belong on the stack. Pass live vars in an arbitrary but
+deterministic order (TODO arg ordering opt). By order of declaration would be
+preferable to alphabetic...
+An initial unshadowing pass can give each semantically
+distinct C local a unique name.
+Exprs become a series of ops, with the exception of && and || which become
+iftes.
+Note case and if have live set = the union of all branches.
+(v,env) = call f x --becomes f ((x,mkCont next scope),env), 
+where next expects (Pair v scope, env).
+No user code explicitly modifies env... save it for later?
+Use declared scope and explicit setScope instead of live.
+Patterns: expr (pushes 1), block (0), ifte (pops 1), assign p (pops; = dups
+a copy).
+case e of Con ps -> s => block $ do
+ x <- expr e
+ t <- x.tagDT
+ caseTag t [("Con", --t has been consumed here
+  assignCase (Con ps) --x is consumed here
+  block $ stmt s
+ ]
+No user code in the structured IR can diverge; that's delegated to functions
+(stop, revert etc). The pre-CPS CFG therefore only needs jump, jumpi,
+caseTag and return. Call becomes a jump with scope = (a,Cont b) post-CPS.
+if cond then f(x) else g(x) can be optimized to avoid a jumpi->jump, so it's
+not the case that interprocedural calls only use jump post-opt.
+Change from old structured IR: ops aren't word-level yet.
+Implicitly declare on assignment to var not in scope. Scope should be a
+(stack,env) pair from the get-go.
+Bind labels in the CFG.
+(b,env) = call f a --scope must be defined at each point in a BB for it to be
+possible to split the BB here.
+Pattern-matching:
+Con ps (fallible or not), (x | *e) (.field | !ixE)*
+Special cases: Pair, Unit.
+The tag check for (Con ps = e) is branching; that can be translated to
+tag <- dt.tag
+neq <- tag /= tagCon --tagCon is a letrec'd Const
+if(neq)revert()
+--revert needs no $ret; it should be possible to avoid cleaning up the stack
+and jump to a specialized (jumpdest,0,0,revert) directly.
+Possible solution: if a cont is never called, you could mkBadCont scope to
+ignore the stack. Alt: ignore scope :: ()
+A function which never returns may still make use of the stack; in that case
+it may be best to pop instead. Stack depth can be statically known for the
+non-recursive skeleton of the call graph from the main call; note static tail calls preserve that.
+
+a && b --either returns null or b; the TS should reflect that
+ret = null --just used for scope; gets optimized away
+if a then ret = b else ret = null
+The structured IR must provide scope information, but need not care about it.
+A nice advantage of it: by breaking up exprs into a series of IR stmts ending with var:t := op, the type of the next cont becomes obvious.
+var := E irs?
+
+First: unshadow locals. That must be done in C rather than IR if declarations
+are implicit in IR. The scope rules will be duplicated...
+
+alloc (len,ap,mem) =
+ (ptr,ap',memFrag) = alloc' ap
+ mem = mem ||| memFrag
+
+Note constant expansion of letrec'd globals is analogous to inlining (less the beta reduction).
+
+Appel CPS:
+Impose restrictions in the Core datatype stack directly?
+1) Any let-bound expr should be in ANF: primop vars or var.
+2) letrecs may bind only constants: lits, cons or lambdas
+3) cont exprs are primop var/tup or f var/tup
+Stop should only occur in a branch expr, add in an op expr
+A BB is a series of let-bindings followed by a branch expr
+
+PRIMOP differs from my primops in that it takes a cont
+p34: val arbitrarily...
+"
+As is traditional in a continuation semantics, we have a type “answer” standing
+for the result of the entire execution of the program. We don’t really need to know
+anything about the structure of this type.
+" --analogous to my End, except I know End's structure
+p55:
+"
+However, two references (mutable cells) are considered equal
+only if they are the same cell (i.e., at the same address). This simplifies the testing
+of structural equality, as cycles need not be considered—every cycle in an ML data
+structure goes through a ref.
+" --A consequence of strictness, though one could in theory build cyclical data structures without refs in a safe language using black magic (pointer-
+manipulating combinators that prevent GC).
+"In summary: Polymorphic equality is no fun at all." --I wonder how that's changed for ML since '92...
+Unboxed updates are distinguished; in EVMC, one could just track the pointers
+a value potentially contains to track pointer escape.
+p57: "Note that case expressions do not bind variables in mini-ML, as they do in ML." --analogous to my caseTag and the STG
+Shame I can't use the "small constant is definitely not pointer" trick; all
+(memory) pointers are small on the EVM.
+p66: F (the CPS conversion function) takes a meta-language cont that takes
+the produced expr...
+Difference: I don't have closures.
+
+Consider a simple stmt and expr language:
+k, e+e, (), Pair, return, x = e, var x = e, SE.
+I can experiment with and compile Core further, separately from the C->Core
+stage. Datatype repr is tied to C...
+Need a Core.PrimFuns module to store them in one place and avoid typo bugs.
+
+Initializing storage in a contract on creation:
+import StorageGlobals;
+main () := {
+ <init storage>;
+ modp = alloc();
+ *modp = m;
+ returnPtr modp
+};
+//Defines a code global containing an appropriately sized type
+module m {import StorageGlobals; main () := …; ...}

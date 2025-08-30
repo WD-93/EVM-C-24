@@ -47,7 +47,17 @@ data Int s l = {};
 Ptr : Region -> Type -> Type;
 data Ptr r a = {MkPtr (UInt 2)};
 //(->) is desugared to Fun
+//Represented as ((a,(b,Env#) -> End#) -> End# in Core
+//TODO give Env#, End# and CoreFun representation in Prim?
 data Fun a b = {MkFun (UInt 2)};
+//Pair is the word-padding primitive: the Bytestring# repr of Pair a b is
+//wordPad (toBS a) ++ wordPad (toBS b)
+//Tuples are foldr Pair Unit
+//Nested tuples are unique in that they can be deconstructed at no runtime
+//cost (well, any zero-sized serializable type has the same property as Unit).
+//They're therefore the only permissible let and lambda pattern in Core;
+//any other pattern matching is implemented using case and let x = y.field.
+data Pair a b = {Pair {fst: a, snd: b}};
 //Unboxed arrays
 //It needs to be declared for type inference to pass... but it really
 //shouldn't have a .tagArray field...

@@ -1,25 +1,26 @@
-{-# LANGUAGE OverloadedStrings, DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings, DeriveDataTypeable, PatternSynonyms #-}
 module Core.DTs where
 
 import AST.DTs
 import Data.Generics
+import Data.Map (Map(..))
 
 --Monomorphized EVMC modules are converted to a single pure Core expression,
 --taking a Env (the EVM state type).
 --All variables are tagged with type; there are only monomorphic functions.
 --f : a -> b => f : ((a,Cont b),Env) -> End
 --type Cont b = (b,Env) -> End
---type Env = () --for now
---data End = Return (Bytestring,NonVolEnv) | Revert Bytestring
---Use Append instead of tuple?
+--type Env = <evmState>
+--data End = Return (Bytestring,...) | Revert Bytestring
+
 --Core need not be aware of value representation; Core primitives such as
 --Memory lack a straightforward bytestring repr.
 --Bytestring# is a variable-size value without a size tag; it has meaning only
 --in the language semantics, not in the compiled code.
 --Bytestring# values can be coerced:
 --getMem off len mem :: Bytestring#
---derefToStack#@[Memory,a] (MkPtr off) mem =
--- coerce# (getMem off (sizeof@a P@a) mem)
+--deref#@[Memory,a] (MkPtr off) mem =
+-- coerce# (getMem off (sizeof#@a P@a) mem)
 
 {-
 Core program structure:
@@ -34,13 +35,19 @@ Core program structure:
 --Full env: the 6 regions, misc BC state, gas
 
 data Expr = Var Id
+          | PrimFun Name [T] --A primfun may only occur fully applied
           | Lit Integer --a word
           | Arr [Expr]  --Novel; the Array constructor would be variadic
           | App Expr Expr
           | Lam P Expr
-          | Let P Expr Expr
+          | Letrec [(Id,Expr)] Expr --for def of mutually recursive constants
+          | Let P Expr Expr --for dynamic binding
           --caseTag t {Nil: \((xs,scope),env) -> ...}
           | CaseTag Expr (Map Name Expr)
+          --Adding Pair and Unit as constructors avoids tagging them with
+          --redundant types; the type can be inferred from the arguments.
+          | EPair Expr Expr
+          | EUnit
           -- | Case Expr [(P,Expr)]
           --Omitted: Coercion
           --Every continuation returns End, so I don't need polymorphism
@@ -56,21 +63,36 @@ data Expr = Var Id
 
 data Id = Mono Name T | Poly (Name,[T]) T
   deriving (Eq,Ord,Read,Show,Data)
---Multi-level inspection enabled for infallible patterns (e.g. Append a b)
---Wild has been eliminated; use a fresh name for ignored fields
---Allow only x, tup in Core ps?
-data P = PVar Id | Tup [P]
+--x | tup are the only allowable Core patterns because they allow for zero-cost
+--deconstruction; the rest are implemented using case and field access.
+--Problem: Wild is currently converted to a new local in C, but there's no
+--corresponding local declaration.
+data P = PVar Id | PUnit | PPair P P
   deriving (Eq,Ord,Read,Show,Data)
+--The type of the env threaded state monad-style through Core expressions.
 evmState :: T
 evmState =
-  structT [extState,
-           memory,
-           storage,
-           tstorage,
-           calldata,
-           returndata,
-           code
-          ]
+  tupleT evmStateTs
+evmStateTs :: [T]
+evmStateTs =
+  [extState,
+   memory,
+   storage,
+   tstorage,
+   calldata,
+   returndata,
+   code
+   --To add: log, gas, allocPtr, misc BC state
+  ]
+--The default pattern used for the env in every Core function.
+--Must be a proper tuple to match evmState
+env :: P
+env = tuplePCore $ zipWith (\t nm -> Core.DTs.PVar $ Mono nm t) evmStateTs $
+  words "$ext $mem $sto $tst $cd $rd $co"
+
+tuplePCore :: [P] -> P
+tuplePCore = foldr PPair PUnit
+
 --For now, just regions and ExtState#
 extState :: T
 extState = "ExtState#"
@@ -92,3 +114,17 @@ returndata = "Returndata#"
 --be a partial map like Memory# et al.
 code :: T
 code = "Code#"
+
+--Additional Core types:
+--The type of pure bytestrings; every user type has a fixed-length
+--bytestring repr.
+bytestring :: T
+bytestring = "Bytestring#"
+--The final result type of a contract CALL:
+--data End# = Return# (Bytestring#,Storage#,ExtState#,...)
+--          | Revert# Bytestring#
+end :: T
+end = "End#"
+--Core functions; toFun#[a,b] and fromFun#[a,b] convert between a -> b and
+--((a,(b,evmState) -># End#),evmState) -># End.
+pattern a :-># b = "->#" :$$ a :$$ b

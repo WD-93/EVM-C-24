@@ -157,14 +157,14 @@ desugarP :: DInfo -> P.E -> Either DError Pat
 desugarP di@(gs,field2bcon,str2id) = go
   where
     go = \case
-      P.Wild -> return PWild
+      P.Wild -> return $ PWild Nothing
       P.Var (Ident v) ->
         if S.member v gs
         then return $ Deref Nothing $ Var v
         else return $ PVar v
       P.Deref e -> Deref Nothing <$> desugarE di e
       P.EmptyTuple -> return unit
-      P.Tuple e es -> mkTup <$> mapM go (e:es)
+      P.Tuple e es -> tupleP <$> mapM go (e:es)
       P.Dot struct (Ident field)
         | Just bcon <- M.lookup field field2bcon -> do
             e <- desugarE di struct
@@ -191,7 +191,8 @@ desugarP di@(gs,field2bcon,str2id) = go
         return $ (con,ps ++ [x]) --TODO fix quadratic
       P.Con (UIdent con) -> return (con,[])
       pe -> throwError $ GenericDError $ "Invalid pattern: " ++ show pe
-    mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
+    --mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
+    mkStruct :: [Pat] -> Pat
     mkStruct = foldr (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
     unit = PConArgs "Unit" Nothing []
 

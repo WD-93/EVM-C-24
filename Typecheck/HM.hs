@@ -615,13 +615,14 @@ typeOfPat :: Pat -> HM (Pat,T)
 typeOfPat = go
   where
     go = \case
-      --Issue: now there'll be $wild<n> names which aren't declared anywhere.
-      PWild -> do
-        wild <- newVarNamed "wild"
+      --Wild => fresh variable conversion is deferred until Core now;
+      --instead PWild is tagged with its type to ensure post-HM and mono pats
+      --are type checkable
+      PWild Nothing -> do
         t <- newTyVar
         k <- kindOf t
         unifyK k "Type"
-        return (TypedPVar (Just t) wild, t)
+        return (PWild $ Just t, t)
       --If the name is a function or global (in hmTySigs or hmTaus), fail -
       --f and &g can't be assigned.
       --If it's a local, look it up in hmLocals and zonk the type.

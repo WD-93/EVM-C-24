@@ -100,7 +100,10 @@ structT (t:ts) = Append t $ structT ts
 
 tupleE :: [E] -> E
 tupleE [] = Var "Unit"
-tupleE (e:es) = Var "Append" :$ (Var "WordPad" :$ e) :$ tupleE es
+tupleE (e:es) = Var "Pair" :$ e :$ tupleE es
+tupleP :: [Pat] -> Pat
+tupleP [] = PConArgs "Unit" Nothing []
+tupleP (p:ps) = PConArgs "Pair" Nothing [p,tupleP ps]
 --tupleF :: [e] -> [Field e]
 --tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type
@@ -184,7 +187,7 @@ unTupleT = go
   where
     go :: T -> Maybe [T]
     go = \case
-      Append (WordPad a) b -> (a :) <$> go b
+      Pair a b -> (a :) <$> go b
       Unit -> Just []
       _ -> Nothing
 
@@ -266,7 +269,7 @@ hardcodedTyCons = M.fromList $
 --(a,b) => Append (WordPad a) (Append (WordPad b) Unit)
 tupleT :: [T] -> T
 tupleT [] = Unit
-tupleT (t:ts) = Append (WordPad t) (tupleT ts) 
+tupleT (t:ts) = Pair t (tupleT ts) 
 
 --No block expressions, so local return has been removed
 data S = SE E --required because := has been moved to E
@@ -294,7 +297,7 @@ data S = SE E --required because := has been moved to E
 
 --Need to add a Maybe [T] tyannot list to every polymorphic op...
 --TODO add a tyannot param to Module, STEP? Not for now.
-data Pat = PWild --becomes new local
+data Pat = PWild (Maybe T) --not converted to new local until Core!
          --The atomic, infallible patterns
          | TypedPVar (Maybe T) Name
            --local only by type infer; global g is desugared to *g

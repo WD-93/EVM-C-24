@@ -29,6 +29,8 @@ import Desugar.Desugar (desugar)
 import Typecheck.TC (typecheck, TCError(..))
 --Monomorphization
 import Mono.Mono --(monomorphize, MonoError(..))
+--Unshadowing (TODO move before HM)
+import Unshadow.Unshadow (unshadow)
 
 data CompilerError = ParserError String
                    | DesugarError DError
@@ -136,6 +138,8 @@ pipeline2typechecked str = do
 pipeline2mono str = do
   m <- pipeline2typechecked str
   monomorphize m ? MonoError
+pipeline2unshadow str = do
+  unshadow <$> pipeline2mono str
 
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.
