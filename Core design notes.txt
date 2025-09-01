@@ -1373,6 +1373,71 @@ var := E irs?
 First: unshadow locals. That must be done in C rather than IR if declarations
 are implicit in IR. The scope rules will be duplicated...
 
+All execution occurs in the context of a function call; there's no such thing
+as a naked expression.
+Then perhaps it makes more sense to reintroduce a CFG-style map and have the
+true main be a function in it.
+Format: Map Var Const. Change: labels are typed and in scope
+across functions.
+Const = Lam (Scope,[OpE],BranchE) | ...value consts
+Since that's so close to the CFG repr and the stack is known at each call in
+the structured IR, there's no point in having a separate CFG stage.
+Con: porting opts from LC becomes a little less straightforward.
+The IR needs $mem etc if primitive deref, writePtr (used in patterns) are to
+be represented correctly.
+Param the CFG by op type (first RHS, then OpE).
+
+Does Core need to contain sufficient info to compile the program?
+No, datatype tags and field offsets can remain abstract. Global offsets and
+static data can have undetermined (label-based) addresses.
+Code pointers are necessarily abstract before code placement.
+case needs to specify the set of possible values; the set can be restricted
+further by local context:
+case bool of
+ False -> 0
+ True -> case bool of
+           --here there is only one possible value
+
+New construct: Label Name T --an undetermined value, not part of the Core
+semantics.
+L -> {0x01,0x02,serialize (L+k)} would let you add (external) linkable code to the code map. jump (MkFun L) ((),env) --lets you jump into it.
+
+trueMain passes the code map... pass it as a (|||) union of (lab,len,content).
+It might as well be defined using a normal series of lets; after per-BB SSA it can easily be reconstructed.
+Do not include .text (the lambdas) in the code map, that breaks the lambda
+abstraction and interferes with opts.
+Mem map: representing mem fragments of dynamic allocs is not a problem:
+they're just (ptr,len,content) with a dynamic len (and arbitrary content).
+alloc# (len,ap) = (ptr,len,content) where ptr doesn't clash with any
+existing pointer and content is arbitrary. There's a conflict between keeping
+the implem abstract to make use of its properties (no conflict, commutativity) and using a concrete implem with its own specific opts
+(e.g. coalescing alloc ptr bumps in BBs).
+Simple implem: add allocPtr:Word(?), bump alloc all potentially escaping ptrs
+in BB, scratch alloc only those that die within a single BB.
+Implement *_ in terms of coerce# (get<R> off len r)?
+
+Const format: label, k:len, coerce# (?), ++
+Con x y z = coerce# {tagCon,x,y,z} --except for Pair, which inserts an
+Array len ZeroByte.
+Arithmetic based on labels/consts could also be allowed, modulo cycles.
+Consts must be convertible to a sequence of bytes and arithmetic functions
+of labels.
+For now, restrict to label and bytes; keep funs and globals (which must point
+to consts if they're Code) in separate maps. No need to define addresses for
+the globals yet, but the memory globals need to be assigned.
+Global rules:
+ memory --may have initializer
+ storage, tstorage --must not
+ code --must
+ any other region: forbidden
+Enforce the above in Desugar.
+Static values are simply anonymous code globals with a set value.
+
+To compile case, need to explicitly store tagging scheme (Nil, N1, N16, Custom) rather than just a Name => E map.
+Store tagging scheme and the full tag set info in DTInfo rather than ConInfo.
+Also, List should have a single ImplList constructor which points to
+ImplList r a.
+
 alloc (len,ap,mem) =
  (ptr,ap',memFrag) = alloc' ap
  mem = mem ||| memFrag

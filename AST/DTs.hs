@@ -388,21 +388,27 @@ data Module = Module {
 --Cons args => ImplCons (allocValue (StructCons args))
 --Cons {f: e} => ImplCons (allocValue (StructCons {fStructCons: e}))
 data DTsInfo e = DTsInfo {
-  datatypes :: Map Name DTInfo,
-  conInfo :: Map Name (ConInfo e),
+  datatypes :: Map Name (DTInfo e),
+  conInfo :: Map Name ConInfo,
   fieldInfo :: Map Name FieldInfo
                        }
   deriving (Eq,Ord,Read,Show,Data)
-data DTInfo = DTInfo {
+data DTInfo e = DTInfo {
   dtParams :: [Name],
   dtRegion :: Maybe Name,
   dtTagType :: T,
+  dtTagScheme :: TagScheme e,
   dtCanonicalCons :: [Name]
                      }
   deriving (Eq,Ord,Read,Show,Data)
-data ConInfo e = UBCon {
+data TagScheme e = Nil --DTs with 0-1 constructors, array, integer
+                 | N1  --DTs with 2 or >16 constructors
+                 | N16 --DTs with 3-16 constructors
+                 | Custom (Map Name e)
+  deriving (Eq,Ord,Read,Show,Data)
+data ConInfo = UBCon {
   conParent ::Name,        --parent datatype
-  conTag :: e,             --tag value
+  --conTag :: e,             --tag value
   conFields :: [(Name,T)], --fields
   conRHS :: T              --rhs = TyCon params (cached)
   }
