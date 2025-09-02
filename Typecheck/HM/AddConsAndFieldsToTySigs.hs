@@ -34,7 +34,7 @@ conSigs di = M.mapWithKey (\con ci ->
              $ conInfo di
 
 --Can't use mapWithKey because the keys must be changed: field => .field
-fieldSigs :: DTsInfo e -> Map Name T
+fieldSigs :: Show e => DTsInfo e -> Map Name T
 fieldSigs di =
   M.fromList $
   map (\(field, fi) ->
@@ -43,6 +43,8 @@ fieldSigs di =
             IsTag tycon ->
               --I presume reconstructing the rhs from ci is more efficient
               --than another M.! lookup of conInfo di.
+              --Datatypes with the Nil tag scheme don't have a tag at all, but
+              --since we see IsTag then dti will have a defined dtTagType.
               let dti = datatypes di M.! tycon
                   rhs = dtTagType dti
                   lhs = unrollTyApps (TyCon tycon) $ map TyVar $ dtParams dti

@@ -1435,8 +1435,32 @@ Static values are simply anonymous code globals with a set value.
 
 To compile case, need to explicitly store tagging scheme (Nil, N1, N16, Custom) rather than just a Name => E map.
 Store tagging scheme and the full tag set info in DTInfo rather than ConInfo.
-Also, List should have a single ImplList constructor which points to
-ImplList r a.
+Update BDT scheme:
+data List r a = Nil | Cons {hd: a, tl: List r a} region r =>
+data List r a = ImplList (Ptr r (ImplList r a));
+data ImplList r a = ImplNil | ImplCons {implList_hd: a, implList_tl: List r a}
+ImplList's tag scheme is that given for List (either default or custom).
+
+TagScheme = Nil implying no tag field at all is an improvement; giving
+Array, Int etc a tag was ugly.
+Support integers in patterns; matching is just an equality check.
+Core would benefit from conversion of tags to linkable data: a mix of bytes
+and labels. That would enable case => ifte opt when the non-_ case has a zero
+tag. For tags containing labels (functions and code pointers), case must be
+compiled to a series of iftes with no guarantee of disambiguation.
+
+TODO update Cons x xs, xs.hd desugaring to fit new boxed datatype convention.
+I mapM Maps in a lot of places... TODO define and use a single combinator.
+
+Changed MonoS to record a tagScheme per monomorphized datatype.
+Debugging:
+main _ := Nil --fails
+ The boxed cons weren't added. Without a con tag, UBCon and BCon now have the
+ same fields. I'll replace them with a single Con constructor that takes an
+ additional boxed :: Bool.
+ Fixed, but now it complains r is unbound... is that correct behavior?
+main _ := True --has a custom tag scheme; the default should be sufficient
+ fixed
 
 alloc (len,ap,mem) =
  (ptr,ap',memFrag) = alloc' ap

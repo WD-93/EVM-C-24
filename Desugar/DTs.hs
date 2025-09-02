@@ -69,6 +69,10 @@ data DError = DuplicateDefun Name
             | Clash String String (Set Name)
             | ClassFunctionsLackSignatures (Set Name)
             | TypeSignaturesLackBindings (Set Name)
+            --Global errors:
+            | BadGlobalRegion Name Region
+            | MustNotHaveInitializer Name Region
+            | CodeGlobalMustHaveInitializer Name
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this

@@ -22,7 +22,7 @@ import Data.Map (Map(..))
 import qualified Data.Map as M hiding ((!))
 import Data.Set (Set(..))
 import qualified Data.Set as S
-import Control.Monad (foldM)
+import Control.Monad (foldM,forM)
 import Control.Monad.Trans.Except
 import Control.Monad.State
 import Text.Read (readMaybe)
@@ -199,22 +199,47 @@ stringTySigs string2n =
 --Only conInfo needs to change since that's where the tags are
 sepDTs :: DInfo -> DTsInfo P.E -> Either DError (DTsInfo E)
 sepDTs di dti = do
-  ci <- M.fromList <$> (mapM sepConInfo $ M.toList $ conInfo dti)
-  return $ DTsInfo {datatypes = datatypes dti,
-                    fieldInfo = fieldInfo dti,
-                    conInfo = ci}
+  dts' <- mapM sepDT $ datatypes dti
+  return dti{datatypes = dts'}
+    where sepDT dtinfo = do
+            ts' <- sepTagScheme $ dtTagScheme dtinfo
+            return dtinfo{dtTagScheme = ts'}
+          sepTagScheme = \case
+            Nil -> return Nil
+            N1 n -> return $ N1 n
+            N16 -> return N16
+            Custom t con2pe ->
+              Custom t <$> mapM (desugarE di) con2pe
+            
+--Cons no longer contain tag info, so sepConInfo is id
+{-    
   where sepConInfo (con, UBCon p tagPE cfs cr) = do
           tagE <- desugarE di tagPE
           return (con, UBCon p tagE cfs cr)
         sepConInfo (con,BCon a b c) = return (con, BCon a b c)
+-}
+--Global rules per region:
+--Memory: may have initializer
+--Storage, TStorage: must not
+--Code: must
+--Other regions: may not have globals
+--We enforce that here.
 sepGlobals :: DInfo -> Map Name (Region, Maybe P.E) ->
   Either DError (Map Name (Region, Maybe E))
 sepGlobals di nm2rmpe = do
   let nm_rmpe = M.toList nm2rmpe
   nmre <- mapM (\(nm,(r,mpe)) -> do
+                   complainIf (r `elem` [Ca,Re])
+                     $ BadGlobalRegion nm r
                    e <- case mpe of
-                          Just pe -> Just <$> desugarE di pe
-                          Nothing -> return Nothing
+                          Just pe -> do
+                            complainIf (r `elem` [St,TS])
+                              $ MustNotHaveInitializer nm r
+                            Just <$> desugarE di pe
+                          Nothing -> do
+                            complainIf (r == Co)
+                              $ CodeGlobalMustHaveInitializer nm
+                            return Nothing
                    return (nm,(r,e))) nm_rmpe
   return $ M.fromList nmre
 

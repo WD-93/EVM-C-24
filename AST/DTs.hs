@@ -396,35 +396,59 @@ data DTsInfo e = DTsInfo {
 data DTInfo e = DTInfo {
   dtParams :: [Name],
   dtRegion :: Maybe Name,
-  dtTagType :: T,
+  --dtTagType :: T, --implicit in TagScheme
   dtTagScheme :: TagScheme e,
   dtCanonicalCons :: [Name]
                      }
   deriving (Eq,Ord,Read,Show,Data)
-data TagScheme e = Nil --DTs with 0-1 constructors, array, integer
-                 | N1  --DTs with 2 or >16 constructors
-                 | N16 --DTs with 3-16 constructors
-                 | Custom (Map Name e)
+{-
+Default tag scheme:
+DTs with 0-1 constructors don't even have a .tagTyCon field!
+ User DT repr for 0-con type: the empty bytestring
+ For 1-con type: the concatenation of the arguments' (bytestring) reprs.
+ Specially treated primitives:
+  Array len a: equivalent to a struct of len a's
+  Int s len: len bytes
+DTs with exactly 2 constructors are tagged with 0 or 1 : Byte, both because
+jumpi is more efficient than jump tables for case on such types and to ensure
+Bool is compatible with Boolean values returned by EVM primitives.
+DTs with 3-16 constructors use 0,16,32.. : Byte as tags, allowing efficient
+jump table dispatch by pushing the whole JT as a single word.
+By using 15b jump addresses another constructor could be fit in, but that would
+mess with linking of the JT since labels would cross byte boundaries.
+DTs with >16 constructors can't use that trick; their repr is 0,1... in the
+smallest UInt type that fits. That will be Byte or Short for any sane datatype,
+but if the user wishes to define a datatype with a million constructors they
+may.
+
+Change: default tags are always UInts, never enums.
+Information about possible values is still preserved.
+-}
+data TagScheme e = Nil    --DTs with 0-1 constructors, array, integer
+                 | N1 Int
+                   --DTs with 2 or >16 constructors; type is UInt <Int>
+                 | N16    --DTs with 3-16 constructors; type is Byte
+                 | Custom T (Map Name e)
   deriving (Eq,Ord,Read,Show,Data)
-data ConInfo = UBCon {
+--Typecheck.HM.AddConsAndFieldsToTySigs uses dtTagType, which has been removed
+--from the fields of DTInfo e... I'll add it as a helper here.
+--Precondition: the tag scheme is not Nil.
+dtTagType :: Show e => DTInfo e -> T
+dtTagType dti =
+  case dtTagScheme dti of
+    Nil -> error $ "Compiler error: tag type of a datatype with no tag queried."
+           ++ " DT Info: " ++ show dti
+    N1 n -> UInt (fromIntegral n)
+    N16 -> UInt 1
+    Custom t _ -> t
+
+data ConInfo = Con {
+  conBoxed :: Bool, --Whether the con is boxed (will be desugared away)
   conParent ::Name,        --parent datatype
-  --conTag :: e,             --tag value
   conFields :: [(Name,T)], --fields
   conRHS :: T              --rhs = TyCon params (cached)
   }
-  --Boxed cons are fully desugared away after mono, so they have no tag
-  --However, they do still need fields and rhs for type inference of
-  --Con args patterns.
-  | BCon {
-      conParent :: Name,
-      conFields :: [(Name,T)],
-      conRHS :: T
-      }
   deriving (Eq,Ord,Read,Show,Data)
-conBoxed :: ConInfo e -> Bool
-conBoxed = \case
-  BCon {} -> True
-  _ -> False
 --Issue: all constructors of DT have a tagDT field!
 --A tagDT is never boxed...
 data FieldInfo = IsTag Name --The parent tycon

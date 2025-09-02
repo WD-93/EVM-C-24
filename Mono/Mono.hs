@@ -68,7 +68,7 @@ data MonoS = MonoS {
   --must do an O(n) scan of arbitrary-valued tags when you case).
   --DT params is live if any of its Cons or fields are (in E or Pat).
   --We also cache the monomorphic tag exprs.
-  exploredDTs :: Map (Name,[T]) (Map Name E)
+  exploredDTs :: Map (Name,[T]) (TagScheme E)
                    }
   deriving (Eq,Ord,Read,Show)
 monomorphize :: Module -> Either MonoError MonoS
@@ -169,6 +169,7 @@ monoGlobal g = withError (InMonoGlobal g) $ do
 -- subst params for monoTs in tag expr, then recursively explore.
 --Most complex scenario: the tag contains a class function
 --TODO use lenses so I can write a clean, shared checkExplored elem field
+--Update: the con => tag expr map is now in dtTagScheme . dtInfo
 monoDT :: Name -> [T] -> Mono ()
 monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
     b <- gets $ M.member (tycon,monoTs) . exploredDTs
@@ -176,9 +177,19 @@ monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
       then return ()
       else do
       dtsi <- asks dtsInfo
-      let Just dsi = M.lookup tycon $ datatypes dtsi
-          params = dtParams dsi
+      let Just dti = M.lookup tycon $ datatypes dtsi
+          params = dtParams dti
           v2t = M.fromList $ zip params monoTs
+      --New code starts here:
+      let ts' = case dtTagScheme dti of
+                  Custom t con2e ->
+                    Custom t $ M.map (\e -> let Right e' = instT v2t e in e')
+                    con2e
+                  ts -> ts
+      modify (\ms -> ms{exploredDTs = M.insert (tycon,monoTs) ts' $
+                         exploredDTs ms})
+      explore ts'
+      {-
           cons = dtCanonicalCons dsi
           cis = conInfo dtsi
       con2e <- M.fromList <$> forM cons (\con -> do
@@ -189,6 +200,7 @@ monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
       modify (\ms -> ms{exploredDTs = M.insert (tycon,monoTs) con2e $
                          exploredDTs ms})
       explore con2e
+-}
 
 --Find all mentions of functions, globals and datatypes that need to be mono'd.
 --Functions: Var f@ts | f in defuns => monoFun f ts

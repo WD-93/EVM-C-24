@@ -17,6 +17,7 @@ import Control.Monad.Except
 import qualified Data.Map as M hiding ((!))
 import qualified Data.Set as S
 import Data.Generics (everywhereM,mkM)
+import Control.Arrow ((***))
 
 -- ***********Copied from Desugar.Desugar:
 
@@ -110,7 +111,8 @@ processDT tycon params cons mr mti = do
                                          ts)) cons
       connames = map fst cons'
   --Compute tag info
-  (tagT,con2tag) <- case mti of
+  tagScheme <- computeTagScheme tycon params cons' mr mti
+    {-case mti of
     --If it's specified:
     Just (tagParams,tagT,con2e) -> do
       -- the length of its params must match 'params'
@@ -155,6 +157,7 @@ processDT tycon params cons mr mti = do
             Nothing Nothing
           return (TyCon tagDT, M.fromList [(con, P.Con $ UIdent $ "Tag"++con)
                                           | con <- connames])
+    -}
   --Result: T, Map Name P.E (params have been normalized away)
   let conrhs = unrollTyApps (TyCon tycon) $ map TyVar params
   --Regardless of whether the datatype is boxed or not, we fill in its kind
@@ -162,16 +165,49 @@ processDT tycon params cons mr mti = do
   defaultKindSig tycon params mr
   case mr of
     --The datatype is boxed; its tag is () and the tags are instead moved to
-    --StructCon1..StructConN.
-    --Its constructors Con fields are replaced with
-    --ImplCon (Ptr r (StructCon params))
+    --ImplCon1..ImplConN in the ImplTyCon datatype.
+    --Con1 args => ImplTyCon (allocValue (ImplCon1 args))
     Just rvar -> do
+      --data List r a = Nil | Cons {hd: a, tl: List r a} region r =>
+      --data List r a = ImplList {unImplList: Ptr r (ImplList r a)}
+      --data ImplList r a = ImplNil | ImplCons {implList_hd: a,
+      --                                        implList_tl: List r a}
+      let implcon = "Impl" ++ tycon
+          implfield = "un" ++ implcon
+          implconRHS = unrollTyApps (TyCon implcon) $
+                       map TyVar params
       addDT tycon $ DTInfo {
         dtParams = params,
         dtRegion = mr,
-        dtTagType = TyCon "Unit",
-        dtCanonicalCons = map ("Impl"++) connames
+        --dtTagType = TyCon "Unit",
+        dtTagScheme = Nil,
+        dtCanonicalCons = [implcon] --map ("Impl"++) connames
         }
+      --Add implcon as normal constructor of tycon
+      addCon implcon $ Con {
+        conBoxed = False,
+        conParent = tycon,
+        conFields = [(implfield, Ptr (TyVar rvar) implconRHS)],
+        conRHS = conrhs
+        }
+      --Add its sole field (which is not boxed)
+      addField implfield $ IsNormal False implcon
+      --Add its boxed constructors (they'll be desugared away, but are needed
+      --for type inference).
+      addPerConInfo tycon conrhs Nil cons' True
+      --Allocate the ImplTyCon datatype
+      --prepend implTyCon_ to each field in each constructor
+      let implConFields = map (("Impl"++) ***
+                               map ((("impl"++tycon++"_")++) *** id)) cons'
+      implcon `copyKindSigFrom` tycon
+      addDT implcon $ DTInfo {
+        dtParams = params,
+        dtRegion = Nothing,
+        dtTagScheme = tagScheme,
+        dtCanonicalCons = map fst implConFields
+        }
+      addPerConInfo implcon implconRHS tagScheme implConFields False
+      {-
       --For each Con args, allocate
       --data StructCon params = StructCon args
       --tag StructCon params = tagT where {StructCon: con2tag M.1 con}
@@ -207,31 +243,79 @@ processDT tycon params cons mr mti = do
            forM_ fields $ \(field,t) ->
              addField field $ IsNormal True con
         | (con,fields) <- cons']
+     -}
     --The datatype is unboxed
     Nothing -> do
       --Add DT info
       addDT tycon $ DTInfo {
         dtParams = params,
         dtRegion = mr,
-        dtTagType = tagT,
+        --dtTagType = tagT,
+        dtTagScheme = tagScheme,
         dtCanonicalCons = connames
         }
-      --Add per-con info
-      sequence_ [do
-        addCon con $ UBCon {
-            conParent = tycon,
-            conTag = con2tag ! con,
-            conFields = fields,
-            conRHS = conrhs
-            }
-        --Add per-con info for each of its fields
-        sequence_ [
-          addField field $ IsNormal False con
-          | (field,_t) <- fields
-          ]
-        | (con,fields) <- cons']
-      --Finally, add field info for .tagDT
-      addField ("tag"++tycon) $ IsTag tycon
+      addPerConInfo tycon conrhs tagScheme cons' False
+
+--A helper function for adding each con and field + tag; used to deduplicate
+--the code in the boxed and unboxed case
+addPerConInfo :: Name -> T -> TagScheme P.E -> [(Name,[(Name,T)])] ->
+  Bool -> --whether the constructors are boxed
+  PDT ()
+addPerConInfo tycon conrhs tagScheme cons' boxed = do
+  --Add per-con info
+  sequence_ [do addCon con $ Con {
+                  conBoxed = boxed,
+                  conParent = tycon,
+                  conFields = fields,
+                  conRHS = conrhs
+                  }
+                --Add per-con info for each of its fields
+                sequence_ [
+                  addField field $ IsNormal boxed con
+                  | (field,_t) <- fields
+                  ]
+            | (con,fields) <- cons']
+  --Finally, add field info for .tagDT *iff the tag scheme is not Nil*
+  if tagScheme /= Nil
+    then addField ("tag"++tycon) $ IsTag tycon
+    else return ()
+
+computeTagScheme :: Name -> --tycon
+         [Name] -> --params
+         [(Name,[(Name,T)])] -> --con specs
+         Maybe Name -> --region param if the datatype is boxed
+         Maybe ([Name],T,Map Name P.E) -> --tag info if specified
+         PDT (TagScheme P.E)
+computeTagScheme tycon params cons mr mti =
+  case mti of
+    Nothing ->
+      return $ let len = length cons
+               in case () of
+                    () | len <= 1 -> Nil
+                       | len == 2 -> N1 1
+                       | len > 16 -> N1 $ log256 $
+                                     fromIntegral len
+                       | let -> N16
+    Just (tagParams,tagT, con2e) -> do
+      -- the length of its params must match 'params'
+      complainIf (length tagParams /= length params)
+        $ TagParamDTParamLengthMismatch tycon params tagParams
+      let tag2dtParams = M.fromList $ zip tagParams params
+      -- T may be free only in params; modify it to match the DT's params.
+      --Note this'll break if I add rank-2 polymorphism
+      tagTNorm <- everywhereM (mkM $ \case
+                                  TyVar nm ->
+                                    case M.lookup nm tag2dtParams of
+                                      Nothing -> throwError $
+                                        FreeVarInTagType nm tagT tycon
+                                      Just nm' -> return $ TyVar nm'
+                                  t -> return t) tagT
+       -- the map's keys must be exactly the con set
+      let conset = S.fromList $ map fst cons
+          specset = M.keysSet con2e
+      complainIf (conset /= specset)
+        $ ConMismatchInTagAndData tycon conset specset
+      return $ Custom tagTNorm con2e
 
 --The below three add functions add a DT, Con and Field to the DTsInfo state
 --respectively.
@@ -243,10 +327,10 @@ processDT tycon params cons mr mti = do
 --datatypes and that would risk confusing it.
 --A generated param would also need to be added to processDT because it
 --recursively generates tag datatypes.
-addDT :: Name -> DTInfo -> PDT ()
+addDT :: Name -> DTInfo P.E -> PDT ()
 addDT = addThing datatypes (\m s -> s{datatypes=m}) "Datatype TyCon"
 
-addCon :: Name -> ConInfo P.E -> PDT ()
+addCon :: Name -> ConInfo -> PDT ()
 addCon = addThing conInfo (\m s -> s{conInfo=m}) "Constructor"
 
 addField :: Name -> FieldInfo -> PDT ()

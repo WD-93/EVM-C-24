@@ -39,7 +39,8 @@ type WordPad a = (a,());
 //Datatypes with 3..16 constructors use 0,16.. (29 gas); datatypes with more
 //use indirect JTs (36 gas).
 data Bool = {False;True};
-tag Bool = Byte where {False: 0, True: 1};
+//Bool does not need an explicit tag declaration
+//tag Bool = Byte where {False: 0, True: 1};
 data Maybe a = {Nothing; Just {fromJust: a}}; //Unboxed
 data List r a = {Nil; Cons {hd: a, tl: List r a}} region r;
 

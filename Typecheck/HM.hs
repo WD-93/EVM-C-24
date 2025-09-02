@@ -1003,10 +1003,40 @@ inferTypes m = do
 --  e'' <- compare and adapt to rigid signature t<params>
 --   as with signed functions, after this e''s tyvars will be in params
 --  update tag to e''
+--Update: Now tag expressions have been moved from ConInfo to DTInfo; the
+--dtTagScheme is what needs to be checked and modified.
 inferConTags :: Module -> Either TCModuleError (DTsInfo E)
 inferConTags m = do
   let dtsi = dtsInfo m
       dts = M.toList $ datatypes dtsi
+  --TODO use monadic mapWithKey combinator here
+  dts' <- forM dts (\(tycon,dti) -> do
+                       ts' <- case dtTagScheme dti of
+                                Custom t con2e ->
+                                  Custom t <$> M.fromList <$>
+                                  forM (M.toList con2e)
+                                  (\(con,e) -> do
+                                      e' <- case runHM (go t e)
+                                                 hmr newHMS of
+                                              (Left hme,_) ->
+                                                Left $ InCheckConTag con hme
+                                              (Right a, _) -> return a
+                                      return (con,e'))
+                                ts -> return ts
+                       return (tycon,dti{dtTagScheme = ts'}))
+  --Note the fromList here should be rolled into monadic mapWithKey
+  return dtsi{datatypes = M.fromList dts'}
+    where hmr = HMR{
+            hmTySigs = tysigs m,
+            hmDTsInfo = dtsInfo m,
+            hmKindSigs = kindsigs m, 
+            hmSorts = kinds m,
+            hmDefaults = defaults m,
+            hmTaus = M.empty, --They'll remain empty
+            hmLocals = M.empty
+            }
+          go = goSig typeOf
+  {-
   --Result: a list of maps Con => ConInfo E
   csi's <- forM dts (\(tycon,dti) -> do
                         let DTInfo {dtParams = params,
@@ -1039,6 +1069,7 @@ inferConTags m = do
             hmLocals = M.empty
             }
           go = goSig typeOf
+-}
 --Moving to top level to be able to use it in checkClasses as well...
 goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
           HM def
