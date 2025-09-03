@@ -1459,8 +1459,36 @@ main _ := Nil --fails
  same fields. I'll replace them with a single Con constructor that takes an
  additional boxed :: Bool.
  Fixed, but now it complains r is unbound... is that correct behavior?
+ Interesting... main _ := alloc 1 passes.
+ Both Nil and alloc turn into TyApps, and tyvar defaulting should be applied
+ uniformly to unbound tyvars of a given kind... what could be going wrong?
+ "main:()->(); main _ := f(); f _ := return Nil" works...
+ It's not r that's unbound, it's the kind var... I must not be binding the
+ kind of typeOf Nil to Type when I introduce it? I wasn't doing so for any
+ name from tysigs… fixed.
 main _ := True --has a custom tag scheme; the default should be sufficient
  fixed
+"main:()->(); main _ := case Nil of {Nil=>return (); Cons _ _ => return ()}"
+Does not include ImplList in exploredDTs… but how could it, when the BDT
+desugaring is done in Core? I could add the Impl type to explored when a
+boxed constructor or field is encountered.
+It also mentions List Memory Word and List Word Memory in exploredDTs, a clear bug (List Word Memory is ill-kinded).
+main _ := Nil does not mention List Word Memory, so it must be the case
+triggering it.
+It's specifically the Cons case, and the bug is present in the HM output.
+(PConArgs "Cons" (Just [uint32,Memory]) [ --I must incorrectly reverse
+somewhere... Nil uses PCon and is correct.
+main _ := ((Cons _ _) = Nil) and (Cons{}) = Nil both apply typarams in the
+reverse order.
+Strangely,
+"main:()->(); main _ := (Foo{} = Foo ()); Foo:Region->Nat->Type->Type;data Foo r n t = {Foo ()}" does not.
+Pair _ _ = Pair () True also types correctly.
+A clue: Cons _ _ = Cons () Nil --types the expression incorrectly!
+Aha... Cons : a -> List r a -> List r a. When quantified, its parameters
+will indeed be [a,r]. But monomorphization assumes the con params are the
+datatype params!
+Solution: add a params list to tysigs, modify quantify.
+TODO: cache kinds as well.
 
 alloc (len,ap,mem) =
  (ptr,ap',memFrag) = alloc' ap

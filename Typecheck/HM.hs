@@ -576,6 +576,9 @@ typeOf = go
 -}
               _ | Just scheme <- M.lookup nm $ hmTySigs hmr -> do
                   (vars,t) <- quantify scheme
+                  --Need to unify t's kind with Type as well.
+                  k <- kindOf t
+                  unifyK k "Type"
                   return (TyApp nm $ map TyVar vars, t)
                 | Just t <- M.lookup nm $ hmLocals hmr -> do
                   t' <- zonk t
