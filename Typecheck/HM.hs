@@ -3,7 +3,7 @@ module Typecheck.HM where
 
 import Util hiding (withError)
 import AST.DTs
-import AST.Util (freeVarsPat,op2fun,region2T)
+import AST.Util (freeVarsPat,op2fun,region2T,tyVarsList,mkSig)
 import Typecheck.TySyn (tyVars,tyCons,
                         --TODO move the two functions below to a more
                         --appropriate module
@@ -153,7 +153,7 @@ Now I can statically pass [Word]s... does that create problems?
 -}
 data HMR = HMR {
   --Things with sigs or already typed; includes constructors and fields
-  hmTySigs :: Map Name T,
+  hmTySigs :: Map Name Scheme,
   --New: dtsInfo from module, using which Con {field: e/p} can be typed
   hmDTsInfo :: DTsInfo E,
   --The kind of level-1 tycons
@@ -242,7 +242,7 @@ data TCModuleError = InCheckTySig Name SigError
                    | InCheckConTag Name HMError
   deriving (Eq,Ord,Read,Show)
 data SigError = MissingDefinition
-              | BadKindInSig T (HMError,HMS)
+              | BadKindInSig Scheme (HMError,HMS)
               | PolymorphicTySigInMonoThing T
               deriving (Eq,Ord,Read,Show)
 data KindSigError = KindOutOfScope Name
@@ -389,14 +389,19 @@ tcTysigs :: Module -> Either TCModuleError ()
 tcTysigs m = do
   let sigs = tysigs m
   mapM_ go $ M.toList sigs
-    where go (nm,t) = (case () of
-                         _ | S.member nm $ M.keysSet $ globals m -> do
-                               complainIf (polymorphic t)
-                                 $ PolymorphicTySigInMonoThing t
-                               checkIsType m t
-                           | M.member nm $ defuns m ->
-                             checkIsType m t
-                           | otherwise -> throwError MissingDefinition
+    where go (nm,(params,t)) =
+            (case () of
+               --I can actually just ignore params here for now...
+               --Checking not (null params) is a slight opt vs polymorphic t,
+               --but if I've given sigs the wrong params that may cause
+               --subtle bugs.
+                _ | S.member nm $ M.keysSet $ globals m -> do
+                      complainIf (not $ null params)
+                        $ PolymorphicTySigInMonoThing t
+                      checkIsType m (params,t)
+                  | M.member nm $ defuns m ->
+                      checkIsType m (params,t)
+                  | otherwise -> throwError MissingDefinition
                       )
                   ? InCheckTySig nm
 
@@ -405,17 +410,18 @@ polymorphic :: T -> Bool
 polymorphic = not . S.null . tyVars
 --Given a module m, initializes HM, instantiates t and checks it is :: Type
 --Relevant module fields: kindsigs
-checkIsType :: Module -> T -> Either SigError ()
-checkIsType m t = (case runHM go newHMR{hmKindSigs = kindsigs m,
-                                 hmSorts = kinds m
-                                }
-                        newHMS
-                    of
-                      (Left err, s) -> Left (err,s)
-                      (Right res, _) -> Right res
-                  ) ? BadKindInSig t
+--This is only used in tcTySigs, so it can take a scheme instead
+checkIsType :: Module -> Scheme -> Either SigError ()
+checkIsType m scheme = (case runHM go newHMR{hmKindSigs = kindsigs m,
+                                             hmSorts = kinds m
+                                            }
+                         newHMS
+                        of
+                          (Left err, s) -> Left (err,s)
+                          (Right res, _) -> Right res
+                       ) ? BadKindInSig scheme
   where go = do
-          (nms,t') <- quantify t --introduce new tyvars bound to kind vars
+          (nms,t') <- quantify scheme --introduce new tyvars bound to kind vars
           k <- kindOf t'
           unifyK k "Type"
           --There should be no polymorphic kind variables
@@ -873,9 +879,10 @@ unifyK k1 k2 = do
 --new tyvars.
 --TODO: record the kinds of tyvars in signatures, immediately unify with
 --them rather than re-inferring.
-quantify :: T -> HM ([Name],T)
-quantify t = do
-  let vs = tyVarsList t
+--Change: quantify now operates on true schemes rather than T
+quantify :: Scheme -> HM Scheme
+quantify (vs,t) = do
+  --vs is now not necessarily == tyVarsList t!
   fresh <- map (\(TyVar v) -> v) <$> mapM newTyVarNamed vs
   let v2fresh = M.fromList $ zip vs fresh
   return (fresh,substTyVarNames v2fresh t)
@@ -960,10 +967,10 @@ inferTypes m = do
             go m' nmss
         withSigs f = S.toList $ S.intersection (M.keysSet $ f m) $
                      M.keysSet $ tysigs m
-        --Is there any reason I can't use m' instead f m in checkWSigs..?
+        --Is there any reason I can't use m' instead of m in checkWSigs..?
         checkWSigs :: (Show def, Data def) =>
                       Module ->
-                      (T -> def -> HM def) ->
+                      (Scheme -> def -> HM def) ->
                       (Module -> Map Name def) ->
                       [Name] ->
                       Either TCModuleError (Map Name def)
@@ -1019,7 +1026,9 @@ inferConTags m = do
                                   Custom t <$> M.fromList <$>
                                   forM (M.toList con2e)
                                   (\(con,e) -> do
-                                      e' <- case runHM (go t e)
+                                      --Is using mkSig instead of the DT params
+                                      --correct here?
+                                      e' <- case runHM (go (mkSig t) e)
                                                  hmr newHMS of
                                               (Left hme,_) ->
                                                 Left $ InCheckConTag con hme
@@ -1074,9 +1083,9 @@ inferConTags m = do
           go = goSig typeOf
 -}
 --Moving to top level to be able to use it in checkClasses as well...
-goSig :: (Show def,Data def) => (def -> HM (def,T)) -> T -> def ->
+goSig :: (Show def,Data def) => (def -> HM (def,T)) -> Scheme -> def ->
           HM def
-goSig handler sig def = do
+goSig handler (_params,sig) def = do
           (def',t) <- handler def
           --All kinds must be bound at this point
           allKindsBound
@@ -1087,12 +1096,6 @@ goSig handler sig def = do
           --Apply the mapping to each type present in it; vars not present
           --are unbound by t and should be defaulted instead.
           t' <- zonk t --Just in case
-          {-
-          let ei_err_inf2sig = execStateT (unifyRigid sig t) M.empty
-          inf2sig <- case ei_err_inf2sig of
-                       Left rue -> throwError $ RigidUnificationError rue
-                       Right inf2sig -> return inf2sig
--}
           inf2sig <- matchWithSig t' sig
           rigidizeAndDefault inf2sig def'
 --Attempts to match t with the rigid type sig; t must be at least as general
@@ -1124,8 +1127,8 @@ checkClasses m classes =
                                            (t,scheme)) $
                                    --The scheme must be more general than the
                                    --instance!
-                                   matchWithSig scheme t
-                                 goSig (typeOfFun m) t (p,s)
+                                   matchWithSig (snd scheme) t
+                                 goSig (typeOfFun m) (mkSig t) (p,s)
                              ) f (p,s) t
                              
                            return (t,p',s')
@@ -1233,7 +1236,9 @@ inferSCC nms m =
     (Left hme, s) -> Left (hme,s)
     --Updated definitions and new tysigs
     (Right (sigs,funs,globs), _) ->
-      return m{tysigs = M.union sigs $ tysigs m,
+      --Change: I simply use mkSig to add a default ordering of tyvars in
+      --polymorphic signatures.
+      return m{tysigs = M.union (M.map mkSig sigs) $ tysigs m,
                defuns = M.union (M.map Left funs) $ defuns m,
                globals = M.union globs $ globals m
               }
@@ -1494,14 +1499,3 @@ substTyVars :: Map Name T -> T -> T
 substTyVars v2t = everywhere (mkT $ \case TyVar v
                                             | Just t <- M.lookup v v2t -> t
                                           t -> t)
-
---Gathers all mentioned tyvars and returns them in order of first mention
---TODO dedup with Typecheck.Tysyn.TyVars and put in AST.Util
-tyVarsList :: T -> [Name]
-tyVarsList = fst . tyVarsListSet
-tyVarsListSet :: T -> ([Name],Set Name)
-tyVarsListSet = everything (\(nms1,snms1) (nms2,snms2) ->
-                              (nms1 ++ filter (not . flip S.member snms1) nms2,
-                               S.union snms1 snms2)) $ mkQ ([],S.empty) $
-                \case TyVar nm -> ([nm],S.singleton nm)
-                      _ -> ([],S.empty)

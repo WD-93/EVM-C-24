@@ -11,7 +11,7 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
-import AST.Util (rollTyApps)
+import AST.Util (rollTyApps,mkSig)
 import Desugar.DTs
 import Desugar.T (desugarT)
 import Desugar.Datatypes (processDTs)
@@ -124,7 +124,7 @@ desugar (P.Module ds) = do
   --tysig
   --tysigs also need string global tysigs inserted to fix their type
   tsigs <- M.union (stringTySigs string2n) <$>
-    groupEx "TySig" (\(P.TySig (Ident nm) t) -> (nm, desugarT t)) nm2d
+    groupEx "TySig" (\(P.TySig (Ident nm) t) -> (nm, mkSig $ desugarT t)) nm2d
   
   --tysyn
   tsyns <- groupEx "TySyn" (\(P.TySyn ca t) ->
@@ -188,10 +188,10 @@ stringGlobals string2n =
   M.toList string2n
 --Strings are also of a fixed type: Array len Byte
 --TODO fuse the functions if it matters to perf...
-stringTySigs :: Map String Int -> Map Name T
+stringTySigs :: Map String Int -> Map Name ([Name],T)
 stringTySigs string2n =
   M.fromList $
-  map (\(str,n) -> ("$string" ++ show n,
+  map (\(str,n) -> ("$string" ++ show n, (,) [] $ --the scheme takes no params
                     Array (TyNat $ fromIntegral $ length str) (UInt 1))) $
   M.toList string2n
 

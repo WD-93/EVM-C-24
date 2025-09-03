@@ -1488,7 +1488,21 @@ Aha... Cons : a -> List r a -> List r a. When quantified, its parameters
 will indeed be [a,r]. But monomorphization assumes the con params are the
 datatype params!
 Solution: add a params list to tysigs, modify quantify.
-TODO: cache kinds as well.
+TODO: cache kinds as well. That might prevent bugs or restrict expressive
+power. Consider copyProxyParam : p a -> f a.
+Param ordering: in order of first appearance for explicit tysigs, in order of
+datatype params for constructors.
+
+Converting tysigs to proper schemes means I must delve into the belly of the
+beast: HM. Have I used quantify messily?
+TODO general code cleanup: go through TODOs, separate out HM.DTs and
+its fundamental funs (runHM etc).
+Get HLS working, use that dependency graph printer to find where to break up
+the oversized modules.
+Oh no: goSig is used for classes as well! It needs to take a scheme, which
+perhaps means the repr of class funs needs to change.
+It's apparently fixed... but I really need a proper test suite for each stage.
+main _ := (Nil.hd) fails: no such field hdStructCons. That's a quick fix...
 
 alloc (len,ap,mem) =
  (ptr,ap',memFrag) = alloc' ap

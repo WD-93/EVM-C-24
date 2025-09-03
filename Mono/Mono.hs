@@ -17,8 +17,8 @@ module Mono.Mono where
 --to get the full function instance set.
 
 import AST.DTs
+import AST.Util (tyVarsList)
 import Util (complainIf,(!))
-import Typecheck.HM (tyVarsList)
 
 import Data.Generics
 import Control.Monad (forM)
@@ -78,7 +78,7 @@ monomorphize m = runExcept $ flip execStateT s $ flip runReaderT m go
         go = do
           complainIf (not $ M.member "main" $ defuns m)
             $ NoMainFunction
-          let Just tmain = M.lookup "main" $ tysigs m
+          let Just (_params,tmain) = M.lookup "main" $ tysigs m
           params <- case bindT tmain (Unit :-> Unit) of
                       Left bindError ->
                         throwError $ IlltypedMainFunction tmain bindError
@@ -104,8 +104,8 @@ monoFun f monoTs = withError (InMonoFun (f,monoTs)) $ do
     Just _ -> return () --already explored
     Nothing -> do
       --Look up tysig, get vars; map them to monoTs and inst sig
-      scheme <- (! f) <$> asks tysigs
-      let vars = tyVarsList scheme
+      --Change: the var order is now specified by the signature.
+      (vars,scheme) <- (! f) <$> asks tysigs
       --Just in case...
       if length vars /= length monoTs
         then error $ "Compiler error: wrong tyapp arity in monoFun " ++ f

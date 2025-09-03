@@ -322,13 +322,22 @@ pattern p :! ix = PBang Nothing p ix
 --type Block = [S]
 --type Program = [D]
 
+--forall a b . a -> b becomes ([a,b],a -> b)
+type Scheme = ([Name],T)
 --Output after desugaring phase:
 data Module = Module {
   --Used for optional type signatures on funs, globals and statics;
   --decls order-independent to simplify desugar.
   --That also means you can put the API at the top of long files :)
   --LEVEL 1: types may only contain level-1 terms such as Memory, Word...
-  tysigs :: Map Name T,
+  --Tysigs now also contain the canonical type param order; type params are
+  --the a b c in forall a b c . t. Originally type params were in order of
+  --appearance, but that led to Cons : a -> List r a -> List r a having param
+  --order [a,r] whereas Nil : List r a had order [r,a]. Since the constructor
+  --type params are used to determine the datatype params, that led to a bug
+  --where Cons () Nil triggered the instantiation of the ill-kinded datatype
+  --List () Memory.
+  tysigs :: Map Name Scheme,
   --Allows the user to specify nonstandard kinds for datatypes; otherwise they
   --default to Type* -> Type for unboxed and Type* -> Region -> Type* -> Type
   --for boxed datatypes respectively.

@@ -1,10 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 module AST.Util where
 
+import AST.DTs
+
 import Data.Set (Set(..))
 import qualified Data.Set as S
-
-import AST.DTs
+import Data.Generics
 
 --Utility functions for manipulating AST DTs; TODO deduplicate
 
@@ -74,3 +75,19 @@ region2T = TyCon . (\case
                        Ca -> "Calldata"
                        Re -> "Returndata"
                        Co -> "Code")
+
+--Gathers all mentioned tyvars and returns them in order of first mention
+--Moved from Typecheck.HM
+tyVarsList :: T -> [Name]
+tyVarsList = fst . tyVarsListSet
+tyVarsListSet :: T -> ([Name],Set Name)
+tyVarsListSet = everything (\(nms1,snms1) (nms2,snms2) ->
+                              (nms1 ++ filter (not . flip S.member snms1) nms2,
+                               S.union snms1 snms2)) $ mkQ ([],S.empty) $
+                \case TyVar nm -> ([nm],S.singleton nm)
+                      _ -> ([],S.empty)
+
+--The default (vars,t) pair for a scheme; if f : a -> b then its scheme will
+--be ([a,b],a -> b)
+mkSig :: T -> ([Name],T)
+mkSig t = (tyVarsList t, t)
