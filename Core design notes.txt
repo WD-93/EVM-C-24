@@ -1503,10 +1503,99 @@ Oh no: goSig is used for classes as well! It needs to take a scheme, which
 perhaps means the repr of class funs needs to change.
 It's apparently fixed... but I really need a proper test suite for each stage.
 main _ := (Nil.hd) fails: no such field hdStructCons. That's a quick fix...
+Need to add a  BCon => TyCon mapping in addition to field => BCon.
+BCon {field: e} => ImplTyCon {unImplTyCon: 
+ allocValue(ImplBCon {implTyCon_field: e})}
+Problem: allocValue allocates a Ptr to ImplTyCon, wasting space when allocating Nil. OTOH, that means you can safely modify xs.unImplList to
+ImplCons.
+allocDynSizedValue ImplNil --could be optimized by inlining and simplifying
+the case. Alt: allocFixedSize (k,ImplNil)
+bdt.field => *(bdt.unImplTyCon).implTyCon_field.
+Normalize PConArgs to PCon? That requires a Con => fields map... might as well pass DTsInfo instead of multiple views of it.
+
+Restrict alloc to memory? Storage deserves a dedicated word-aligned API due to its high warm-up cost per slot. It also needs byte-precision refs into
+the entire address space (Word,Byte).
+Byte vs word-aligned alloc is not a trivial choice... word-aligned alloc could well be more expensive for multiple small allocs. Ideally a custom scheme specialized to each individual contract would be expressible...
+
+dec for pointers := return indexPtr(p,65535)… if I add non-bounds-checked
+pointer indexing that'll become a bug.
+Use unsafeCoerce to avoid masking, assuming no overflow? Corrupt pointer
+values extending beyond their 16b range is a major footgun, but alloc overflow is a footgun regardless.
+No one Prelude can meet the perf vs security needs of all contracts...
+fortunately, configuring the stdlib is possible.
+A flag function f : () -> Bool; f () := return ... could be used to configure
+choices such as 1) safe pointer addition, 2) allocPtr overflow checks.
+Inlining + DCE would let you use it as an ifdef.
+Solidity's choice to make every datatype one or more whole words must've saved the devs a lot of pain...
+
+Argh: if a BDT's Impl datatype has a non-Nil tag scheme, xs.tagList should
+desugar to *(xs.unImplList).tagImplList. xs.tagList should also be assignable, but Cons{tagList: p/e} should not be permitted.
+.tagList should be fully desugared away, so no need to put it in tysigs.
+Add Boxed implTagScheme as a new tag scheme type?
+Then I can record .tagList as List's tag and rely on the scheme to clarify
+what that means.
+case xs of
+ --Both ImplList and Nil/Cons should work here!
+The constructors overlap... and whether to inspect the tag depends on the
+patterns used.
+Add Boxed implTagScheme, add BDT tag field to field info.
+
+Implement a concrete alloc in Core; it needs to mutate allocPtr while also
+returning a new memFrag. allocPtr should be assumed to be disjoint from every
+other pointer; the globals and their child ptrs are disjoint for free, but
+it needs to be disjoint from every alloc'd pointer as well.
+Use reallyUnsafe* variants to encode no alias? The side effect on allocPtr must be observable (while affecting nothing else) to enable stack lifting and
+symbolic opt of it.
+getMem off len : Bytestring#
+deref@[Memor,t] p => getMem p.unMkPtr sizeof#@t
+Every Core primitive must have a # appended to prevent confusion with user
+functions.
+BB effect: stack, map => stack', map'; alias info encoded as ||| on map.
+Types do not in general have a single fixed-length Bytestring# length since
+mkCont breaks that assumption... but in every other case they do.
+Track which Var (if any) is mkCont; there should only ever be one.
 
 alloc (len,ap,mem) =
- (ptr,ap',memFrag) = alloc' ap
+ (ptr,memFrag) = alloc' ap
  mem = mem ||| memFrag
+In Structured:
+ap <- newAP --Track ap variable; becomes (ap',ap) = splitAP ap
+It's important that's done in Structured to ensure there's a fixed skeleton
+of splitAP ops per function body, preventing any sequential dependencies.
+Need to split to pass a new AP into each substatement (consider loops)
+(a1,a2) = splitAP ap;
+stmt; --pass a1
+--continue with a2
+That should be translated into an additional zero-sized parameter for the
+substatement which is passed through unchanged! It can reside in the scope;
+reordering it out of the way is zero-cost.
+(a1,a2) = splitAP ap is equivalent to (a2,a1) = …; if one ap is unused the
+split can be eliminated.
+
+TODO desugar BCon{field:e} to use allocValue (for now).
+TODO use BNFC's generated print function for ppr of errors in desugar.
+
+Q: Do I really need to define alloc in Core? If I had a rule "Pointers
+created with MkPtr n are assumed to point to free memory", its allocating
+effect could derive from that.
+However, that doesn't capture its intended commutativity, so I will define it in Core.
+A flush()/sync() primitive could signal all writes should be committed before
+further progress.
+allocPtr should perhaps be the only memory global assumed protected from
+pointer writes.
+
+TODO prune the error datatypes to eliminate obsolete errors, starting with
+DError.
+TODO warn on potential UB: setting tag fields to arbitrary values, access out
+of range, accessing the field of a constructor which lacks that field.
+
+The initial test suite can be composed of unit tests, but I should also write
+QC generators for valid (or deliberately invalid) code.
+"If program is otherwise valid but has X error, the compiler should report it"
+
+Generalizing BDTs: some fields could be sugar for *(dt.field).field2; that
+could be used for method tables. If the tag were a pointer to an info table
+that could support GC, loading, linking etc in an interpreter.
 
 Note constant expansion of letrec'd globals is analogous to inlining (less the beta reduction).
 

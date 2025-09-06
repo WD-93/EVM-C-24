@@ -23,7 +23,6 @@ import Data.Map (Map(..))
 import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 
 data DError = DuplicateDefun Name
-            | BadDOrdering [P.D]
             | BadOpInType String
             | BadEInType P.E --catch-all error for desugarT
             | BadEInPat P.E --same for desugarP
@@ -73,6 +72,9 @@ data DError = DuplicateDefun Name
             | BadGlobalRegion Name Region
             | MustNotHaveInitializer Name Region
             | CodeGlobalMustHaveInitializer Name
+            --
+            | UndefinedFieldInExprDot Name
+            | UndefinedFieldInPatternDot Name
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this
@@ -104,4 +106,12 @@ deriving instance Data P.ConTag
 --1) the global set (used for g=>*g in P,E)
 --2) boxed field status (used for bdt.field => *(...).fieldStructCon in E)
 --3) a string numbering m (used for "str" => *($string++show m["str"]))
-type DInfo = (Set Name, Map Name Name, Map String Int)
+--TODO change field => (boxed con) to field => boxed tycon instead.
+--I could also desugar BCon {f: e} to
+--ImplTyCon (allocValue (ImplBCon {implTyCon_f: e})).
+--However, desugaring of BCon {f: p} = e must be deferred to the Core stage.
+data DInfo = DInfo {
+  diGlobalSet :: Set Name,
+  diDTsInfo :: DTsInfo P.E, --used for field=>bcon, bcon=>fields
+  diStringNumbering :: Map String Int
+}

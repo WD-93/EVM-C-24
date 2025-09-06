@@ -110,11 +110,16 @@ desugar (P.Module ds) = do
       string2n = M.fromList $ zip (S.toList strings) [1..]
       --Now we have 3) and can define the DInfo
       --bdt.tagBDT is always unit; tag fields are never boxed.
+      {-
       field2bcon = M.map (\(IsNormal _ bcon) -> bcon) $
                    M.filter (\case IsNormal b _ -> b
                                    _ -> False) $
                    fieldInfo dtsFull
-      di = (gset,field2bcon,string2n)
+-}
+      di = DInfo {diGlobalSet = gset,
+                  diDTsInfo = dtsFull,
+                  diStringNumbering = string2n
+                 }
   dtsFinal <- sepDTs di dtsFull
   --Also add string globals to global map
   gsFinal <- M.union (stringGlobals string2n) <$> sepGlobals di gs

@@ -279,11 +279,7 @@ getFieldParent :: Name -> Mono Name
 getFieldParent field = do
   dtsi <- asks dtsInfo
   let Just fi = M.lookup field $ fieldInfo dtsi
-  case fi of
-    IsTag tycon ->
-      return tycon
-    IsNormal _ tycon ->
-      return tycon
+  return $ fiParentTyCon fi
 
 --Given a polymorphic type poly with all tysyns expanded
 --and a monomorphic type mono,

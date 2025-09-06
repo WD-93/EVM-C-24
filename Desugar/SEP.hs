@@ -21,7 +21,10 @@ import Control.Monad.Except
 --desugarE needs to throw errors because CST patterns are expressions which
 --may not correspond to AST patterns.
 desugarE :: DInfo -> P.E -> Either DError E
-desugarE di@(gs,field2bcon,str2id) = go
+desugarE di@DInfo{diGlobalSet = gs,
+                  diStringNumbering = str2id,
+                  diDTsInfo = dtsi
+                 } = go
   where
     dot e = Dot e Nothing
     go = \case
@@ -61,14 +64,28 @@ desugarE di@(gs,field2bcon,str2id) = go
         return $ Var "deref" :$ Var "indexPtr" :$ ptr :$ ix
       --Critical decision: field access is not represented as a function
       --application.
-      P.Dot struct (Ident f)
-        --bdt.f => *(bdt.fieldImplCon1).fStructCon
-        | Just bcon <- M.lookup f field2bcon -> do
-            bdt <- go struct
-            return $ Var "deref" :$
-              ((bdt `dot` defaultFieldName bcon 1) `dot`
-                (f ++ "Struct" ++ bcon))
-        | let -> do
+      P.Dot struct (Ident f) -> do
+        --Look up the field info
+        --TODO deduplicate with P.Dot case in desugarP
+        let fsi = fieldInfo dtsi
+        fi <- case M.lookup f fsi of
+          Nothing -> throwError $ UndefinedFieldInExprDot f
+          Just fi -> return fi
+        if fiBoxed fi
+          then do
+          let tycon = fiParentTyCon fi
+          --Old scheme: bdt.f => *(bdt.fieldImplCon1).fStructCon
+          --New scheme: look up tycon,
+          -- *(bdt.unImpl<tycon>).impl<tycon>_f
+          bdt <- go struct
+          let unboxedField =
+                case fi of
+                  IsTag {} -> "tagImpl" ++ tycon
+                  _ -> "impl" ++ tycon ++ "_" ++ f
+          return $ (Var "deref" :$
+                    ((bdt `dot` ("unImpl" ++ tycon)))) `dot`
+            unboxedField
+          else do
             dt <- go struct
             return $ dt `dot` f
       P.Bang arr ix -> op2 "indexArray" arr ix
@@ -154,7 +171,10 @@ bdt.f => *(...).fStructCon
 g => *g
 -}
 desugarP :: DInfo -> P.E -> Either DError Pat
-desugarP di@(gs,field2bcon,str2id) = go
+desugarP di@DInfo{diGlobalSet = gs,
+                  diDTsInfo = dtsi,
+                  diStringNumbering = str2id
+                 } = go
   where
     go = \case
       P.Wild -> return $ PWild Nothing
@@ -165,15 +185,32 @@ desugarP di@(gs,field2bcon,str2id) = go
       P.Deref e -> Deref Nothing <$> desugarE di e
       P.EmptyTuple -> return unit
       P.Tuple e es -> tupleP <$> mapM go (e:es)
-      P.Dot struct (Ident field)
-        | Just bcon <- M.lookup field field2bcon -> do
-            e <- desugarE di struct
-            return $ Deref Nothing
-              (Dot e Nothing $ defaultFieldName ("Impl"++bcon) 1)
-              :. (field ++ "Struct" ++ bcon)
-        | let -> do
-            p <- go struct
-            return $ p :. field
+      --bdt.field => look up field's parent tycon,
+      -- *(bdt.unImpl<tycon>).impl<tycon>_field
+      --Ooh, consequence: (f()).field becomes a valid LHS for assignment.
+      --That's a bit surprising but fine; C++ allows it.
+      P.Dot struct (Ident field) -> do
+        let fsi = fieldInfo dtsi
+        --TODO dedup with analogous desugaring in desugarE
+        fi <- case M.lookup field fsi of
+                Nothing -> throwError $ UndefinedFieldInPatternDot field
+                Just fi -> return fi
+        if fiBoxed fi
+          then do
+          let tycon = fiParentTyCon fi
+          e <- desugarE di struct
+          --Appending Impl<tycon> instead of prepending it would make the
+          --name of the unboxed datatype fields more consistent...
+          let unboxedField =
+                case fi of
+                  IsTag {} -> "tagImpl" ++ tycon
+                  _ -> error $ "impl" ++ tycon ++ "_" ++ field
+          return $ Deref Nothing
+            (Dot e Nothing $ "unImpl" ++ tycon)
+            :. unboxedField
+          else do
+          p <- go struct
+          return $ p :. field
       P.Bang arr ix -> (:!) <$> go arr <*> desugarE di ix
       P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
       P.ConRecord (UIdent con) efields -> do

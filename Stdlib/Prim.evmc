@@ -115,10 +115,39 @@ deref : Ptr r a -> a;
 deref _ := ();
 //Note the polymorphic result type independent of the argument!
 //alloc n :: Ptr r a allocates enough space for n a's
-//The first word of memory is reserved for the alloc ptr, which is set in the
-//prologue before calling main.
+//alloc is a fundamental operation in EVMC; beyond globals, it's the only
+//safe way to get root pointers.
+//The alloc# Core primitive should take an AllocPtr# resource but not return
+//it, capturing that allocs are commutative.
+
+//Should memAllocPtr be exposed directly?
+//It's a word for efficiency; it may or may not be placed at address 0.
+//Should the memory model assume it's never aliased so it can be stack-lifted
+//more often? That would be in contrast to other globals.
+//memAllocPtr should be initialized to point to the first free byte after
+//the memory globals.
+//If no alloc is actually done it should be optimized away.
+memAllocPtr : Word;
+memory memAllocPtr;
+//stoAllocPtr is a Short in the hopes that it can share a slot with another
+//global. Ideally it would be optimized away.
+stoAllocPtr : Short;
+storage stoAllocPtr;
+//Is there a solid case for ever needing to allocate things in tstorage?
+//I'm not sure, but it doesn't hurt to have the option.
+tstoAllocPtr : Short;
+tstorage tstoAllocPtr;
 alloc : Int s l -> Ptr r a;
-alloc _ := ();
+//alloc is supported for three region types: Memory, Storage, TStorage
+//These instances are just placeholders meant to trigger type errors when
+//instantiating alloc with a non-allocable region; the real definition for
+//each type is filled in in Core.
+instance alloc : Int s l -> Ptr Memory a where
+ _ := ();
+instance alloc : Int s l -> Ptr Storage a where
+ _ := ();
+instance alloc : Int s l -> Ptr TStorage a where
+ _ := ();
 //Pointer indexing _[_] is now separate from unboxed array indexing _!_.
 //Since indexPtr can be implemented directly in EVMC, it needn't be in Prim.
 //However, its supporting primitive proxy ops need to be.

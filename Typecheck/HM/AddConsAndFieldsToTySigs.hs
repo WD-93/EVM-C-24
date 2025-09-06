@@ -59,7 +59,7 @@ fieldSigs di =
   map (\(field, fi) ->
          ('.':field,
           case fi of
-            IsTag tycon ->
+            IsTag {fiParentTyCon = tycon} ->
               --I presume reconstructing the rhs from ci is more efficient
               --than another M.! lookup of conInfo di.
               --Datatypes with the Nil tag scheme don't have a tag at all, but
@@ -69,7 +69,7 @@ fieldSigs di =
                   rhs = dtTagType dti
                   lhs = unrollTyApps (TyCon tycon) $ map TyVar $ dtParams dti
               in (params, lhs :-> rhs)
-            IsNormal _ con ->
+            IsNormal {fiParentCon = con} ->
               let ci = conInfo di M.! con
                   tycon = conParent ci
                   Just dti = M.lookup tycon $ datatypes di

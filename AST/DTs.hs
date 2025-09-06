@@ -405,7 +405,7 @@ data DTsInfo e = DTsInfo {
 data DTInfo e = DTInfo {
   dtParams :: [Name],
   dtRegion :: Maybe Name,
-  --dtTagType :: T, --implicit in TagScheme
+  dtBoxed :: Bool,
   dtTagScheme :: TagScheme e,
   dtCanonicalCons :: [Name]
                      }
@@ -438,7 +438,20 @@ data TagScheme e = Nil    --DTs with 0-1 constructors, array, integer
                    --DTs with 2 or >16 constructors; type is UInt <Int>
                  | N16    --DTs with 3-16 constructors; type is Byte
                  | Custom T (Map Name e)
+                 -- ^ inline (unboxed) tags with arbitary, potentially
+                 -- overlapping values. The values must be constants
+                 -- (TODO test the compiler requires that).
   deriving (Eq,Ord,Read,Show,Data)
+-- Each boxed DT points to an unboxed Impl<DT>; a DT is boxed iff
+-- dtBoxed (datatypes (dtsInfo module)) == True.
+-- Boxed datatypes inherit the tag scheme of their Impl type; note the
+-- mappings in Custom refer to ImplCon rather than Con.
+-- Iff Impl<DT>'s scheme is not Nil then DT has a tag field
+-- .tagDT; bdt.tagDT desugars to *(bdt.unImplDT).tagImplDT.
+-- Tag fields may not occur inside the {} brackets of a
+-- record expression or pattern Con{...}; each datatype has
+-- at most one tag field. TODO add that to test suite!
+
 --Typecheck.HM.AddConsAndFieldsToTySigs uses dtTagType, which has been removed
 --from the fields of DTInfo e... I'll add it as a helper here.
 --Precondition: the tag scheme is not Nil.
@@ -452,17 +465,22 @@ dtTagType dti =
     Custom t _ -> t
 
 data ConInfo = Con {
-  conBoxed :: Bool, --Whether the con is boxed (will be desugared away)
-  conParent ::Name,        --parent datatype
+  conBoxed :: Bool,        --Whether the con is boxed (will be desugared away)
+  conParent :: Name,       --parent datatype TyCon
   conFields :: [(Name,T)], --fields
   conRHS :: T              --rhs = TyCon params (cached)
   }
   deriving (Eq,Ord,Read,Show,Data)
---Issue: all constructors of DT have a tagDT field!
---A tagDT is never boxed...
-data FieldInfo = IsTag Name --The parent tycon
-               | IsNormal Bool Name --boxed status, parent constructor
+
+data FieldInfo = IsTag {fiBoxed :: Bool,
+                        fiParentTyCon :: Name 
+                       }
+               | IsNormal {fiBoxed :: Bool,
+                           fiParentTyCon :: Name, --cached for bdt.field desugar
+                           fiParentCon :: Name
+                          }
   deriving (Eq,Ord,Read,Show,Data)
+
 type Syns = Map Name ([Name],T)
 
 --This is still required in Desugar.Desugar...

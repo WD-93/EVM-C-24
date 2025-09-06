@@ -87,3 +87,14 @@ instance dec : Int s l -> Int s l where
 //It's equivalent to coerce ().
 null : () -> a;
 null _ := return coerce();
+
+//Allocates the given value to a new pointer.
+//allocValue is currently used in desugaring BCon {field: e}
+//Since that wastes space when allocating constructors that are smaller than
+//the maximum size, that might change.
+allocValue : a -> Ptr r a;
+allocValue a := {
+ var p = alloc 1;
+ *p = a;
+ return p
+}
