@@ -3,6 +3,7 @@ module Desugar.SEP where
 
 import qualified E.Abs as P
 import AST.DTs
+import AST.Util (unrollApps,roll)
 import Desugar.DTs
 import Util
 import Desugar.Util (defaultFieldName)
@@ -20,6 +21,18 @@ import Control.Monad.Except
 
 --desugarE needs to throw errors because CST patterns are expressions which
 --may not correspond to AST patterns.
+--New invariant: desugarE is never recursively called on a partial application,
+--e.g. (f x) in f x y.
+--Instead Apps (except Array (e1,e2,...) and Struct (e1,e2,...)) are fully
+--rolled into f ...xs before recursive desugaring.
+--That's used to enforce full application of every constructor, and
+--permit overapplication iff the constructor is MkFun.
+--All the constructor arguments are therefore collected before generating the
+--constructor application, so they can always be of form Con {field: e}.
+--Boxed constructors Con {field: e} are desugared to
+--ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
+--HM may then assume Var nm is either a global or function; TODO remove
+--the logic for constructors.
 desugarE :: DInfo -> P.E -> Either DError E
 desugarE di@DInfo{diGlobalSet = gs,
                   diStringNumbering = str2id,
@@ -42,7 +55,11 @@ desugarE di@DInfo{diGlobalSet = gs,
         case M.lookup str str2id of
           Just id -> return $ Var "deref" :$ (Var $ "$string"++show id)
           Nothing -> error $ "Compiler error: unmapped string " ++ str
-      P.Con (UIdent nm) -> return $ Var nm
+      --A standalone Con.
+      --If there is no such Con, error.
+      --If it's underapplied, error.
+      --If it's boxed, desugar to ImplTyCon (...).
+      P.Con (UIdent con) -> desugarConApp di con []
       P.ConRecord (UIdent con) efields -> do
         es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
               efields
@@ -95,6 +112,7 @@ desugarE di@DInfo{diGlobalSet = gs,
       --Why (a,b,c) and not Array a b c? Because the former makes
       --recursive desugaring easy and cheap: no need to backtrack based
       --on whether the expr being applied is Array/Struct.
+      {-
       P.App (P.Con (UIdent "Array")) ptup ->
         case ptup of
           P.EmptyTuple -> return $ EArray Nothing []
@@ -111,7 +129,15 @@ desugarE di@DInfo{diGlobalSet = gs,
                   es <- mapM go $ pe : pes
                   return $ structE es
                 _ -> throwError $ GenericDError "malformed struct expr"
-      P.App pf px -> (:$) <$> go pf <*> go px
+-}
+      --First roll the P.Apps into f ...args to get a bird's eye view.
+      --If f is a Con, go to desugarConApps
+      --Otherwise desugar f and args and unroll.
+      P.App pf px -> do
+        let (pf',args) = rollPApps (P.App pf px)
+        case pf' of
+          P.Con (UIdent con) -> desugarConApp di con args
+          _ -> unrollApps <$> go pf' <*> mapM go args
       P.PlusPlusPre p -> PPPre <$> desugarP di p
       P.MinusMinusPre p -> MMPre <$> desugarP di p
       P.Negate a -> op1 "negate" a
@@ -155,6 +181,76 @@ desugarE di@DInfo{diGlobalSet = gs,
       a <- go pa
       b <- go pb
       return $ Var fnm :$ tupleE [a,b]
+
+--Gets the function being repeatedly applied and collects its arguments:
+--Given f a b ... z :: P.E , returns (f,[a,b,...z]).
+--Used to enforce that constructors must be fully applied.
+rollPApps :: P.E -> (P.E,[P.E])
+rollPApps = roll (\case P.App f x -> Just (f,x)
+                        _ -> Nothing)
+
+--A helper for constructor applications Con ...args,
+--used for standalone Con and applications.
+--If con is Array or Struct, args must be [a syntactic tuple].
+--If the con is not defined, error.
+--If it's underapplied, error.
+--If it's overapplied but not MkFun, error.
+--If it's boxed, desugar to
+--ImplTyCon {unImplTyCon: ImplCon {implTyCon_field: e}}.
+desugarConApp :: DInfo -> Name -> [P.E] -> Either DError E
+desugarConApp di@(DInfo{diDTsInfo=dtsi}) con args
+  | con `elem` ["Array","Struct"] = do
+    let err = ArrayAndStructTakeASyntacticTuple con args
+    case args of
+      [ptup] -> do
+        mes <- desugarTup di desugarE ptup 
+        case mes of
+          Just es ->
+            return $ case con of
+              "Array" -> EArray Nothing es
+              "Struct" -> structE es
+          Nothing -> throwError err
+      _ -> throwError err
+  | let = case M.lookup con $ conInfo dtsi of
+            Nothing -> throwError $ NoSuchCon con
+            Just ci -> do
+              let arity = length $ conFields ci
+                  len = length args
+              --If underapplied, fail
+              complainIf (arity > len)
+                $ UnderappliedCon con arity len
+              --Desugar the args and split them into the first arity es and
+              --the rest.
+              es <- mapM (desugarE di) args
+              let (eargs,erest) = (take arity es, drop arity es)
+              --If overapplied, require con == MkFun
+              complainIf (len > arity && con /= "MkFun")
+                $ OverappliedNonMkFun con arity es
+              let tycon = conParent ci
+                  fields = map fst $ conFields ci
+                  record = if conBoxed ci
+                              --Boxed: ImplTyCon (allocValue ImplCon
+                              -- {implTyCon_field: e})
+                           then ConRecord ("Impl"++tycon) Nothing
+                                [("unImpl"++tycon,
+                                  Var "allocValue" :$
+                                   ConRecord ("Impl"++con) Nothing
+                                   (zip (map (("impl"++tycon++"_")++) fields)
+                                    $ eargs)
+                                 )
+                                ]
+                                --Unboxed: Con {field: e}
+                           else ConRecord con Nothing $ zip fields eargs
+              return $ unrollApps record erest
+            
+--Used for Struct (a,b,c...) and Array (a,b,c...) in both
+--desugarE and desugarP.
+desugarTup :: DInfo -> (DInfo -> P.E -> Either DError a) -> P.E ->
+  Either DError (Maybe [a])
+desugarTup di handler = \case
+  P.EmptyTuple -> return $ Just []
+  P.Tuple pe pes -> Just <$> mapM (handler di) (pe:pes)
+  _ -> return Nothing
 
 {-
 Valid patterns:

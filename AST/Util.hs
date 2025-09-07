@@ -26,13 +26,11 @@ unrollTyApps = foldl (:$$)
 --roll collects repeated application arguments into a list; unroll is its
 --inverse.
 roll :: (a -> Maybe (a,b)) -> a -> (a,[b])
-roll sel a =
-  let (f,rargs) = go a []
-  in (f,reverse rargs)
-  where go a rbs =
+roll sel a = go [] a
+  where go rbs a =
           case sel a of
-            Just (a',b) -> go a' (b:rbs)
-            Nothing -> (a,rbs)
+            Just (a',b) -> go (b:rbs) a'
+            Nothing -> (a, rbs)
 --Generic unroll is just foldl
 
 --The free vars (all of which should be locals in scope) of a pattern.

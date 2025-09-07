@@ -72,9 +72,14 @@ data DError = DuplicateDefun Name
             | BadGlobalRegion Name Region
             | MustNotHaveInitializer Name Region
             | CodeGlobalMustHaveInitializer Name
-            --
+            --Field access errors
             | UndefinedFieldInExprDot Name
             | UndefinedFieldInPatternDot Name
+            --Constructor errors
+            | ArrayAndStructTakeASyntacticTuple Name [P.E]
+            | NoSuchCon Name
+            | UnderappliedCon Name Int Int --arity, actual
+            | OverappliedNonMkFun Name Int [E]
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this

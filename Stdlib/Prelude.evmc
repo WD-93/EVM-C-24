@@ -31,7 +31,9 @@ type BytePtr r = Ptr r Byte;
 data Unit = {Unit};
 //Bytestring append without padding
 //Append without padding is the default rule for datatypes.
-data Append a b = {Append a b};
+//It has named fields to make creating Appends in the compiler more
+//convenient.
+data Append a b = {Append {first: a, second: b}};
 //WordPad is now replaced by Pair as the word-padding primitive
 type WordPad a = (a,());
 //Datatypes with exactly 2 constructors have default tags [0,1], allowing

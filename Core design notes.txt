@@ -1584,6 +1584,61 @@ further progress.
 allocPtr should perhaps be the only memory global assumed protected from
 pointer writes.
 
+Now to desugar Con, Con args and Con {field: e} for unboxed cons to
+ImplCon (allocValue (ImplCon{implTyCon_field: e})).
+Error on missing or repeated fields?
+Enforce full application of constructors, boxed and unboxed... that requires
+unrolling apps into f xs, recursively desugaring f and xs, then checking
+whether f is a constructor.
+If it is, fully apply it and then roll the remaining arguments; fail if there
+are too few. Iff the constructor is MkFun then overapplication is OK.
+
+case e of
+ MultiCon1 fs -> …
+ _ -> …
+Can be converted to an ifte; for a trivial constructor you can just prune the
+_ case.
+
+For documentation/writeup:
+There are a number of C types which are deeply entangled with the compiler
+because they're fundamental to the language.
+They include:
+Fun --used to implement functions
+Ptr --used to implement pointers, entangled with the memory model.
+The unsafe operation ptr[ix] is necessary for dealing with dynamically-sized
+data; I say data and not types because the type system currently can't
+capture types which don't have a statically bounded size.
+Pair --the word-padding primitive; its runtime representation doesn't use the
+default byte concatenation rule used by other constructors. It has zero-cost
+construction and destruction. For that reason, tuples and vars are the only 
+valid Core patterns.
+Int --Int s len is a primitive, having a non-default representation.
+All other datatypes are represented as the concatenation of field types; Int
+is at the bottom of that hierarchy, unique in that it's nonempty but has no fields, indices or tag.
+Int Signed is the only type compared using SGT and SLT rather than the
+unsigned GT and LT.
+Array is unique in that it has indices instead of fields; indices are
+accessible via the infix ! operator.
+
+Separating the algo to report more errors at a time: depending on decl type,
+each can be desugared separately.
+Unrelated SCCs and funs with signatures in HM can be inferred separately.
+Use Applicative to represent parallelism a la Haxl?
+
+TODO ensure I use ConRecord rather than Var for constructors everywhere.
+TODO eliminate PConArgs.
+Wow, converting to mandatory ConRecords and ImplCons made the list of tyvars
+massive for main _ := Cons 1 2 (which correctly type errors). A sign of a bug
+or performance issue?
+Cons 1 Nil errors, while Cons {hd: 1, tl: Nil} passes...
+Cons Nil 1 passes, but its output is not equal to Cons{hd:1,tl:Nil}!
+TODO add unit tests which test the equivalence of programs written with sugar vs without.
+I'm forgetting to reverse somewhere. Ofc they're not equivalent, I haven't
+desugared properly in P.ConRecord yet!
+f 1 2 also desugars to f 2 1...
+I'd introduced a bug into roll; fixed.
+Next: proper desugaring in P.ConRecord.
+
 TODO prune the error datatypes to eliminate obsolete errors, starting with
 DError.
 TODO warn on potential UB: setting tag fields to arbitrary values, access out

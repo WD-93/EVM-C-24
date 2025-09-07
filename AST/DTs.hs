@@ -97,10 +97,14 @@ n `padWith` p = n `roundedUpMod` pad2Sz p
 structT :: [T] -> T
 structT [] = "Unit"
 structT (t:ts) = Append t $ structT ts
+structE :: [E] -> E
+structE [] = ConRecord "Unit" Nothing []
+structE (e:es) = ConRecord "Append" Nothing [("first",e),
+                                             ("second", structE es)]
 
 tupleE :: [E] -> E
-tupleE [] = Var "Unit"
-tupleE (e:es) = Var "Pair" :$ e :$ tupleE es
+tupleE [] = ConRecord "Unit" Nothing []
+tupleE (e:es) = ConRecord "Pair" Nothing [("fst",e), ("snd",tupleE es)]
 tupleP :: [Pat] -> Pat
 tupleP [] = PConArgs "Unit" Nothing []
 tupleP (p:ps) = PConArgs "Pair" Nothing [p,tupleP ps]
