@@ -572,14 +572,7 @@ typeOf = go
           Var nm -> do
             hmr <- ask
             case () of
-              {-
-              --Now deprecated because Pats are once again separate from E.
-              _ | nm == "_" -> do
-                    v <- newTyVar
-                    k <- kindOf v
-                    unifyK k "Type"
-                    return (TyApp "_" [v], v)
--}
+              --Globals must now use TypedVar rather than TyApp.
               _ | Just scheme <- M.lookup nm $ hmTySigs hmr -> do
                   (vars,t) <- quantify scheme
                   --Need to unify t's kind with Type as well.
@@ -655,6 +648,18 @@ typeOfPat = go
         r' <- zonk r
         a' <- zonk a
         return (Deref (Just [r',a']) e',a')
+      --Array (p1 :: a,p2 :: a ...,pN :: a) :: Array N a
+      PArray Nothing ps -> do
+        a <- newTyVar
+        k <- kindOf a
+        unifyK k "Type" --in case the array is empty
+        p'ts <- mapM go ps
+        let p's = map fst p'ts
+            ts = map snd p'ts
+        mapM (unify a) ts
+        a' <- zonk a
+        return (PArray (Just a') p's,
+                Array (TyNat $ fromIntegral $ length p's) a')
       --PDot: look up .field : a -> b in tysigs, treat as application.
       --Using FIKS to put field types in tysigs avoids the need to modify HMR,
       --but having a separate map for fields is cleaner...
@@ -681,6 +686,7 @@ typeOfPat = go
         a' <- zonk a
         return (PBang (Just [len',a']) parr' eix', a')
         --PConArgs: look up con type, treat as application
+        {-
       PConArgs con Nothing ps -> do
         (vars,conT) <- pconPrefix con
         p'ts <- mapM go ps
@@ -693,7 +699,7 @@ typeOfPat = go
           $ PConArgsArityMismatch con ps conArity
         rhsT <- unifyConArgs conT ts
         typarams <- mapM (zonk . TyVar) vars
-        return (PConArgs con (Just typarams) p's, rhsT)
+        return (PConArgs con (Just typarams) p's, rhsT) -}
       --PCon: look up field types, unify
       PCon con Nothing fieldps -> do
         (vars,conT) <- pconPrefix con
@@ -1001,7 +1007,7 @@ inferTypes m = do
                         case me of
                           Just e -> do
                             (e',t) <- typeOf e
-                            return ((r,Just e'),t)
+                            return ((r,Just e'),Ptr (region2T r) t)
                           Nothing -> return ((r,Nothing),TyVar "whatever")
 
 --Given a TC'd module where every global and function already has a tysig:

@@ -1638,9 +1638,31 @@ desugared properly in P.ConRecord yet!
 f 1 2 also desugars to f 2 1...
 I'd introduced a bug into roll; fixed.
 Next: proper desugaring in P.ConRecord. Done; now to eliminate PConArgs.
-Need to add PArray.
+Need to add PArray. Done.
 Supporting &&pointed = e would be nice... then I could write
 &&(Array (a,b,c)).
+
+Now: support PArray, remove support for PConArgs. Done.
+main _ := "foo" triggers TypeSignaturesLackBindings {"$string1"}…
+Now I get rigid unification error: Ptr, Array. Note: in check signature of
+$string1, not in main!
+"a" => deref $string1, which has signature ([],uint1[1]) after desugar…
+memAllocPtr has signature ([],Word) after desugar, but surprisingly fails in
+mono!
+Why do locals work but not globals in mono...?
+I convert globals to TyApp nm [], but I don't expect that in mono!
+Rather than add a global set to HM and generate TypedVar for globals, I'll
+check for globalness. TypedVar now refers exclusively to locals; I need to
+recognize that in Structured.
+String still fails...
+memory x = True; main _ := x --works, but adding x:Bool causes it to fail.
+The issue seems to arise when a global has both an initializer and a 
+signature. I had forgotten to report back that a global r x = (e :: t) must 
+be of type Ptr r t, not t.
+Now I get RIU 1 32. Ahh, I need to add fromWord to the string expr. Now it
+typechecks!
+
+Remember: Const serialization must handle fromWord.
 
 TODO prune the error datatypes to eliminate obsolete errors, starting with
 DError.

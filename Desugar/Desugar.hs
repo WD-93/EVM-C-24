@@ -109,13 +109,6 @@ desugar (P.Module ds) = do
                                        _ -> S.empty) nm2d
       string2n = M.fromList $ zip (S.toList strings) [1..]
       --Now we have 3) and can define the DInfo
-      --bdt.tagBDT is always unit; tag fields are never boxed.
-      {-
-      field2bcon = M.map (\(IsNormal _ bcon) -> bcon) $
-                   M.filter (\case IsNormal b _ -> b
-                                   _ -> False) $
-                   fieldInfo dtsFull
--}
       di = DInfo {diGlobalSet = gset,
                   diDTsInfo = dtsFull,
                   diStringNumbering = string2n
@@ -123,6 +116,8 @@ desugar (P.Module ds) = do
   dtsFinal <- sepDTs di dtsFull
   --Also add string globals to global map
   gsFinal <- M.union (stringGlobals string2n) <$> sepGlobals di gs
+  let gsetFinal = M.keysSet gsFinal
+  -- ^ gotta include the string globals to prevent TypeSignaturesLackBindings
   --default
   dflts <- groupEx "Default" (\(P.Default (UIdent nm) t) -> (nm, desugarT t))
     nm2d
@@ -168,7 +163,7 @@ desugar (P.Module ds) = do
      complainIf (not $ S.null lacking)
        $ ClassFunctionsLackSignatures lacking
      --All type signatures must correspond to a fun or global
-     let nakedSigs = S.difference sigs (S.union fset gset)
+     let nakedSigs = S.difference sigs (S.union fset gsetFinal)
      complainIf (not $ S.null nakedSigs)
        $ TypeSignaturesLackBindings nakedSigs
 
@@ -189,7 +184,8 @@ stringGlobals string2n =
   M.fromList $
   map (\(str,n) -> ("$string" ++ show n,
                      (Co, Just $ EArray Nothing $
-                       map (EInteger . fromIntegral . ord) str))) $
+                       map ((Var "fromWord" :$) . EInteger . fromIntegral . ord)
+                       str))) $
   M.toList string2n
 --Strings are also of a fixed type: Array len Byte
 --TODO fuse the functions if it matters to perf...

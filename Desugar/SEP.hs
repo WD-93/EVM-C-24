@@ -339,7 +339,7 @@ desugarP di@DInfo{diGlobalSet = gs,
         then return $ Deref Nothing $ Var v
         else return $ PVar v
       P.Deref e -> Deref Nothing <$> desugarE di e
-      P.EmptyTuple -> return unit
+      P.EmptyTuple -> return $ tupleP []
       P.Tuple e es -> tupleP <$> mapM go (e:es)
       --bdt.field => look up field's parent tycon,
       -- *(bdt.unImpl<tycon>).impl<tycon>_field
@@ -359,10 +359,6 @@ desugarP di@DInfo{diGlobalSet = gs,
           P.Con (UIdent con) -> do
             desugarConAppP di con args
           _ -> throwError $ BadConInPattern f
-    --mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
-    mkStruct :: [Pat] -> Pat
-    mkStruct = foldr (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
-    unit = PConArgs "Unit" Nothing []
 
 desugarS :: DInfo -> P.S -> Either DError S
 desugarS di = go
@@ -384,5 +380,5 @@ desugarS di = go
         desugarCase (P.C p s) = (,) <$> gop p <*> go s
         desugarVB = \case
           --var x; => var x = null()
-          P.JustVar (Ident v) -> return (v,Var "null" :$ Var "Unit")
+          P.JustVar (Ident v) -> return (v,Var "null" :$ tupleE [])
           P.VarIs (Ident v) e -> (,) v <$> goe e

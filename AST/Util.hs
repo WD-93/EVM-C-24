@@ -44,7 +44,6 @@ freeVarsPatG f2 f1 f0 = go
           Deref _ _ -> f0
           PDot _ p _ -> go p
           PBang _ p _ -> go p
-          PConArgs _ _ ps -> foldr f2 f0 $ map go ps
           PCon _ _ nmps -> foldr f2 f0 $ map (go . snd) nmps
 freeVarsPat :: Pat -> Set Name
 freeVarsPat = freeVarsPatG (S.union) S.singleton S.empty

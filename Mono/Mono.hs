@@ -219,19 +219,13 @@ explore :: Data a => a -> Mono ()
 explore a = do
   everywhereM (mkM $ \e -> do
                   case e of
-                    --Global
-                    TypedVar mt nm -> do
+                    --TypedVar is not relevant; globals are TyApps
+                    --Functions and globals
+                    TyApp nm ts -> do
                       b <- asks (M.member nm . globals)
                       if b
                         then monoGlobal nm
-                        else return ()
-                    --Function or constructor
-                    TyApp nm ts -> do
-                      b <- asks (M.member nm . defuns)
-                      if b
-                        then monoFun nm ts
-                        --It must be a constructor; look up the parent tycon
-                        else exploreCon nm ts
+                        else monoFun nm ts
                     ConRecord con mts _ ->
                       case mts of
                         Nothing -> error "Compiler error: ConRecord not HM'd!"
@@ -251,8 +245,6 @@ explore a = do
                     PDot (Just ts) _ field -> do
                       exploreField field ts
                     PBang (Just ts) _ _ -> monoFun "indexArray" ts
-                    PConArgs con (Just ts) _ ->
-                      exploreCon con ts
                     PCon con (Just ts) _ ->
                       exploreCon con ts
                     _ -> return ()

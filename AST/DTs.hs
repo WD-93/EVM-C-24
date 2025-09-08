@@ -109,8 +109,8 @@ tupleE :: [E] -> E
 tupleE [] = ConRecord "Unit" Nothing []
 tupleE (e:es) = ConRecord "Pair" Nothing [("fst",e), ("snd",tupleE es)]
 tupleP :: [Pat] -> Pat
-tupleP [] = PConArgs "Unit" Nothing []
-tupleP (p:ps) = PConArgs "Pair" Nothing [p,tupleP ps]
+tupleP [] = PCon "Unit" Nothing []
+tupleP (p:ps) = PCon "Pair" Nothing [("fst",p),("snd",tupleP ps)]
 --tupleF :: [e] -> [Field e]
 --tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type
@@ -309,15 +309,14 @@ data Pat = PWild (Maybe T) --not converted to new local until Core!
          | TypedPVar (Maybe T) Name
            --local only by type infer; global g is desugared to *g
          | Deref (Maybe [T]) E
-         | PArray (Maybe [T]) [Pat] --Array (p1,p2,p3)
+         | PArray (Maybe T) [Pat] --Array (p1,p2,p3)
          --Converted to assignment of atomic pattern
          | PDot (Maybe [T]) Pat Name
          | PBang (Maybe [T]) Pat E
          --arr ! ix, distinct from ptr[ix] which is sugar
-         --Fallible patterns:
-         | PConArgs Name (Maybe [T]) [Pat]
-         --Duplicate fields need not be a syntax error: consider
-         --Cons {hd: *p1, hd: *p2}
+         --Con {field: p}, the only fallible pattern:
+         --Repeated fields are a syntax error, despite Cons{hd:x,hd:y} being
+         --useful.
          --Order matters because patterns may contain side-effecting exprs
          | PCon Name (Maybe [T]) [(Name,Pat)]
   deriving (Eq,Ord,Read,Show,Data)
