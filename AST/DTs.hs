@@ -101,6 +101,9 @@ structE :: [E] -> E
 structE [] = ConRecord "Unit" Nothing []
 structE (e:es) = ConRecord "Append" Nothing [("first",e),
                                              ("second", structE es)]
+structP :: [Pat] -> Pat
+structP [] = PCon "Unit" Nothing []
+structP (p:ps) = PCon "Append" Nothing [("first",p),("second",structP ps)]
 
 tupleE :: [E] -> E
 tupleE [] = ConRecord "Unit" Nothing []
@@ -306,6 +309,7 @@ data Pat = PWild (Maybe T) --not converted to new local until Core!
          | TypedPVar (Maybe T) Name
            --local only by type infer; global g is desugared to *g
          | Deref (Maybe [T]) E
+         | PArray (Maybe [T]) [Pat] --Array (p1,p2,p3)
          --Converted to assignment of atomic pattern
          | PDot (Maybe [T]) Pat Name
          | PBang (Maybe [T]) Pat E

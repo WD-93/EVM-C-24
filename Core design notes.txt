@@ -1637,12 +1637,28 @@ I'm forgetting to reverse somewhere. Ofc they're not equivalent, I haven't
 desugared properly in P.ConRecord yet!
 f 1 2 also desugars to f 2 1...
 I'd introduced a bug into roll; fixed.
-Next: proper desugaring in P.ConRecord.
+Next: proper desugaring in P.ConRecord. Done; now to eliminate PConArgs.
+Need to add PArray.
+Supporting &&pointed = e would be nice... then I could write
+&&(Array (a,b,c)).
 
 TODO prune the error datatypes to eliminate obsolete errors, starting with
 DError.
 TODO warn on potential UB: setting tag fields to arbitrary values, access out
 of range, accessing the field of a constructor which lacks that field.
+
+A desirable reordering: Cons f() (Cons g() Nil) =>
+x = f(); y = g(); Cons x (Cons y Nil)
+By performing the (assumed non-inlinable) calls first, the straight-line
+inlinable code is grouped together. That would alloc the alloc pointer to
+be lifted, saving 2 load-stores.
+Write effect: oldAllocPtr -> {00,01,y,pNil,01,x,pCons}
+That could be optimized: with pNil and pCons simplified to oldAllocPtr+k,
+they can be disentangled from the write effect. Stores can be done from the
+back to avoid saving and restoring bytes that will be overwritten anyway.
+In the best-case scenario, the entire thing would fit into a word.
+If pointers are assumed to never over/underflow, pointer fields can be
+incremented by adding a left-shifted k.
 
 The initial test suite can be composed of unit tests, but I should also write
 QC generators for valid (or deliberately invalid) code.

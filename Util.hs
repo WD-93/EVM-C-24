@@ -27,7 +27,7 @@ unsafePrint str
   | debugFlag = unsafePerformIO $ putStrLn str >> return (return ())
   | let = return ()
 
---TODO update transformers/mtl and fix dependencies in cabal...
+--TODO remove this and replace uses with the lib-provided withError.
 withError :: MonadError e m => (e -> e) -> m a -> m a
 withError f action = catchError action (throwError . f)
 
@@ -48,3 +48,13 @@ m ! k =
   case M.lookup k m of
     Just v -> v
     Nothing -> error $ "Missing key in (!): " ++ show (k,m)
+
+--I'm sure I have this somewhere... TODO find and deduplicate
+count :: Ord a => [a] -> Map a Int
+count = foldr (adjustWithDefault succ 0) M.empty
+
+--Applies f to m[k], or inserts d if m doesn't have that mapping.
+--Useful when you want to track info about keys, but the set of possible keys
+--is unknown so you can't initialize the map in advance.
+adjustWithDefault :: Ord k => (v -> v) -> v -> k -> Map k v -> Map k v
+adjustWithDefault f d = M.alter (Just . maybe d f)

@@ -12,6 +12,7 @@ import Desugar.T
 import qualified Data.Set as S
 import qualified Data.Map as M hiding ((!))
 import Control.Monad.Except
+import Control.Arrow ((***))
 
 --Desugaring functions using DInfo for S, E and Pat respectively.
 --Since the datatypes contain each other, they need to be put in one module.
@@ -41,7 +42,7 @@ desugarE di@DInfo{diGlobalSet = gs,
   where
     dot e = Dot e Nothing
     go = \case
-      P.EmptyTuple -> return $ Var "Unit"
+      P.EmptyTuple -> return $ tupleE []
       P.Tuple pe pes -> tupleE <$> (mapM go $ pe:pes)
       --Integers are sugar for fromWord #w, where w is :: Word
       P.HexInt (P.HexInteger str) -> go $ P.Int $ read str
@@ -55,15 +56,18 @@ desugarE di@DInfo{diGlobalSet = gs,
         case M.lookup str str2id of
           Just id -> return $ Var "deref" :$ (Var $ "$string"++show id)
           Nothing -> error $ "Compiler error: unmapped string " ++ str
-      --A standalone Con.
-      --If there is no such Con, error.
-      --If it's underapplied, error.
-      --If it's boxed, desugar to ImplTyCon (...).
-      P.Con (UIdent con) -> desugarConApp di con []
+      --A constructor with no arguments
+      P.Con (UIdent con) -> desugarConAppE di con []
+      --Look up con info.
+      --If the con does not exist, error.
+      --If any of the fields are not fields of the con, error.
+      --If there are duplicate fields, error.
+      --If Con {field: e} is boxed, desugar to
+      --ImplTyCon (allocValue (ImplCon {implTyCon_field: e}))
       P.ConRecord (UIdent con) efields -> do
-        es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
+        field_es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
               efields
-        return $ ConRecord con Nothing es
+        conE dtsi con field_es
       --I'll choose to disallow _ in an expr context for now
       P.Wild -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
@@ -78,65 +82,24 @@ desugarE di@DInfo{diGlobalSet = gs,
       P.Index pptr pix -> do
         ptr <- go pptr
         ix <- go pix
-        return $ Var "deref" :$ Var "indexPtr" :$ ptr :$ ix
+        return $ Var "deref" :$ (Var "indexPtr" :$ tupleE [ptr,ix])
       --Critical decision: field access is not represented as a function
       --application.
-      P.Dot struct (Ident f) -> do
-        --Look up the field info
-        --TODO deduplicate with P.Dot case in desugarP
-        let fsi = fieldInfo dtsi
-        fi <- case M.lookup f fsi of
-          Nothing -> throwError $ UndefinedFieldInExprDot f
-          Just fi -> return fi
-        if fiBoxed fi
-          then do
-          let tycon = fiParentTyCon fi
-          --Old scheme: bdt.f => *(bdt.fieldImplCon1).fStructCon
-          --New scheme: look up tycon,
-          -- *(bdt.unImpl<tycon>).impl<tycon>_f
-          bdt <- go struct
-          let unboxedField =
-                case fi of
-                  IsTag {} -> "tagImpl" ++ tycon
-                  _ -> "impl" ++ tycon ++ "_" ++ f
-          return $ (Var "deref" :$
-                    ((bdt `dot` ("unImpl" ++ tycon)))) `dot`
-            unboxedField
-          else do
-            dt <- go struct
-            return $ dt `dot` f
+      --bdt.boxedField desugars to not use boxed fields... so I can share the
+      --desugaring and field validity check between exprs and patterns.
+      --Params: component desugar (go), deref function, dot function
+      P.Dot struct f -> do
+        desugarDot (Var "deref" :$) dot go di struct f
       P.Bang arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
       P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
-      --I use Array (a,b,c) as hacky syntax for array exprs
-      --Why (a,b,c) and not Array a b c? Because the former makes
-      --recursive desugaring easy and cheap: no need to backtrack based
-      --on whether the expr being applied is Array/Struct.
-      {-
-      P.App (P.Con (UIdent "Array")) ptup ->
-        case ptup of
-          P.EmptyTuple -> return $ EArray Nothing []
-          P.Tuple pe pes -> do
-            es <- mapM go $ pe : pes
-            return $ EArray Nothing es
-          _ -> throwError $ GenericDError "malformed array expr"
-      P.App (P.Con (UIdent "Struct")) ptup -> do
-              let structE [] = Var "Unit"
-                  structE (e:es) = Var "Append" :$ e :$ structE es
-              case ptup of
-                P.EmptyTuple -> return $ structE []
-                P.Tuple pe pes -> do
-                  es <- mapM go $ pe : pes
-                  return $ structE es
-                _ -> throwError $ GenericDError "malformed struct expr"
--}
       --First roll the P.Apps into f ...args to get a bird's eye view.
       --If f is a Con, go to desugarConApps
       --Otherwise desugar f and args and unroll.
       P.App pf px -> do
         let (pf',args) = rollPApps (P.App pf px)
         case pf' of
-          P.Con (UIdent con) -> desugarConApp di con args
+          P.Con (UIdent con) -> desugarConAppE di con args
           _ -> unrollApps <$> go pf' <*> mapM go args
       P.PlusPlusPre p -> PPPre <$> desugarP di p
       P.MinusMinusPre p -> MMPre <$> desugarP di p
@@ -182,6 +145,52 @@ desugarE di@DInfo{diGlobalSet = gs,
       b <- go pb
       return $ Var fnm :$ tupleE [a,b]
 
+desugarDot :: (E -> e) -> (e -> Name -> e) -> (P.E -> Either DError e) ->
+  DInfo -> P.E -> Ident -> Either DError e
+desugarDot deref dot go di struct (Ident f) = do
+  --Look up the field info
+  let dtsi = diDTsInfo di
+      fsi = fieldInfo dtsi
+  fi <- case M.lookup f fsi of
+          Nothing -> throwError $ UndefinedFieldInDot f
+          Just fi -> return fi
+  if fiBoxed fi
+    then do
+    let tycon = fiParentTyCon fi
+    --Old scheme: bdt.f => *(bdt.fieldImplCon1).fStructCon
+    --New scheme: look up tycon,
+    -- *(bdt.unImpl<tycon>).impl<tycon>_f
+    bdt <- desugarE di struct
+    let unboxedField =
+          case fi of
+            IsTag {} -> "tagImpl" ++ tycon
+            _ -> "impl" ++ tycon ++ "_" ++ f
+    let edot = flip Dot Nothing
+    return $ deref ((bdt `edot` ("unImpl" ++ tycon))) `dot` unboxedField
+    else do
+    dt <- go struct
+    return $ dt `dot` f
+
+--Useful in both desugarE and desugarP; a is ignored.
+--If the con does not exist, error.
+--If the record has a field that does not belong to the con, error.
+--If there are duplicate fields, error.
+checkRecordValidity :: DTsInfo e -> Name -> [(Name,a)] -> Either DError ()
+checkRecordValidity dtsi con field_as =
+  case M.lookup con $ conInfo dtsi of
+    Nothing -> throwError $ NoSuchCon con
+    Just ci -> do
+      let expectedFields = S.fromList $ map fst $ conFields ci
+          fieldList = map fst field_as
+          actualFields = S.fromList fieldList
+          conflict = S.difference actualFields expectedFields
+      complainIf (not $ S.null conflict)
+        $ FieldsDoNotMatchConInRecord con conflict
+      let fieldCounts = count fieldList
+          badCounts = M.filter (>1) fieldCounts
+      complainIf (not $ M.null badCounts)
+        $ DuplicateFieldsInRecord con badCounts
+
 --Gets the function being repeatedly applied and collects its arguments:
 --Given f a b ... z :: P.E , returns (f,[a,b,...z]).
 --Used to enforce that constructors must be fully applied.
@@ -197,21 +206,44 @@ rollPApps = roll (\case P.App f x -> Just (f,x)
 --If it's overapplied but not MkFun, error.
 --If it's boxed, desugar to
 --ImplTyCon {unImplTyCon: ImplCon {implTyCon_field: e}}.
-desugarConApp :: DInfo -> Name -> [P.E] -> Either DError E
-desugarConApp di@(DInfo{diDTsInfo=dtsi}) con args
-  | con `elem` ["Array","Struct"] = do
-    let err = ArrayAndStructTakeASyntacticTuple con args
-    case args of
-      [ptup] -> do
-        mes <- desugarTup di desugarE ptup 
-        case mes of
-          Just es ->
-            return $ case con of
-              "Array" -> EArray Nothing es
-              "Struct" -> structE es
-          Nothing -> throwError err
-      _ -> throwError err
-  | let = case M.lookup con $ conInfo dtsi of
+--To fully dedup with its pattern equivalent, I would need to apply the
+--desugaring to patterns. That would require an &&(ImplCons {...}) underef
+--pattern. I'll write a separate desugarConAppP for now and then compare...
+--The Array and Struct cases are almost identical, but Con args does not
+--permit overapplication in patterns.
+desugarConAppE :: DInfo -> Name -> [P.E] -> Either DError E
+desugarConAppE =
+  desugarConApp desugarE (EArray Nothing) structE
+  (\dtsi ci con len arity eargs erest -> do
+      --If overapplied, require con == MkFun
+      complainIf (len > arity && con /= "MkFun")
+        $ OverappliedNonMkFun con arity (eargs ++ erest) --es reconstructed
+      --conE redundantly checks con validity, but it's convenient...
+      --Besides, defensive programming is good.
+      record <- conE dtsi con $ zip (map fst $ conFields ci) eargs
+      return $ unrollApps record erest)
+--Con args => Con {field: e} regardless of whether it's boxed.
+--Overapplied constructors are never accepted.
+desugarConAppP :: DInfo -> Name -> [P.E] -> Either DError Pat
+desugarConAppP =
+  desugarConApp desugarP (PArray Nothing) structP
+  (\dtsi ci con len arity pargs prest -> do
+      complainIf (len > arity)
+        $ OverappliedPatternCon con arity (pargs ++ prest)
+      let field_ps = zip (map fst $ conFields ci) pargs
+      return $ PCon con Nothing field_ps
+  )
+
+desugarConApp ::
+  (DInfo -> P.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
+  (DTsInfo P.E -> ConInfo -> Name -> Int -> Int -> [e] -> [e] ->
+   Either DError e) ->
+  --end of P/E args
+  DInfo -> Name -> [P.E] -> Either DError e
+desugarConApp go array struct build
+  di@(DInfo{diDTsInfo=dtsi}) con args =
+  ifArrOrStruct go array struct di con args $
+  case M.lookup con $ conInfo dtsi of
             Nothing -> throwError $ NoSuchCon con
             Just ci -> do
               let arity = length $ conFields ci
@@ -221,28 +253,56 @@ desugarConApp di@(DInfo{diDTsInfo=dtsi}) con args
                 $ UnderappliedCon con arity len
               --Desugar the args and split them into the first arity es and
               --the rest.
-              es <- mapM (desugarE di) args
+              es <- mapM (go di) args
               let (eargs,erest) = (take arity es, drop arity es)
-              --If overapplied, require con == MkFun
-              complainIf (len > arity && con /= "MkFun")
-                $ OverappliedNonMkFun con arity es
-              let tycon = conParent ci
-                  fields = map fst $ conFields ci
-                  record = if conBoxed ci
-                              --Boxed: ImplTyCon (allocValue ImplCon
-                              -- {implTyCon_field: e})
-                           then ConRecord ("Impl"++tycon) Nothing
-                                [("unImpl"++tycon,
-                                  Var "allocValue" :$
-                                   ConRecord ("Impl"++con) Nothing
-                                   (zip (map (("impl"++tycon++"_")++) fields)
-                                    $ eargs)
-                                 )
-                                ]
-                                --Unboxed: Con {field: e}
-                           else ConRecord con Nothing $ zip fields eargs
-              return $ unrollApps record erest
-            
+              --Everything above this can be shared.
+              --Params: dtsi, con, eargs, erest
+              build dtsi ci con len arity eargs erest
+ifArrOrStruct :: (DInfo -> P.E -> Either DError e) ->
+                 ([e] -> e) ->
+                 ([e] -> e) ->
+                 DInfo -> Name -> [P.E] ->
+                 Either DError e ->
+                 Either DError e
+ifArrOrStruct go array struct di con args alt
+  | con `elem` ["Array","Struct"] = do
+    let err = ArrayAndStructTakeASyntacticTuple con args
+    case args of
+      [ptup] -> do
+        mes <- desugarTup di go ptup 
+        case mes of
+          Just es ->
+            return $ case con of
+              "Array" -> array es
+              "Struct" -> struct es
+          Nothing -> throwError err
+      _ -> throwError err
+  | otherwise = alt
+
+--A helper for generating the desugaring of boxed Con {field: e}
+--given datatype info. It takes dtsi rather than ci to make it possible to
+--call without an in-place M.lookup.
+--If the Con is a boxed constructor of datatype TyCon, it desugars to
+--ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
+conE :: DTsInfo e -> Name -> [(Name,E)] -> Either DError E
+conE dtsi con field_es = do
+  checkRecordValidity dtsi con field_es
+  case M.lookup con $ conInfo dtsi of
+    --Nothing case eliminated
+    Just ci ->
+      let tycon = conParent ci
+      in return $ if conBoxed ci
+      --Boxed: ImplTyCon (allocValue ImplCon {implTyCon_field: e})
+      then ConRecord ("Impl"++tycon) Nothing
+           [("unImpl"++tycon,
+             Var "allocValue" :$
+             ConRecord ("Impl"++con) Nothing
+             (map ((("impl"++tycon++"_")++) *** id) field_es)
+            )
+           ]
+           --Unboxed: Con {field: e}
+      else ConRecord con Nothing field_es
+
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
 desugarTup :: DInfo -> (DInfo -> P.E -> Either DError a) -> P.E ->
@@ -285,45 +345,20 @@ desugarP di@DInfo{diGlobalSet = gs,
       -- *(bdt.unImpl<tycon>).impl<tycon>_field
       --Ooh, consequence: (f()).field becomes a valid LHS for assignment.
       --That's a bit surprising but fine; C++ allows it.
-      P.Dot struct (Ident field) -> do
-        let fsi = fieldInfo dtsi
-        --TODO dedup with analogous desugaring in desugarE
-        fi <- case M.lookup field fsi of
-                Nothing -> throwError $ UndefinedFieldInPatternDot field
-                Just fi -> return fi
-        if fiBoxed fi
-          then do
-          let tycon = fiParentTyCon fi
-          e <- desugarE di struct
-          --Appending Impl<tycon> instead of prepending it would make the
-          --name of the unboxed datatype fields more consistent...
-          let unboxedField =
-                case fi of
-                  IsTag {} -> "tagImpl" ++ tycon
-                  _ -> error $ "impl" ++ tycon ++ "_" ++ field
-          return $ Deref Nothing
-            (Dot e Nothing $ "unImpl" ++ tycon)
-            :. unboxedField
-          else do
-          p <- go struct
-          return $ p :. field
+      P.Dot struct f ->
+        desugarDot (Deref Nothing) (:.) go di struct f
       P.Bang arr ix -> (:!) <$> go arr <*> desugarE di ix
       P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
       P.ConRecord (UIdent con) efields -> do
         es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
               efields
         return $ PCon con Nothing es
-      pe -> goCon pe
-    goCon pe = do
-      (con,ps) <- unrollConApps pe
-      return $ PConArgs con Nothing ps
-    unrollConApps = \case
-      P.App pf px -> do
-        x <- go px
-        (con,ps) <- unrollConApps pf
-        return $ (con,ps ++ [x]) --TODO fix quadratic
-      P.Con (UIdent con) -> return (con,[])
-      pe -> throwError $ GenericDError $ "Invalid pattern: " ++ show pe
+      pe -> do
+        let (f,args) = rollPApps pe
+        case f of
+          P.Con (UIdent con) -> do
+            desugarConAppP di con args
+          _ -> throwError $ BadConInPattern f
     --mkTup = mkStruct . map (\p -> PConArgs "WordPad" Nothing [p])
     mkStruct :: [Pat] -> Pat
     mkStruct = foldr (\a tup -> PConArgs "Append" Nothing [a,tup]) unit
