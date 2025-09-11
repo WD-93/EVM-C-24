@@ -59,14 +59,35 @@ data PS s = {PS};
 data Addr = {Addr (UInt 20)};
 
 //ptr[ix] => *(indexPtr (ptr,ix))
-indexPtr : (Ptr re a, UInt 2) -> Ptr re a;
+indexPtr : (Ptr re a, Short) -> Ptr re a;
 indexPtr (ptr,ix) := {
+ ptr :: Ptr r a;
+ var wp  = coerce ptr :: Word,
+     wsz = coerce (sizeof (P :: P a)),
+     wix = coerce ix;
+ return unsafeCoerce (wp + (wsz * wix))
+ };
+/*{
 	 ptr :: Ptr r a;
 	 var off;
 	 MkPtr off = ptr;
 	 var sz = sizeof (P :: P a);
 	 return MkPtr (off + sz * ix)
-	 //This generates an incomprehensibly long type error...
+};*/
+//Pointer indexing is a fundamental operation, so it needs to be fast.
+//Masking pointer addition to ensure pointers remain 16b is marginally safer,
+//but you're still in big trouble if your pointer access overflows/underflows
+//and the code corrupts globals. Masking also increases the cost of indexing
+//by 6 gas. Instead, we implement indexing using unsafe word ops and make
+//over/underflow UB.
+//That requires subtracting 1 rather than adding 65535 in Ptr dec.
+//Note the pointed type changes! That enables p->field to be implemented as
+//unsafeAddPtr(p,k).
+unsafeAddPtr : (Ptr re a, Short) -> Ptr re b;
+unsafeAddPtr (ptr,n) := {
+	     var pw = coerce ptr :: Word,
+	         nw = coerce n :: Word;
+             return unsafeCoerce (pw + nw) //Doesn't mask!
 };
 
 //_++ supports both pointers and integers; to do so it uses the class function
@@ -79,7 +100,12 @@ instance inc : Int s l -> Int s l where
 //dec is the analogous function for _--
 dec : a -> a;
 instance dec : Ptr r a -> Ptr r a where
- p := return indexPtr (p,65535); //uint addition wraps around...
+ p := {
+  p :: Ptr r a;
+  var wsz = coerce (sizeof (P :: P a)) :: Word;
+  var wp = coerce p :: Word;
+  return unsafeCoerce (wp - wsz)
+  };
 instance dec : Int s l -> Int s l where
  n := return n-1;
 
@@ -96,7 +122,7 @@ null _ := return coerce();
 //the maximum size, that might change.
 allocValue : a -> Ptr r a;
 allocValue a := {
- var p = alloc 1;
- *p = a;
- return p
+ var up = alloc 1;
+ writeUPtr(up,a);
+ return initUPtr up
 }

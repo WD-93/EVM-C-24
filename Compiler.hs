@@ -31,11 +31,14 @@ import Typecheck.TC (typecheck, TCError(..))
 import Mono.Mono --(monomorphize, MonoError(..))
 --Unshadowing (TODO move before HM)
 import Unshadow.Unshadow (unshadow)
+--Computing the byte size of all mentioned DTs (and failing on cycles)
+import Sizeof (computeSizeof)
 
 data CompilerError = ParserError String
                    | DesugarError DError
                    | TypeCheckError TCError
                    | MonoError MonoError
+                   | CycleInSizeof [(Name,[T])]
                    {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
@@ -137,9 +140,17 @@ pipeline2typechecked str = do
   typecheck m ? TypeCheckError
 pipeline2mono str = do
   m <- pipeline2typechecked str
-  monomorphize m ? MonoError
+  monoS <- monomorphize m ? MonoError
+  return (m,monoS)
 pipeline2unshadow str = do
-  unshadow <$> pipeline2mono str
+  (m,monoS) <- pipeline2mono str
+  return (m, unshadow monoS)
+pipeline2sizeof str = do
+  (m,monoS) <- pipeline2unshadow str
+  monoT2Sz <- computeSizeof (dtsInfo m) (M.keysSet $ exploredDTs monoS) ?
+              CycleInSizeof
+  return (m,monoS,monoT2Sz)
+  
 
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.

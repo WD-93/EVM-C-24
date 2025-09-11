@@ -46,6 +46,38 @@ data Int s l = {};
 //compiler treats them specially.
 Ptr : Region -> Type -> Type;
 data Ptr r a = {MkPtr (UInt 2)};
+//In order to make use of the structure of the referenced type when optimizing
+//pointer writes we must distinguish between initialized and uninitialized
+//pointers. UPtr represents the latter.
+//The uninitialized pointer API.
+//Prim and Prelude are growing quite large, so it's worth splitting them into
+//submodules; TODO.
+
+//The UPtr type, representing a reference to an a in region r which has not
+//yet been initialized.
+UPtr : Region -> Type -> Type;
+data UPtr r a = {MkUPtr (UInt 2)};
+//Write an a to an uninitialized pointer, after which it may safely be
+//initialized. Only valid for mutable regions.
+writeUPtr : (UPtr r a, a) -> ();
+instance writeUPtr : (UPtr Memory a, a) -> () where
+ _ := ();
+instance writeUPtr : (UPtr Storage a, a) -> () where
+ _ := ();
+instance writeUPtr : (UPtr TStorage a, a) -> () where
+ _ := ();
+//Analogous to indexPtr for Ptrs; over- or underflow causes terrible UB
+//(an invalid bitpattern in the return value).
+indexUPtr : (UPtr r a, Short) -> UPtr r a;
+indexUPtr (up,ix) := {
+ up :: UPtr r a;
+ var wup = coerce up :: Word,
+     wix = coerce ix,
+     sz = coerce (sizeof (P :: P a));
+ return unsafeCoerce (wup + wix*sz)
+};
+initUPtr : UPtr r a -> Ptr r a;
+initUPtr up := return coerce up;
 //(->) is desugared to Fun
 //Represented as ((a,(b,Env#) -> End#) -> End# in Core
 //TODO give Env#, End# and CoreFun representation in Prim?
@@ -137,16 +169,17 @@ storage stoAllocPtr;
 //I'm not sure, but it doesn't hurt to have the option.
 tstoAllocPtr : Short;
 tstorage tstoAllocPtr;
-alloc : Int s l -> Ptr r a;
+//Since alloc doesn't initialize its contents, it must return a UPtr
+alloc : Int s l -> UPtr r a;
 //alloc is supported for three region types: Memory, Storage, TStorage
 //These instances are just placeholders meant to trigger type errors when
 //instantiating alloc with a non-allocable region; the real definition for
 //each type is filled in in Core.
-instance alloc : Int s l -> Ptr Memory a where
+instance alloc : Int s l -> UPtr Memory a where
  _ := ();
-instance alloc : Int s l -> Ptr Storage a where
+instance alloc : Int s l -> UPtr Storage a where
  _ := ();
-instance alloc : Int s l -> Ptr TStorage a where
+instance alloc : Int s l -> UPtr TStorage a where
  _ := ();
 //Pointer indexing _[_] is now separate from unboxed array indexing _!_.
 //Since indexPtr can be implemented directly in EVMC, it needn't be in Prim.
@@ -168,8 +201,7 @@ indexArray _ := ();
 //The other primitives are black magic but this one is blacker due to its
 //non-compositional semantics.
 // &e = p if e can be inferred to be *p
-//Applicable arguments: globals, static data, variables bound by case on a
-//boxed datatype.
+//Applicable arguments: *p (.field | !ix)*
 //HM doesn't check the region is correct, that's done later.
 addressOf : a -> Ptr r a;
 addressOf _ := ();

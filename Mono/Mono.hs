@@ -17,7 +17,7 @@ module Mono.Mono where
 --to get the full function instance set.
 
 import AST.DTs
-import AST.Util (tyVarsList)
+import AST.Util (tyVarsList,rollTyApps)
 import Util (complainIf,(!))
 
 import Data.Generics
@@ -43,6 +43,7 @@ import qualified Data.Map as M hiding ((!))
 -- funs[f@monoTs] = the updated definition
 --If Con@monoTs has not yet been explored:
 -- Explore from its monomorphized tag.
+--Addition: if f@monoTs returns the datatype TyCon params, also explore the DT.
 
 --When monomorphizing a class function, also need to instantiate.
 --That's never relevant to tag expressions, which should be static.
@@ -113,6 +114,10 @@ monoFun f monoTs = withError (InMonoFun (f,monoTs)) $ do
         else return ()
       let v2t = M.fromList $ zip vars monoTs
           Right ft = instT v2t scheme
+      --Explore the datatype returned by ft
+      let farg :-> fret = ft
+          (TyCon tycon, ts) = rollTyApps fret
+      monoDT tycon ts
       --Look up def; note we already know f is a function
       def <- (! f) <$> asks defuns
       --monomorphize the def
@@ -226,6 +231,8 @@ explore a = do
                       if b
                         then monoGlobal nm
                         else monoFun nm ts
+                    EArray (Just t) es -> monoDT "Array"
+                                          [TyNat $ fromIntegral $ length es, t]
                     ConRecord con mts _ ->
                       case mts of
                         Nothing -> error "Compiler error: ConRecord not HM'd!"

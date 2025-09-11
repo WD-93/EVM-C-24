@@ -1663,6 +1663,165 @@ Now I get RIU 1 32. Ahh, I need to add fromWord to the string expr. Now it
 typechecks!
 
 Remember: Const serialization must handle fromWord.
+Format: fromWord k, -fromWord k, Con {field: e}, f, &g (which includes string and is represented as TyApp g [] at the Mono level), array.
+Serialization: fromWord@[_s,len] k => len raw bytes (TODO warn on too large
+literals, it could be used for malicious Ints which are surprisingly equal).
+UBCon: cache serialized tags per monomorphic datatype tycon params.
+Normalize field order and fill empty fields with null bytes (use Maybe or
+permit null()?).
+If the type is Pair, word-pad both arguments and concat.
+If it has a tag, fetch its serialization and prepend it; concat the rest.
+Array is just concat.
+f, &g become labels.
+Boxed cons and strings are interesting: BCon {field: e} requires allocating
+a new global; the serialization is the label to that global.
+"foo" desugars to *($string<N>). &"foo" is a Ptr Code (Array 3 Byte), but
+"foo" itself is an array. To enable inline strings, permit deref of code
+global pointers in static exprs as well... note that can lead to exponential
+blowup: code x1 = 0 :: Word; code x2 = (x1,x1); …
+Code is the one region where initializers which refer to other globals are
+safe... but need to prevent cycles.
+Restrict all initializers (code and memory...) to consts.
+Problem: memAllocPtr must be initialized on each call, sto on creation,
+tsto on first call of txn. Without alloc for sto and tsto, boxed datatypes
+for those regions can't be created.
+Solution: a memOffset() primitive rather than introduce a source-level
+concept of labels? External labels would require extending the source
+language, but would be very useful for FFI and constructor arguments.
+imported nm : MonoT
+exported f = e : MonoT
+Exe mode: exported main : () -> (), main => stop placed at 0.
+Library mode requires either separation into text and data segments, with
+data placed last (complex) or up to 32B of padding if the last byte of data
+is PUSH32. The latter is preferable since it makes code objects easy to
+manipulate on-chain; sort code globals to minimize padding.
+A source module becomes a set of decls; the static environment is a mapping
+module path => such sets. It would be desirable to cache the parsing/decl
+grouping and mount a conceptually immutable environment during compilation.
+Split Prim and Prelude into multiple variants + config modules, don't import
+them by default?
+Code objects are then contiguous and linkable, exporting base-relative
+and constant labels and importing constant labels.
+Each region requires a base, but all bytecode modules must take the same
+<r>Offset.
+The code object API could be auto-generated: place in memory, specify
+imports, return/compute exports.
+Stick to exe mode for now. No need to expose memOffset or support labels, just set memAllocPtr's initial value in the prologue.
+Permitting initializers only for code globals might simplify matters.
+
+Store smaller-than-max constructors such as Nil and Nothing unpadded in code?
+Then reads may contain garbage. I'll allow it for now.
+Code layout: main BB, BBs, data, padding.
+If JTs were first-class then they could be shared among several caseTags.
+Place them inline for now...
+Const/ defines the serialization scheme for constants, which must be
+consistent with the layout of dynamically created objects.
+Note if I only generate exes I don't need to worry about data padding.
+
+I should perhaps explore every global and function, deferring pruning until the Core primitives are added.
+I currently do mask pointer addition in indexPtr… which is necessary for dec's definition (adding 65535) to work. TODO replace with unsafeCoerce,
+word ops. Done.
+Problem: I want to inline indexPtr, unsafeAddPtr, inc/dec etc on pointers
+while preserving aliasing info. Inlining of other functions may also reveal
+aliasing info. Solution: recognize pointer ops when inlining.
+
+Moving more of the primop logic to source: if I had a toWordTuple op, I
+could define &, | etc at the user level. However, that requires knowing sizeof during monomorphization.
+Bug: data Foo = {Foo Bar}; data Bar = {Bar Foo} isn't rejected... I need to do a cycle check in datatypes.
+If the well-foundedness check is done on a finite set of monomorphic types
+it's simple... but how difficult is it to do on abstract parameterized
+datatypes?
+Datatypes can take and apply n-ary tycons as arguments and refer to m
+different combinations of them + constant tycons.
+data Foo a b c = Foo (a, Foo b c ()) --loops, but has finite size.
+If n/2 and 2n+1 could be encoded I could use Collatz as proof of termination
+checks being at least nontrivial in practice.
+A datatype can deconstruct its value argument if you pass it the
+component constructors, see:
+Foo : (Type -> Type) -> Type -> Type
+data Foo f a = Foo (f a, a)
+Simple solution for now: check the finite, monomorphized set; I need to do 
+that before I serialize tags and initializers.
+Inputs: DTsInfo, exploredDTs; result: monoDT => repr. Best to get the full
+repr all at once, that way field lookups etc become easier later.
+Sizeof and tag serialization need to be done at the same time to get an
+accurate repr.
+Each field/index path has an offset and surrounding values. Values to the
+right may be relevant for opt, consider (Short,Array 30 Zero): writes to the
+short can be done without a restore by left-shifting it.
+That is if I can assume that if a pointer p :: Ptr r a exists, then p must
+already point to a valid bitpattern.
+That would imply pointer writes of single-value types are noops... but my
+current definition of alloc/allocValue breaks that assumption!
+I could make a function allocValid(a,n) that places n instances of valid
+bitpattern a using log(n) mcopies…
+Proposal: split allocation; allocRaw returns an UninitPtr r a.
+writeUninit(up,a) makes no assumptions about the old value's bitpattern; once
+you've initialized a up it's safe to coerce it to a p with initPtr up.
+
+Relevant queries: sizeof, offset of field, sizeof elem, flattened repr
+(allowing concatenation of fixed regions).
+Once sizeof is determined, I can fix the global addresses of the non-code
+globals. Compilation is a multivariate opt problem... global addrs interact
+with code opts. Ideally one would be able to try multiple solutions, fixing one var at a time and use a heuristic to tree search...
+
+Ah: need to include padding bits with indeterminate value in repr to ensure
+they're masked out when performing equality checks or comparisons.
+Plan for remainder of pipeline:
+Don't go for every possible opt, just the minimum required to get working
+code. Scrap: opts based on datatype structure. Keep: inlining, it's essential
+for reasonable perf. Defer: pointer opts.
+Compute minimal repr info per monoT (sizeof, field offsets and lens,
+serialized tags).
+Structured => Core => opt => Stack => asm.
+Structured doesn't need const serialization... what does Core need it for?
+case e of ZeroTaggedCon args -> …; _ -> … opt and sizeof inlining. The latter
+is big enough to justify repr/serialize first. Hacky first solution: just
+cache sizeof for each monotype, rely on DTsInfo (and special rules for
+Array, Int and Pair) to get field offsets.
+Disallow a mix of Cons and ImplList in case.
+Disallow array index of local arrays larger than 1 word (unsupported for now).
+
+Potential bug in Mono: will (null() :: DT) result in DT being mentioned? It
+should, since I need repr info at that point.
+I can't just compute it for all datatypes since they're parameterized...
+If any expression returns a DT, it's mentioned. That's a problem: how to get
+the full set of returned types with my current algo?
+Looking at function return types isn't enough, consider
+f : a -> (b -> D). (b -> D) is of fixed size, but returns a D.
+But for f to return a valid g at runtime there must be a function which
+returns a D...
+Also don't forget EArray! Done.
+In library mode external functions would be able to pass externally
+constructed values, at which point the "mentioned" criterion becomes more
+complex - I might need to apply Mono after Structured (where every subexpr
+is bound to typed vars) instead.
+
+To use an open set of modules in stdlib I need to parse them and recursively
+fetch imports. Each module consists of a set of decls (preferably grouped by
+type) and a set of dependencies.
+Rather than just import Prim and Prelude by default, I should add the stdlib
+modules to the module namespace. I'll keep it as it is for now...
+
+Nasty trick: I could use datatype padding in memory as scratch.
+
+Surrounding fields with constant values (eg tags or padding) can make pointer
+writes cheaper: if you know the exact value the old surrounding data should
+have, you can add it without a load. That's particularly useful for tuple
+pointer writes. Aside: TODO add syntactic sugar for nth(n,tup) =>
+tup.snd. … for exprs and patterns.
+Preserve that info when taking &(p->field).
+
+Storage API:
+If you have a small number of fixed-size arrays, you could use
+small constants to distinguish them like this: indexSlot = (index << 8 | k).
+Maps could simply use 248b of the hash as the index. Note large arrays that
+take up a significant fraction of the address space make maps that simply hash their key to get the slot unsafe.
+Is preventing storage slot overlap when possible worth it? That requires
+padding, which in the worst case (17-byte values) wastes half the space.
+This is a choice that should be exposed to and made by the user, since it
+depends on the use case. Note if you're frequently loading multiple adjacent
+slots then Merkles might be preferable.
 
 TODO prune the error datatypes to eliminate obsolete errors, starting with
 DError.
