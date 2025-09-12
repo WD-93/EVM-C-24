@@ -176,10 +176,16 @@ alloc : Int s l -> UPtr r a;
 //instantiating alloc with a non-allocable region; the real definition for
 //each type is filled in in Core.
 instance alloc : Int s l -> UPtr Memory a where
- _ := ();
+ _ := memAllocPtr; //Just used to mention relevant var
 instance alloc : Int s l -> UPtr Storage a where
- _ := ();
+ _ := stoAllocPtr;
 instance alloc : Int s l -> UPtr TStorage a where
+ _ := tstoAllocPtr;
+//What's this!? Well, boxed constructors Cons x xs desugar to
+//ImplList (allocValue (ImplCons x xs)). However, allocValue to a region
+//requires allocValue be supported. So to have code BDTs in constant
+//expressions, you need a false code alloc instance.
+instance alloc : Int s l -> UPtr Code a where
  _ := ();
 //Pointer indexing _[_] is now separate from unboxed array indexing _!_.
 //Since indexPtr can be implemented directly in EVMC, it needn't be in Prim.

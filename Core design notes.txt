@@ -1779,8 +1779,34 @@ case e of ZeroTaggedCon args -> …; _ -> … opt and sizeof inlining. The latte
 is big enough to justify repr/serialize first. Hacky first solution: just
 cache sizeof for each monotype, rely on DTsInfo (and special rules for
 Array, Int and Pair) to get field offsets.
-Disallow a mix of Cons and ImplList in case.
+Disallow a mix of Cons and ImplList in case (for now).
 Disallow array index of local arrays larger than 1 word (unsupported for now).
+Now: serialize tags and initializers.
+Core/structured: expose .slice(off,len):T directly?
+getMem p len m .slice(off,len2) = getMem (p+off) len2 m
+.slice(o1,l1).slice(o2,l2) = .slice(o1+o2,l2) --lens ops
+
+The valid repr assumption of Ptr may mess up not only p->field = e, but *p=e.
+That's because writes to types with a single valid bytestring pattern should be a noop. For that reason, memory global initialization needs to use raw
+memory writes.
+The total size of memory globals can be computed after Sizeof, giving you
+the memOffset initializer for memAllocPtr.
+Scrap sto and tsto alloc?
+Memory global layout: memAllocPtr at 0, initialized globals placed
+contiguously; initialize with a single codecopy in prologue.
+Issue: Mono's mentioned should include <r>allocPtr if you use alloc@r.
+I can solve that by mentioning the vars in the placeholder bodies; fixed.
+
+When there are no memory globals and only scratch alloc is done you should be
+able to alloc off 0. What's the maximally general basis of opt rules which
+enables that? Scratch alloc: if alloc'd pointer does not escape, read but
+don't bump allocPtr. If allocPtr is read but never written, replace reads with memOffset. Then if there are neither reads nor writes, drop the global
+and set memOffset to 0.
+
+Should Nil be padded with arbitrary bytes or zeroes? The latter would make
+comparison cheaper, but code globals larger. A word list only has one Nil, but it would cost 6600 more gas to deploy padded...
+Note a codecopy to init memory x = 255 :: Word is massively inefficient, let
+alone memory x = 0.
 
 Potential bug in Mono: will (null() :: DT) result in DT being mentioned? It
 should, since I need repr info at that point.
@@ -1796,6 +1822,9 @@ In library mode external functions would be able to pass externally
 constructed values, at which point the "mentioned" criterion becomes more
 complex - I might need to apply Mono after Structured (where every subexpr
 is bound to typed vars) instead.
+
+Note: it's not a problem that N1 uses Int; you'd need more constructors than
+could possibly fit in memory to exhaust that space.
 
 To use an open set of modules in stdlib I need to parse them and recursively
 fetch imports. Each module consists of a set of decls (preferably grouped by
