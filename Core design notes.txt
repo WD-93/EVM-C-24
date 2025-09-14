@@ -1808,6 +1808,23 @@ comparison cheaper, but code globals larger. A word list only has one Nil, but i
 Note a codecopy to init memory x = 255 :: Word is massively inefficient, let
 alone memory x = 0.
 
+TODO bytestring value deserialization, in particular for parsing return/revert values.
+
+OK, now pipeline2serialize runs... but it's revealed bugs in earlier stages.
+1)
+ghci> (\(_,_,_,sers)->sers)<$>pipeline2serialize"main:()->();main _ := x; code x = Cons 1 Nil :: List Code Byte"
+*** Exception: Compiler error: tycon "Byte" not in scope despite FIKS
+CallStack (from HasCallStack):
+  error, called at .\Typecheck\HM.hs:780:18 in evmc-0.1.0.0-inplace:Typecheck.HM
+2)
+ghci> (\(_,_,_,sers)->sers)<$>pipeline2serialize"main:()->();main _ := x; code x = Cons () Nil :: List Code ()"
+*** Exception: Compiler error: missing sizeof for ("ImplCons",[Code,()])
+CallStack (from HasCallStack):
+  error, called at .\Const\Serialize.hs:477:16 in evmc-0.1.0.0-inplace:Const.Serialize
+1) Must be due to tysyn subst missing globals. Fixed.
+2) Indicates the arguments of monomorphic DTs aren't considered mentioned.
+I'll fix 2) tomorrow.
+
 Potential bug in Mono: will (null() :: DT) result in DT being mentioned? It
 should, since I need repr info at that point.
 I can't just compute it for all datatypes since they're parameterized...

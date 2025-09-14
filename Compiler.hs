@@ -33,12 +33,15 @@ import Mono.Mono --(monomorphize, MonoError(..))
 import Unshadow.Unshadow (unshadow)
 --Computing the byte size of all mentioned DTs (and failing on cycles)
 import Sizeof (computeSizeof)
+--Serialize constant expressions (global initializers and datatype tags)
+import Const.Serialize (serialize,SerError(..))
 
 data CompilerError = ParserError String
                    | DesugarError DError
                    | TypeCheckError TCError
                    | MonoError MonoError
                    | CycleInSizeof [(Name,[T])]
+                   | SerError SerError
                    {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
@@ -150,7 +153,10 @@ pipeline2sizeof str = do
   monoT2Sz <- computeSizeof (dtsInfo m) (M.keysSet $ exploredDTs monoS) ?
               CycleInSizeof
   return (m,monoS,monoT2Sz)
-  
+pipeline2serialize str = do
+  (m,monoS,monoT2Sz) <- pipeline2sizeof str
+  serS <- serialize m monoS monoT2Sz ? SerError
+  return (m,monoS,monoT2Sz,serS)
 
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.

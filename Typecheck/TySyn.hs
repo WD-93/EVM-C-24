@@ -50,6 +50,7 @@ substTySyns m = do
   --sorts does not need subst
   defaults' <- inM "default" defaults
   defuns' <- inM "defun" defuns
+  globs' <- inM "global" globals
   dti <- inM "dtInfo map" $ datatypes . dtsInfo
   ci <- inM "conInfo map" $ conInfo . dtsInfo
   return m{
@@ -58,6 +59,7 @@ substTySyns m = do
     defaults = defaults',
     defuns = defuns',
     tysyns = syns,
+    globals = globs',
     dtsInfo = DTsInfo dti ci $ fieldInfo $ dtsInfo m
     }
   --It might be possible to use everywhereM to just apply the tysyns to

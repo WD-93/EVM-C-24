@@ -120,8 +120,27 @@ null _ := return coerce();
 //allocValue is currently used in desugaring BCon {field: e}
 //Since that wastes space when allocating constructors that are smaller than
 //the maximum size, that might change.
+//Since code BDTs desugar to ImplCon (allocValue v), const serialization
+//needs to support allocValue for code pointers.
+//However, that needn't affect writeUPtr or alloc, which should ideally be
+//limited to mem, sto and tsto. Solution: two instances for allocValue.
 allocValue : a -> Ptr r a;
-allocValue a := {
+//FW: if a "dynamic" use of allocValue v :: Ptr Code a takes a const object,
+//I could in fact permit it... at the cost of complicating the language
+//further.
+//Note it's extravagant to use a human-readable error string on the EVM.
+//If you want informative errors, use an error datatype.
+instance allocValue : a -> Ptr Code a where
+ _ := revertValue();
+instance allocValue : a -> Ptr Memory a where
+ a := allocValueImplem a;
+instance allocValue : a -> Ptr Storage a where
+ a := allocValueImplem a;
+instance allocValue : a -> Ptr Storage a where
+ a := allocValueImplem a;
+
+allocValueImplem : a -> Ptr r a;
+allocValueImplem a := {
  var up = alloc 1;
  writeUPtr(up,a);
  return initUPtr up

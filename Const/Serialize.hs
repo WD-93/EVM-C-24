@@ -6,14 +6,19 @@ module Const.Serialize where
 --which are unresolved labels until the asm is assembled into bytecode.
 
 import AST.DTs
+import AST.Util (rollTyApps)
 import Mono.Mono (MonoS(..))
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import Data.Set (Set(..))
+import qualified Data.Set as S
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except
 import Data.List (elemIndex)
+import Control.Monad (forM,forM_)
+import Control.Arrow ((***))
 
 --Serialized values are more restricted than assembly, consisting only of
 --Bytes [Int] and UseLabel n (LNamed str). I therefore use a Serialized
@@ -92,13 +97,21 @@ data SerR = SerR {
       }
 data SerS = SerS {
   sersAllocPtr :: Int, --for static allocation of Code BDTs
-  --Why include the E? Because new code globals may be allocated and we might
-  --want to apply opts which depend on symbolically evaluating them.
-  --Why do the same for mem? Because a map of tuples is cheaper than a tuple
-  --of maps.
-  sersCodeInits :: Map Name (E,Serialized), --mandatory for all code globals
-  sersMemInits :: Map Name (E,Serialized),  --optional for memory globals
-  sersTagSchemes :: Map (Name,[T]) (TagScheme (E,Serialized))
+  --Why include E, T? Because allocValue v :: Ptr Code a in a const leads to a
+  --new code global being created, and all of its global info must be
+  --available in later stages.
+  --Note also that substituting allocValue for $anonCodeGlobal<n> changes the
+  --E, so a new one needs to be returned in serializeE.
+  sersCodeInits :: Map Name (T,E,Serialized), --mandatory for all code globals
+  sersMemInits :: Map Name (T,E,Serialized),
+    --optional for memory globals
+  --We include the canonical con list to enable tag calc from con without
+  --re-consulting DTSI.
+  sersTagSchemes :: Map (Name,[T]) ([Name], TagScheme (E,Serialized)),
+  --The list of allocValue vs that must be bound to the given global;
+  --their serialization is performed asynchronously to avoid an infinite loop
+  --in e.g. data Foo = Foo; tag Foo = Ptr Code Foo where {Foo: allocValue Foo}
+  sersRunQueue :: [(Name,T,E)] --global name, type, value
   }
   deriving (Eq,Ord,Read,Show)
   
@@ -111,15 +124,112 @@ type SerM = ReaderT SerR (StateT SerS (Except SerError))
 -- If tag scheme is custom, add serialization
 --Every allocValue@[Code,a] v must create a Code global.
 --With no mutual dependencies I don't need to check for loops; phew!
-serialize :: DTsInfo E -> --layout info
+--serializeE now updates the E (replacing allocValue c with a new code global
+--pointer). That means custom tag schemes need to be updated.
+--That risks introducing a cycle:
+--data Foo = Foo;
+--tag Foo = Ptr Code Foo where {Foo: allocValue Foo}
+--How to deal with that? Sequentially serializing the v in allocValue v
+--causes the loop, but thankfully we don't need to do that; instead we can
+--just allocate the new code global's name, then register it for async
+--serialization.
+--Each allocValue is independent, there's no sharing. However, tag scheme
+--serialization must be memoized to prevent repeated allocation.
+--Global => tag is not a problem, only tag => tag is. Inline cycles shouldn't
+--exist since Sizeof should've caught that.
+serialize :: Module -> --layout info
              MonoS ->     --global and monoDT sets
              Map (Name,[T]) Integer -> --sizeof info
              Either SerError SerS
-serialize dtsi monoS monoT2sz = error "todo"
+serialize m monoS monoT2sz =
+  let dtsi = dtsInfo m in
+    runExcept $ flip execStateT (SerS {sersAllocPtr = 1,
+                                       sersCodeInits = M.empty,
+                                       sersMemInits = M.empty,
+                                       sersTagSchemes = M.empty,
+                                       sersRunQueue = []
+                                      }) $
+    flip runReaderT (SerR {serrTagValues = exploredDTs monoS,
+                           serrSizeof = monoT2sz,
+                           serrDTSI = dtsi
+                          }) $ do
+    --For each global that has an initializer, run serGlobal
+    let gset = S.toList $ exploredGlobals monoS
+    --Because they're already monomorphic after HM, their initializers are to
+    --be found in Module
+    forM_ gset (\g -> do
+                 let Just (r,me) = M.lookup g (globals m)
+                     isCode = r == Co
+                 case me of
+                   Nothing -> return ()
+                   Just e ->
+                     let Just ([],t) = M.lookup g (tysigs m)
+                     in serGlobal isCode g t e)
+    --For each mentioned datatype, serialize its tags
+    let dts = M.keys $ exploredDTs monoS
+    forM_ dts (uncurry serDatatype)
+    --Ensure the scheduled serialization tasks are run
+    serScheduler
 
+--Serializes the initializer of a code or memory global, storing the
+--serialization and updated expr in the appropriate map.
+--Serializing newly allocated code globals is the only task which can be
+--spawned and run asynchronously.
+--If isCode is True it's a code global, otherwise it's a memory global.
+serGlobal :: Bool -> Name -> T -> E -> SerM ()
+serGlobal isCode nm t e = do
+  (e',ser) <- serializeE e
+  s <- get
+  if isCode
+    then put s{sersCodeInits = M.insert nm (t,e',ser) $
+                sersCodeInits s}
+    else put s{sersMemInits = M.insert nm (t,e',ser) $
+                sersMemInits s}
+--Fills in the info for the monomorphic type tycon params.
+--Memoizing because it may be called repeatedly.
+--Returns (cons,tagScheme), all the info you need to compute a con's tag
+--serialization.
+serDatatype :: Name -> [T] -> SerM ([Name],TagScheme (E,Serialized))
+serDatatype tycon ts = do
+  m <- gets sersTagSchemes
+  case M.lookup (tycon,ts) m of
+    Just x -> return x
+    Nothing -> do
+      --Get the constructors from DTSI:
+      dtsi <- asks serrDTSI
+      let Just di = M.lookup tycon $ datatypes dtsi
+          cons = dtCanonicalCons di
+      --Serialize the monomorphic tag scheme
+      --If the datatype is boxed it has the UBDT's tag scheme but no tag...
+      --recurse on ImplTyCon to copy over the updated tag scheme.
+      ts' <- if dtBoxed di
+             then do
+        (_ubcons,tagScheme') <- serDatatype ("Impl"++tycon) ts
+        return tagScheme'
+             else do
+        tvs <- asks serrTagValues
+        case M.lookup (tycon,ts) tvs of
+          Nothing ->
+            error $ "Compiler error: missing monomorphic tag scheme for "
+            ++ tycon ++ " " ++ show ts
+          Just tagScheme ->
+            serTagScheme tagScheme
+      let pair = (cons,ts')
+      modify (\s->s{sersTagSchemes = M.insert (tycon,ts) pair $
+                   sersTagSchemes s})
+      return pair
+serTagScheme :: TagScheme E -> SerM (TagScheme (E,Serialized))
+serTagScheme tagScheme =
+  case tagScheme of
+    Nil -> return Nil
+    N1 len -> return $ N1 len
+    N16 -> return N16
+    Custom t con2e ->
+      Custom t <$> mapM serializeE con2e
+      
 {-
 Valid const expr form:
-Disallow *_, indexPtr, .field, !ix for now.
+Disallow *_, indexPtr, .field, arr!ix for now.
 c ::= f, g, k, -k, Array es, Con {field: c}, allocValue@[Code,a] v
 Q: Should I also support null()? Not for now.
 Note Pair is treated specially (zero bytes are inserted).
@@ -127,66 +237,202 @@ Note zero bytes are distinct from arbitrary-valued padding!
 Desirable property: I don't need to manipulate serialized values, just concat
 them.
 -}
-serializeE :: E -> SerM Serialized
+serializeE :: E -> SerM (E,Serialized)
 serializeE = go
   where go e =
           case e of
             --f, g
             TyApp nm ts ->
-              ret e $ Serialized {serLength = 2,
-                                  serSizeof = 2,
-                                  serContent = [Right (2, mkLabel nm ts)]
-                                 }
+              ret (e,Serialized {serLength = 2,
+                                 serSizeof = 2,
+                                 serContent = [Right (2, mkLabel nm ts)]
+                                })
             --k
             --Now where did I put the Integer => bytes function...?
             TyApp "fromWord" [s,TyNat len] :$ EInteger k ->
-              ret e $ Serialized {serLength = len,
-                                  serSizeof = len,
-                                  serContent = normalizeContent
-                                               [Left $ serInt len k]
-                                 }
+              ret (e,Serialized {serLength = len,
+                                 serSizeof = len,
+                                 serContent = normalizeContent
+                                              [Left $ serInt len k]
+                                })
             --(-k)
             TyApp "negate" _ :$
               (TyApp "fromWord" [s,TyNat len] :$ EInteger k) ->
-              ret e $ Serialized {serLength = len,
+              --Fateful choice: statically apply the negation. That breaks
+              --the invariant that all integer literals are non-negative, but
+              --I don't use that currently.
+              ret (TyApp "fromWord" [s,TyNat len] :$ EInteger (-k)
+                  , Serialized {serLength = len,
                                   serSizeof = len,
                                   serContent = normalizeContent
                                    [Left $ serInt len (-k)]
-                                 }
+                                 })
+            --Static value allocation
+            --More general than just BDTs
+            --Serialization of the referenced expr c must be done asynchronously
+            --to prevent infinite loops.
+            --Trap: the region is the second tyvar argument, unlike alloc where
+            --it's the first.
+            TyApp "allocValue" [a, TyCon "Code"] :$ c ->
+              spawnSerializeNewGlobal a c
             --Array => just concat all values
-            EArray (Just _t) es -> do
-              ss <- mapM go es
+            EArray (Just t) es -> do
+              esers <- mapM go es
               --Note using foldl would be quadratic
-              ret e $ foldr concatSer emptySer ss
+              ret (EArray (Just t) $ map fst esers,
+                   foldr concatSer emptySer $ map snd esers)
+            --Note missing fields of type TyCon params become sz zero bytes,
+            --where sz is sizeof (TyCon params). That means Mono must consider
+            --every con argument datatype mentioned!
+            --Fields may also appear out of order in ConRecords; they must be
+            --placed in canonical order when serializing.
             --Pair is a special case: both fst and snd are word-padded
+            ConRecord "Pair" (Just [a,b]) field_es -> do
+              field_e_sers <- serializeFields [("fst",a),("snd",b)] field_es
+              ret (ConRecord "Pair" (Just [a,b]) $
+                   map (id *** fst) field_e_sers
+                , concatSers $ map (leftPadSer . snd . snd) field_e_sers)
             --Con {field: c}
-            -- Get tag (possibly empty), concat args and prepend tag
-            -- Set serSizeof to max size of type 
+            -- Get tag (possibly empty) and fields, concat args in field order
+            -- and prepend tag.
+            -- Set serSizeof to max size of type
+            -- Because serializeE modifies the tag, you also need to update it!
             ConRecord con (Just params) field_es -> do
+              (dtSz,serTag,field_ts) <- serGetConInfo con params
+              field_e_sers <- serializeFields field_ts field_es
+              ret (ConRecord con (Just params) $
+                  map (id *** fst) field_e_sers,
+                   (concatSers $ serTag :
+                    map (leftPadSer . snd . snd) field_e_sers){serSizeof=dtSz})
+              {-
               tycon <- serGetConParent con
               dtSz <- serGetSizeof (tycon,params)
-              serTag <- serGetTag tycon params con >>= go
+              serTag <- serGetTag tycon params con
               ss <- mapM (go . snd) field_es
               --TODO fail w/ compiler error if serLength unexpectedly > sizeof
               return (concatSers (serTag:ss)){serSizeof = dtSz}
+-}
             e -> throwError $ MalformedConstExpr e
-        ret :: E -> Serialized -> SerM Serialized
-        ret e s = if serLength s > 24000
-                  then throwError $ SerializedLengthExceedsCodeSizeLimit e s
-                  else return s
+        ret :: (E, Serialized) -> SerM (E,Serialized)
+        ret (e,s) = if serLength s > 24000
+                    then throwError $ SerializedLengthExceedsCodeSizeLimit e s
+                    else return (e,s)
 
---Get the datatype to which a constructor belongs
-serGetConParent :: Name -> SerM Name
-serGetConParent con = do
+--Given the structure of a constructor's arguments and the given fields,
+--returns their serialization in layout order with missing
+--fields filled in with null().
+--Precondition: no duplicate fields in either argument, field_es contains
+--no fields not in field_ts, field_es is well-typed.
+--Why not return a single Serialized? Because for Pair, the fst and snd fields
+--must be word-padded before concatenation.
+serializeFields :: [(Name,T)] -> [(Name,E)] ->
+  SerM [(Name,(E,Serialized))]
+serializeFields field_ts field_es = do
+  let field2e = M.fromList field_es
+  forM field_ts (\(field,t) ->
+                   case M.lookup field field2e of
+                     Nothing -> do
+                       --Empty fields are null
+                       sz <- serGetSizeofT t
+                       return (field,(TyApp "null" [t] :$
+                                      ConRecord "Unit" (Just []) [],
+                                       Serialized {
+                                         serSizeof = sz,
+                                         serLength = sz,
+                                         serContent = normalizeContent [
+                                             Left $
+                                             replicate (fromIntegral sz) 0]
+                                         })
+                              )
+                     Just e -> do
+                       (e',ser) <- serializeE e
+                       return (field,(e',ser)))
+
+--Spawns an asynchronous serialization task of allocValue@[Code,a] v, returning
+--a reference to it. The v is allocated to a new global $anonCodeGlobal<n>.
+spawnSerializeNewGlobal :: T -> E -> SerM (E,Serialized)
+spawnSerializeNewGlobal t e = do
+  s <- get
+  let n = sersAllocPtr s
+      name = "$anonCodeGlobal" ++ show n
+  --Add (name,t,e) to runqueue, bump n
+  put s{sersAllocPtr = n + 1,
+        sersRunQueue = (name,t,e) : sersRunQueue s
+       }
+  return (TyApp name [],
+           Serialized {serLength = 2,
+                       serSizeof = 2,
+                       serContent = [Right (2,mkLabel name [])]
+                      })
+--Runs all scheduled tasks (and their subtasks) to completion. This must be
+--called for spawn to have any effect.
+serScheduler :: SerM ()
+serScheduler = do
+  s <- get
+  case sersRunQueue s of
+    [] -> return ()
+    (name,t,e):rest -> do
+      put s{sersRunQueue = rest}
+      serGlobal True {-is global-} name t e
+      serScheduler
+      
+--Get the ConInfo of the given constructor
+serGetCI :: Name -> SerM ConInfo
+serGetCI con = do
   dtsi <- serrDTSI <$> ask
   case M.lookup con $ conInfo dtsi of
     Nothing -> error $ "Compiler error: missing con info for " ++ con ++
       "in serialization phase"
-    Just ci -> return $ conParent ci
---Get the monomorphic tag expr of a con in tycon params
+    Just ci -> return ci
+--Get the information needed for constructor serialization:
+--the size of the datatype, the serialized tag (empty if Nil or boxed), fields.
+--Tag computation is memoized to prevent repeated allocation of allocValues in
+--tags.
 --TODO deduplicate with later logic...
-serGetTag :: Name -> [T] -> Name -> SerM E
-serGetTag tycon ts con = do
+--I could cache all the info rather than just the tag, but that would pollute
+--the env and require I filter it later. I'll just recalculate it for now.
+--TODO find a less confusing name; this doesn't return the ConInfo DT, but
+--serGetCI does.
+serGetConInfo :: Name -> [T] -> SerM (Integer,Serialized,[(Name,T)])
+serGetConInfo con ts = do
+  ci <- serGetCI con
+  let tycon = conParent ci
+      fields = conFields ci
+  --If the DT is boxed the tag will be nil
+  dtsi <- asks serrDTSI
+  let Just dti = M.lookup tycon (datatypes dtsi)
+      boxed = dtBoxed dti
+  sz <- serGetSizeof (con,ts)
+  --The memoized part:
+  (cons,tagScheme) <- serDatatype tycon ts
+  let serTag = serComputeTag boxed cons tagScheme con
+  return (sz,serTag,fields)
+
+--For tag schemes N1 n and N16, you also need the canonical con list to
+--compute a constructor's tag (because it depends on the index).
+--I don't return an E because there might not be one (as boxed datatypes and
+--those with tag scheme Nil lack a tag).
+serComputeTag :: Bool -> [Name] -> TagScheme (E,Serialized) -> Name ->
+  Serialized
+serComputeTag boxed cons tagScheme con
+  | boxed || (tagScheme == Nil) = emptySer
+  | let = case tagScheme of
+            Custom t con2e_ser ->
+              let Just (_e,ser) = M.lookup con con2e_ser
+              in ser
+            other ->
+              let Just ix = elemIndex con cons
+                  len = case other of
+                          N1 len -> fromIntegral len
+                          N16 -> 1
+              in Serialized {
+                serSizeof = len,
+                serLength = len,
+                --Note N1 never has len 0, so no need to normalizeContent
+                serContent = [Left $ serInt len $
+                              fromIntegral ix]
+                }
+{-  
   --Get the monomorphic tagScheme we prepared earlier
   monot2ts <- asks serrTagValues
   case M.lookup (tycon,ts) monot2ts of
@@ -216,7 +462,13 @@ serGetTag tycon ts con = do
                      --Note ix <- 0..15 here
                      N16 -> litOfLen 1 (ix*16)
                      N1 len -> litOfLen len ix
-
+-}
+--Get the size of a monomorphic T :: Type
+--(guaranteed to be of form TyCon params)
+serGetSizeofT :: T -> SerM Integer
+serGetSizeofT t =
+  let (TyCon tycon, params) = rollTyApps t
+  in serGetSizeof (tycon,params)
 --Get the size of a monotype
 serGetSizeof :: (Name,[T]) -> SerM Integer
 serGetSizeof conTs = do

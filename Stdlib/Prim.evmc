@@ -181,12 +181,11 @@ instance alloc : Int s l -> UPtr Storage a where
  _ := stoAllocPtr;
 instance alloc : Int s l -> UPtr TStorage a where
  _ := tstoAllocPtr;
-//What's this!? Well, boxed constructors Cons x xs desugar to
-//ImplList (allocValue (ImplCons x xs)). However, allocValue to a region
-//requires allocValue be supported. So to have code BDTs in constant
-//expressions, you need a false code alloc instance.
-instance alloc : Int s l -> UPtr Code a where
- _ := ();
+//Boxed constructors Cons x xs desugar to
+//ImplList (allocValue (ImplCons x xs)). However, by implementing an instance
+//for Code directly in allocValue (bypassing alloc), I no longer require an
+//alloc instance for Code.
+
 //Pointer indexing _[_] is now separate from unboxed array indexing _!_.
 //Since indexPtr can be implemented directly in EVMC, it needn't be in Prim.
 //However, its supporting primitive proxy ops need to be.
@@ -266,16 +265,26 @@ unsafeCoerce _ := ();
 copy : (MPtr a, Ptr r a, Int s l) -> ();
 copy _ := ();
 
+//TODO move these user-level functions to Prelude?
 //RETURNs the given argument, malloc'd into memory
 returnValue : a -> ();
-returnValue _ := ();
+returnValue a := returnPtr (allocValue a);
 //RETURNs the value pointed to
 returnPtr : MPtr a -> ();
-returnPtr _ := ();
-//RETURN n elements pointed to
+returnPtr p := returnPtrLen (p,1);
+//RETURN n elements pointed to.
+//n is interpreted as unsigned, so if it's a negative signed integer the
+//result may be surprising - but it's behaving as intended.
 returnPtrLen : (MPtr a, Int s l) -> ();
-returnPtrLen _ := ();
-//Raw RETURN
+returnPtrLen (p,n) := {
+ p :: MPtr a; //Bringing a into type scope
+ var sz = coerce sizeof (P :: P a) :: Word,
+     wlen = sz*unsafeCoerce n;
+ //Why unsafeCoerce? To avoid sign extension.
+ returnRaw(coerce p, wlen)
+};
+//Raw RETURN. Takes the mem map at the Core level, so it needs to be
+//primitive.
 returnRaw : (MPtr Byte, Int s l) -> ();
 returnRaw _ := ();
 
@@ -288,3 +297,18 @@ returnRaw _ := ();
 //Template polymorphism might be able to support serialize/deserialize.
 //By returning the entire memory (with a mptr at a fixed address), you could
 //convert a memory datatype to a returndata one and deserialize lazily.
+
+revertValue : a -> ();
+revertValue a := revertPtr (allocValue a);
+revertPtr : Ptr Memory a -> ();
+revertPtr p := revertPtrLen (p,1);
+revertPtrLen : (Ptr Memory len, Int s l) -> ();
+revertPtrLen (p,n) := {
+ p :: MPtr a; //Bringing a into type scope
+ var sz = coerce sizeof (P :: P a) :: Word,
+     wlen = sz*unsafeCoerce n;
+ //Why unsafeCoerce? To avoid sign extension.
+ revertRaw(coerce p, wlen)
+};
+revertRaw : (MPtr Byte, Int s l) -> ();
+revertRaw _ := ();
