@@ -175,6 +175,7 @@ monoGlobal g = withError (InMonoGlobal g) $ do
 --Most complex scenario: the tag contains a class function
 --TODO use lenses so I can write a clean, shared checkExplored elem field
 --Update: the con => tag expr map is now in dtTagScheme . dtInfo
+--I also need to explore all constructor arguments!
 monoDT :: Name -> [T] -> Mono ()
 monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
     b <- gets $ M.member (tycon,monoTs) . exploredDTs
@@ -191,9 +192,18 @@ monoDT tycon monoTs = withError (InMonoDT (tycon,monoTs)) $ do
                     Custom t $ M.map (\e -> let Right e' = instT v2t e in e')
                     con2e
                   ts -> ts
+      --Get all constructor arguments:
+      let subDTs = do
+            con <- dtCanonicalCons dti
+            let Just ci = M.lookup con $ conInfo dtsi
+            (_field,t) <- conFields ci
+            let Right t' = instT v2t t
+                (TyCon con, monoTs) = rollTyApps t'
+            return (con,monoTs)
       modify (\ms -> ms{exploredDTs = M.insert (tycon,monoTs) ts' $
                          exploredDTs ms})
       explore ts'
+      mapM_ (uncurry monoDT) subDTs
       {-
           cons = dtCanonicalCons dsi
           cis = conInfo dtsi

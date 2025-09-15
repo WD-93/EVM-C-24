@@ -1825,6 +1825,22 @@ CallStack (from HasCallStack):
 2) Indicates the arguments of monomorphic DTs aren't considered mentioned.
 I'll fix 2) tomorrow.
 
+fmap(\(_,_,_,si)->si)$pipeline2serialize"main:()->();main _ := D;data D={D};tag D=UInt 4 where{D: 0xdeadbeef}"
+Right (SerS {sersAllocPtr = 1, sersCodeInits = fromList [], sersMemInits = fromList [], sersTagSchemes = fromList [(("D",[]),(["D"],Custom uint4 (fromList [("ImplD",(TyApp "fromWord" [Unsigned,4] :$ EInteger 3735928559,Serialized {serLength = 4, serSizeof = 4, serContent = [Left [222,173,190,239]]}))]))),(("Int",[Unsigned,4]),([],Nil)),(("Unit",[]),(["Unit"],Nil))], sersRunQueue = []})
+--Strange... why is there an ImplD when D is unboxed? It's a bug in
+Desugar.Datatypes; fixed.
+
+ghci> str="main:()->();main _ := x;code x = Cons True Nil :: List Code Bool"
+ghci> fmap(\(_,_,_,si)->si)$pipeline2serialize str
+*** Exception: Compiler error: missing sizeof for ("ImplCons",[Code,Bool])
+CallStack (from HasCallStack):
+  error, called at .\Const\Serialize.hs:477:16 in evmc-0.1.0.0-inplace:Const.Serialize
+Ofc, ImplCons is not a real datatype. Somewhere in Serialize I'm using the
+constructor rather than the tycon to look up size. Fixed.
+code x = Nil :: List Code Bool --$anonCodeGlobal1 has the correct value, but
+x = ImplNil $anonCodeGlobal1 is incorrectly given the serialization 0 :: Word.
+I was incorrectly left-padding arguments in non-Pair datatypes; fixed.
+
 Potential bug in Mono: will (null() :: DT) result in DT being mentioned? It
 should, since I need repr info at that point.
 I can't just compute it for all datatypes since they're parameterized...

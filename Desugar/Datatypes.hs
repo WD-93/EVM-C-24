@@ -243,8 +243,10 @@ computeTagScheme tycon params cons mr mti =
           specset = M.keysSet con2e
       complainIf (conset /= specset)
         $ ConMismatchInTagAndData tycon conset specset
-      return $ Custom tagTNorm $ M.mapKeys ("Impl"++) con2e
-
+      --Change: only prepend Impl if the datatype is boxed
+      return $ Custom tagTNorm $ if mr /= Nothing
+                                 then M.mapKeys ("Impl"++) con2e
+                                 else con2e
 --The below three add functions add a DT, Con and Field to the DTsInfo state
 --respectively.
 --It makes sense to throw duplicate errors here despite an earlier

@@ -303,7 +303,7 @@ serializeE = go
               ret (ConRecord con (Just params) $
                   map (id *** fst) field_e_sers,
                    (concatSers $ serTag :
-                    map (leftPadSer . snd . snd) field_e_sers){serSizeof=dtSz})
+                    map (snd . snd) field_e_sers){serSizeof=dtSz})
               {-
               tycon <- serGetConParent con
               dtSz <- serGetSizeof (tycon,params)
@@ -402,7 +402,7 @@ serGetConInfo con ts = do
   dtsi <- asks serrDTSI
   let Just dti = M.lookup tycon (datatypes dtsi)
       boxed = dtBoxed dti
-  sz <- serGetSizeof (con,ts)
+  sz <- serGetSizeof (tycon,ts)
   --The memoized part:
   (cons,tagScheme) <- serDatatype tycon ts
   let serTag = serComputeTag boxed cons tagScheme con
