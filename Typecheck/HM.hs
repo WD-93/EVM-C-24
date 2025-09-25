@@ -678,7 +678,7 @@ typeOfPat = go
       PBang Nothing parr eix -> do
         (parr',tarr) <- go parr
         (eix',tix) <- typeOf eix
-        unify tix (UInt 16)
+        unify tix (UInt 2)
         len <- newTyVar
         a <- newTyVar
         unify tarr (Array len a)

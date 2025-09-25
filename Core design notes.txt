@@ -1962,3 +1962,119 @@ main () := {
 };
 //Defines a code global containing an appropriately sized type
 module m {import StorageGlobals; main () := …; ...}
+
+*****************************************************************************
+Next: Structured IR.
+Structured decomposes stmts and exprs into Core ops while maintaining
+structured control flow. The work of decomposing the structured code into
+Core basic blocks is deferred.
+In my old approach, I used pull-based live rather than push-based decls to
+determine which vars should be passed to CFG (now Core) branches.
+That has the advantage that vars bound to subexprs are cleaned up for free,
+but OTOH dead locals must be aggressively GC'd.
+Would declaring live after every op work well? The main issue with that is
+that live behaviour is complex in assignment and case.
+
+Variable order at the Core level isn't what determines perf; word-level code
+should be able to split multi-word vars and store them non-contiguously.
+GCing a dead word var requires either a pop or swap, pop; the latter risks
+putting the words in a bad order. Taking into account order requires having
+a concept of "bad order" based on estimated cost of code as a function of
+order, as well as support for reordering functions.
+Focus only on optimizing Core for now.
+
+First:
+Adapt Structured input to serialize output.
+Change: the Module has already been unshadowed.
+
+Before I can adapt the structure of Structured I need to adapt Core.
+Use a newtype of (Name,[T]) for Core primops; opE = push | primop.
+Make behaviour as explicit as possible at the expense of terseness.
+If I put funs and globals in a different namespace (accessible through a
+StaticVal opE) that would simplify scope and type checking.
+Push Constant, Constant = lit | named
+Should I distinguish between fun and global names? How about fields and cons?
+For compilation to word-level code, Core requires defuns, globals, inits and
+datatypes.
+Con, setField and getField (on locals) can be primitives; I can use
+unsafeAddPtr (with additional aliasing annots?) for p->field.
+Invariant: all types are fixed-size, so global pointers refer to a fixed
+region. alloc'd pointers OTOH may refer to an array of dynamic size.
+p->field, *p!ix and p[ix] should be assumed to never cross a global/alloc
+boundary.
+Length-tagged array allocation requires coercion (because the tag is of a
+distinct type from the elements), but that should be fine.
+
+Distinguishing between fun names and let-bound names isn't a trivial decision; while it clarifies behaviour, it also messes with LC rewrites.
+
+There isn't a fixed set of state vars; splitAP creates two new APs, and
+alloc@[r,a] (len,ap) creates a new r slice.
+To simplify the algo, splitAP whenever an AP could be needed, then prune.
+stmt => (ap,ap') = splitAP ap; stmt; ap = ap' for new ap'
+
+Core primops must include:
+Integer literals
+Label push (functions and globals)
+Field get and set
+Constructor application
+Other primops (deref, arith etc)
+
+Keep global and function values abstract.
+How to model alloc in a way that ensures it's both commutative and
+implementable?
+*allocPtr = arbitrary(ap)?
+
+If trueMain initializes memory and code globals with consts, it needs a
+concept of consts. Const push can be a primitive which subsumes function and
+global push.
+Any expr in const form (c ::= +-k | g | f | UBCon{...}) could then be
+converted to a single const opE. Note it's not necessarily a push, consider
+*memPtr = const.
+To keep global pointers abstract, Core modules need a pointer set.
+
+Code map ops: ptr->const, m1 ||| m2, empty.
+If a pointer p is never accessed, p->v ||| m can be simplified to m.
+FW: if only static offsets off p are ever accessed, it can be split into its
+accessed fields placed out of order.
+The code map ops will need to be scanned later.
+Wouldn't it be simpler to retain the original code global mapping...?
+Since functions already have access to letrec-bound names, I can just
+letrec-bind it.
+deref@[code,a] (p,code) => v
+Memory globals still need to be initialized... including memAllocPtr.
+
+Start with an inefficient but simple effect model: just memory, get and set.
+No memory splitting, it's a single token; no AP.
+allocRaw?
+Note reads of consuming ops must be scheduled before the consumer.
+No need to pass code as a resource, it's let-bound.
+$trueMain takes calldata and nothing else (gas &c ignored).
+
+Bytestring# is necessary at the Core level for representing revert.
+Value ops reduce to bytestring ones.
+Problem: stack words are always a multiple of 32B, so they don't represent
+bytestrings perfectly. Core needn't capture that, but word-level code would
+benefit from having a concept of "bs stored in ws at offset o".
+Problem 2: bs = *p; *mp = bs may be separated by several basic blocks, making it more difficult to optimize to a copy.
+Symbolic eval and propagation of arg value info across BBs could address that.
+
+OK: bytestring get/set, no AP, concrete allocs.
+id#
+
+Deref in patterns will only trigger an error after monomorphization?
+Need to detect *immutableP = e.
+
+Q: do I recognize EArray as a const? I should.
+
+Should I have a null# primitive separate from Stdlib's null? It doesn't hurt... and it simplifies opts relative to a more general coerce-based opt.
+If a coercion results in a valid bitpattern (e.g. coerce# 0 :: Bool), it can
+be replaced with a const of that type.
+That's particularly useful for optimizing derefs (which involves coercing
+the Bytestring# result of getMem).
+
+There's redundancy between tuples encoded directly as Values and ones created
+with MkCon; simplify away the latter.
+Issues with scope (more or less than necessary, ops getting lost) are a certain to be a source of bugs.
+Need to make sure I'm tracking every subexpr evaluated + keeping track of
+them across branch boundaries (in particular within pattern eval).
+And do I produce enough Declares? emitStmt produces one...

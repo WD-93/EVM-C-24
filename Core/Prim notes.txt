@@ -1,0 +1,66 @@
+Need an exhaustive list of primops with consistent names... here's an
+initial list.
+
+Mem:
+getMemory# : (Short,Short,Memory#) -> Bytestring#
+setMemory# : (Short,Bytestring#,Memory#) -> Memory#
+--length is implicit in bytestring
+
+deref@[Memory,a] p => coerce# (getMemory# (p.unMkPtr,sizeof a))
+
+Calldata:
+getCalldata# : (Short,Short,Calldata#) -> Bytestring#
+
+setMemory#(off,getCalldata#(coff,len,cd),mem) =>
+ calldatacopy(off,coff,len,cd,mem)
+Ditto for mcopy, returndatacopy...
+
+--Unsafe coercion
+coerce# : a -> b
+
+Bytestring: slice(off,len,bs), concat(b1,b2), literal
+
+Mem, calldata etc are partial bytestring maps
+slice(off,len,getMemory#(om,Len,mem)) = getMemory#(om+off,len,mem)
+
+off -> coerce# Con{field: e}
+After MkPtr off -> field = e': off -> coerce# Con{field: e'}
+Note during symbolic eval the expr may be an AST rather than just a value.
+
+Replace get/set field with get/set offset, allowing me to deduplicate
+local(.field | !ix)* offset calculation in the same manner as for
+*p(.field | !ix)?
+That suggests a new type: Field a b, representing an offset into an a which
+yields a b.
+Operations:
+.field: Field a b
+(!): Int s l -> Field (Array len a) a
+compose: Field a b, Field b c -> Field a c
+indexPtr: Ptr r a, Field a b -> Ptr r b
+setOffset: a, Field a b, b -> a
+FW... duplicate for now. Nested array indexing of locals is an edge case
+anyway.
+Using an offset isn't always optimal anyway, consider the leftmost and
+rightmost field (retrievable by shifting and masking respectively).
+The computation can be deduplicated via common subexpression elimination
+anyway... once the offset calculation has been made explicit.
+
+What is the form of a compilable evaluated pat?
+p ::=
+ _
+ local path
+ *v
+ Con {field: p}
+ Array ps
+ Unbox p
+The trivial pattern _ can be eliminated: Con {field: _, rest} => Con {rest}
+That applies to Array as well (it's Con-like).
+Adding support for Array{!ix: v} would be interesting, but that's FW.
+Con {} for tag scheme Nil can be normalized to _, as can Array with all _s.
+Array patterns can be normalized to a nonempty list of index-p pairs.
+Unbox _ can also be normalized to _.
+Normalization must be done within evalPatternEs. Can an effectively trivial
+pattern contain subexprs? _!ix() should be disallowed, so no.
+
+Mono does not disallow (_!0) = 1, but it incorrectly gives 0 the type uint16
+(a halfword) rather than uint2. Fixed.
