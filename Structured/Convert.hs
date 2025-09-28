@@ -40,6 +40,8 @@ data ConvertS = CS {
   }
   deriving (Eq,Ord,Read,Show)
 data ConvertError = GenericCE String --placeholder
+                  | PlusPluslikeOnWildlikePattern Name Bool Pat
+                  | OPAssignOnWildlike E Pat
   deriving (Eq,Ord,Read,Show)
 --I don't annot poly names (fs and Cons) with actual type, nor do I do so for
 --(:$), so I must reconstruct them from params... a complexity and perf drag.
@@ -61,9 +63,39 @@ convertS :: S -> Convert ()
 convertS = go
   where go = \case
           --Evaluates e, then pops the result
-          A.SE e -> do
+          SE e -> do
             v <- convertE e
             error "todo"
+          --Tail call recognition is better done at the Core level, where it
+          --can synergize with other opts.
+          A.Return e -> do
+            v <- convertE e
+            emitStmt $ S.Return v
+          --Initial scope: S
+          --Eval truthy# e, branch on it.
+          --The cases have scope S => S.
+          A.Ifte e th el -> do
+            v <- convertE e
+            let Mono _ t = v
+            w <- emitOp (Op "truthy#" [t]) (Var v) (UInt 32)
+            error "todo"
+          --First collect the code for eval of e into its own [Stmt];
+          --branch on the v returned.
+          --The s has scope S => S.
+          A.While e s -> do
+            error "todo"
+          A.Case e pat_ss -> do
+            error "todo"
+          --Collect the generated stmts, then reset the scope.
+          Block ss -> do
+            error "todo"
+          --TODO check we're in a loop.
+          A.Break -> emitStmt S.Break
+          A.Continue -> emitStmt S.Continue
+          --Equivalent to a series of single-(nm,e) declares
+          --For each (nm,e): v <- convertE e; copy v to Mono nm t; delete v
+          --from scope.
+          A.Declare nmes -> error "todo"
 
 --Each expr returns a single var; it may be split with a copy
 --Constant expressions could become a Const bound to a new var.
@@ -103,9 +135,11 @@ convertE = go
           --I'll hackily use E Vars to represent them; TODO param Pat by the
           --subexpr type or use a different DT.
           p A.:= e -> do
-            p' <- evalPatternEs p
+            mp' <- evalPatternEs p
             ve <- go e
-            assign p' ve
+            case mp' of
+              Nothing -> return ()
+              Just p' -> assign p' ve
             return ve
           EArray (Just t) es ->
             mapM go es >>= primMkArray t
@@ -115,8 +149,11 @@ convertE = go
           --p' = (interpret as E(p') + k)
           OPAssign (Just opf) p _ e -> do
             --First eval exprs to prevent duplicated side effects
-            p' <- evalPatternEs p
-            old <- abusedPat2Value p'
+            p' <- do mp' <- evalPatternEs p
+                     case mp' of
+                       Nothing -> throwError $ OPAssignOnWildlike opf p
+                       Just p' -> return p'
+            old <- evaluatedPat2Value p'
             operand <- go e
             --cTypeOf just looks at the f to determine the type of f :$ x,
             --so this works:
@@ -155,10 +192,11 @@ convertE = go
             --Con vs :: TyCon  params
             emitOp (MkCon con params) (vars2value vs) $
               unrollTyApps (TyCon tycon) params
+          --Optimize (local | *p) .field* at the Core level.
           Dot e (Just params) field -> do
             v <- go e
             t <- typeOfDotE field params
-            emitOp (GetField $ NamedField field params) (Var v) t
+            emitOp (GetField [NamedField field params]) (Var v) t
           e -> error $ "Compiler error: unexpected case in convertE: " ++
                show e
         cleanup :: (E -> Convert Var) -> E -> Convert Var
@@ -167,6 +205,18 @@ convertE = go
           v <- hdlr e
           modify (\s->s{csScope = v:scope})
           return v
+--Collect the stmts emitted by a Convert action, returning them instead of
+--appending them to the state.
+--Note csOutput is accumulated in reverse order, so it must be reversed before
+--returning it.
+collect :: Convert a -> Convert (a,[Stmt])
+collect c = do
+  s <- get
+  put s{csOutput = []}
+  a <- c
+  s' <- get
+  put s'{csOutput = csOutput s}
+  return (a, reverse $ csOutput s')
 
 --Each emitted stmt must be preceded by a scope declaration.
 --That is the state of the stack before the stmt, rather than the scope it
@@ -300,30 +350,56 @@ cGetModule = do
 --x <- ix(), y <- p()
 --(arr!x,(*y).field).
 --That's necessary to prevent e.g. (arr!ix())++ from evaluating ix() twice.
-evalPatternEs :: Pat -> Convert EvaluatedPat
-evalPatternEs = error "todo"
+--Iff the pattern is trivial (equivalent to _), it returns Nothing.
+--EvaluatedPats are normalized and nonsensical patterns (e.g. _.field or
+--Con{}.field) raise an exception.
+evalPatternEs :: Pat -> Convert (Maybe EvaluatedPat)
+evalPatternEs = go
+  where go = \case
+          PWild _ -> return Nothing
+          PArray (Just t) ps -> do
+            meps <- mapM go ps
+            let ixeps = [(ix,ep) | (ix,Just ep) <- zip [0..] meps]
+            return $ if null ixeps
+                     then Nothing
+                     else Just $ EPArray (length meps) t ixeps
+          PCon con (Just params) field_ps ->
+            error "todo"
+          --Remaining valid form: (local|deref)(.field | !ix)* 
+          p -> evalIndexPatternEs p
+--First roll into (Either Var E, [Either .field !E])
+--If local: eval the ix Es in order to get [Field]
+--If *ptr: eval the ptr first, then eagerly transform it using the fields and
+--indices.
+evalIndexPatternEs :: Pat -> Convert (Maybe EvaluatedPat)
+evalIndexPatternEs = go
+  where go = \case
+          _ -> error "todo"
 
 --A pattern after exprs have been evaluated.
 --Its form is restricted to preclude Con{..} (.field | !ix)* which is
 --nonsensical.
 --BCon {bfield: p} => Unbox (UBCon {ubfield: p})
-data EvaluatedPat = EPWild T
+data EvaluatedPat = EPLocal Var [Field]
                   --Locals become vars in Structured; they're still viewed as
                   --mutable in the abstraction because it's pre-SSA
-                  | EPLocal Var [Field]
                   | EPDeref Var --the fields have been baked into the ptr
-                  | EPCon Name [T] [(Name,EvaluatedPat)]
+                  --The Bool is to tell whether the tag needs to be checked
+                  --(it does not in cases).
+                  | EPCon Bool Name [T] [(Name,EvaluatedPat)]
+                  | EPArray Int T [(Int,EvaluatedPat)]
                   | Unbox EvaluatedPat
   deriving (Eq,Ord,Read,Show)
---An abused pat has two uses: assigning a value to it and interpreting it as
---an E. Instead of creating an abused E, it's simpler to interpret it
---directly.
---Problem: what about boxed constructors? Evaluating an abused pat should
+--An eval'd pat has two uses: assigning a value to it and interpreting it as
+--an E.
+--Problem: what about boxed constructors? Evaluating an eval'd pat should
 --consistently produce the same value and have no side effects.
 --Consider (Nil :: List ()) |= 0x10_00_00
---Solution: disallow boxed constructors in abusedPat2Value.
-abusedPat2Value :: AbusedPat -> Convert Var
-abusedPat2Value = error "todo"
+--Solution: disallow boxed constructors in evaluatedPat2Value; it should only
+--permit the permissible patterns for += and ++,
+--i.e. local(.field | !v)* | *v
+evaluatedPat2Value :: EvaluatedPat -> Convert Var
+evaluatedPat2Value = error "todo"
 
 --assign implements matching of a pattern p to a value (var) v.
 --It's central to pattern matching in case and assignment operations.
@@ -349,12 +425,8 @@ However, local!foo()!bar() needs to save both foo and bar.
 Ideally I'd just save a slice offset (essentially a byte pointer into a
 stack var).
 -}
-assign :: AbusedPat -> Var -> Convert ()
-assign (AP p) v = go p v
-  where go p v =
-          case p of
-            PWild{} -> return _
-            _ -> error "todo"
+assign :: EvaluatedPat -> Var -> Convert ()
+assign ep v = error "todo"
             
 --The array creation op on vars (evaluated exprs).
 --FW: eagerly compress at the word level, as otherwise the stack could grow
@@ -385,9 +457,13 @@ call vf vx = do
 --Parameters: inc (++) or dec (--), old or new value returned
 plusplus :: Name -> Bool -> Pat -> Convert Var
 plusplus incdec prefix p = do
-  p' <- evalPatternEs p
-  old <- abusedPat2Value p'
-  let Mono _nm t = old
+  mp' <- evalPatternEs p
+  p' <- case mp' of
+          Nothing -> throwError $
+                     PlusPluslikeOnWildlikePattern incdec prefix p
+          Just p' -> return p'
+  old <- evaluatedPat2Value p'
+  let t = typeOfVar old
       opf = TyApp incdec [t]
   vf <- convertE opf
   new <- call vf (Var old)

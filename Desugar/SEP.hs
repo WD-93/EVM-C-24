@@ -132,7 +132,7 @@ desugarE di@DInfo{diGlobalSet = gs,
         if aop == P.EqEq
           then return $ p := e
           --Hacky but terse replacement for a big case:
-          else let op = read $ drop 2 $ show aop
+          else let Just op = aop2op aop
                in return $ OPAssign Nothing p op e
       --Coerce need no longer be part of the syntax
       P.TypeAnnot pe pt -> do
@@ -144,6 +144,21 @@ desugarE di@DInfo{diGlobalSet = gs,
       a <- go pa
       b <- go pb
       return $ Var fnm :$ tupleE [a,b]
+--EqEq does not correspond to an Op
+aop2op :: P.AOp -> Maybe Op
+aop2op = \case
+  P.EqEq -> Nothing
+  aop -> Just $ case aop of
+                  P.PlusEq -> Plus
+                  P.MinusEq -> Minus
+                  P.MulEq -> Mul
+                  P.DivEq -> Div
+                  P.ModEq -> Mod
+                  P.ShlEq -> Shl
+                  P.ShrEq -> Shr
+                  P.AndEq -> And
+                  P.XorEq -> Xor
+                  P.OrEq -> Or
 
 desugarDot :: (E -> e) -> (e -> Name -> e) -> (P.E -> Either DError e) ->
   DInfo -> P.E -> Ident -> Either DError e

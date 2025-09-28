@@ -2078,3 +2078,84 @@ Issues with scope (more or less than necessary, ops getting lost) are a certain 
 Need to make sure I'm tracking every subexpr evaluated + keeping track of
 them across branch boundaries (in particular within pattern eval).
 And do I produce enough Declares? emitStmt produces one...
+
+BDT case compilation:
+case xs of
+ Nil -> s1
+ Cons x xs' -> s2 =>
+case *(xs.unImplList) of
+ ImplNil -> s1
+ ImplCons x xs' -> s2
+It should be possible to choose intelligently between fetching part of a DT
+(deref . GetFieldPtr) or fetching the whole thing, then slicing it
+(GetField . deref).
+A good heuristic for the former: if the value to fetch >> the expected number
+of bytes read (i.e. the tag and any fields).
+Simple implem: do so on a per-BB basis, so the tag gets fetched before the
+Core-level case.
+FW: coalesce reads of adjacent fields, either directly at the word level or
+by coercing to a struct pointer.
+UB case compilation:
+v <- e
+Get list of canonical cons, map each mentioned Con{field:p} to assign v to
+Con{field:p} without the tag check, the rest go to default case (revert if
+none is specified). You needn't do any matching on revert, since it can't
+affect the outcome.
+Note case e of Con fs -> s; d -> dflt => 
+ifte (e.tagField == k) s {d = e; dflt}.
+That also works if one of two con tags is truthy and the other is not.
+Problem:
+case *p of
+ Con1 x y -> s
+--Is the DT itself on the stack and passed as an argument? That's determined
+by scope in Structured. Core opts must be able to recover structure and
+move coalesced derefs to earlier BBs?
+That should be possible by looking at the subset of the CFG that's static.
+Beyond trivial inlining, you can also inline looping code by specializing
+$ret to a fixed cont. You should be able to reverse the stashing of the
+original ret and scope in a mkCont… and deduplicate pushed arguments using
+them.
+You can avoid the default behaviour (fetch entire *p) by explicitly fetching
+(bdt.unImplTyCon)->tagImplTyCon in Structured, but that doesn't let you choose approach later.
+Note: I can't eval the patterns before the case is matched; analysis must be
+done on Pat!
+
+case rules:
+1)No conflicting cases:
+ At most one case per top-level con
+ No cases after default
+ --Consequence: you can determine which case to execute using a single
+ JT jump.
+2)Either no boxed cons or all boxed
+ That could be refined: ImplTyCon p could be treated as a default.
+ No default case on a BDT involves dereferencing p.
+If there is only one case p, convert to p = e; {s}
+Valid form: (BCon* | UBCon*)[default]. FW: integer literal patterns are ~
+UBCon.
+BCon ::= boxed con where the ImplDT has > 1 canonical cons;
+UBCon ::= unboxed con where the DT has > 1 canonical cons;
+the remainder are defaults. Note it's only the top-level con that matters:
+NilCon () and NilCon True are both defaults.
+Ignore whether custom tags are equal at this stage.
+If a case statement starts with scope S, each case in it should have scope
+v:S, where v is the scrutinized value (regardless of whether the case is
+boxed or not). The body of the case (after the matching) has scope S.
+The difference between boxed and unboxed nontrivial case is whether it's v's tag or v.unImplTyCon->tagImplTyCon which is branched on.
+FW: more general integer overloading, boxed integers? No pressing need...
+
+Note: once I begin pruning dead cases (e.g. in a specialized fun), cases
+which would not become iftes during Structured compilation can be converted. It's therefore not appropriate to perform case => ifte conversion
+at that stage.
+
+On Core vs C primitives: all C prims need to be mentioned (?), Core prims do
+not (and cannot be, they're straight-line ops and not functions).
+
+Even a subword local array may straddle two words, as it may be in a field.
+An index may also straddle two words.
+Implementation of general local array get/set therefore requires a JT.
+Storage pointer access also requires branching... can I optimize that at the
+Core level?
+
+x+=5 produces an error value in desugar: Prelude.read: no parse.
+Presumably I got bitten by my hacky read . show conversion for op; TODO
+convert it to a proper case. Fixed.

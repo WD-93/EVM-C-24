@@ -78,7 +78,7 @@ data Branch = Jump Var Value
 --never be generated.
 
 --Dynamic value names, as distinct from functions and globals.
-data Var = Mono Name T
+data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
   deriving (Eq,Ord,Read,Show,Data)
 data FunVar = FMono Name T --for auto-generated BBs
             | FPoly Name [T] T --for user-level functions

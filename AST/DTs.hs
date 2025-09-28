@@ -79,6 +79,7 @@ data Op = Plus
         | Or
   deriving (Eq,Ord,Read,Show,Data)
 
+{-
 --Tuples are word-padded structs with default field names;
 --the default for structs is byte padding;
 --currently there is no support for bitfields
@@ -88,11 +89,12 @@ pad2Sz :: Num a => Padding -> a
 pad2Sz = \case
   Byte -> 8
   Word -> 256
+-}
 --padModulo n sz = n * ((sz `div` n) + if (sz `rem` n) /= 0 then 1 else 0)
 n `roundedUpMod` m = m * ((if (n `mod` m) > 0
                           then 1
                           else 0) + (n `div` m))
-n `padWith` p = n `roundedUpMod` pad2Sz p
+--n `padWith` p = n `roundedUpMod` pad2Sz p
 
 structT :: [T] -> T
 structT [] = "Unit"
@@ -148,7 +150,7 @@ pattern Calldata = TyCon "Calldata"
 pattern Returndata = TyCon "Returndata"
 pattern Code = TyCon "Code"
 pattern Ptr r a = "Ptr" :$$ r :$$ a
-type Field a = ((Padding,Padding), Maybe Name, a)
+--type Field a = ((Padding,Padding), Maybe Name, a)
 --Anonymous structs now removed; structs are instead in boxed and unboxed
 --datatypes. Padding/alignment data can be in metadata describing the struct;
 --it's not relevant to type checking.
@@ -177,6 +179,7 @@ duplicatedShowT = do
     --TODO reconcile with showT; add smarter paren emission
     tf :$$ tx -> r tf ++ " (" ++ r tx ++ ")"
     TyNat n -> show n
+{-
 duplicatedShowFieldT ((pad,al),mnm,t) =
   let p = case pad of
             Byte -> []
@@ -188,7 +191,7 @@ duplicatedShowFieldT ((pad,al),mnm,t) =
             Nothing -> []
             Just nm -> [nm,":"]
   in unwords $ p ++ n ++ [duplicatedShowT t]
-
+-}
 unTupleT :: T -> Maybe [T]
 unTupleT = go
   where
