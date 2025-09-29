@@ -2137,11 +2137,31 @@ UBCon ::= unboxed con where the DT has > 1 canonical cons;
 the remainder are defaults. Note it's only the top-level con that matters:
 NilCon () and NilCon True are both defaults.
 Ignore whether custom tags are equal at this stage.
+If a datatype has only one con, omit the tag check even if it has a custom
+tag scheme.
 If a case statement starts with scope S, each case in it should have scope
 v:S, where v is the scrutinized value (regardless of whether the case is
 boxed or not). The body of the case (after the matching) has scope S.
 The difference between boxed and unboxed nontrivial case is whether it's v's tag or v.unImplTyCon->tagImplTyCon which is branched on.
 FW: more general integer overloading, boxed integers? No pressing need...
+
+There can be no revert# op because it's branching; default cases where no
+infallible pattern has been specified must call a revert function unless I
+add revert to Structured. If I use revertValue() I must mention it in Mono,
+inline and optimize it to 0, 0, revert. The zeroes need not become push0;
+there might already be a 0 on the stack. I'll use revertValue for now.
+The need to mention every implicitly used function is likely to be a rich
+source of bugs; can't I avoid it by deferring mono? Issues: mono on demand
+would be complex, interleaving concerns; the mono output is used in
+serialization.
+Inspecting whether case has an unspecified default in mono is overkill;
+simply always mention revertValue() and prune it during Core opt. Mono is for
+instantiation, not tree-shaking - even if it closely resembles the latter.
+Note: case on a BDT also mentions deref of the tag and every field!
+
+Nice: since overlapping cases are forbidden, case on arrays can only take
+a single case, meaning it'll be converted to ~an assignment.
+With no literal patterns, integers are also treated the same way.
 
 Note: once I begin pruning dead cases (e.g. in a specialized fun), cases
 which would not become iftes during Structured compilation can be converted. It's therefore not appropriate to perform case => ifte conversion
@@ -2159,3 +2179,45 @@ Core level?
 x+=5 produces an error value in desugar: Prelude.read: no parse.
 Presumably I got bitten by my hacky read . show conversion for op; TODO
 convert it to a proper case. Fixed.
+
+A vital application of reordering: pushing noninterfering exprs in reverse
+textual order. Ex: in f x, f will ultimately be ToS - evaluating it first
+will require a swap (O(n) in word size of x).
+In f (a && b), the branches of the && could be split, with f pushed in each.
+If A -> B1,B2; both -> C -> D, when is it worth copying and inlining C?
+If you must eventually jump, there's no use in delaying it. However, if D
+terminates...
+Need to consider code size budget; use a heuristic size when optimizing.
+Make most profitable exec => code size trades (given exec intensity at each
+BB) until there are no more that are profitable or fit in remaining code
+space.
+If heuristic size is an underestimate and I run out of space later, retry with a proportionally reduced budget. To prevent runaway inlining (e.g. of
+a main consisting of a while loop), the code size budget could also be given
+as a compiler flag. Loops could also be annotated with max-unroll alongside
+expected iter count.
+
+Intensity annots: intensity on f and stmt, iter count on loop, probability on
+ifte and case branches (normalize sum to 1).
+Function intensity is on a per-instance basis...
+Bound callee intensity by caller or increase caller's intensity to ensure
+consistency?
+
+The compiler is complicated by the fact I must deal with code no sane
+programmer would write, such as _++. Ideally I would nip that in the bud by
+restricting the language, but requiring a superficial resemblance to C
+renders that impossible. A future language targeting Core could be more
+Haskell-like...
+
+Right s = pipeline2structured "main:()->(); main _ := {var x = 1; while (x) return ()}"
+sdefuns s M.! (FPoly "main" [] $ fun2coreT (TyCon"Unit") (TyCon "Unit"))
+--Generates reasonable-looking output... but I need a suite of larger programs to test the pipeline on.
+Next: convert to Core, find all the ways my current repr is wrong.
+I haven't implemented short-circuiting ops yet.
+Ifte, while, case and call will require generation and use of new BB funs.
+h() :=
+if cond
+then return f()
+else g()
+end
+--Can be optimized to jumpi to f directly, but then I need to convert
+fun2core# of the const to get/recognize the Core fun.

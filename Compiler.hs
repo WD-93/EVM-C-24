@@ -35,6 +35,11 @@ import Unshadow.Unshadow (unshadow)
 import Sizeof (computeSizeof)
 --Serialize constant expressions (global initializers and datatype tags)
 import Const.Serialize (serialize,SerError(..))
+--Convert C to structured IR
+import Structured.DTs (Structured(..))
+import Structured.Convert (convert,ConvertError(..))
+--FunVars (for debugging Structured)
+import Core.RestrictedCore (FunVar(..),fun2coreT)
 
 data CompilerError = ParserError String
                    | DesugarError DError
@@ -42,6 +47,7 @@ data CompilerError = ParserError String
                    | MonoError MonoError
                    | CycleInSizeof [(Name,[T])]
                    | SerError SerError
+                   | StructuredError ConvertError
                    {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
@@ -157,6 +163,9 @@ pipeline2serialize str = do
   (m,monoS,monoT2Sz) <- pipeline2sizeof str
   serS <- serialize m monoS monoT2Sz ? SerError
   return (m,monoS,monoT2Sz,serS)
+pipeline2structured str = do
+  v <- pipeline2serialize str
+  convert v ? StructuredError
 
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.

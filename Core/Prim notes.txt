@@ -20,6 +20,20 @@ coerce# : a -> b
 
 Bytestring: slice(off,len,bs), concat(b1,b2), literal
 
+fun2core# : Fun a b -> Cont (a, Cont b)
+type Cont a = (a,Env) -># End#
+data a -># b
+size: 2
+I need to be able to represent Core functions which are not C functions, e.g.
+they take only a subset of the Env or they have no cont.
+The FunVar names in the Core (and Structured) defuns map therefore need to
+have the Core types.
+When calling an (a -> b), you first need to convert it to a ->#. However,
+Call in structured doesn't need to do that - but a fun2core# op will need to
+be added in Core.
+A function constant:
+Const t (MkConst $ TyApp f ts) --becomes core2fun# f
+
 Mem, calldata etc are partial bytestring maps
 slice(off,len,getMemory#(om,Len,mem)) = getMemory#(om+off,len,mem)
 

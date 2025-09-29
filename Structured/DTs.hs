@@ -7,7 +7,7 @@ module Structured.DTs where
 import AST.DTs
 import Const.Serialize
 import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),Pattern(..),
-                            FunVar(..))
+                            FunVar(..),ConstSet(..))
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
@@ -34,13 +34,16 @@ import Data.Set (Set(..))
 data Structured = Structured {
   --defuns
   --includes $trueMain, which initializes memory globals and then calls main().
-  sdefuns :: Map FunVar (T,Pattern,[Stmt]),
+  sdefuns :: Map FunVar (Pattern,[Stmt]),
   --pointers: globals and static values
-  sglobals :: Set Var, --region is implicit in type
-  sstatic :: Map Var Const, --code or mem global => its initializer
+  sglobals :: Map Name T,
+  sstatic :: Map Name Const, --code or mem global => its initializer
   --DT tags, fields etc per monotype
-  sdtsInfo :: Map (Name, [T]) ([Name], TagScheme (E, Serialized))
-                             }
+  stagSchemes :: Map (Name, [T]) ([Name], TagScheme (E, Serialized)),
+  sdtsInfo :: DTsInfo E,
+  --sizeof info
+  ssizeof :: Map (Name,[T]) Integer
+  }
   deriving (Eq,Ord,Read,Show)
 --ifte : (Word:s) (s => s) (s => s) -> (s => s)
 --while : (s => Word:s) (s => s) -> (s => s)
@@ -48,7 +51,9 @@ data Structured = Structured {
 data Stmt = Value := RHS
           | Ifte Var [Stmt] [Stmt]
           | While [Stmt] Var [Stmt]
-          | CaseTag Var [(Const,[Stmt])] [Stmt]
+          --Why are the cases a list rather than a map? Because we can't elide
+          --redundant cases at this stage.
+          | CaseTag Var ConstSet [(Const,[Stmt])] [Stmt]
           | Break
           | Continue
           | Return Var

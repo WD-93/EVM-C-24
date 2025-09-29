@@ -1,9 +1,10 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, PatternSynonyms #-}
 module Core.RestrictedCore where
 
 import AST.DTs (T(..),Name(..),E(),tupleT)
 
 import Data.Map (Map(..))
+import Data.Set (Set(..))
 import Data.Generics
 
 --Core with a distinction between straight-line op exprs and branch exprs.
@@ -36,10 +37,13 @@ data Core = Core {
   --The basic blocks, including $trueMain
   coreDefuns :: Map FunVar (T, --its type
                              Pattern, --lhs
-                             [(Value,OpE)], --body
+                             [(Value,OpE)], --body, in SSA form
                              Branch),
   --Region implicit in type
-  coreGlobals :: Map Name T
+  coreGlobals :: Map Name T,
+  --Code global => its initializer
+  --Mem global initialization is done in trueMain
+  coreStatic :: Map Name Const
   }
 --Rewrites: letrec merge, let merge, inline
           
@@ -60,6 +64,10 @@ data PrimOp = Const T Const --k, f, g, Con{consts}; takes ()
 data Field = NamedField Name [T] | ArrayIndex Var T
   deriving (Eq,Ord,Read,Show,Data)
 --Branching expressions
+--Since caseTag operates on constants rather than constructors, it's conceivable
+--that the optimizer could recognize and deduplicate equivalent logic on
+--different datatypes. Equivalent logic is especially easy to find for boxed
+--datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
 data Branch = Jump Var Value
             | Jumpi Var Var Var Value
             --The compilation of case depends on the range of possible values,
@@ -67,16 +75,29 @@ data Branch = Jump Var Value
             --(many DTs have tag :: Byte but fewer than 256 constructors).
             --The range of possible values must either be inferred from
             --context or passed as an argument.
-            | Case Var           --tag inspected
-                   [(Const,FunVar)] --cases
+            | Case Var              --tag inspected
+                   ConstSet         --An upper bound on possible consts
+                   (Map Const FunVar) --cases
                    FunVar           --default case
-                   Value         --scope
+                   Value            --scope
             | Revert Var --Bytestring# -> End
             | Return Value --(Bytestring#,Ext,Sto,TSto) -> End
   deriving (Eq,Ord,Read,Show,Data)
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.
 
+data ConstSet = ConstSet (Set Const)
+              --The sets of possible values for DTs with tag scheme N1 and N16
+              --are represented compactly.
+              --In future CSN1 may be used for case on integers.
+              | CSN16 {csLo :: Integer,
+                       csHi :: Integer
+                      }
+              | CSN1 {csSz :: Int,
+                      csLo :: Integer,
+                      csHi :: Integer
+                     }
+  deriving (Eq,Ord,Read,Show,Data)
 --Dynamic value names, as distinct from functions and globals.
 data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
   deriving (Eq,Ord,Read,Show,Data)
@@ -107,10 +128,26 @@ newtype Const = MkConst E
 --Return contains the persistent Env fields, but if I drop them for now then
 --it contains only a bytestring.
 
+tupleV :: [Value] -> Value
+tupleV = foldr Pair Unit
+
 envT = tupleT [memory, calldata]
 memory = TyCon "Memory#"
 calldata = TyCon "Calldata#"
 envV :: Value
-envV = Pair (Var $ Mono "$mem" memory) $
-       Pair (Var $ Mono "$cd" calldata) $
-       Unit
+envV = tupleV $ map Var [Mono "$mem" memory,
+                         Mono "$cd" calldata]
+--Core functions, in which Env passing is made explicit:
+--(->#) : Type -> Type -> Type
+--data a -># b
+--size: 2
+--a -> b becomes Cont (a, Cont b)
+--What's the point of having -># End# instead of an atomic Cont type?
+--It's not strictly necessary, nor is using -># for straight-line ops
+--(they're always fully applied, after all). The hope is it will simplify
+--type checking (NB: done only for debugging purposes) and make lambda-calc-
+--based rewrites and analysis easier.
+pattern a :-># b = TyCon "->#" :$$ a :$$ b
+--Cont a = (a,Env) -># End#
+contT a = tupleT [a,envT] :-># TyCon "End#"
+fun2coreT a b = contT $ tupleT [a, contT b]

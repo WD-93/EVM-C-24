@@ -220,14 +220,17 @@ addressOf : a -> Ptr r a;
 addressOf _ := ();
 
 //Short-circuited ops; if called on a non-explicit tuple the short-circuiting
-//doesn't occur.
-scAnd : (a,a) -> Bool;
-scAnd _ := ();
-scOr : (a,a) -> Bool;
-scOr _ := ();
+//doesn't occur and their ordinary definition is used instead.
+scAnd : (a,b) -> Bool;
+scAnd (a,b) := if a //truthy implicitly applied
+      	       then return truthy b > 0
+	       else return False
+	       end;
+scOr : (a,b) -> Bool;
+scOr (a,b) := return truthy (a,b) > 0;
 
 //Logical and bitwise ops
-truthy : a -> Bool;
+truthy : a -> Word;
 truthy _ := ();
 lNot : a -> Bool;
 lNot _ := ();

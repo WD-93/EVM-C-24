@@ -1461,6 +1461,8 @@ inferBlock' ret ss =
             --unsafePrint $ "(e',t): " ++ show (e',t)
             unify ret t
             return $ Return e'
+          Ifte e th el ->
+            Ifte <$> (fst <$> typeOf e) <*> go th <*> go el
           While e s -> While <$> (fst <$> typeOf e) <*> go s
           Case e patss -> do
             (e',t) <- typeOf e
