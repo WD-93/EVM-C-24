@@ -123,7 +123,10 @@ convertF :: T -> Pat -> S -> Convert (Pattern,[Stmt])
 convertF rett p s = do
   (vs,val) <- pat2Pattern p
   let ct = contT rett
-      pat = P $ tupleV [tupleV [val, Var $ Mono "$ret" ct],
+      --Changed to (a * $ret * stk, env)
+      pat = P $ tupleV [foldr1 Pair [val,
+                                     Var $ Mono "$ret" ct,
+                                     Var $ Mono "$stk" $ TyVar "stk"],
                         envV]
   stmts <- snd <$> collect (setScope vs >> convertS s)
   return (pat,stmts)

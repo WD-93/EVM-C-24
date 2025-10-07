@@ -159,6 +159,9 @@ data T = TyCon Name
        | TyVar Name --Only for data and tysyn type params initially
        | T :$$ T
        | TyNat Integer --for bitlens, array lens etc
+       --forall (v : Type) . t
+       --Used only in Core and only for v = stk (for now?)
+       | TyForall Name T
   deriving (Eq,Ord,Read,Data)
 --Making T show prettier by duplicating Pretty code...
 --TODO move IR1's data decls here so it can import Pretty.hs without a cycle.
@@ -171,14 +174,20 @@ duplicatedShowT = do
     UInt n -> "uint"++show n
     SInt n -> "int"++show n
     a :-> b -> "(" ++ r a ++ " -> " ++ r b ++ ")"
+    --TODO move pattern :-># to AST.DTs? 
+    TyCon "->#" :$$ a :$$ b ->
+      "(" ++ r a ++ " -># " ++ r b ++ ")"
     Array n t -> "(" ++ r t ++ "[" ++ r n ++ "])"
     t | Just ts <- unTupleT t ->
         "(" ++ intercalate ", " (map r ts) ++ ")"
+    --A pair where b is not a syntactic tuple:
+    Pair a b -> "(" ++ r a ++ " * " ++ r b ++ ")"
     TyCon nm -> nm
     TyVar nm -> nm
     --TODO reconcile with showT; add smarter paren emission
     tf :$$ tx -> r tf ++ " (" ++ r tx ++ ")"
     TyNat n -> show n
+    TyForall nm t -> "forall " ++ nm ++ " . " ++ r t
 {-
 duplicatedShowFieldT ((pad,al),mnm,t) =
   let p = case pad of

@@ -2421,3 +2421,7 @@ Note: pseudo-inlining is just fallthrough (as opposed to Core-level
 inlining). Fallthrough requires the callee is static, so it should be
 possible to simply update the word-level BB's target stack layout.
 BB spec: invars, outvars, op DAG, branch.
+
+First changes: add TyForall Name T :: T, change CC in Structured.Convert
+Will using only a single stk tyvar mess things up somehow? I'll find out.
+Convention: the var for the stack is $stk.

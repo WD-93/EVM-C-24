@@ -2,6 +2,7 @@
 module Core.RestrictedCore where
 
 import AST.DTs (T(..),Name(..),E(),tupleT)
+import qualified AST.DTs as T (pattern Pair)
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
@@ -147,7 +148,14 @@ envV = tupleV $ map Var [Mono "$mem" memory,
 --(->#) : Type -> Type -> Type
 --data a -># b
 --size: 2
---a -> b becomes Cont (a, Cont b)
+--I now use stack-polymorphic Core functions!
+--a -> b becomes forall stk . Cont (a * Cont (b*stk) * stk),
+--where Cont t = (t,Env) -># End and (*) is Pair (right-associative).
+--Note that's not a tupleT; a * b * c ... stk together forms one large tuple
+--which is prepended to using (*). That allows arguments to be pushed
+--incrementally and consumed off the stack later, fitting the behavior of
+--efficient stack machine code.
+
 --What's the point of having -># End# instead of an atomic Cont type?
 --It's not strictly necessary, nor is using -># for straight-line ops
 --(they're always fully applied, after all). The hope is it will simplify
@@ -155,5 +163,11 @@ envV = tupleV $ map Var [Mono "$mem" memory,
 --based rewrites and analysis easier.
 pattern a :-># b = TyCon "->#" :$$ a :$$ b
 --Cont a = (a,Env) -># End#
+contT :: T -> T
 contT a = tupleT [a,envT] :-># TyCon "End#"
-fun2coreT a b = contT $ tupleT [a, contT b]
+--NB: a and b may not be closed over stk
+fun2coreT :: T -> T -> T
+fun2coreT a b = TyForall "stk" $
+                let stk = TyVar "stk" in
+                  contT $
+                  foldr1 T.Pair [a, contT $ T.Pair b stk, stk]
