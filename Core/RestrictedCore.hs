@@ -35,9 +35,8 @@ import Data.Generics
 --fs + gs + tags) to transform, which should ideally be kept consistent.
 data Core = Core {
   --The basic blocks, including $trueMain
-  coreDefuns :: Map FunVar (T, --its type
-                             Pattern, --lhs
-                             [(Value,OpE)], --body, in SSA form
+  coreDefuns :: Map FunVar (Pattern, --lhs
+                            [(Value,OpE)], --body, in SSA form
                              Branch),
   --Region implicit in type
   coreGlobals :: Map Name T,
@@ -80,8 +79,15 @@ data Branch = Jump Var Value
                    (Map Const FunVar) --cases
                    FunVar           --default case
                    Value            --scope
-            | Revert Var --Bytestring# -> End
-            | Return Value --(Bytestring#,Ext,Sto,TSto) -> End
+            --Change: revert and return take off, len, state vars
+            --They are equivalent to variants which take a bytestring
+            --and persisted state vars in the case of return
+            | Revert Var Var Var --off,len,mem
+            --Bytestring# -> End
+            | Return Var Var Value --off,len,(mem,ext,sto,tsto)
+            --(Bytestring#,Ext,Sto,TSto) -> End
+            --Stop deserves to be here as well
+            | Stop Value --(mem,ext,sto,tsto)
   deriving (Eq,Ord,Read,Show,Data)
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.

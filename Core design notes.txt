@@ -2221,3 +2221,203 @@ else g()
 end
 --Can be optimized to jumpi to f directly, but then I need to convert
 fun2core# of the const to get/recognize the Core fun.
+
+With malloc available, stack spilling is possible... but just fail if
+dup/swap > 16 are attempted for now.
+Sometimes I may know an argument is irrelevant without being able to prune
+it by inlining, e.g. in f(x,y) where f is a large function.
+Then I could use an explicit arbitrary@t op.
+If I just want to revert and don't care about the revert message, I can
+revertValue (arbitrary()). I should then be able to consume any two words that happen to be on the stack...
+
+Stack scheduling benchmark:
+fac n := {
+ var accum = 1;
+ while (n) {
+  accum *= n;
+  n--;
+  }
+ }
+Mutated vars should be eagerly swapped to their ultimate positions.
+
+Making the simplifying assumption that inlining replaces
+push2 ret, push2 f, jump, jumpdest, jump, jumpdest with the function body (ignoring reuse of arguments
+that were in locals) and that 24 gas is saved (the minimum, excluding savings
+from specialization):
+code size increase: |body|-10
+gas saving: 24
+For an exec count of 1000, assuming code size limit not encountered, the
+body would need to be >130B to make inlining not worth it.
+That assumes you won't eventually need to jump anyway... the target f also
+needs to be inlined.
+
+Consider a series of functions fN:()->(). f1();f2();...;fN() should be
+TCO-able as if it were fN (f<N-1> (… f1())).
+f(g(h(x))) should be TCO-able even if it's not returned!
+Opt: when a non-state value is 0-sized, eliminate it. Then f1();f2() is in
+TCO-able form.
+Ignoring a suffix of the stack isn't just the purview of revert and return;
+a jump which ultimately doesn't return can also do so. Add an ignored tuple
+argument? Alt: an op forget :: a -># ().
+The key to TCO is identifying pass-through functions of the form
+f x = g x', where x' is a coercion of x. Then any instance of f can be
+replaced with a coercion of g.
+
+How to identify BBs where I can ignore a suffix? Perhaps I should distinguish
+conts of potentially unbounded size (f,S) from those which are bounded
+(e.g. stop) at the type level.
+But consider f();stop() - the return address of f is not of potentially
+unbounded size, so stack cleanup can be elided in 
+bb (scope...ret,env) = jump f (stopf,env). That can be captured by stopf not taking ret (or some parent of bb not doing so).
+Only when the arguments passed to the branch are of potentially unbounded size (which can only be because the last argument is a return cont) must you
+ensure the stack is exactly the arguments; otherwise it can be args++S, where
+S is some garbage.
+That can be viewed as ++ not supporting a left argument which is of unbounded
+size.
+Ordinary functions are of the ordinary -># type!
+OK, so $ret : ReturnCont b...
+Problem: jump $ret args should logically have $ret ToS, but it's actually
+of unknown size.
+Solution: split return cont into an ordinary function
+(b,Stack) -># End and Stack?
+Then mkCont f rest should be replaced with pushStack a S.
+The constraint for a branchE then becomes "the stack must include the args as
+a prefix", which enforces stack == args when the last argument is :: Stack.
+When making a call, the type of the return function is blinded... instead of
+((v...scope),Env) -># End, it becomes ((v,Stack),Env) -># End.
+But it's associated with a particular stack; that risks introducing type
+errors not recognized by Core itself!
+Proposal: introduce a new Branch call f arg ret rest env which is polymorphic
+and enforces ret takes (b,rest)?
+Problem: all stacks have the same type. That could in theory be solved with
+rank-2 polymorphism to assign a UID to each stack, but Core is monomorphic.
+It's still trivial to create
+well-typed, non-compilable Core because a hypothetical Core author might
+still write f stk = g (stk,stk).
+It's simplest to just use jump, then opts have fewer branch cases to deal with. Ensure that Stack is used linearly in a separate check from the
+typecheck.
+The first main call needs a stack; introduce an emptyStack primitive.
+
+A problem with let s = extendStack a s': stack layout isn't obvious from the
+branchE alone, you must look at the definition of s.
+Really, functions are polymorphic:
+f : A -> B becomes
+f : forall stk . ((A, ((B,stk),Env) -># End, stk), Env) -># End (?)
+That prevents confusion between stacks; extendStack can simply be a tuple
+(making layout obvious in word-level IR). The type distinguishes (rest,stk)
+from stk in size!
+For stk = (), (B,Env) -># End should be coercible to an acceptable return...
+But I don't want to reintroduce polymorphism after all the effort I went to in order to eliminate it...
+For now, just use an opaque Stack and accept the one case where I need to
+look at the def...
+
+f();stop()
+The stop Core function should be coercible to forall a . a -># End?
+
+*******iPhone notes
+
+Aha! Since Pair is just cons on a hetlist,
+f : a -> b
+Becomes
+forall stk . a * (b * stk -> End) * stk -> End.
+(Ignoring Env)
+Then fully expanded nested tail calls become well-typed!
+As does a compilation of ifte cond f() g() where the retf is pushed before the branch.
+If the stack is one big tuple of the form functions expect, you can incrementally push arguments and jump to functions directly.
+f();stop() can also be compiled to tail call directly from f to non-returning stop by choosing stk = Pair b scope for stop.
+A non-returning f : (a,b,c…) -> () becomes
+forall stk . (a,b,c…stk) -> End.
+That neatly captures that functions which ignore a suffix of the stack are polymorphic in it!
+Non-returning stop with no arguments:
+stop : forall stk . stk -> End
+Problem: how to reintroduce polymorphism?
+Function values are rank-2 polymorphic; instantiating them for a specific stack is a noop at runtime.
+
+C functions converted directly to Core take a single argument; they should jump directly to implems that flatten all the arguments and returns. For () and other 0-sized types that means removing them!
+I can split tuples that appear dynamically (eg as the result of derefs) and inline the converted C functions to their friendly flattened equivalents.
+A function f which takes an a, ignores it and then stops is in practice fully polymorphic in stk. How to expose that to the optimizer? Perhaps polymorphic implem functions which are then inlined and used, no coercion necessary. Coercions essential to optimization are a code smell, indicating the type system can’t capture enough info.
+Note arbitrary coerce is distinct from coerce-like ops such as rank-2 fun instantiation - in the former case you hope you’re right, in the latter you’re telling the reader why you are.
+
+Word-level Core could still type the words; a multi-word T could be divided into T#1, T#2 etc.
+Straight-line ops could then be typed:
+dup1 : Code (a * a * stk) -> Code (a * stk)
+Note: to ensure a is indeed single-word, you need a kind system.
+(*) : 1 -> n -> (n+1)
+If n is fixed, you must be in the skeleton of main… if the EVM weren’t a stack machine, you’d be able to use fixed-address global instead of stack variables.
+Dup1’s first argument is its continuation, the remainder of the code. All straight-line ops have such a continuation, branching ops do not.
+Need to distinguish between the function types: compile-time function, Code, Cont (callable from a branching op).
+A defun nm code takes a Code a and introduces a Cont a to scope.
+But could I capture fallthrough? Problem: the code fallen through to may be more general than just supporting use by the code above it, so you’d need a constraint.
+defall: (t > Code b) => (Code b -> Code a) -> t -> (Code a, t) —might need a type way of communicating “adds nms to scope”.
+Idea: names as effects/constraints for typed module construction. Find that “typed asm in Haskell” talk.
+How to treat quantified subtyping systematically? Need an algebra for it.
+forall a b . (a,b) ~ (forall a . a, forall b . b) because they’re independent.
+What is a quantified type? It’s like a function which takes an unordered map and produces a concrete type.
+Operations: SKI-type combinators? App, select, K. A forall a is also a forall a b…
+There might be a relation to reasoning about options in a contract DSL.
+How to treat nested foralls?
+Todo make a stack of lower-level typed Cores, it seems a fruitful avenue of exploration.
+
+*******/iPhone notes
+
+Preinlining: in case e of A -> f(args1); B -> f(args2); …, all fs share a
+return address. One could make a variant of f with a fixed ret...
+For that to work with a polymorphic stk the retf pushed would need to be
+parameterized with the given stk.
+Related: ifte cond f(x) g(x) => (ifte cond f g)(x)
+If there's a shared stack suffix, you might need coercion of the fs to get it
+to work. ifte cond f(a,(b,c)) g((a,b),c)
+
+Flattening argument tuples to a*b*c*stk ensures functions with uniform
+representations are implemented using fs of the same type.
+Cont a --as a monomorphic wrapper for forall stk . a*stk -> End doesn't
+generalize to flattened multi-arg funs; you'd need Cont1, Cont2 etc.
+However, every C function which might appear uncoerced as a value is a Cont1.
+
+Nice, with a flattened, append-based stack repr I can safely represent
+functions with multiple return conts. That can be done with retf, Stack as
+well...
+
+f ((a*b*c)*stk) = f' (a*b*c*stk) --because runtime repr is equal, any use of
+f can be replaced with a safe coerce of f'.
+
+All values on the stack are word-padded; represent that explicitly? Pair
+already does that...
+It strikes me one can inline from both the back and front: a normally exiting
+contract must revert/return at some point. Out of gas ~ revert(), so if the
+only leaf branch is returnValue(X) and the contract has no side effects, you
+still need to prove termination to optimize it to just returnValue(X).
+Note aggressive gas opts such as "elide storage writes that will never be
+read" would optimize GasCoin to main () := {}. That's acceptable, focus on
+external observability via log,call,return/revert.
+
+How to implement new scheme?
+C functions -> forall stk . Cont (A*Cont (B*stk)*stk) where
+Cont t = (t,Env) -># End. Introduce TyForall in T, note it's only for Core
+onwards - and only for quantified polymorphism.
+All functions : forall stk . Cont (a*b*c … stk) for some a,b,c… closed over
+stk.
+Zero-cost primop instT t.
+Primops for (a -> b) <-> forall stk . (…) conversion.
+Invariant: a rank-2 type will never mention the stk in scope, so there's no
+need to worry about shadowing.
+jump : (a -># End) -># a -># End, in practice restricted to b = End.
+The second argument should be a value; for nullary functions that don't return the stack may be dropped entirely.
+jumpi : Word -># (a -># End) -># (a -># End) -># a -> End
+stop : PersistentState -> End
+When do I need to create quantified values? $ret is not quantified, it just
+has the top-level stk in scope.
+Pre-opt I can just directly convert each (->) function to -># and
+instantiate it... sharing polymorphic Core functions becomes relevant when
+optimizing.
+They shouldn't pose much trouble because only stk is ever quantified and it's
+always shadowed (so you can stop at Forall when inlining).
+Need a primitive for pushing Core funs (as opposed to C (->), which must
+first be converted to a Core fun).
+
+Argh: I need to reimplement sizeof logic when I introduce TyVar "stk"?
+
+Note: pseudo-inlining is just fallthrough (as opposed to Core-level
+inlining). Fallthrough requires the callee is static, so it should be
+possible to simply update the word-level BB's target stack layout.
+BB spec: invars, outvars, op DAG, branch.
