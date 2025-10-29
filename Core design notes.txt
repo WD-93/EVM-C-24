@@ -2425,3 +2425,239 @@ BB spec: invars, outvars, op DAG, branch.
 First changes: add TyForall Name T :: T, change CC in Structured.Convert
 Will using only a single stk tyvar mess things up somehow? I'll find out.
 Convention: the var for the stack is $stk.
+
+I won't flatten the tuples immediately; that wouldn't be precise anyway since
+some may be wrapped up in newtypes.
+scope = vs (including $ret and $stk) => v1 * v2 * … vN.
+
+Troublesome edge case: I'd like to eliminate all zero-sized on-stack args.
+But what if a function just takes (), not even env? Then I simply can't apply
+that simplification...
+It's a bit ugly that the type of Cont a is (a,Env) -># End, when (a,Env)
+means a * Env * (). No matter, there's no runtime impact and I can simplify
+it away.
+
+Oh sweet: if a function never returns I'm not limited to just not pushing
+ret, I can omit pushes from lower on the stack as well.
+
+There's a mismatch in my code: a Cont is (FunVar,Scope), but a lhs is
+(FunVar,Pattern). FunVar includes type, which is inferred from scope.
+The Name component is allocated. All funs have a scope, so you might as well
+generate the funvar directly.
+A Core function push is polymorphic in stack; a Call should take a C function
+(a -> b), convert it to a polymorphic Core function and instantiate it on
+the stack type (arg * scope).
+Instantiation is a Core op to enable rank-2 funs to live on the stack.
+
+f x:
+call (x*f*scope,env) =
+ let coref = fun2corefun# cf
+     instf = instantiate coref --stk = scope
+     ret = instantiate retf    --stk = stk
+ in jump instf (x * ret * scope, env)
+--Need to look at Structured to see actual scope at time of call.
+
+Would it be simpler to emit a function for every stmt as I did in CFG? Yes!
+coreBlock stmts next --the next is to be jumped to after the last stmt
+ (lhs := Op opE):rest => append op to ops? No.
+  It instead becomes:
+   lhs = opE
+   callNext --two ops and a branch
+ If v th el : rest =>
+  nextIf <- coreBlock rest next --return a cont?
+  (ft,scope) <- coreBlock th nextIf --the scopes will be equal
+  (fe,_) <- coreBlock el nextIf
+  branch $ Jumpi v ft fe scope 
+  --defines and returns the cont of a function which just branches!
+coreBlock [] cont = return cont
+Keeping (fun,pat) in state rather than an argument confuses things and
+makes it hard to recursively call coreBlock.
+coreFun:
+ flattenedCont <- coreBlock body returnNull
+ insert a call to flattenedCont
+
+Consider case b of True -> {}… b will be on the stack in {}, but not after
+the case. Do I need to emit more declares to catch [Declare s1] (next_s2)?
+
+Don't force tuple erasure yet, instead cfun calls a flattened implem fun like
+this:
+cfun (x,y)*ret*stk =
+ cfun' x * y.fst * y.snd * ret * stk
+x = call f v --f returns a single value? Yes; note f must be a C function.
+return stmts must therefore be compiled to push a single value.
+When f is static it can be inlined; otherwise going from
+x*y*z*stk to (x,y,z)*stk has no runtime cost, so it's still fine to push a
+shared suffix.
+The exec cost of each branch of jumpi cond f1 f2 val --depends on word ordering. Finding a good compromise is tricky... changes can be propagated
+across a graph of statically called funs.
+Coercion makes modifying the word ordering (CC) of all funs on a per-type
+basis dangerous; don't do so, instead dynamic calls must comply with the CC.
+That's for C functions; a known set of Core functions can have their args
+jointly rearranged.
+Tuple erasure might fit in a C-level pass: x :: Pair a b => x1,x2. Problem:
+var x = f() :: Pair a b. Note vars are pushed in order, while a is ToS.
+Add var Pair x y = f()?
+x.fst => x1
+A Core-level transformation would be simpler, but you must adjust the type
+of BBs from (a,b)*stk to a*b*stk together.
+Core lhses should not be required to be in [Var] form; state arguments may
+vary. Explicitly separate state as a kind? Not passing them in one tuple
+would be necessary.
+Restricting lhs to var and doing a bunch of let x = arg.fst.(…) would work,
+but the Core would become unreadable.
+StackAndState : Type -> State -> Argument?
+Ops may return stack and state...
+The stack could be a field of an EVM state... no, I want the state to
+be of variable type (but State kind) to be able to split out pointer region
+maps.
+By forcing explicit Type and State (,), I can ensure lhses are in a normal
+form. Normal doesn't mean runtime-equivalent for stack, cf (a * b) * c vs
+a * b * c. FW Idea: associative value and type constructors (*).
+
+***
+Back in the saddle after interruption:
+Let lhs be tuples. Functions polymorphic in stk (and only the tyvar stk).
+An additional State kind, state Pair and Nil, 
+Arg : Type -> State -> Argument
+Core functions are Argument -># End... but what is the kind of End?
+What is the kind of Bytestring?
+Tuple erasure isn't simple to do immediately; it must be done later.
+Algo: divide functions into SCCs, replace f ((a,b),c) = ... with 
+f ((a,b),c) = f' a*b*c.
+Any call f x where f args = f' (re args) and re is a zero-cost reordering
+can be replaced with f' (re x).
+In jumpi b f1 f2 x where both f1 and f2 apply the same reordering (and they
+will since tuple erasure converts es to normal form), it can be replaced with
+jumpi b f1' f2' (re x).
+--Jumpi simplification: b can be put on the stack.
+Problem: th and el resist that, but they're vars, produced by ops...
+Solution: either accept slightly more complex branch => stack calcuation, or
+put b*th*el ToS and rely on opts in word-level Core.
+return and revert can take (off*len) as stack; the absence of stk tells the
+compiler you can ignore the preexisting stack rather than pop it.
+
+After normalization, all bindings returning tuples should be in explicit form.
+Need to extend Value to include state-level Nil and Pair and Arg.
+Ops such as deref# may return an Arg.
+Mutable state should be linear; it may be borrowed repeatedly, but consumed
+only once. FW: datatypes that accept State params, e.g. to hide private
+memory Rust-style.
+If C function -> Core function conversion converted to normal form from the
+start, things would be easier... no need to deal with dynamic functions
+specially.
+Then Core functions generated from structured can be independently processed
+into normal form; the C functions start in NF.
+Tuple-locals become (v1,v2,...) when used as exprs; v.fst becomes a sub-v.
+Zero-sized types are eliminated.
+
+Problem: with tuples eliminated, must tuple derefs turn into multiple derefs?
+No: normalization makes tuples explicit, that's all. The lhs of a deref op
+can simply be a tuple. The return type ((),a) can be normalized to a!
+Exprs no longer return a single v... indeed, it may return no vs at all.
+Are there any side-effecting, non-call exprs which return ()?
+Struct field access may return a tuple; its lhs should be made explicit as
+well. Since an E may be a call, all Es must pass their result on the stack
+and call a cont?
+That works fine with inlining: in f scope = let x = op in g (x*scope),
+f's body is inlined to g's with the x parameter let-bound instead of passed.
+As a result, it will no longer pollute the stack.
+
+Problem with ([Var],[Var]) repr:
+a*b*stk --ends with a var
+[a] --just an a?
+a*b --ends with b, that's fine
+[] --ends with ()
+It's a slight complexity, not a big problem?
+Bigger problem: stk is a tuple. In practice it'll be :: tyvar stk, so NF
+means flat tuple with no syntactic tuple types.
+Core fun type: ([T],[T]) -># End?
+Nil, Pair, SNil, SPair, Arg : Type -> State -> Arg
+Always pass an Arg; (->#) : Arg -> End -> Type. 
+Introduce Cont : Type -> State -> Type?
+jump :: Arg (Cont a s * a) s -># End
+jumpi could take cond, t, e on stack... do that for now, opt later.
+Real repr:
+body ::=
+ let v = op v in body |
+ jump v |
+ jumpi (cond*th*scope,s) body --th passed dynamically, body takes (scope,s)
+There's no clean LC equivalent and lets don't cross the jumpi boundary; all
+the args to body must be in (scope,s). LC is perhaps not the right
+abstraction...
+An explicit Code a s type? That doesn't let you group and manipulate lets,
+because all scope would need to be explicit. th still shouldn't be on the
+stack... use "let ops in jumpi cond th el v".
+Ops also take and return an Arg, ([Var],[Var]).
+
+
+Overall design goal for Core ops: they should be trivially compilable to
+word-based Core.
+
+Core first-pass compilation:
+Allocate a fun for each op, inline later...
+Pattern assignment is complex...
+scope: Arg (v*rest) env
+x = v => let x = v in next (Arg (v*rest) env
+--Note assignment keeps the v on the stack!
+*(p :: Ptr Memory a) => 
+ let (Arg () mem') = writeMem (Arg (p,a) mem)
+ in next (Arg (v*rest) env)
+x.fields.field => --unoptimized
+ old = x.fields
+ new = old{field=v}
+ x.fields = new --recurse
+Con (check=True) fieldps =>
+ if tag scheme = Nil:
+  Con (check=False) fieldps = v
+ else:
+  t = v.tag
+  b = k == t
+  jumpi b (f: Con (check=false) fieldps = v) revert (v*rest,env)
+--
+Con {field: p, fieldps} =>
+ v' = v.field
+ p = v' --expr, not op
+ Con (check=False) fieldps = v
+
+Reordering f x should be ez if f, x are independent and involve no control
+flow: inline the ops until the jump, then you're set (stack scheduling
+should do the rest).
+
+***
+
+Storage API: byte-aligned storage pointers are necessary for field access,
+but expensive and limited to 16b.
+Word-padded API:
+data Slot a = Slot Word
+get : Slot a -> WordPad a
+set : (Slot a, WordPad a) -> ()
+toPtr : Slot a -> Ptr Storage (WordPad a) --fails if slot too large
+Accessing fields or indices could use custom DTs... SlotArray a?
+sload_n : (PN n, Word) -> Array n Word?
+Problem: I have no way of checking whether a Nat is 0 or to do type-level
+arithmetic. I can't convert Nats to Peano repr at the type level either.
+The best I can do is use PN->Word, implement the logic dynamically and
+rely on specialization (CE, DCE).
+With pointer reasoning I could optimize an impl of sload_n that used alloc
+to one that pushed to the stack... Actually, allocating an on-stack array and
+setting its indices in a loop (which should then get unrolled) should work.
+Static index writes to an on-stack array of a whole-word type should be zero-
+cost.
+
+Idea: If BBs can be compiled down to word IR and then stack code in isolation, you could peep the compilation to inform exec cost and code size
+while optimizing Core.
+
+Look into applicability of concepts from database normalization (e.g. 3NF) to
+application-specific data structure design (e.g. my IR types). "No redundant data in key (non-cache) fields" is an obviously desirable property, preventing bugs caused by inconsistency.
+
+***
+
+Closures:
+//If you want to close over a large type, better to alloc and use a pointer
+//instead.
+data Closure r a b = Closure {fun:()->(),closed:()} region r;
+mkClosure : ((c,a) -> b, c) -> Closure r a b
+call : (Closure r a b, a) -> b
+Pushing an unknown number of words can't be done in C, but perhaps in Core
+using coercion... would need to be careful opts don't mess it up.
+Store c word-padded.

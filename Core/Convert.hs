@@ -1,6 +1,8 @@
+{-# LANGUAGE PatternSynonyms #-}
 module Core.Convert where
 
-import AST.DTs (T(..))
+import AST.DTs (T(..),tupleT)
+import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
 
@@ -60,7 +62,8 @@ coreF :: FunVar -> Pattern -> [Stmt] ->
 coreF fv p body =
   fmap csDefuns $ runExcept $ flip execStateT initSt $
   flip runReaderT fv $ do
-  rn <- newFunName "returnNull" [Mono "$ret" $ _]
+  (rn,rnp) <- newFunLHS' "returnNull" [Mono "$ret" $ error "todo"]
+  error "todo"
   where initSt = CoreS {
           csAllocCtr = 1,
           csLoopStack = [],
@@ -74,17 +77,40 @@ coreBlock :: [Stmt] -> --remaining stmts
              CoreM ()
 coreBlock = error "todo"
 
+--Flushes the 
+branch :: Branch -> CoreM ()
+branch b = error "todo"
+
 setCurrentFun :: (FunVar,Pattern) -> CoreM ()
 setCurrentFun fvp = modify (\s->s{csCurrentFun=fvp})
 
---All C funs, allocated funs and primfuns (as opposed to primops)
---are of type Cont a = (a,Env) -># End#.
-newFunName :: Scope -> --the scope the function expects
-              CoreM FunVar
+--Allocates a new function Name, as distinct from a FunVar (which contains
+--type info).
+newFunName :: CoreM Name
 newFunName = newFunName' ""
---Tags the fun with an explanatory string
-newFunName' :: String -> Scope -> CoreM FunVar
-newFunName' = error "todo"
+--Adds an explanatory string
+newFunName' :: String -> CoreM Name
+newFunName' expl = do
+  fv <- ask
+  s <- get
+  let n = csAllocCtr s
+  put s{csAllocCtr = n + 1}
+  let FPoly f ts _ = fv
+  return $ concat [f,show ts,show n,expl]
+
+--TODO do something prettier
+mangleFunVar :: FunVar -> String
+mangleFunVar (FPoly f ts _) = f ++ show ts
+
+--scope (including $ret and $stk but not env) = vs => lhs = (v1*v2*...vN,env)
+--Type: forall stk . lhs -> End
+--The type is put in the FunVar.
+scope2LHS :: Scope -> (Pattern,T)
+--Edge case, should not be encountered in Structured:
+scope2LHS [] = error $ "Compiler error: an empty scope in structured IR?!"
+scope2LHS scope = (P $ tupleV [foldr1 Pair $ map Var scope],
+                   TyForall "stk" $ tupleT [foldr1 T.Pair $ map typeOfVar scope,
+                                            envT])
 
 {-
 

@@ -1,0 +1,32 @@
+Add syntactic sugar for method tags.
+The ABI itself is friendly: any argument signature Ts can be represented as
+a struct. The EVMC type system already integrates region parameters (in a more general manner than Sol, where they're just attributes of structs and arrays).
+data SolArray r a = SolArray {unSolArray: Word};
+lengthSolArray : SolArray r a -> Word;
+lengthSolArray arr := {
+ arr :: SolArray r a;
+ var p = unsafeCoerce arr.unSolArray :: Ptr r Word;
+ return *p
+}
+
+Method APIs can be represented as datatypes with a custom tag scheme... but
+each new combination must be a new datatype.
+If I allowed more general distinction of cases, I could combine APIs using
+a Union a b = Left a | Right b datatype with custom tag (), then
+case-distinguish them as long as a and b have incompatible reprs (which they
+would in this case).
+
+Typical Sol contract emulator:
+main () := {
+ var p = coerce 0 :: Ptr Calldata MyAPI;
+ case *myAPI of {
+  Method1 (a,b,c) => …;
+  ...
+ }
+}
+--Note the compilation of *myAPI in the case should access only the tag,
+--modulo free content in the remaining 28B.
+
+Returning values and calls is trickier; you need to remember the offset into
+the memory. An array of arrays (for example) must be serialized into a
+return buffer; class functions could help with that.

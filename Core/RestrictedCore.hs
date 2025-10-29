@@ -108,6 +108,10 @@ data ConstSet = ConstSet (Set Const)
 --Dynamic value names, as distinct from functions and globals.
 data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
   deriving (Eq,Ord,Read,Show,Data)
+--Note that now Core functions are polymorphic in stk (except in possible edge
+--cases where they don't take stack at all) the name FMono is misleading;
+--FPoly represents the equivalent of C functions, whose names take an additional
+--typarams argument. TODO just tag all functions with their parent (Name,[T])?
 data FunVar = FMono Name T --for auto-generated BBs
             | FPoly Name [T] T --for user-level functions
   deriving (Eq,Ord,Read,Show,Data)
