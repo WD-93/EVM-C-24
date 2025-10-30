@@ -19,10 +19,11 @@ import Control.Monad.Except
 --info. Array, Int and Pair are treated specially and are not cached.
 type Size = Integer
 type MonoT = (Name,[T]) --A monomorphic type of form TyCon ts
+type Sizeof = Map MonoT Size
 type SizeofError = [MonoT] --A cycle
 computeSizeof :: DTsInfo E -> --Info about all DTs, includes placeholders 4 prim
                  Set MonoT ->
-                 Either SizeofError (Map MonoT Size)
+                 Either SizeofError Sizeof
 computeSizeof dtsi tyconTs =
   runExcept $
   flip execStateT M.empty $

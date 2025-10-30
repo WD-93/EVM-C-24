@@ -2589,6 +2589,100 @@ because all scope would need to be explicit. th still shouldn't be on the
 stack... use "let ops in jumpi cond th el v".
 Ops also take and return an Arg, ([Var],[Var]).
 
+Tuple erasure:
+Step 1: in all Values (lambda lhs, op lhs and rhs, branch arg), 
+>>= tupleVarToVars. Convert x :: Pair a b to x.fst, x.snd, then recurse.
+Convert all zero-sized types to [].
+Step 2: x = vs.fst@ts => x = copy (select_fst vs ts)
+
+Note for writeup: Core's jumpi doesn't fit JUMPI well. Core will not be the
+be all and end all of EVM IR's...
+
+Should scope in trueMain be fixed to ()? Does that offer any benefits?
+
+Thought: a stack of SElems alongside a dynamic stack could make sense. That
+would require quantifying both over stk and sstk.
+Use case: a recursive function that allocs new pointers in each call.
+I need that for allocs to be able to spawn new state vars and pass them
+across call boundaries. Until that's done I can only use memory slices within
+a single BB.
+
+After I get an asm backend done, I could make a word-level Core -> Yul backend and compare perf.
+
+For writeup: major steps of Structured->Core: 
+In Structured creation: tuple erasure.
+In Core creation: structured control flow and Call pseudo-op to branch.
+After Core has been produced, SSA to erase stack assignments.
+Copy erasure.
+Debug: check Core is well-typed.
+
+Pruning dead vars in cyclical code: identify statically called subset, form
+SCCs. Vars demanded by lower SCCs or dynamic calls are live.
+
+*********************Value -> ([Var],[Var]) changes**************************
+
+Structured.Convert
+Q: Also erase newtypes? No, Fun and Ptr are newtypes and have invariants.
+The rest don't... FW, if at all.
+When a tuple is added to scope, it must be flattened first.
+An E may now return multiple vars, or none.
+Ah, now that sizeof is relevant to value flattening it must be in the convert
+monad's reader.
+Plan: erase tuples here, not in Core.
+
+Should I ditch the Const op? It seems ugly to retain the higher-level lang I
+went to such trouble to eliminate. A better alt could be symbolic exprs:
+integer literals, typed asm symbols, Con {field: sym}
+Then I can still CE struct.field.
+Invariant: the exprs should be implementable with a push. The same SymE type
+could be used to represent State vars and for symbolic simplification.
+Note: function symbols are Core functions... and they're quantified!
+
+For now, limit effects to binary did/n't modify mutable storage region.
+p = alloc(n) consumes (and does not return) a splittable ap, mem and produces
+(mem ||| new_chunk). That should correspond to an op so p->new_chunk can be
+remembered.
+Since I don't use the output of state, emitOp can return a [Var] for now?
+The returned vars should be new and depend on Arg type params.
+It only takes Args! That makes pure stack ops a bit more awkward, but I
+can't distinguish between SUnit and no State just by looking at the vars...
+
+Convert deref directly to a primop? Calls take and potentially modify all
+state, but let you share code.
+Calling is more general, optimize later.
+Should I move the Core types Arg, Cont, SPair, SUnit to AST.DTs?
+
+Should the region param to a pointer be Memory or a Memory# slice?
+EVMC's type system can't handle the latter yet, but it's an interesting idea
+to explore. I'd need a subslice relation.
+Functions that alloc would return a different slice type than they consumed.
+
+Argh: with tuple erasure, CaseTag must now take a list of vars!
+A nil tag is common, but using a Pair as a tag is a bit maniacal.
+Nonetheless, it must be supported.
+For writeup: simple rules mean you encounter "maniac programmer" edge cases.
+
+Structured.Convert has grown too large... TODO decompose it.
+Candidate modules: Monad, assign logic, case logic...
+
+revertValue() should be optimizable to revert 0 0. The latter 0 by inlining
+sizeof, the former by realizing the value of zero-size pointers is
+irrelevant. If I enforce that, void pointers will not be usable...
+That's fine, note it and encourage users to use Byte pointers instead.
+
+Now that I can tell whether a type is zero-sized, I could elide zero-size pointer read/writes and assignments. That belongs in Core opt...
+
+FW: By adding quantification to the C type system, I could represent
+Core funs directly. I would also need to add richer overloading, where types
+aren't just a set of QP types but can do computation to impose constraints.
+Ex: 
+ sizeof : P a -> PN n --where n is a function of a
+ cfun2corefun : (a -> b) -> forall stk. Cont t Env 
+--where t is a function of a, b
+Simplest approach: introduce a v = TyFam a..z constraint, unify v with
+result when a..z are monomorphized. The tyfams could be primitive.
+
+*****************************************************************************
 
 Overall design goal for Core ops: they should be trivially compilable to
 word-based Core.

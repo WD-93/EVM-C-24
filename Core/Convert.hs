@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Core.Convert where
 
-import AST.DTs (T(..),tupleT)
+import AST.DTs (T(..),Name(..),tupleT)
 import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
@@ -106,8 +106,6 @@ mangleFunVar (FPoly f ts _) = f ++ show ts
 --Type: forall stk . lhs -> End
 --The type is put in the FunVar.
 scope2LHS :: Scope -> (Pattern,T)
---Edge case, should not be encountered in Structured:
-scope2LHS [] = error $ "Compiler error: an empty scope in structured IR?!"
 scope2LHS scope = (P $ tupleV [foldr1 Pair $ map Var scope],
                    TyForall "stk" $ tupleT [foldr1 T.Pair $ map typeOfVar scope,
                                             envT])

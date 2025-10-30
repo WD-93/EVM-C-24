@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase, PatternSynonyms #-}
 module Structured.Convert where
 
-import AST.DTs hiding (Var,Unit,Pair)
+import AST.DTs --hiding (Var,Unit,Pair)
 {-(Pat(),E(),S(),T(..),Name(),Module(..), pattern UInt,
                 pattern (:->), pattern Array)-}
 import AST.Util (rollTyApps,unrollTyApps,region2T)
@@ -11,7 +11,10 @@ import qualified Structured.DTs as IR
 import Mono.Mono (MonoS(..),instT)
 import Const.Serialize
 import Core.RestrictedCore
+import Core.Flatten --for tuple erasure
+import Core.PrimTypes --Core-specific types
 import Util (complainIf)
+import Sizeof (Sizeof())
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -29,17 +32,18 @@ import Data.List (elemIndex)
 --computed, enabling case => ifte opts.
 --Algo:
 --for each (f,(t,(p,s))) in exploredFuns, convert its s to structured Stmts
-convert :: (Module,MonoS,Map (Name,[T]) Integer, SerS) ->
+convert :: (Module,MonoS,Sizeof, SerS) ->
            Either ConvertError Structured
 convert (mod,monoS,sizes,serS) = do
   --Structured compilation doesn't use sizeof
   (defs,_) <- runExcept $
               flip runStateT initConvertS $
-              flip runReaderT (mod,monoS,serS) $
+              flip runReaderT (mod,monoS,sizes,serS) $
               M.fromList <$> (forM (M.toList $ exploredFuns monoS)
                               (\((f,params),(a :-> b,(p,s))) -> do
                                   (pat,stmts) <- convertF b p s
-                                  return (FPoly f params $ fun2coreT a b,
+                                  coreT <- fun2coreTM a b
+                                  return (FPoly f params coreT,
                                           (pat,stmts))))
   let gs = M.fromSet (\g ->
                         let Just (r,_me) = M.lookup g $ globals mod
@@ -59,8 +63,29 @@ convert (mod,monoS,sizes,serS) = do
                     sdtsInfo = dtsInfo mod,
                     ssizeof = sizes
                    }
+fun2coreTM :: T -> T -> Convert T
+fun2coreTM = curry $ tryFlatten (\sz (a,b) -> fun2coreT sz a b)
+flattenVarsM :: [Var] -> Convert [Var]
+flattenVarsM = tryFlatten flattenVars
+flattenTM :: T -> Convert [T]
+flattenTM = tryFlatten flattenT
+--A shared helper function for lifting Core.Flatten's flattening functions
+--to Convert.
+tryFlatten :: (Sizeof -> a -> Either T b) -> a -> Convert b
+tryFlatten f a = do
+  (_,_,sizeof,_) <- ask
+  case f sizeof a of
+    Left t -> throwError $ FlattenFailed t
+    Right b -> return b
+argTypeToVarsM :: T -> Convert ([T],[T])
+argTypeToVarsM t = do
+  (_,_,sizeof,_) <- ask
+  case argTypeToVars sizeof t of
+    Right tup -> return tup
+    Left are -> throwError $ ArgReprError are
+    
 --Read: Module, MonoS, sizeof info, SerS
-type ConvertR = (Module,MonoS, SerS)
+type ConvertR = (Module, MonoS, Sizeof, SerS)
 --State: scope + stmts (it's just convenient to have in State)
 --Also need to alloc new vars
 data ConvertS = CS {
@@ -92,6 +117,15 @@ data ConvertError = GenericCE String --placeholder
                   --Fun LHS errors
                   | ArgPatHasDuplicateVars Pat
                   | NonTupleyFunLHS Pat
+                  --If sizeof for a monotype is missing from the Sizeof map,
+                  --type and value flattening may fail. That can also be
+                  --triggered by C fun -> Core Cont conversion, since it
+                  --involves flattening
+                  | FlattenFailed T
+                  --If a bad return type is given to an op this can be thrown
+                  --Checking the argument is correct will not be done in this
+                  --phase...
+                  | ArgReprError ArgReprError
   deriving (Eq,Ord,Read,Show)
 --I don't annot poly names (fs and Cons) with actual type, nor do I do so for
 --(:$), so I must reconstruct them from params... a complexity and perf drag.
@@ -106,56 +140,58 @@ cNewVar t = do
   put s{csAllocCtr = n+1}
   return $ Mono ("$v" ++ show n) t
 
---Calling convention: ((arg,$ret),env) -> End#
+--Calling convention:
+--flattened a ++ $ret * stk
 --I don't disallow non-tuple lhses in Mono... but I should here.
 --Change Core Lambda to have a single var as its lhs, then bind using id#?
---Then id must be able to operate on state types.
---If I pass a single var, I must recognize when one of its arguments is
---unused semantically.
---For now I'll use a Pattern as the lhs and set scope to flattern the vars
---first thing.
+--No.
 --Need to enforce no duplicate vars when converting Pat to Pattern
---Need rett to type $ret :: (rett,Env) -># End#
+--Need rett to type $ret :: Cont (flattened rett ++ stk) Env
 --Oh no, I forgot to convert called functions to Core funs (where Env is
 --explicit) before calling them! Actually that's fine: the Core implem of the
 --Call pseudo-op just needs to convert it.
 convertF :: T -> Pat -> S -> Convert (Pattern,[Stmt])
 convertF rett p s = do
   (vs,val) <- pat2Pattern p
-  let ct = contT rett
+  ct <- contTM rett
       --Changed to (a * $ret * stk, env)
-      pat = P $ tupleV [foldr1 Pair [val,
-                                     Var $ Mono "$ret" ct,
-                                     Var $ Mono "$stk" $ TyVar "stk"],
-                        envV]
+  let pat = (val ++ [Mono "$ret" ct, Mono "$stk" $ TyVar "stk"],
+             envV)
   stmts <- snd <$> collect (setScope vs >> convertS s)
   return (pat,stmts)
+--The type of a return continuation expecting a b; free in stk
+contTM b = do
+  bs <- flattenTM b
+  return $ Cont (stackT $ bs ++ [TyVar "stk"]) envT
 
---Returns a value so I can easily combine it with envV
---Also returns the non-wild vars so they (and only they) can be put in scope
+--First [Var]: the non-wild vars so they (and only they) can be put in scope
+--Second [Var]: the vars on the stack.
 --Valid arg patterns p ::= () | _ | x | Pair p p
 --Wild becomes a new var which is discarded.
-pat2Pattern :: Pat -> Convert ([Var],Value)
+--Note vs and allVs now need to be flattened to erase tuples!
+pat2Pattern :: Pat -> Convert ([Var],[Var])
 pat2Pattern p = do
-  (vs,val) <- go p
+  (vs,allVs) <- go p
   complainIf (S.size (S.fromList vs) < length vs)
     $ ArgPatHasDuplicateVars p
-  return (vs,val)
+  vs' <- flattenVarsM vs
+  allVs' <- flattenVarsM allVs
+  return (vs',allVs')
     where
       go = \case
         PWild (Just t) -> do
           v <- cNewVar t
-          return ([], Var v)
+          return ([],[v])
         TypedPVar (Just t) v ->
           let var = Mono v t
-          in return ([var], Var var)
-        PCon "Unit" _ _ -> return ([],Unit)
+          in return ([var],[var])
+        PCon "Unit" _ _ -> return ([],[])
         --The pair fields may be out of order or missing...
         --No need to normalize (_,_) to _, it has no runtime impact anyway?
         PCon "Pair" (Just [a,b]) fields -> do
           (vs1,val1) <- lookupField a "fst" fields
           (vs2,val2) <- lookupField b "snd" fields
-          return (vs1 ++ vs2, Pair val1 val2)
+          return (vs1 ++ vs2, val1 ++ val2)
         --TODO find a better adjective than "tupley"...
         p -> throwError $ NonTupleyFunLHS p
       lookupField t field fields =
@@ -169,14 +205,17 @@ pat2Pattern p = do
 convertS :: S -> Convert ()
 --The only case that modifies the scope:
 --Note that unshadowing should guarantee the nm is not in scope already.
-convertS (A.Declare nmes) =
+--TODO flatten the vs!
+convertS (A.Declare nmes) = error "todo"
+{-
   forM_ nmes (\(nm,e) -> do
                  scope <- getScope
                  v <- convertE e
                  let t = typeOfVar v
                      local = Mono nm t
-                 emitStmt $ Var local IR.:= OpE (Op "id#" [t], Var v)
+                 emitStmt $ Var local IR.:= OpE (Op "id#" [t], ([v],[]))
                  setScope $ local:scope)
+-}
 convertS s = cleanup (go s)
   where
     go :: S -> Convert ()
@@ -186,27 +225,31 @@ convertS s = cleanup (go s)
       --Tail call recognition is better done at the Core level, where it
       --can synergize with other opts.
       A.Return e -> do
-        v <- convertE e
-        emitStmt $ IR.Return v
+        vs <- convertE e
+        emitStmt $ IR.Return vs
       --Initial scope: S
       --Eval truthy# e, branch on it.
       --The cases have scope S => S.
+      --Argh: post-tuple erasure, convertE doesn't directly give me the
+      --type info I need for truthy. I instead get a flattened type.
       A.Ifte e th el -> do
         scope <- getScope
-        v <- convertE e
-        let Mono _ t = v
-        w <- emitOp (Op "truthy#" [t]) (Var v) (UInt 32)
+        vs <- convertE e
+        w <- truthy vs
         setScope scope
         ths <- snd <$> collect (convertS th)
         setScope scope
         els <- snd <$> collect (convertS el)
-        emitStmt $ IR.Ifte v ths els
+        emitStmt $ IR.Ifte w ths els
       --First collect the code for eval of e into its own [Stmt];
       --branch on the v returned.
       --The s has scope S => S.
+      --The expr branch must apply truthy and return a single Word var.
       A.While e body -> do
         scope <- getScope
-        (v,estmts) <- collect $ convertE e
+        (v,estmts) <- collect $ do
+          vs <- convertE e
+          truthy vs
         setScope scope
         (_,bstmts) <- collect $ inLoop $ convertS body
         emitStmt $ IR.While estmts v bstmts
@@ -243,11 +286,21 @@ convertS s = cleanup (go s)
       c
       setScope scope
 
+--Takes a number of stack vars and returns their truthiness (a single Word var)
+truthy :: [Var] -> Convert Var
+truthy vs = do
+  let t = stackT $ map typeOfVar vs
+  (ws,_) <- emitOp (Op "truthy#" [t]) (vs,[]) (Arg (UInt 32) SUnit)
+  let [w] = ws
+  return w
+
 --Compiles a case statement with >1 cases
 --If there's a refutable case for every constructor then there should be no
 --default.
 handleCase :: E -> [(Pat,S)] -> Convert ()
-handleCase e pat_ss = do
+handleCase e pat_ss = error "todo"
+{-
+  do
   --First: [(Pat,S)] -> (boxity, refutable cases, Maybe default)
   (boxity, refutable, md) <- handleCase1 $ pat_ss
   --Next: fail if two refutable cases have the same top-level con.
@@ -268,7 +321,7 @@ handleCase e pat_ss = do
   tagScheme <- do
     --The tag is not an ordinary field, so typeOfDotE won't work...
     --Fortunately the monomorphized tag type is available in monoS.
-    (_,monoS,_) <- ask
+    (_,monoS,_,_) <- ask
     let Just tagScheme = M.lookup (tycon,ts) $ exploredDTs monoS
     return tagScheme
   let tagT = case tagScheme of
@@ -282,14 +335,14 @@ handleCase e pat_ss = do
     let ptrField = "unImpl"++tycon
     ptrt <- typeOfDotE ptrField ts
     let Ptr r implDT = ptrt
-    v' <- emitOp (GetField [NamedField ("unImpl"++tycon) ts]) (Var v) ptrt
+    v' <- emitOp (GetField [NamedField ("unImpl"++tycon) ts]) ([v],[]) ptrt
     --Another coerce with no runtime impact
-    v'' <- emitOp (GetFieldPtr [NamedField ("tagImpl"++tycon) ts]) (Var v')
+    v'' <- emitOp (GetFieldPtr [NamedField ("tagImpl"++tycon) ts]) ([v'],[])
            (Ptr r tagT)
     --We call the deref function here (it should be inlined later)
     deref v''
          else do
-    emitOp (GetField [NamedField ("tag"++tycon) ts]) (Var v) tagT
+    emitOp (GetField [NamedField ("tag"++tycon) ts]) ([v],[]) tagT
   --The set of possible consts, determined by the tag scheme + cons:
   constSet <- getConstSet (tycon,ts)
   --Compute the (const,stmts) list and default
@@ -297,7 +350,7 @@ handleCase e pat_ss = do
   dflt <- case md of
             Nothing -> snd <$> collect
               (do setScope (v:scope)
-                  callCFun "revertValue" [TyCon"Unit"] Unit)
+                  callCFun "revertValue" [TyCon"Unit"] ([],envV))
             Just (p,s) -> snd <$> collect
               (do setScope (v:scope)
                   mep <- evalPatternEs p
@@ -311,6 +364,7 @@ handleCase e pat_ss = do
   --The same function can be used for matching against a single pattern in
   --either case; the EvaluatedPat knows whether it's boxed or not.
   emitStmt $ CaseTag v constSet const_stmtss dflt
+-}
 
 --Checks whether the refutable cases include every relevant constructor.
 --Ex: Nil, Cons and False, True would qualify.
@@ -323,22 +377,22 @@ casesOfferFullCoverage cons = do
   let Just dti = M.lookup reltycon $ datatypes $ dtsInfo mod
   return $ length cons == length (dtCanonicalCons dti)
 
---v is the value which will be matched against the pats. The tag check of the
+--vs is the value which will be matched against the pats. The tag check of the
 --top-level con is omitted.
 --Why return a list and not a map? Because earlier cases dominate later ones;
 --later cases with a tag bit-equal to an earlier one are never executed.
 --However, we can't in general determine const equality at this stage.
-refutableCase :: [Var] -> Var -> (Pat,S) -> Convert (Const,[Stmt])
-refutableCase scope v (p@(PCon con (Just params) _),s) = do
+refutableCase :: [Var] -> [Var] -> (Pat,S) -> Convert (Const,[Stmt])
+refutableCase scope vs (p@(PCon con (Just params) _),s) = do
   const <- getConTag con params
   (_,stmts) <- collect $ do
     --Scope at start of case, before matching
-    setScope (v:scope)
+    setScope (vs ++ scope)
     --Evaluate subexprs in the pattern
     mep <- evalPatternEs p
     --It's refutable, so guaranteed not to be trivial
     let Just ep = mep
-    assign (elideTagCheck ep) v
+    assign (elideTagCheck ep) vs
     --Scope at start of body
     setScope scope
     convertS s
@@ -350,7 +404,7 @@ refutableCase scope v (p@(PCon con (Just params) _),s) = do
 --Precondition: only called on monots with non-nil tag scheme
 getConstSet :: (Name,[T]) -> Convert ConstSet
 getConstSet con_ts = do
-  (_,_,serS) <- ask
+  (_,_,_,serS) <- ask
   let Just (cons,tagScheme) = M.lookup con_ts $ sersTagSchemes serS
       numcons = fromIntegral $ length cons
   case tagScheme of
@@ -380,7 +434,7 @@ getRelCon con = do
 --Get the tag of a given monomorphic constructor
 getConTag :: Name -> [T] -> Convert Const
 getConTag con params = do
-  (mod,_,serS) <- ask
+  (mod,_,_,serS) <- ask
   --First get tycon from con using mod
   (relcon,reltycon) <- getRelCon con
   --Then get tag scheme from serS; todo deduplicate tag computation logic
@@ -403,7 +457,9 @@ getConTag con params = do
 --inlined later for the compiler to be remotely efficient.
 --The work of dispatching based on region and sizeof is done later.
 deref :: Var -> Convert Var
-deref ptr = do
+deref ptr = error "todo"
+{-
+  do
   let t = typeOfVar ptr
   case t of
     Ptr r a -> do
@@ -411,6 +467,7 @@ deref ptr = do
       f <- emitOp (Const ft $ MkConst $ TyApp "deref" [r,a]) (Var ptr) ft
       call f (Var ptr)
     _ -> error "Compiler error: deref called on non-pointer!"
+-}
   
 --Because the cases are well-typed, there will never be a mix of retutable
 --boxed and unboxed. The only possible error is a default case that isn't last.
@@ -466,28 +523,47 @@ inLoop c = do
   modify (\s' -> s'{csInALoop = csInALoop s})
   return a
 
---Each expr returns a single var; it may be split with a copy
---Constant expressions could become a Const bound to a new var.
+--New: convertE returns a list of vars, as its result is flattened.
+--It may return several vars if its result is a tuple, or none if its result
+--is a zero-size type.
+--Constant expressions could become a Const bound to new vars; split tuple
+--consts into multiple const ops.
 --Important: that includes functions and global pointers.
---For now, turn leaf consts into const primops; CE later. Indeed, doing so
---by symbolic eval is more general than identifying syntactic consts.
+--For now, turn leaf consts into const primops; constant-expand later.
+--Indeed, doing so by symbolic eval is more general than identifying syntactic
+--consts, as it catches e.g. x = 1; y = 2; z = x + y.
 --Static calls can later be detected by symbolic eval.
 --Since locals have been unshadowed, they can be translated straightforwardly
---to function params. Emit no code and simply return the var.
---Note the Var contains type info, so no need to return a separate T.
---Invariant: every expr of type t pushes a generated var of type t; any
---subexprs are consumed. I use cleanup for that.
-convertE :: E -> Convert Var
-convertE = go
-  where go = cleanup go'
-        go' = \case
-          --w: Emit op newvar = Const Word n
-          EInteger n ->
-            emitOp (Const (UInt 32) $ MkConst (EInteger n)) Unit (UInt 32)
+--to function params. Emit a copy operation (id#) to prevent
+--x = y; y++; return x from returning x+1 instead of x.
+--Note the Vars contain type info, so no need to return a separate T.
+--Does that remain true..? All ops should already contain the type info they
+--need.
+--Invariant: every expr of type t pushes new vars corresponding to a flattened
+--t; any subexprs are consumed. I use cleanup for that.
+convertE :: E -> Convert [Var]
+convertE = error "todo"
+  where
+    cleanup :: (E -> Convert [Var]) -> E -> Convert [Var]
+    cleanup hdlr e = do
+      scope <- getScope
+      vs <- hdlr e
+      setScope $ vs ++ scope
+      return vs
+    go = cleanup go'
+    go' = \case
+      --w: Emit op newvar = Const Word n
+      EInteger n -> do
+        (vs,_ss) <- emitOp (Const (UInt 32) $ MkConst (EInteger n)) ([],[])
+          (UInt 32)
+        return vs
+        {-
           --A local: dup and return corresponding var
           --Why dup? Because I expect a given stack effect...
+          --TODO convert C var to zero or more Core vars by flattening!
           TypedVar (Just t) nm ->
-            emitOp (Op "id#" [t]) (Var (Mono nm t)) t
+            error "todo"
+            --emitOp (Op "id#" [t]) (Var (Mono nm t)) t
           --Short-circuiting ops; a && b desugars to scAnd (a,b),
           --a || b to scOr (a,b)
           --Short-circuiting is only applied when the argument is an explicit
@@ -496,11 +572,13 @@ convertE = go
           --Function application: recursively eval f and x, then
           --emit a call (not a primop!)
           f :$ x -> do
+            error "TODO"
             vf <- go f
             vx <- go x
             tf <- cTypeOf f
-            let _a :-> b = tf 
-            call vf $ Var vx
+            let _a :-> b = tf
+            error "TODO"
+            --call vf $ Var vx
           --case permits one-level fallible patterns, e.g. Cons True xs
           --The subpatterns True and xs are matched the same way as assignment:
           --If the con doesn't match (as in True = False), revertValue ().
@@ -531,6 +609,8 @@ convertE = go
           --That becomes p' <- eval subexprs in p
           --p' = (interpret as E(p') + k)
           OPAssign (Just opf) p _ e -> do
+            error "todo"
+            {-
             --First eval exprs to prevent duplicated side effects
             p' <- do mp' <- evalPatternEs p
                      case mp' of
@@ -546,6 +626,7 @@ convertE = go
             new <- call vf $ Pair (Var old) $ Pair (Var operand) Unit
             assign p' new
             return new
+-}
           -- ++x; means {var y = x; x = inc x; y}
           --TODO ensure ++_ et al mention inc in mono!
           --TODO annotate PPPre et al with type, dedup with OPAssign
@@ -582,12 +663,8 @@ convertE = go
             emitOp (GetField [NamedField field params]) (Var v) t
           e -> error $ "Compiler error: unexpected case in convertE: " ++
                show e
-        cleanup :: (E -> Convert Var) -> E -> Convert Var
-        cleanup hdlr e = do
-          scope <- getScope
-          v <- hdlr e
-          setScope $ v:scope
-          return v
+        
+-}
 --Gets the scope
 getScope :: Convert [Var]
 getScope = gets csScope
@@ -623,18 +700,22 @@ emitStmt stmt = do
       scope = csScope s
   put s{csOutput = stmt : IR.Declare scope : output}
 
---Emits a Core op, binding its result to a single new var. Doesn't specify
---the stack/scope effect.
---It takes its result type as a parameter to give to the Var.
---Note: side-effecting ops may return a tuple containing a mix of dynamic
---and state types. Pair must then be able to store a mix of them, so state
---types are of kind Type!
---Consequence: not all Types are coerce#ible to Bytestring#.
-emitOp :: PrimOp -> Value -> T -> Convert Var
-emitOp op val t = do
+--Emits a Core op.
+--All ops take and return an Arg stk s : Argument. Its repr as a ([Var],[Var])
+--is determined by argTypeToVars. For each Type Var (in the first list) and
+--each SElem var (the second), emitOp allocates a new var.
+--Note: for a side effect to be noticed by the compiler, the new SElem var
+--(e.g. a modified MemSlice) needs to be copied to a preexisting var
+--(e.g. $mem).
+--Doesn't specify the stack/scope effect.
+emitOp :: PrimOp -> Value -> T -> Convert Value
+emitOp op val t = error "todo"
+  {-
+  do
   v <- cNewVar t
   emitStmt (Var v IR.:= OpE (op,val))
   return v
+-}
 
 --Returns the type of an E; if the type is determined by a parameterized name
 --(e.g. f, g, Con) it must unfortunately be computed rather than retrieved
@@ -735,7 +816,7 @@ typeOfConE con params = do
 --Gets the Module, which contains much of the info necessary for compilation
 cGetModule :: Convert Module
 cGetModule = do
-  (mod,_mono,_ser) <- ask
+  (mod,_mono,_sizeof,_ser) <- ask
   return mod
 
 --evalPatternEs converts a syntactic pattern which may contain subexprs such
@@ -800,7 +881,7 @@ elideTagCheck ep = ep
 evaluatedPat2Value :: EvaluatedPat -> Convert Var
 evaluatedPat2Value = error "todo"
 
---assign implements matching of a pattern p to a value (var) v.
+--assign implements matching of a pattern p to a value ([Var]) vs.
 --It's central to pattern matching in case and assignment operations.
 --In contrast to Haskell, EVMC case supports only one-level case distinction;
 --subpatterns are matched using assign and will revert rather than go to the
@@ -819,12 +900,12 @@ TODO opt: if mem remains the same, (*p).field ~ *(GetPtrField p field)
 TODO boxed con pattern => deref mentioned
 
 .field | !ix have different behavior for locals and derefs; I should convert
-*p (.field | !ix)* to a single *v in the abused pattern.
+*p (.field | !ix)* to a single *v in the evaluated pattern.
 However, local!foo()!bar() needs to save both foo and bar.
 Ideally I'd just save a slice offset (essentially a byte pointer into a
 stack var).
 -}
-assign :: EvaluatedPat -> Var -> Convert ()
+assign :: EvaluatedPat -> [Var] -> Convert ()
 assign ep v = error "todo"
             
 --The array creation op on vars (evaluated exprs).
@@ -835,26 +916,32 @@ assign ep v = error "todo"
 primMkArray :: T -> [Var] -> Convert Var
 primMkArray = error "todo"
 
+--DEPRECATED
 --Converts a list of vars to a tuple value
-vars2value :: [Var] -> Value
-vars2value = foldr Pair Unit . map Var
+--vars2value :: [Var] -> Value
+--vars2value = foldr Pair Unit . map Var
 
 --Emits a call (ret = f x). However, it also needs to pass and take the env to
 --encode side effects! Passing the env is done after Structured, because
 --before passing everything I must create the return continuation.
 --The Value may be a tuple.
 call :: Var -> Value -> Convert Var
-call vf vx = do
+call vf vx = error "todo"
+{-
+  do
   let Mono _ (a :-> b) = vf
   retv <- cNewVar b
   --(retv,env) = Call vf vx 
   let retLHS = Pair (Var retv) (Pair envV Unit)
   emitStmt (retLHS IR.:= Call vf vx)
   return retv
+-}
 --Calls a C function with the given name and typarams.
 --It must be mentioned in Mono.
 callCFun :: Name -> [T] -> Value -> Convert Var
-callCFun f params val = do
+callCFun f params val = error "todo"
+{-
+  do
   (_,monoS,_) <- ask
   case M.lookup (f,params) $ exploredFuns monoS of
     Nothing -> error $ "Compiler error: function " ++ f ++ " " ++ show params
@@ -862,11 +949,14 @@ callCFun f params val = do
     Just (ft, _) -> do
       fv <- emitOp (Const ft $ MkConst $ TyApp f params) Unit ft
       call fv val
-
+-}
+  
 --Deduplicates the logic for ++_ et al
 --Parameters: inc (++) or dec (--), old or new value returned
 plusplus :: Name -> Bool -> Pat -> Convert Var
-plusplus incdec prefix p = do
+plusplus incdec prefix p = error "todo"
+{-
+  do
   mp' <- evalPatternEs p
   p' <- case mp' of
           Nothing -> throwError $
@@ -881,3 +971,4 @@ plusplus incdec prefix p = do
   return $ if prefix
            then old
            else new
+-}

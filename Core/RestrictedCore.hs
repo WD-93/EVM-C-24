@@ -1,8 +1,9 @@
-{-# LANGUAGE DeriveDataTypeable, PatternSynonyms #-}
+{-# LANGUAGE DeriveDataTypeable, PatternSynonyms, LambdaCase #-}
 module Core.RestrictedCore where
 
 import AST.DTs (T(..),Name(..),E(),tupleT)
-import qualified AST.DTs as T (pattern Pair)
+import qualified AST.DTs as T (pattern Pair, pattern Unit)
+import Core.PrimTypes
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
@@ -68,7 +69,7 @@ data Field = NamedField Name [T] | ArrayIndex Var T
 --that the optimizer could recognize and deduplicate equivalent logic on
 --different datatypes. Equivalent logic is especially easy to find for boxed
 --datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
-data Branch = Jump Var Value
+data Branch = Jump Value
             | Jumpi Var Var Var Value
             --The compilation of case depends on the range of possible values,
             --which is not determined by the type of the var being inspected
@@ -83,9 +84,9 @@ data Branch = Jump Var Value
             --Change: revert and return take off, len, state vars
             --They are equivalent to variants which take a bytestring
             --and persisted state vars in the case of return
-            | Revert Var Var Var --off,len,mem
+            | Revert Value --off,len,mem
             --Bytestring# -> End
-            | Return Var Var Value --off,len,(mem,ext,sto,tsto)
+            | Return Value --off,len,(mem,ext,sto,tsto)
             --(Bytestring#,Ext,Sto,TSto) -> End
             --Stop deserves to be here as well
             | Stop Value --(mem,ext,sto,tsto)
@@ -115,12 +116,15 @@ data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
 data FunVar = FMono Name T --for auto-generated BBs
             | FPoly Name [T] T --for user-level functions
   deriving (Eq,Ord,Read,Show,Data)
-data Value = Unit
-           | Var Var
-           | Pair Value Value
-  deriving (Eq,Ord,Read,Show,Data)
-newtype Pattern = P Value
-  deriving (Eq,Ord,Read,Show,Data)
+--Arg : Type -> State -> Argument
+--State, Argument : Kind
+--SUnit : State
+--SPair : SElem -> State -> State
+--Memory etc : SElem --prevents non-list tuples
+--Tuple erasure ensures this repr is enough
+--All Values are of kind Argument
+type Value = ([Var],[Var])
+type Pattern = Value
 --If I made Pattern a data I could add Wild T, indicating an argument is
 --unused...
 
@@ -139,15 +143,11 @@ newtype Const = MkConst E
 --Return contains the persistent Env fields, but if I drop them for now then
 --it contains only a bytestring.
 
-tupleV :: [Value] -> Value
-tupleV = foldr Pair Unit
-
-envT = tupleT [memory, calldata]
-memory = TyCon "Memory#"
-calldata = TyCon "Calldata#"
-envV :: Value
-envV = tupleV $ map Var [Mono "$mem" memory,
-                         Mono "$cd" calldata]
+--Env :: State
+envT = sTupleT [MemSlice, CalldataState]
+envV :: [Var]
+envV = [Mono "$mem" MemSlice,
+        Mono "$cd" CalldataState]
 --Core functions, in which Env passing is made explicit:
 --(->#) : Type -> Type -> Type
 --data a -># b
@@ -165,13 +165,8 @@ envV = tupleV $ map Var [Mono "$mem" memory,
 --(they're always fully applied, after all). The hope is it will simplify
 --type checking (NB: done only for debugging purposes) and make lambda-calc-
 --based rewrites and analysis easier.
-pattern a :-># b = TyCon "->#" :$$ a :$$ b
---Cont a = (a,Env) -># End#
-contT :: T -> T
-contT a = tupleT [a,envT] :-># TyCon "End#"
---NB: a and b may not be closed over stk
-fun2coreT :: T -> T -> T
-fun2coreT a b = TyForall "stk" $
-                let stk = TyVar "stk" in
-                  contT $
-                  foldr1 T.Pair [a, contT $ T.Pair b stk, stk]
+--pattern a :-># b = TyCon "->#" :$$ a :$$ b
+
+
+
+

@@ -53,10 +53,10 @@ data Stmt = Value := RHS
           | While [Stmt] Var [Stmt]
           --Why are the cases a list rather than a map? Because we can't elide
           --redundant cases at this stage.
-          | CaseTag Var ConstSet [(Const,[Stmt])] [Stmt]
+          | CaseTag [Var] ConstSet [(Const,[Stmt])] [Stmt]
           | Break
           | Continue
-          | Return Var
+          | Return [Var]
           | Declare [Var]
           --declares the scope, defining what the subsequent code expects
           --Each non-Declare Stmt must be preceded by a Declare

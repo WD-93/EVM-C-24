@@ -285,10 +285,9 @@ hardcodedTyCons = M.fromList $
 --be hardcoded.
   
 --The kind check can't be done here, you need to defer it to IR.
---(a,b) => Append (WordPad a) (Append (WordPad b) Unit)
 tupleT :: [T] -> T
 tupleT [] = Unit
-tupleT (t:ts) = Pair t (tupleT ts) 
+tupleT (t:ts) = Pair t (tupleT ts)
 
 --No block expressions, so local return has been removed
 data S = SE E --required because := has been moved to E
