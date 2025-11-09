@@ -542,7 +542,7 @@ inLoop c = do
 --Invariant: every expr of type t pushes new vars corresponding to a flattened
 --t; any subexprs are consumed. I use cleanup for that.
 convertE :: E -> Convert [Var]
-convertE = error "todo"
+convertE = go
   where
     cleanup :: (E -> Convert [Var]) -> E -> Convert [Var]
     cleanup hdlr e = do
@@ -557,28 +557,31 @@ convertE = error "todo"
         (vs,_ss) <- emitOp (Const (UInt 32) $ MkConst (EInteger n)) ([],[])
           (UInt 32)
         return vs
+      --A local: dup and return corresponding var
+      --Why dup? Because I expect a given stack effect...
+      --TODO convert C var to zero or more Core vars by flattening!
+      TypedVar (Just t) nm -> do
+        nms <- flattenVarsM [Mono nm t]
+        --Inefficiency: I construct the arg type, then split it again in
+        --emitOp.
+        fst <$> emitOp (Op "id#" [t]) (nms,[])
+          (Arg (stackT $ map typeOfVar nms) SUnit)
+      --Short-circuiting ops; a && b desugars to scAnd (a,b),
+      --a || b to scOr (a,b)
+      --Short-circuiting is only applied when the argument is an explicit
+      --pair; it is also applied to scAnd/Or (a,b) because it's
+      --indistinguishable from a &&/|| b post-desugaring.
+      
+      --Function application: recursively eval f and x, then
+      --emit a call (not a primop!)
+      f :$ x -> do
+        vf <- head <$> go f
+        vsx <- go x
+        call vf vsx
+        --tf <- cTypeOf f
+        --let _a :-> b = tf
+        --call vf $ Var vx
         {-
-          --A local: dup and return corresponding var
-          --Why dup? Because I expect a given stack effect...
-          --TODO convert C var to zero or more Core vars by flattening!
-          TypedVar (Just t) nm ->
-            error "todo"
-            --emitOp (Op "id#" [t]) (Var (Mono nm t)) t
-          --Short-circuiting ops; a && b desugars to scAnd (a,b),
-          --a || b to scOr (a,b)
-          --Short-circuiting is only applied when the argument is an explicit
-          --pair; it is also applied to scAnd/Or (a,b) because it's
-          --indistinguishable from a &&/|| b post-desugaring.
-          --Function application: recursively eval f and x, then
-          --emit a call (not a primop!)
-          f :$ x -> do
-            error "TODO"
-            vf <- go f
-            vx <- go x
-            tf <- cTypeOf f
-            let _a :-> b = tf
-            error "TODO"
-            --call vf $ Var vx
           --case permits one-level fallible patterns, e.g. Cons True xs
           --The subpatterns True and xs are matched the same way as assignment:
           --If the con doesn't match (as in True = False), revertValue ().
@@ -709,13 +712,13 @@ emitStmt stmt = do
 --(e.g. $mem).
 --Doesn't specify the stack/scope effect.
 emitOp :: PrimOp -> Value -> T -> Convert Value
-emitOp op val t = error "todo"
-  {-
-  do
-  v <- cNewVar t
-  emitStmt (Var v IR.:= OpE (op,val))
-  return v
--}
+emitOp op val t = do
+  (as,ss) <- argTypeToVarsM t
+  avs <- mapM cNewVar as
+  svs <- mapM cNewVar ss
+  let lhs = (avs,svs)
+  emitStmt (lhs IR.:= OpE (op,val))
+  return lhs
 
 --Returns the type of an E; if the type is determined by a parameterized name
 --(e.g. f, g, Con) it must unfortunately be computed rather than retrieved
@@ -916,26 +919,19 @@ assign ep v = error "todo"
 primMkArray :: T -> [Var] -> Convert Var
 primMkArray = error "todo"
 
---DEPRECATED
---Converts a list of vars to a tuple value
---vars2value :: [Var] -> Value
---vars2value = foldr Pair Unit . map Var
-
 --Emits a call (ret = f x). However, it also needs to pass and take the env to
 --encode side effects! Passing the env is done after Structured, because
 --before passing everything I must create the return continuation.
---The Value may be a tuple.
-call :: Var -> Value -> Convert Var
-call vf vx = error "todo"
-{-
-  do
+--The retLHS becomes the lhs of the return continuation after Core conversion.
+call :: Var -> [Var] -> Convert [Var]
+call vf vsx = do
   let Mono _ (a :-> b) = vf
   retv <- cNewVar b
   --(retv,env) = Call vf vx 
   let retLHS = Pair (Var retv) (Pair envV Unit)
   emitStmt (retLHS IR.:= Call vf vx)
   return retv
--}
+
 --Calls a C function with the given name and typarams.
 --It must be mentioned in Mono.
 callCFun :: Name -> [T] -> Value -> Convert Var

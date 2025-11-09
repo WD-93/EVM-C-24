@@ -2619,6 +2619,98 @@ Debug: check Core is well-typed.
 Pruning dead vars in cyclical code: identify statically called subset, form
 SCCs. Vars demanded by lower SCCs or dynamic calls are live.
 
+How to commute the call graph, e.g. reordering C function calls or lifting
+constant calls out of loops?
+Stack frame rule: f : forall stka stks . Cont (a * stka) (s * stks) can be
+extended with stack and state it's guaranteed not to touch by theorems for
+free. Minimize function arguments, explicitly call extended f?
+Downside: it might not be efficient to swap its args to ToS. You could perhaps solve that by reversing the transformation later.
+Extending Core with a host language for reasoning about call graphs: 
+f vs => g symEs or if symE then ... else ...
+Well-behaved while loops can have their vs -> vs effect expressed as a single
+letrec expression.
+
+C-level state parameters for functions would be cool... a -> b as a type
+synonym for Fun a b Env Env, calls as sugar for passing default state.
+Effect typing: reads/writes state. Effects should be wrappable in pure APIs if you isolate them (e.g. don't let a pointer escape). Mutating the internal state of an object is a side effect... it should consume a handle to the object? With linear typing you could have session types, e.g. UPtr -> Ptr.
+free as an op that consumes the pointer...
+Pointers and objects parameterized by accessible range.
+Const pointers?
+
+C<->Core fun conversion enables safe function coercion, e.g.
+(a -> b) -> ((a,Word) -> (b,Word))... but that requires substituting the
+stk in the argument for an external (Word*stk).
+Note: hardcoded tyfams (complex type relationships) are expressible in Core;
+you can reject a subset of programs which look well-typed from the C type
+checker's perspective. However, the annotations which feed tyfam-derived info
+to the C type checker must be added manually in response to type errors.
+C-level foralls would be cool, ex: 
+apply : forall a b . (MPtr a -> MPtr b, MPtr a) -> MPtr b
+That could then be applied to existentially quantified fields, e.g. in an
+AST or closure.
+Issue: you'd need sizeof and similar constraints. Does template polymorphism
+preclude Haskell's repr -> kind approach?
+
+jumpi_el (cond * th * rest, s) =
+ if cond > 0 
+ then th (rest,s)
+ else el (rest,s)
+el should be a Core function, not a var...
+Nice, that reflects the fact that th is dynamic but el must be static.
+Relevant opt: shared suffix lifting (to before the branch).
+Structured will exclusively emit jumpis with static Core function th and el.
+A C function should be represented as core2c coreF; when statically called
+c2core (core2c coreF) can be simplified to coreF.
+A single function can always be copied (~loop unrolling); a SCC can also be
+copied, which can be more size efficient. Variants can then be specialized.
+Each fun has a list of call sites with symEs; if one var is always a single
+symE then it can be pushed down into the fun.
+
+Would it be worth it to word-split C types in Core, a la the old IR?
+Then field access can be expressed directly using shift, mask and or ops,
+and var dropping logic needn't be duplicated in a separate word-level Core.
+Primitives could also be implemented directly as EVM ops.
+There would be two kinds: Word and State.
+WPair : Word -> Words -> Words.
+Problem: need to distinguish w1*w2*() and w1*w2?
+
+Implement field access directly, don't group fields. Symbolic eval of shift,
+or and mask can optimize foo.bar.baz more generally than a dedicated opt.
+Implement primfun calls directly as ops.
+p->field should also be optimizable: incrementing the pointer is equivalent
+to performing a shift.
+mload (p+k) costs 12 gas... it should also be possible to aggregate reads.
+Is there an optimal normal form?
+Recognizing shift lets you optimize across field dataflow, e.g.
+var x; x.field = y.field --should be convertible to x = y mask m
+Field aggregation: the or of contiguous slices == a larger slice.
+Between branches (when stack must be explicit) fields can be considered
+separate?
+Assume every *ptr from C has valid padding wrt the need to mask; assume
+struct in struct.field has the padding corresponding to field's constructor.
+
+Ops are generated at the Structured level. They should correspond to EVM
+opcodes, so compilation will be trivial.
+Mathops => EVM ops and mask_n.
+
+Lifting out constant expressions from loops: consider x + y in a while loop
+where x, y aren't touched. Recognize the given vars aren't mutated in
+while->while. Lift the op out and replace it with a param.
+That can be used to cache globals if you know their memory isn't modified...
+But for now that just means "no memory is modified".
+FW: a SElem stack.
+With explicit SElem returns you could avoid unioning new allocs.
+If the user could control it, they could e.g. make a State DT for storing
+allocated List cons cell memory, guaranteed to contain reachable(result)?
+Linear SElems stored in C values would be cool...
+
+Proper function extension:
+a*Cont (b*stk)*stk --a -> b
+stk = c*Cont (d*stk)*stk
+Res: forall stk . a*Cont (b*c*Cont (d*stk)*stk)*c*Cont (d*stk)*stk
+Corresponds to C function type (a,(b,c) -> d,c) -> d
+f becomes \(a,cont,c) -> return cont(f(a),c)
+
 *********************Value -> ([Var],[Var]) changes**************************
 
 Structured.Convert
@@ -2637,6 +2729,8 @@ Then I can still CE struct.field.
 Invariant: the exprs should be implementable with a push. The same SymE type
 could be used to represent State vars and for symbolic simplification.
 Note: function symbols are Core functions... and they're quantified!
+Problem: EVMC's Fun datatype decl says it's a Short newtype, giving it its
+sizeof. So SymE would need to include the core->C coercion operator?
 
 For now, limit effects to binary did/n't modify mutable storage region.
 p = alloc(n) consumes (and does not return) a splittable ap, mem and produces

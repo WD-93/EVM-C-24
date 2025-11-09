@@ -62,5 +62,5 @@ data Stmt = Value := RHS
           --Each non-Declare Stmt must be preceded by a Declare
   deriving (Eq,Ord,Read,Show)
 data RHS = OpE OpE --a straight-line primop
-         | Call Var Value --the BB will need to be split across this later!
+         | Call Var [Var] --the BB will need to be split across this later!
   deriving (Eq,Ord,Read,Show)
