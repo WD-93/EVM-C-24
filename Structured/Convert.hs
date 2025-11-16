@@ -926,7 +926,7 @@ primMkArray = error "todo"
 call :: Var -> [Var] -> Convert [Var]
 call vf vsx = do
   let Mono _ (a :-> b) = vf
-  retv <- cNewVar b
+  bts <- flattenTM 
   --(retv,env) = Call vf vx 
   let retLHS = Pair (Var retv) (Pair envV Unit)
   emitStmt (retLHS IR.:= Call vf vx)

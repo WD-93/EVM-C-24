@@ -37,7 +37,7 @@ import Data.Generics
 --fs + gs + tags) to transform, which should ideally be kept consistent.
 data Core = Core {
   --The basic blocks, including $trueMain
-  coreDefuns :: Map FunVar (Pattern, --lhs
+  coreDefuns :: Map FunVar (BranchValue, --lhs
                             [(Value,OpE)], --body, in SSA form
                              Branch),
   --Region implicit in type
@@ -51,26 +51,28 @@ data Core = Core {
 --Straight-line expressions
 type OpE = (PrimOp,Value)
 --The non-branching Core ops
---Issue: should I make &(p->field) and &(*p!ix) explicit/opaque ops or
---implement them using unsafeAddPtr? Explicit helps preserve aliasing info.
-data PrimOp = Const T Const --k, f, g, Con{consts}; takes ()
-            | GetField [Field] --struct/arr => field
-            | SetField [Field] --(f,struct/arr) => struct'/arr'
-            | GetFieldPtr [Field]
-            | MkCon Name [T] --(arg1,arg2,...) => Con{...}
-            | Op Name [T] --includes id@[a]
-  deriving (Eq,Ord,Read,Show,Data)
---A named field (static offset) or array index (dynamic offset)
---Why use a list of fields in the get/set primops?
-data Field = NamedField Name [T] | ArrayIndex Var T
+--Final design: Const Constant | EVM op. No type params, they're implicit in
+--argument and return vars. As with the old IR, the type of words is irrelevant
+--to compilation (modulo padding info enabling opts).
+--Side-effecting ops such as mstore implicitly consume state, requiring any
+--readers be scheduled before it. However, Core needn't care about that.
+data PrimOp = Const Const --k, f, g, Con{consts}; takes ()
+            | Op Name --copy is dup ([x],[])
   deriving (Eq,Ord,Read,Show,Data)
 --Branching expressions
 --Since caseTag operates on constants rather than constructors, it's conceivable
 --that the optimizer could recognize and deduplicate equivalent logic on
 --different datatypes. Equivalent logic is especially easy to find for boxed
 --datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
-data Branch = Jump Value
-            | Jumpi Var Var Var Value
+data Branch = Jump BranchValue
+            --The cond and then branch are dynamic and part of the value.
+            --The else branch is static (since JUMPI falls through), so it must
+            --be a FunVar.
+            --jumpi el (cond*th*scope,st) =
+            -- if cond > 0
+            -- then th (scope,st)
+            -- else el (scope,st)
+            | Jumpi FunVar BranchValue
             --The compilation of case depends on the range of possible values,
             --which is not determined by the type of the var being inspected
             --(many DTs have tag :: Byte but fewer than 256 constructors).
@@ -80,7 +82,7 @@ data Branch = Jump Value
                    ConstSet         --An upper bound on possible consts
                    (Map Const FunVar) --cases
                    FunVar           --default case
-                   Value            --scope
+                   BranchValue      --scope
             --Change: revert and return take off, len, state vars
             --They are equivalent to variants which take a bytestring
             --and persisted state vars in the case of return
@@ -94,7 +96,7 @@ data Branch = Jump Value
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.
 
-data ConstSet = ConstSet (Set Const)
+data ConstSet = Consts [Const]
               --The sets of possible values for DTs with tag scheme N1 and N16
               --are represented compactly.
               --In future CSN1 may be used for case on integers.
@@ -124,12 +126,31 @@ data FunVar = FMono Name T --for auto-generated BBs
 --Tuple erasure ensures this repr is enough
 --All Values are of kind Argument
 type Value = ([Var],[Var])
-type Pattern = Value
---If I made Pattern a data I could add Wild T, indicating an argument is
---unused...
+--The argument passed to a branch may have a stack of form
+--(x,y,z) (i.e. full stack is known) or x*y*z*stk (function is polymorphic in
+--stk). To accomodate that it takes a Maybe Var parameter containing stk.
+--When the full stack is known (e.g. in revert or inlining of main), you can
+--ignore a suffix of the stack rather than pop it when stack scheduling.
+type BranchValue = ([Var],Maybe Var,[Var])
 
---Integer literals, constructors, names for letrec-defined values.
-newtype Const = MkConst E
+--The concatenation of bytes and label slices. Labels have no concept of type,
+--only size.
+--Core function instantiation for a specific stk is just a dup/copy op.
+--Consts are in normal form, i.e. they consist of a minimal number of sections.
+--No adjacent bytestrings, no zero padding to the left in pushed words.
+--All slices are of len > 0 and in range.
+--Adjacent label slices are merged:
+--(lab,from,len), (lab,from+len,len') => (lab,from,len+len')
+--All pushed constants are <= 32B. You need to slice labels because they may
+--be split across two or more pushes.
+--Validity:
+--All content bytes are 0 <= b < 256.
+--Label slices are in the range of the given label.
+newtype Const = MkConst [(Int, --byte length
+                          Either (String,Int) --label name, slice offset
+                          [Int] --bytes
+                         )
+                        ]
   deriving (Eq,Ord,Read,Show,Data)
 
 --Minimal env: (stackScope,($mem,$cd) :: Env)

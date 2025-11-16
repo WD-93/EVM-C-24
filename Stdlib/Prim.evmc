@@ -53,6 +53,10 @@ data Ptr r a = {MkPtr (UInt 2)};
 //Prim and Prelude are growing quite large, so it's worth splitting them into
 //submodules; TODO.
 
+//Since I'm forgoing a memory model (and optimizer) that takes types into
+//account, UPtr can be dropped.
+
+/*
 //The UPtr type, representing a reference to an a in region r which has not
 //yet been initialized.
 UPtr : Region -> Type -> Type;
@@ -78,6 +82,8 @@ indexUPtr (up,ix) := {
 };
 initUPtr : UPtr r a -> Ptr r a;
 initUPtr up := return coerce up;
+*/
+
 //(->) is desugared to Fun
 //Represented as ((a,(b,Env#) -> End#) -> End# in Core
 //TODO give Env#, End# and CoreFun representation in Prim?

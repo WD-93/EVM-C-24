@@ -2776,6 +2776,181 @@ Ex:
 Simplest approach: introduce a v = TyFam a..z constraint, unify v with
 result when a..z are monomorphized. The tyfams could be primitive.
 
+**********************Word-level Core****************************************
+
+I need to make a number of changes to Prim and Prelude... first step:
+generalize compile-time module loading so I can split the modules.
+Result: a namespace from which I can selectively import library modules.
+Alternative definitions of sugar functions (plus, fromWord etc) would be cool - overflow checks could be enabled, for example.
+Also alloc and indexPtr definition (word-pad, mask vs overflow check vs
+nothing). Prelude should import sensible defaults.
+FW: Core and asm definition syntax, so I can define the EVM op functions as
+non-primitive.
+Two IO functions: dirNamespace, modNamespace
+State: namespace, Read: path.
+Goal: keep the rest of the pipeline pure.
+I need to parse the decls, so I might as well bucket the decls by type and
+key.
+Merging may fail due to duplicate keys both within and between modules; report the culprit module(s) if so.
+Ops: add decl to DeclBucket; merge DeclBuckets. Associate decls with module
+name so I can report conflicts that appear after multiple merges.
+What happens if multiple modules in the path match the given name? Don't
+complain, just choose the first one.
+complete :: ModuleName -> Namespace -> Either MergeError DeclBucket
+In the pure pipeline, give the text the module name Main.
+
+Path and whether to use the statically parsed Stdlib should be compiler
+options.
+TODO change Module structure to reflect..?
+
+Open class functions complicate decl conflict detection... but they're worth
+having.
+Instances with sub-instances with a specified match order would be powerful,
+that's like closed type families.
+instance f : T where {
+ f : T'; f p := s; ...
+ }
+ 
+
+I'll use --functor to associate each CST node with a srcspan. I then need to
+enhance the srcspan with ModName. Not filepath... a module namespace is not
+inherently associated with a file system. But it is with the source text for error messages...
+Nice, I can add ModName to each location annotation using Generic.
+Compiler commands:
+State: path, stdlib_on (default True)
+add-path dir
+stdlib-off
+load(dir|filepath)
+compile text --e.g. import Mod
+compile modname
+
+Q: Are defaults checked for monomorphism?
+
+Strategy: get a minimal subset working, then extend. A Core consisting only of EVM ops can be trivially (if inefficiently) compiled.
+First: just locals and integer literals.
+Need writePtr and evm_return for Hello World.
+
+Q: Should alloc even be a primitive? No: every primfun that compiles to
+multiple (non-DUP/SWAP) instructions should be a function; leave it to the
+inliner to decide whether to inline and accept the initial perf hit.
+Eliminate UPtr, the memory optimizer should operate on bytestrings.
+plus : (Int s l, Int s l) -> Int s l
+plus (a,b) := {
+ a :: Int s l;
+ var m = mask (PN :: PN l) --Word
+ return unsafeCoerce (and(m,add(coerce a, coerce b)))
+}
+EVM ops (and, add etc) should be true primitives. coerce and unsafeCoerce must be primitives because they operate at the word level, which C doesn't see.
+mask is a useful primitive: mask@n is 256^n - 1 (instances for 0 to 32).
+
+For writeup: what to make primitive is an important choice. Too much and you make the compiler inelegant, too little and you don't use the full power of
+the Core abstraction (and must rely on potentially unreliable opt to make the functions performant).
+
+I do NOT need to fix global layout before Structured conversion.
+Structured/Core gives me an upper bound on global addresses that are actually
+used; D/CE lets me tighten it. Global placement and D/CE interact; place
+globals incrementally, then substitute their labels and D/CE further.
+Note exploredGlobals doesn't cover all accessed globals; alloc accesses
+memAllocPtr.
+First approximation: just scan for all globals used and place them.
+FW: Identify globals that are accessed, but have no observable effect on output; prune them. That's particularly useful for memAllocPtr = memOffset
+when no allocs are performed.
+Spec:
+All m/s/t globals that remain should point to a non-overlapping, contiguous
+byte space at 0. *Offset should point to the end of it. They may be placed in
+any order.
+Note that means program behavior (&g1 > &g2) may depend on compiler
+optimization choices; an EVMC program can have multiple valid compilations.
+Global lifting and location sharing opts would complicate that further, but
+*g should be guaranteed not to interfere with other globals or alloc'd space,
+as long as you don't mess with the allocPtr.
+Note: since pointers are only 16b, I can't express very large storage arrays
+using globals as they're defined now.
+Code globals remain labels...
+FW:
+Let users control layout with a 'layout region x, y, z' decl.
+Set layout incrementally based on Structured (e.g. most common global at 0).
+That opt would be most useful for allocPtr.
+Compiler-controlled word-padding of globals.
+
+TODO unify serialized and Const repr. Non-code global pointers should be
+bytes! FW: CE constant expressions (global initializers and DT tags).
+Ex: &(g->field) should be permissible.
+So I need to determine layout before serialize.
+FW: if sizeof were incremental (a stateful server), I could call it lazily and without worrying about whether I've computed all sizes.
+Nested monads rather than pipelines would let me add effects...
+
+Memory lifting would be useful for sub-word global write opt: you could lift
+the spare bytes until they're accessed. Writes could even be deferred!
+A CALL/CREATE potentially touches all storage... analysis across multiple
+calls would be needed to rule out slots.
+
+GetField, SetField and GetFieldPtr should be removed and replaced with their
+constituent EVM ops.
+p->field can be straightforwardly optimized after naive compilation: unused 
+words are simply dropped. p->field = e still needs to use +k.
+Const should be eliminated and replaced with push.
+Issue: labels and bytes may be mixed in a word. A label may also appear
+truncated across several words.
+CE should be able to deal with labels.
+
+No need to worry about tuple erasure? Tuple-typed vars can be distinguished
+from their content; field get and set are still cheap.
+Could I easily could get stronger function lhs pattern matching by declaring
+the params as locals and then performing an assignment? No, because a
+failing pattern match ends the BB.
+As such x:A, y:B should be on the stack for lhs (x,y):(A,B).
+Conversion to tuple must then be undone when inlining.
+
+Var kinds: Word (T,Int) or SElem
+Problem: Core functions refer to SElems, are quantified and are a word.
+So I need to add a tycon WordOf : Type -> Nat -> WordK
+WPair : WordK -> Words -> Words
+Do I need or have any use for WNil? Yes, for expressing 
+revert (Arg (off,len) (mem,sto,tsto,ext)) - where stk has been dropped because it's irrelevant.
+State should also be future-proofed to take a stack of states.
+Argh, that means ([Var],[Var]) doesn't fit again. It'd have to be [Var],
+stack: Maybe Var or explicit Arg, (W/S)Pair/Nil.
+The latter is best; it's general and avoids overloading Pair as both a C-level and Core-level construct. It can be ill-kinded, but so can [Var],Bool.
+Cont : Words -> State -> Type
+The kind quantified on should be specified in forall; in future functions
+will be quantified on both the Words and State stack.
+That way I can kind-check Core functions despite quantification.
+All ops still take and return an Argument, but they never take a stk.
+
+Pointer aliasing: allocs, globals and struct fields are disjoint. Does pointed type tell me anything about disjointness? If not, that's fine.
+Cop-out: split memory only within static call graphs.
+FW: alloc becomes a primop that consumes an AP but not mem.
+For now it just becomes another mem-touching op. Express directly as its
+implem. Then I can use the Prim definition; skip uptrs.
+If I must initialize to prevent corrupt reads (e.g. for alloc 1 :: MPtr (WordPad Short)), do so manually. If I pre-alloc a buffer for scratch memory,
+I can assume allocs produce zeroed memory. I could save the buffer and its
+size in globals in order to dynamically expand it... allocating 2^n bytes
+ensures linear overhead.
+For now: no memory opts, analyze and improve later.
+Recognize that mutating mem ops consume their mem argument, schedule all reads to the old state before them. That applies only within a BB; branches
+consume their arguments by default.
+Since I'm compiling a single exe, I might as well replace global ptrs with
+constants? That would let me CE more, and if I don't use global identities
+anyway it's no loss. Doing one thing at a time lowers the hurdle I need to
+jump...
+
+You get zero-sized type => no vars for free
+Compile primfuns directly to ops, only define their types in Prim.evmc.
+Only word-padding remains... n bytes of padding must be followed by 32-n bytes of content. Values are byte-aligned, simplifying matters.
+deref once again becomes a series of mloads (optimize to copy when possible).
+
+Byte access on stack and in memory can be optimized with BYTE and MSTORE8
+respectively.
+Field access should make use of padding; when the other bytes in an affected
+field are zero, don't mask.
+Extension: data Zero and Arrays or structs thereof are zero.
+
+Padding should be taken into account when derefing and writing to pointers.
+Reading an uninitialized ptr is ofc UB... do padding/value-based opts force
+me to use UPtr? A word-padded byte can be written to using mstore8 (p+31),
+but mstore p is more efficient.
+
 *****************************************************************************
 
 Overall design goal for Core ops: they should be trivially compilable to
