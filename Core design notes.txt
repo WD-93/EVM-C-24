@@ -2816,6 +2816,9 @@ I'll use --functor to associate each CST node with a srcspan. I then need to
 enhance the srcspan with ModName. Not filepath... a module namespace is not
 inherently associated with a file system. But it is with the source text for error messages...
 Nice, I can add ModName to each location annotation using Generic.
+I should be able to use Generic to infer the span from the location of each
+element... the end of x in Con x y is the start of y. That fails for the
+last element.
 Compiler commands:
 State: path, stdlib_on (default True)
 add-path dir
@@ -2823,6 +2826,28 @@ stdlib-off
 load(dir|filepath)
 compile text --e.g. import Mod
 compile modname
+I'll just use single locs for now, getting spans working is not top prio.
+
+A datatype clash on TyCon implies a clash on .tagTyCon... but I'll just
+naively report all clashes for now. The loc of .tagTyCon should be the loc of
+its parent data decl.
+Quirk: the r value in the con ImplList (Ptr r (ImplList r a)) will refer to
+the r in "region r". .implList_hd will have hd's loc.
+Should I change implList_ to impl<Con>? No, that forces the user to remember
+the field's Con when accessing an Impl<TyCon> field.
+
+Recall issue: when allocating Nil, the max size of ImplList will be allocated. While that allows safe con change, sometimes minimal alloc would
+be desirable.
+Loading a variable-size DT could leave garbage if it's allocated to a minimal
+store... that's fine, deref shouldn't require a case.
+
+Location info could be hidden behind refs that are only accessible in the
+error path using a monad; that would guarantee they don't affect compiler
+output.
+
+Ah: .tagList should be a boxed field, desugaring to 
+.unImplList->tagImplList. Unboxed constructors of boxed datatypes (i.e.
+Impl<TyCon>) should be compiled to copy/id ops.
 
 Q: Are defaults checked for monomorphism?
 
