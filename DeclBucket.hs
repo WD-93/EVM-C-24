@@ -136,6 +136,9 @@ unionBucket (DB a1 a2 a3 a4 a5 a6 a7 a8 a9 a10)
   DB (u a1 b1) (u a2 b2) (u a3 b3) (u a4 b4) (u a5 b5) (u a6 b6) (u a7 b7)
   (u a8 b8) (u a9 b9) (S.union a10 b10)
   where u m1 m2 = M.unionWith S.union m1 m2
+unionBuckets :: Foldable t => t DeclBucket -> DeclBucket
+unionBuckets dbs = foldr unionBucket emptyBucket dbs
+
 adeclToBucket :: ADecl -> DeclBucket
 adeclToBucket = \case
   ADefault (k,v) -> e{dbDefaults=s k v}

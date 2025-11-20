@@ -48,6 +48,7 @@ library
                      , array >= 0.5.8.0
                      , process
                      , directory
+                     -- , filepath
   build-tool-depends: alex:alex >= 3.2
                     , happy:happy >= 1.19
                     , BNFC:bnfc >= 2.9

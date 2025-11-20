@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor, LambdaCase #-}
 module Util where
 
 import Control.Monad.Except
@@ -58,3 +59,23 @@ count = foldr (adjustWithDefault succ 0) M.empty
 --is unknown so you can't initialize the map in advance.
 adjustWithDefault :: Ord k => (v -> v) -> v -> k -> Map k v -> Map k v
 adjustWithDefault f d = M.alter (Just . maybe d f)
+
+--The Errors applicative (it's not a monad) lets you report many errors at
+--once from independent computations.
+data Errors err a = Errors [err]
+                  | Success a
+  deriving (Eq,Ord,Read,Show,Functor)
+instance Applicative (Errors err) where
+  pure = Success
+  --An IO-list could ensure accumulation is O(n) despite accumulation from the
+  --left; TODO.
+  Success f <*> Success x = Success $ f x
+  Errors xs <*> Errors ys = Errors $ xs ++ ys
+  Errors xs <*> _ = Errors xs
+  _ <*> Errors xs = Errors xs
+runErrors :: Errors err a -> Either [err] a
+runErrors = \case
+  Errors errs -> Left errs
+  Success a -> Right a
+fling :: err -> Errors err a
+fling = Errors . (:[])

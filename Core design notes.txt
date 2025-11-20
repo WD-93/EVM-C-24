@@ -2849,6 +2849,34 @@ Ah: .tagList should be a boxed field, desugaring to
 .unImplList->tagImplList. Unboxed constructors of boxed datatypes (i.e.
 Impl<TyCon>) should be compiled to copy/id ops.
 
+Module structure: it makes sense to cache the defun, instance and global name
+sets, but their info should be in a single map since they're in the same
+namespace.
+The Module type is a misnomer, since it's the entire program.
+Plan:
+Generate PreModule --done modulo testing
+File IO API (load folder, file) --dmt
+Update compile-time Stdlib loading --done
+Split Stdlib: EVM, alloc (with initAlloc, memOffset), ptr, int etc.
+Modify Desugar to take it (simplifying Desugar.Datatypes)
+Complete Structured --use ppr to test
+Core --initially no opts
+Stack: Core -> Asm --initially naive, just ops in order
+Test using setcode
+Opts: op pruning, naive inlining, TCO, D/CE
+Stretch: mem splitting/alias analysis, symbolic eval of memory alongside
+stack values. Symbolic effects => more efficient, reorderable ops.
+Module objects: initially a plain recursive call to compile using the same
+namespace, ignore code size concerns. 'module ModName' returns a byte array
+literal. code m = module ModName;
+codecopyPtr(memp, &m); returnPtr(memp)
+Pathological case: a module contains a module literal of itself.
+Add label end : Ptr Code Byte, set it in Asm. Ensure *Offset work.
+
+CE+DCE should let me optimize storage global writes, avoiding the "value
+straddles two words" check. Lay out storage vars naively (sequentially), no
+minimizing straddling.
+
 Q: Are defaults checked for monomorphism?
 
 Strategy: get a minimal subset working, then extend. A Core consisting only of EVM ops can be trivially (if inefficiently) compiled.
