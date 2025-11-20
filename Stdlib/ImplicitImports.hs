@@ -16,18 +16,15 @@ import Data.IORef
 --A parse error in Stdlib will cause stdlib to = M.empty.
 --Stdlib can now be split into as many files as necessary.
 
---Hacky solution to lack of Lift instance for DeclBucket: show at compile time,
---read at runtime. That's nasty, will need to fix.
+--Nice, with this it should be possible to ship a standalone exe.
 stdlib :: Namespace
-stdlib = read $(runIO (do ior <- newIORef emptyCS{csPath=["Stdlib"]}
-                          ei <- runLoader ior $ do
-                            loadDir "Stdlib"
-                            --loadModule ["Prelude"]
-                            --loadModule ["Prim"]
-                          case ei of
-                            Left err -> print err
-                            Right () -> return ()
-                          (show . csNamespace) <$> readIORef ior)
+stdlib = $(runIO (do ior <- newIORef emptyCS{csPath=["Stdlib"]}
+                     ei <- runLoader ior $ loadDir "Stdlib"
+                     case ei of
+                       Left err ->
+                         putStrLn $ "Error when loading stdlib: " ++ show err
+                       Right () -> return ()
+                     csNamespace <$> readIORef ior)
             >>= lift)
 
 --Currently Prim.evmc depends on type synonyms in Prelude.evmc, so they must

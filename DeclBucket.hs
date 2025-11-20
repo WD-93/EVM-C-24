@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, DeriveLift, StandaloneDeriving #-}
 module DeclBucket where
 
 --Modules are converted into DeclBuckets after initial parsing, since we might
@@ -42,6 +42,7 @@ import qualified Data.Map as M
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Arrow ((***))
+import Language.Haskell.TH.Syntax (Lift())
 
 --First: associate each syntax node not just with its location in the module
 --but with the module name.
@@ -101,7 +102,20 @@ data DeclBucket = DB {
   dbFields :: MSL FieldInfo,
   dbImports :: Set (Located ModName)
   }
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Lift)
+--Boilerplate, but at least Haskell writes most of it
+--An AutoDeriveChildren extension would make this one line.
+deriving instance Lift a => Lift (S' a)
+deriving instance Lift a => Lift (T' a)
+deriving instance Lift a => Lift (E' a)
+deriving instance Lift Region
+deriving instance Lift a => Lift (EField' a)
+deriving instance Lift Ident
+deriving instance Lift a => Lift (AOp' a)
+deriving instance Lift HexInteger
+deriving instance Lift UIdent
+deriving instance Lift a => Lift (CASE' a)
+deriving instance Lift a => Lift (VarBind' a)
 --What possible conflicts are there?
 --Tysigs and kind sigs form their own maps; for datatypes a kind sig is
 --optional.
@@ -109,25 +123,25 @@ data DeclBucket = DB {
 data DynamicThing = DTDefun (E,S)
                   | DTInstance (T,E,S)
                   | DTGlobal (Region, Maybe E)
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Lift)
 --Datatypes and tysyns
 --Might as well Locate everything
 data StaticThing = STDatatype [Located Name] --typarams
                    [Located Name] --canonical constructors
                    (Maybe (Located Name)) --r if boxed
                  | STTySyn [Located Name] T
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Lift)
 data ConInfo = CI {ciBoxed :: Bool,
                    ciParent :: Located Name,
                    ciFields :: [(Located Name,T)],
                    ciRHS :: T
                   }
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Lift)
 data FieldInfo = IsTag {fiBoxed :: Bool, fiParentTyCon :: Located Name}
                | IsNormal {fiBoxed :: Bool,
                            fiParentTyCon :: Located Name,
                            fiParentCon :: Located Name}
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Lift)
 emptyBucket = DB e e e e e e e e e S.empty
   where e :: Map k v
         e = M.empty
