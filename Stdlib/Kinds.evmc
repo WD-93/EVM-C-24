@@ -1,0 +1,21 @@
+//Primitive kinds
+//Kind does not itself have a kind, bounding the kind hierarchy to depth 3
+
+//The kind of all value types
+Type : Kind;
+//Type-level naturals
+Nat : Kind;
+
+//Regions, used to parameterize pointers and boxed datatypes
+Region : Kind;
+Memory : Region;
+Storage : Region;
+TStorage : Region;
+Calldata : Region;
+Returndata : Region;
+Code : Region;
+
+//Indicates whether an Int is signed
+Signedness : Kind;
+Signed : Signedness;
+Unsigned : Signedness;

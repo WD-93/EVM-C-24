@@ -1,0 +1,55 @@
+//The types the compiler is aware of; TODO split out those which are more or
+//less primitive.
+
+//Primitive types
+//Int's structure can't be defined in the language because it's variable-size.
+Int : Signedness -> Nat -> Type;
+data Int s l = {};
+
+//While the structure of Ptr and Fun can be defined in the language, the
+//compiler treats them specially.
+Ptr : Region -> Type -> Type;
+data Ptr r a = {MkPtr (UInt 2)};
+
+//(->) is desugared to Fun
+//Fun : Type -> Type -> Type at the type level, but is poly-kinded at the kind
+//level (requiring special treatment).
+data Fun a b = {MkFun (Int Unsigned 2)};
+
+//Pair is the word-padding primitive: the Bytestring# repr of Pair a b is
+//wordPad (toBS a) ++ wordPad (toBS b)
+//Tuples desugar to foldr Pair Unit.
+//Nested tuples are unique in that they can be deconstructed at no runtime
+//cost (well, any zero-sized serializable type has the same property as Unit).
+//They're therefore the only permissible let and lambda pattern in Core;
+//any other pattern matching is implemented using case and let x = y.field.
+data Pair a b = {Pair {fst: a, snd: b}};
+data Unit = {Unit};
+
+//Bytestring append without padding.
+//Anonymous structs Struct (a,b,c) desugar to foldr Append Unit.
+//Append without padding is the default rule for datatypes, so this requires
+//no special treatment during codegen.
+//It has named fields to make creating Appends in the compiler more
+//convenient.
+data Append a b = {Append {first: a, second: b}};
+
+//The proxy types
+//Do they deserve to be here? sizeof needs P, anyway.
+data P a = {P};
+PR : Region -> Type;
+data PR r = {PR};
+PN : Nat -> Type;
+data PN n = {PN};
+PS : Signedness -> Type;
+data PS s = {PS};
+
+//A newtype wrapper for EVM addresses
+//TODO move it somewhere appropriate.
+data Addr = {Addr (UInt 20)};
+
+//TODO move Bool, Maybe and List somewhere appropriate
+data Bool = {False;True};
+data Maybe a = {Nothing;Just{fromJust: a}};
+//The only boxed type provided by Prelude (for now):
+data List r a = {Nil;Cons{hd:a,tl:List r a}} region r

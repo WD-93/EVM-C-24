@@ -1,0 +1,43 @@
+//Memory allocation.
+//There are three mutable regions: memory, storage and tstorage;
+//returndata can technically be modified but only indirectly, not via pointer
+//writes.
+
+//storage and tstorage are relatively expensive and accesses which overlap
+//slots are costly. Boxed DT construction uses alloc under the hood, so if
+//you want to construct Storage or TStorage BDTs automatically you must
+//provide alloc instances for them. alloc is defined as a class to accomodate
+//that.
+
+//Allocates enough space for n of the given type.
+//Should Int s l be restricted to Short?
+//Design choice: regions are treated as bytestrings, no assumption that a
+//Ptr r a actually points to a valid bitpattern for a is made. As such, alloc
+//can return a Ptr directly rather than a separate uninitialized ptr type.
+alloc : Int s l -> Ptr r a;
+instance alloc : UInt l -> MPtr a where
+ n := {
+  var sz = sizeof (P :: P a),
+      m = sz * n; //The product gets masked here...
+  return coerce (allocRawMem (coerce m)) :: MPtr a
+ };
+
+//TODO add wordpad global pragma
+memAllocPtr : Word;
+memory memAllocPtr;
+//Fateful decision: no overflow checking is done.
+allocRawMem : Word -> MPtr Byte;
+allocRawMem n := {
+ var pw = memAllocPtr;
+ memAllocPtr = n + pw;
+ return unsafeCoerce pw
+ };
+
+//Variants; BDT construction uses allocValue.
+allocValue : a -> Ptr r a;
+allocValue a := {
+ var p = alloc 1;
+ *p = a;
+ return p
+ };
+//Add alloc from pointer?

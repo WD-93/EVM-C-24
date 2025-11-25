@@ -266,7 +266,7 @@ loadModule mnm = Loader $ do
                         LoaderImpl LoadModuleError DeclBucket
     tryParseToBucket mnm str =
       case sourceToBucket mnm str of
-        Left perr -> throwError $ ModuleParseError mnm str
+        Left perr -> throwError $ ModuleParseError mnm perr
         Right db -> return db
     --Precondition: the mnm wasn't in ns before
     go :: ModName -> DeclBucket -> LoaderImpl LoadModuleError ()

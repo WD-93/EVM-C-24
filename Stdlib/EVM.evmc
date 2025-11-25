@@ -1,0 +1,215 @@
+//Primfun bindings for the EVM opcodes.
+//The compiler replaces their empty bodies in Core with a single-op body.
+//Ex:
+//add(w1,w2) := () =>
+//add (w1*w2*ret*stk,env) =
+// let (x,()) = add ((w1,w2),())
+// in jump (ret*x*stk,env)
+//Ops that interact with state take and return vars from env.
+//Ex:
+//mstore(woff,wval) := () =>
+//add (woff*wval*ret*stk,(mem,cd,...)) =
+// let (x,mem') = mstore((woff,wval),mem)
+// in jump (ret*x*stk,(mem',cd,...))
+//The optimizer should inline them; that also allows independent ops to be
+//reordered as tighter bounds on their effect can be found.
+//Excluded:
+//jump, jumpi (they're branches in Core, not ops)
+//invalid (it's just a worse stop unless you're spiteful toward the caller)
+//push* (accessible via constants and literals instead)
+//dup*, swap* are excluded for now; the stack scheduler implicitly
+//generates them.
+
+//This could be auto-generated from an iset spec: arity, returns, effect
+//0x00-0x0b
+stop : () -> ();
+stop x := ();
+add : (Word,Word) -> Word;
+add x := ();
+mul : (Word,Word) -> Word;
+mul x := ();
+//It's unfortunate that sub, div, sdiv, mod, smod don't take the operand as
+//the first argument: x-k, x/k, x%k are more common than the reverse and
+//could generate efficient stack code if they did.
+sub : (Word,Word) -> Word;
+sub x := ();
+div : (Word,Word) -> Word;
+div x := ();
+sdiv : (Word,Word) -> Word;
+sdiv x := ();
+mod : (Word,Word) -> Word;
+mod x := ();
+smod : (Word,Word) -> Word;
+smod x := ();
+addmod : (Word,Word,Word) -> Word;
+addmod x := ();
+mulmod : (Word,Word,Word) -> Word;
+mulmod x := ();
+exp : (Word,Word) -> Word;
+exp x := ();
+signextend : (Word,Word) -> Word;
+signextend x := ();
+
+//0x10-0x1d
+//Variants that return a Bool would be useful for the optimizer, but aren't
+//appropriate here: first of all EVM should avoid locking in the user to
+//particular type definitions as far as possible, and secondly being able to
+//chain EVM primfun applications without unsafeCoercing to word is ergonomic.
+lt : (Word,Word) -> Word;
+lt x := ();
+gt : (Word,Word) -> Word;
+gt x := ();
+slt : (Word,Word) -> Word;
+slt x := ();
+sgt : (Word,Word) -> Word;
+sgt x := ();
+eq : (Word,Word) -> Word;
+eq x := ();
+iszero : Word -> Word;
+iszero x := ();
+and : (Word,Word) -> Word;
+and x := ();
+or : (Word,Word) -> Word;
+or x := ();
+xor : (Word,Word) -> Word;
+xor x := ();
+not : Word -> Word;
+not x := ();
+byte : (Word,Word) -> Word;
+byte x := ();
+shl : (Word,Word) -> Word;
+shl x := ();
+shr : (Word,Word) -> Word;
+shr x := ();
+sar : (Word,Word) -> Word;
+sar x := ();
+
+//0x20
+//sha3 is a synonym of keccak256
+sha3 : (Word,Word) -> Word;
+sha3 (off,len) := return keccak256(off,len);
+keccak256 : (Word,Word) -> Word;
+keccak256 x := ();
+
+//0x30-0x4a
+address : () -> Word;
+address x := ();
+balance : () -> Word;
+balance x := ();
+origin : () -> Word;
+origin x := ();
+caller : () -> Word;
+caller x := ();
+callvalue : () -> Word;
+callvalue x := ();
+calldataload : Word -> Word;
+calldataload x := ();
+calldatasize : () -> Word;
+calldatasize x := ();
+calldatacopy : (Word,Word,Word) -> ();
+calldatacopy x := ();
+codesize : () -> Word;
+codesize x := ();
+codecopy : (Word,Word,Word) -> ();
+codecopy x := ();
+gasprice : () -> Word;
+gasprice x := ();
+extcodesize : Word -> Word;
+extcodesize x := ();
+extcodecopy : (Word,Word,Word,Word) -> ();
+extcodecopy x := ();
+returndatasize : () -> Word;
+returndatasize x := ();
+extcodehash : Word -> Word;
+extcodehash x := ();
+blockhash : Word -> Word;
+blockhash x := ();
+coinbase : () -> Word;
+coinbase x := ();
+timestamp : () -> Word;
+timestamp x := ();
+number : () -> Word;
+number x := ();
+prevrandao : () -> Word;
+prevrandao x := ();
+gaslimit : () -> Word;
+gaslimit x := ();
+chainid : () -> Word;
+chainid x := ();
+selfbalance : () -> Word;
+selfbalance x := ();
+basefee : () -> Word;
+basefee x := ();
+blobhash : Word -> Word;
+blobhash x := ();
+blobbasefee : () -> Word;
+blobbasefee x := ();
+
+//0x50-0x5e
+//pop is the odd one out: it can be defined in C.
+pop : Word -> ();
+pop _ := return ();
+mload : (Word,Word) -> Word;
+mload x := ();
+mstore : (Word,Word) -> ();
+mstore x := ();
+mstore8 : (Word,Word) -> ();
+mstore8 x := ();
+sload : Word -> Word;
+sload x := ();
+sstore : (Word,Word) -> ();
+sstore x := ();
+//jump, jumpi excluded
+pc : () -> Word;
+pc x := ();
+msize : () -> Word;
+msize x := ();
+gas : () -> Word;
+gas x := ();
+//jumpdest excluded
+tload : Word -> Word;
+tload x := ();
+tstore : (Word,Word) -> ();
+tstore x := ();
+mcopy : (Word,Word,Word) -> ();
+mcopy x := ();
+
+//push*, dup*, swap* excluded
+
+//0xa0-0xa4
+log0 : (Word,Word) -> ();
+log0 x := ();
+log1 : (Word,Word,Word) -> ();
+log1 x := ();
+log2 : (Word,Word,Word,Word) -> ();
+log2 x := ();
+log3 : (Word,Word,Word,Word,Word) -> ();
+log3 x := ();
+log4 : (Word,Word,Word,Word,Word) -> ();
+log4 x := ();
+
+//0xf0-0xf5
+create : (Word,Word,Word) -> Word;
+create x := ();
+call : (Word,Word,Word,Word,Word,Word,Word) -> Word;
+call x := ();
+callcode : (Word,Word,Word,Word,Word,Word,Word) -> Word;
+callcode x := ();
+//return must be called evm_return because return is a keyword in C
+evm_return : (Word,Word) -> ();
+evm_return x := ();
+delegatecall : (Word,Word,Word,Word,Word) -> Word;
+delegatecall x := ();
+create2 : (Word,Word,Word,Word) -> Word;
+create2 x := ();
+
+//0xfa
+staticcall : (Word,Word,Word,Word,Word,Word) -> Word;
+staticcall x := ();
+
+//0xfd-0xff
+revert : (Word,Word) -> ();
+revert x := ();
+//invalid excluded
+selfdestruct : Word -> ();
+selfdestruct x := ();

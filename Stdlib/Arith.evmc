@@ -1,0 +1,228 @@
+//The arithmetic functions; C operators desugar to these.
+//Functions which don't fit in Alloc or Terminate also go here for now.
+
+//Given a type a (passed via proxy), returns its size % 2^256.
+//Must be primitive.
+sizeofWord : P a -> Word;
+sizeofWord _ := ();
+//Problem: types may be larger than 65kB, but pointers are 16b.
+//TODO overload deref and writePtr, support full-sized pointers?
+sizeof : P a -> Short;
+sizeof p := return coerce (sizeofWord p);
+//Convenience function; it should be optimized to a constant.
+sizeofValue : a -> Short;
+sizeofValue a := {
+ a :: a;
+ return sizeof (P :: P a)
+};
+//Given a Nat proxy, returns the nat's value % 2^256
+knownNatWord : PN n -> Word;
+knownNatWord _ := ();
+knownNat : PN n -> Int s l; 
+knownNat pn := return coerce (knownNatWord pn);
+
+//A utility function since looking up the byte size of the n elements pointed
+//to is common. Should be inlined and CE'd. Annoyance: the masking adds 6
+//gas. Drop it?
+sizeofPtrLen : (Ptr r a, Short) -> Short;
+sizeofPtrLen (p,n) := {
+ p :: Ptr r a;
+ var sz = sizeof (P :: P a);
+ return (n*sz)
+}
+
+//mask n returns a Word consisting of n 1-bits, left-padded with zeroes.
+//If its argument is >= 256, it returns ~0.
+//It's useful for implementing mathops in C and should be optimized to a
+//constant.
+mask : Short -> Word;
+mask n := if n > 255
+       	  then return ~0
+	  else return (1 << n) - 1
+	  end;
+
+//The other primitives are black magic but this one is blacker due to its
+//non-compositional semantics.
+// &e = p if e can be inferred to be *p
+//Applicable arguments: *p (.field | !ix)*
+addressOf : a -> Ptr r a;
+addressOf _ := ();
+
+//Short-circuited ops; if called on a non-explicit tuple the short-circuiting
+//doesn't occur and their ordinary definition is used instead.
+scAnd : (a,b) -> Bool;
+scAnd (a,b) := if a //truthy implicitly applied
+      	       then return truthy b > 0
+	       else return False
+	       end;
+scOr : (a,b) -> Bool;
+scOr (a,b) := return truthy (a,b) > 0;
+
+//Logical and bitwise ops.
+//Because they may be applied to values with an unknown size, they must be
+//primitive.
+truthy : a -> Word;
+truthy _ := ();
+lNot : a -> Bool;
+lNot _ := ();
+bwAnd : (a,a) -> a;
+bwAnd _ := ();
+bwOr : (a,a) -> a;
+bwOr _ := ();
+bwXor : (a,a) -> a;
+bwXor _ := ();
+bwNot : a -> a;
+bwNot _ := ();
+
+//Comparison ops
+//Because block exprs have been removed, > can't be implemented as sugar for
+// < with reverse argument eval order.
+lt_ : (a,a) -> Bool;
+lt_ _ := ();
+lte_ : (a,a) -> Bool;
+lte_ _ := ();
+gt_ : (a,a) -> Bool;
+gt_ _ := ();
+gte_ : (a,a) -> Bool;
+gte_ _ := ();
+eq_ : (a,a) -> Bool;
+eq_ _ := ();
+neq_ : (a,a) -> Bool;
+neq_ _ := ();
+
+//Coercion
+//coerce may result in an invalid bitpattern, but it at least masks the
+//result to the correct byte length.
+//TODO ensure it also masks internal padding?
+coerce : a -> b;
+coerce _ := ();
+//unsafeCoerce does not, which makes it cheaper but more dangerous.
+unsafeCoerce : a -> b;
+unsafeCoerce _ := ();
+//coerce does not signextend, it simply masks. To coerce -1 :: SInt 1 to
+//-1 :: SInt 32, use coerceInt.
+coerceInt : Int s1 n1 -> Int s2 n2;
+instance coerceInt : UInt n1 -> Int s2 n2 where
+ a := return coerce a;
+instance coerceInt : SInt n1 -> Int s2 n2 where
+ a:= return coerce (extendToWord a);
+//signextend an n-bit signed integer
+//Opt: signextend(x,31) is an identity op
+extendToWord : SInt n -> Word;
+extendToWord a := {
+ var sz = sizeofValue a;
+ return signextend(coerce a, (coerce sz) - 1)
+};
+
+//Utility functions
+//copy(to,from,n) copies n elems from from to to; it's a shared frontend for
+//the EVM copy variants (mcopy, calldatacopy, returndatacopy, codecopy).
+//extcodecopy is not covered because it requires an additional address
+//argument.
+copy : (MPtr a, Ptr r a, Short) -> ();
+copy (to,from,n) := {
+ var len = sizeofPtrLen(to,n);
+ copyBytes(to,from,len)
+};
+copyBytes : (MPtr a, Ptr r a, Short) -> ();
+instance copyBytes : (MPtr a, MPtr a, Short) -> () where
+ (to,from,len) := mcopy(coerce to, coerce from, coerce len);
+instance copyBytes : (MPtr a, Ptr Calldata a, Short) -> () where
+ (to,from,len) := calldatacopy(coerce to, coerce from, coerce len);
+instance copyBytes : (MPtr a, Ptr Returndata a, Short) -> () where
+ (to,from,len) := returndatacopy(coerce to, coerce from, coerce len);
+instance copyBytes : (MPtr a, Ptr Code a, Short) -> () where
+ (to,from,len) := codecopy(coerce to, coerce from, coerce len);
+
+//Numeric ops
+//Important: don't shadow the EVM opcode names! The EVMC ops do additional
+//masking to keep them well-typed; the opcodes are of type Word* -> Word | ()
+//Integer constants desugar to fromWord w, because all overloading is captured
+//in polymorphic functions (which are then type applied during type inference).
+fromWord : Word -> Int s len;
+fromWord _ := ();
+
+//Since pointer "addition" is moved to indexPtr, plus and minus can now have
+//nice types.
+//Design principle: sacrifice C-style sugar for better type inference.
+//Arith on distinct int types now disallowed without an explicit coerce.
+//Since they're now quantified polymorphic, perhaps implement using add, and,
+//sizeof.
+plus : (Int s l,Int s l) -> Int s l;
+plus (a,b) := return coerce (add(coerce a, coerce b)); 
+minus : (Int s l, Int s l) -> Int s l;
+minus (a,b) := return coerce (sub(coerce a, coerce b));
+
+//Is it OK to make its type more restrictive than C's?
+//Note only the bottom 32B are used for n > 32
+multiply : (Int a b, Int a b) -> Int a b;
+multiply (a,b) := return coerce (mul(coerce a, coerce b));
+divide : (Int a b, Int a b) -> Int a b;
+instance divide : (UInt a, UInt a) -> UInt a where
+ (a,b) := return coerce (div(coerce a, coerce b))
+instance divide : (SInt a, SInt a) -> SInt a where
+ (a,b) := return coerce (sdiv(extendToWord a, extendToWord b));
+//Like & and |, modulo doesn't require masking.
+modulo : (Int a b, Int a b) -> Int a b;
+instance modulo : (UInt a, UInt a) -> UInt a where
+ (x,m) := return unsafeCoerce (mod(coerce x, coerce m));
+instance modulo : (SInt a, SInt a) -> SInt a where
+ (x,m) := return unsafeCoerce (smod(coerce x, extendToWord m));
+
+negate : Int a b -> Int a b;
+negate n := return 0 - n;
+
+//The C ops << and >> desugar to shL and shR respectively.
+//Note their argument order is the reverse of the EVM ops shr and shl.
+//The shift value is interpreted as unsigned; any value greater than n's
+//bitlen will lead to a constant 0 being returned.
+shL : (Int a b, Int c d) -> Int a b;
+shL (n,sh) := return coerce (shl(coerce sh, coerce n));
+shR : (Int a b, Int c d) -> Int a b;
+shR (n,sh) := return coerce (shr(coerce sh, coerce n));
+
+//Pointer ops
+
+//With inbuilt support for malloc, every region can now be deref'd.
+//Since Memory, Storage and TStorage deref is implemented using a variable
+//number of mloads, sloads and tloads respectively, they must be primitive.
+//Calldata, Returndata and Code derefs can be implemented in C.
+//However, calldata is also addressable by calldataload, so it's better to
+//implement it as a primitive.
+deref : Ptr r a -> a;
+instance deref : MPtr a -> a where
+ p := return derefMem p;
+instance deref : SPtr a -> a where
+ p := return derefSto p;
+instance deref : TSPtr a -> a where
+ p := return derefTSto p;
+instance deref : Ptr Calldata a -> a where
+ p := return derefCD p;
+//In-C implems!
+instance deref : Ptr Code a -> a where
+ p := return derefByCopy p;
+instance deref : Ptr Returndata a -> a where
+ p := return derefByCopy p;
+derefByCopy : Ptr r a -> a;
+derefByCopy p := {
+  //Instead of alloc, just scratch alloc
+  var tmp = coerce memAllocPtr;
+  copy (tmp,p,1);
+  return *tmp
+  };
+
+//Primitives
+//These two are simple: a partial word gets shr'd, the rest get loaded using
+//either mload or calldataload.
+derefMem : MPtr a -> a;
+derefMem _ := ();
+derefCD : Ptr Calldata a -> a;
+derefCD _ := ();
+//These are complex, since storage and tstorage are word-addressed. That makes
+//byte-addressed pointers a costly abstraction. An n-byte value results in
+//n rounded up by 32 `div` 32 loads, so it must start with a branch on the
+//byte offset.
+derefSto : SPtr a -> a;
+derefSto _ := ();
+derefTSto : TSPtr a -> a;
+derefTSto _ := ();

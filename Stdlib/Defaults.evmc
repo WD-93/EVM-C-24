@@ -1,0 +1,19 @@
+//When a tyvar of a given kind is unbound after initial unification, *but it
+//is not rigid* then it is unified with its default if one exists.
+//These are sensible choices for the defaults.
+
+import Int; //Used for the Type default; imports TySyns
+import Kinds; //The things we're defaulting
+
+//Currently the EVM ops use the tysyn Word, which depends on Int;
+//as such there's little point in avoiding it to reduce dependencies.
+default Type = Word;
+
+//This causes integer literals without a restricted type to default to Word
+//(desirable for perf reasons), but arrays without a set length will default
+//to length 32! TODO: more flexible per-tycon argument and function
+//tyvar defaults.
+default Nat = 32;
+default Signedness = Unsigned;
+
+default Region = Memory

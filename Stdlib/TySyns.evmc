@@ -1,0 +1,22 @@
+//Type synonyms
+//Since the language operates at byte granularity, we pass byte length rather
+//than bitlength to Int.
+type UInt = Int Unsigned;
+type SInt = Int Signed;
+type Byte = UInt 1;
+type Char = Byte;
+type Short = UInt 2;
+type Size_T = Short;
+type Long = UInt 4;
+type Half = UInt 16;
+type Word = UInt 32;
+
+type MPtr = Ptr Memory;
+type SPtr = Ptr Storage;
+type TSPtr = Ptr TStorage;
+type CaPtr = Ptr Calldata;
+type RPtr = Ptr Returndata;
+type CoPtr = Ptr Code;
+
+//WordPad is now replaced by Pair as the word-padding primitive
+type WordPad a = (a,())

@@ -1,0 +1,42 @@
+//Ergonomic wrappers for revert and evm_return
+
+//Should they return an arbitrary b so I can call them in the middle of
+//expressions, e.g. (cond || revertValue("Oh no!"))? I can use coerce for that.
+
+//Writes the given value to 0 (clobbering globals) and RETURNs it.
+//The clobbering is done to avoid an alloc... but it might mess with
+//reordering opts if affected globals are used when evaluating a.
+returnValue : a -> ();
+returnValue a := {
+ var p = coerce 0; //Opt: the mask on 0 should be elided.
+ *p = a; //Inefficiency: a partial word will be shl'd.
+ //Really I should wordpad, then figure out the (constant) offset a will
+ //start at. Need a primitive WordPad type with a field for the payload?
+ returnPtr p
+ //Opt: after inlining, the default return block should be pruned.
+ };
+
+returnPtr : MPtr a -> ()
+returnPtr p := returnPtrLen (p,1);
+returnPtrLen : (MPtr a, Short) -> ();
+returnPtrLen (p,n) := {
+ p :: MPtr a;
+ var sz = sizeof (P :: P a);
+ evm_return (coerce p, coerce (n*sz))
+ };
+
+//TODO use WordPad
+revertValue : a -> ();
+reverValue a := {
+ var p = coerce 0;
+ *p = a;
+ revertPtr p
+ };
+revertPtr : MPtr a -> ();
+revertPtr p := revertPtrLen (p,1);
+revertPtrLen : (MPtr a, Short) -> ();
+revertPtrLen (p,n) := {
+ p :: MPtr a;
+ var sz = sizeof (P :: P a);
+ revert (coerce p, coerce (n*sz))
+ }

@@ -2858,8 +2858,26 @@ Generate PreModule --done modulo testing
 File IO API (load folder, file) --dmt
 Update compile-time Stdlib loading --done
 Split Stdlib: EVM, alloc (with initAlloc, memOffset), ptr, int etc.
-Modify Desugar to take it (simplifying Desugar.Datatypes)
+ Which types are essential to compilation?
+  Int and Pair are treated specially in sizeof
+  Array has a dedicated construct in E; construction and indexing has
+   dedicated logic.
+  k => fromWord k#; k# is Int Unsigned 32
+  Boxed datatype construction and destruction uses Ptr
+  Code and returndata deref uses alloc/scratch.
+ Which types are used in desugaring?
+  Globals are given type Ptr r a
+  (a,b,c) => Pair, Unit
+  Struct (a,b,c) => Append, Unit
+  Array (a,b,c) => array construct
+For now put the types the compiler mentions in Types.evmc.
+TODO figure out the dependency hierarchy; it's all tangled together atm.
+
+Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
+ --Also make WordPad the padding primitive
+ --Change in Sizeof: compute field offsets per monotype
 Complete Structured --use ppr to test
+ --ampersand needs addPtrBytes
 Core --initially no opts
 Stack: Core -> Asm --initially naive, just ops in order
 Test using setcode
@@ -2876,6 +2894,36 @@ Add label end : Ptr Code Byte, set it in Asm. Ensure *Offset work.
 CE+DCE should let me optimize storage global writes, avoiding the "value
 straddles two words" check. Lay out storage vars naively (sequentially), no
 minimizing straddling.
+
+FW compiler maintainability issue, possible functional pearl: figure out how
+to state rewrite rules in isolation (e.g. Struct tup => ...) while fusing the
+traversals to make it fast.
+Challenge: the type changes from CST -> AST; finer-grained types might
+introduce more steps inbetween.
+It's related to opts: apply rs until fixpoint would be a useful combinator.
+Maintain exec intensity, code+exec gas cost per-block caches at the same
+time?
+
+Ah: a ptr to an a is never padded. If Pair is the wordpad primitive, 
+&(p->fst) will therefore be p+padding bytes of fst. So p->fst = short will *not* be efficient, you need to use p->fst_ = WordPad short instead!
+data Pair a b = {MkPair {fst_: WordPad a, snd_: WordPad b}
+The expr Pair a b could then be desugared to MkPair (WordPad a) (WordPad b).
+data WordPad a = {WordPad {unWordPad: a}}
+sizeof WordPad and offset of unWordPad would require special treatment.
+
+SAR lets me save 2 gas when dividing a signed integer by 2^n...
+I'll use SHR rather than SAR for >> on signed ints to make it useful for
+manual record construction; whether to use SHR or SAR seems to be a free
+choice in the C89 standard.
+
+0x0100
+x, y
+addmod
+--Has the same gas cost and code size as
+x, y
+add
+0xff, and
+--The latter is preferable due to more flexible stack scheduling.
 
 Q: Are defaults checked for monomorphism?
 
