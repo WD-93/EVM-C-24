@@ -2870,11 +2870,33 @@ Split Stdlib: EVM, alloc (with initAlloc, memOffset), ptr, int etc.
   (a,b,c) => Pair, Unit
   Struct (a,b,c) => Append, Unit
   Array (a,b,c) => array construct
+If I had proper namespacing I could desugar and typecheck stdlib modules
+separately. But Core relies on fixed global addrs...
 For now put the types the compiler mentions in Types.evmc.
 TODO figure out the dependency hierarchy; it's all tangled together atm.
 
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
+ --Convert strings to inline byte array literals again? Yes.
+  Global context I need currently:
+   global set for g => *g
+   Con fields for Con args => Con fs --E' -> E, P' -> Pat
+   Boxity for 
+    Con fs => ImplTyCon (allocValue (ImplCon fs'))
+    x.field => *(x.unImplCon).implTyCon_field
+   string numbering --no longer needed
+Pair a b => Pair {fst:a, snd: b}
+How many transformations can I separate into their own traversals?
+ --Prohibit memory global initializers
  --Also make WordPad the padding primitive
+  Pair a b in PET => Append (WordPad a) (WordPad b)
+  Pair {fst: a, snd: a} => ditto
+  x.fst => x.first.unWordPad in PE
+  Opt: p...field.unWordPad = v => p...field = WordPad v
+  Local assignment behavior:
+  x.a...fields = v =>
+  tmp = x.a
+  tmp...fields = v
+  x.a = tmp
  --Change in Sizeof: compute field offsets per monotype
 Complete Structured --use ppr to test
  --ampersand needs addPtrBytes

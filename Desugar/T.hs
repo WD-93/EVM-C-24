@@ -5,21 +5,23 @@ module Desugar.T (desugarT) where
 
 import Desugar.DTs
 import qualified E.Abs as P
+import qualified DeclBucket
 import AST.Util
 
 import Data.Generics (everything,mkQ,everywhere,mkT)
 
-desugarT :: P.T -> T
+--TODO propagate loc info
+desugarT :: DeclBucket.T -> T
 desugarT = struct2append . go
   where go = \case
-          P.TVar (Ident nm) -> TyVar nm
-          P.TNat n -> TyNat n
-          P.TCon (UIdent nm) -> TyCon nm
-          P.TEmptyTup -> TyCon "Unit"
-          P.TTup t ts -> tupleT $ map go $ t:ts
-          P.TApp tf tx -> go tf :$$ go tx
-          P.TArray len a -> Array (go len) (go a)
-          P.TArrow a b -> go a :-> go b
+          P.TVar _loc (Ident nm) -> TyVar nm
+          P.TNat _loc n -> TyNat n
+          P.TCon _loc(UIdent nm) -> TyCon nm
+          P.TEmptyTup _loc -> TyCon "Unit"
+          P.TTup _loc t ts -> tupleT $ map go $ t:ts
+          P.TApp _loc tf tx -> go tf :$$ go tx
+          P.TArray _loc len a -> Array (go len) (go a)
+          P.TArrow _loc a b -> go a :-> go b
 --Desugars Struct a b c to Append a (Append b (Append c Unit))
 struct2append :: T -> T
 struct2append = everywhere $ mkT $

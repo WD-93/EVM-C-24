@@ -86,26 +86,27 @@ data DError = DuplicateDefun Name
   deriving (Eq,Ord,Read,Show)
 
 --Boilerplate instances... todo recommend BNFC does this
-deriving instance Data P.D
-deriving instance Data P.E
-deriving instance Data P.S
-deriving instance Data P.CASE
-deriving instance Data P.VarBind
+deriving instance Data a => Data (P.D' a)
+deriving instance Data a => Data (P.E' a)
+deriving instance Data a => Data (P.S' a)
+deriving instance Data a => Data (P.CASE' a)
+deriving instance Data a => Data (P.VarBind' a)
+deriving instance Data a => Data (P.EField' a)
+deriving instance Data a => Data (P.AOp' a)
+deriving instance Data a => Data (P.T' a)
+deriving instance Data a => Data (P.ConArgs' a)
+deriving instance Data a => Data (P.ModuleName' a)
+deriving instance Data a => Data (P.GlobalRegion' a)
+deriving instance Data a => Data (P.DataRHS' a)
+deriving instance Data a => Data (P.UnboxedRHS' a)
+deriving instance Data a => Data (P.DataCon' a)
+deriving instance Data a => Data (P.DCA' a)
+deriving instance Data a => Data (P.RecordField' a)
+deriving instance Data a => Data (P.ConTag' a)
+--Token instances don't need a loc param
 deriving instance Data P.Ident
-deriving instance Data P.HexInteger
-deriving instance Data P.EField
 deriving instance Data UIdent
-deriving instance Data P.AOp
-deriving instance Data P.T
-deriving instance Data P.ConArgs
-deriving instance Data P.ModuleName
-deriving instance Data P.GlobalRegion
-deriving instance Data P.DataRHS
-deriving instance Data P.UnboxedRHS
-deriving instance Data P.DataCon
-deriving instance Data P.DCA
-deriving instance Data P.RecordField
-deriving instance Data P.ConTag
+deriving instance Data P.HexInteger
 
 --The module context required for desugaring SEP; passed as a parameter
 --rather than as three parameterized functions. Boxed field status is

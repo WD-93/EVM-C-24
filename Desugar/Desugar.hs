@@ -12,10 +12,12 @@ import qualified E.Abs as P
 --CST -> AST
 import AST.DTs
 import AST.Util (rollTyApps,mkSig)
+import qualified DeclBucket as DB 
+import Import (PreModule(..),MNL(..))
 import Desugar.DTs
 import Desugar.T (desugarT)
-import Desugar.Datatypes (processDTs)
-import Desugar.SEP (desugarS,desugarE,desugarP)
+--import Desugar.Datatypes (processDTs)
+--import Desugar.SEP (desugarS,desugarE,desugarP)
 --AST -> AST
 
 import Data.Map (Map(..))
@@ -32,6 +34,42 @@ import Control.Arrow ((***))
 import Data.Maybe (fromMaybe)
 
 import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
+
+--DeclBucket now takes care of most of the conflict elimination.
+--Remaining: tag clash on BDT + tag of ImplTyCon.
+--Rules: only memory and code globals may have initializers.
+--Should I drop memory initializers? They complicate trueMain and make
+--init ordering non-obvious. The inits hint the type... but I can do that
+--with an explicit type signature.
+--Drop for now, verbose but obvious > terse but obscure.
+
+desugar :: PreModule -> Either DError Module
+desugar pm = do
+  let tsigs = M.map mkSig $ getTs pmTySigs
+      --pmKindSigs contains two types of decl: TyCon : T and TyCon : Kind;
+      --the former become kindsigs, the set of keys in the latter become
+      --kinds. Note type Foo = Kind; TyCon : Foo will not be recognized as
+      --a kind declaration; the rhs must be syntactically Kind.
+      kss = getTs pmKindSigs
+      ksigs = M.filter (/= TyCon "Kind") kss
+      ks = M.keysSet $ M.filter (== TyCon "Kind") kss
+      dflts = getTs pmDefaults
+      sthings = M.map fst $ pmStatThings pm --discarding location
+      tsyns = M.mapMaybe (\case DB.STTySyn lnms pt ->
+                                  Just (map fst lnms, desugarT pt)
+                                _ -> Nothing) sthings
+      --Now I need to desugar defuns, globals and dtsInfo
+      --Perform as many context-dependent rewrites as possible in separate
+      --traversals of the Module rather than baked into SEP desugaring.
+  return Module{tysigs = tsigs,
+                kindsigs = ksigs,
+                kinds = ks,
+                defaults = dflts,
+                tysyns = tsyns
+               }
+    where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
+
+{-
 
 --Grouping declarations by constructor first leads to cleaner code, as I can
 --get an overview of the handling for each decl type in one place.
@@ -360,3 +398,5 @@ desugarConArgs = go
           P.CACons conlhs (Ident param) ->
             let (tycon,params) = go conlhs
             in (tycon,params++[param]) --I know it's quadratic...
+
+-}
