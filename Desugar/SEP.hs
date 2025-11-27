@@ -8,11 +8,18 @@ import Desugar.DTs
 import Util
 import Desugar.Util (defaultFieldName)
 import Desugar.T
+import qualified DeclBucket --for the E' Loc, T' Loc etc synonyms
 
 import qualified Data.Set as S
 import qualified Data.Map as M hiding ((!))
 import Control.Monad.Except
 import Control.Arrow ((***))
+
+--Change: I'll split the desugaring into a first pass that takes no context,
+--followed by a series of generic everywhereM rewrites on the Module.
+--Con args => Con fs can be deferred by converting Con to an invalid Var.
+--Underapplication detection must use a stop condition to prevent triggering
+--it on f in f :$ x.
 
 --Desugaring functions using DInfo for S, E and Pat respectively.
 --Since the datatypes contain each other, they need to be put in one module.
@@ -34,7 +41,7 @@ import Control.Arrow ((***))
 --ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
 --HM may then assume Var nm is either a global or function; TODO remove
 --the logic for constructors.
-desugarE :: DInfo -> P.E -> Either DError E
+desugarE :: DInfo -> DeclBucket.E -> Either DError E
 desugarE di@DInfo{diGlobalSet = gs,
                   diStringNumbering = str2id,
                   diDTsInfo = dtsi
@@ -42,44 +49,45 @@ desugarE di@DInfo{diGlobalSet = gs,
   where
     dot e = Dot e Nothing
     go = \case
-      P.EmptyTuple -> return $ tupleE []
-      P.Tuple pe pes -> tupleE <$> (mapM go $ pe:pes)
+      P.EmptyTuple _loc -> return $ tupleE []
+      P.Tuple _loc pe pes -> tupleE <$> (mapM go $ pe:pes)
       --Integers are sugar for fromWord #w, where w is :: Word
-      P.HexInt (P.HexInteger str) -> go $ P.Int $ read str
-      P.Int n -> return $ Var "fromWord" :$ EInteger n
-      P.Var (Ident nm)
+      P.HexInt loc (P.HexInteger str) -> go $ P.Int loc $ read str
+      P.Int _loc n -> return $ Var "fromWord" :$ EInteger n
+      P.Var _loc (Ident nm)
         --g => *g
         | S.member nm gs -> return $ Var "deref" :$ Var nm
         | let -> return $ Var nm
-      P.String str ->
+      P.String _loc str ->
         --str => *g
         case M.lookup str str2id of
           Just id -> return $ Var "deref" :$ (Var $ "$string"++show id)
           Nothing -> error $ "Compiler error: unmapped string " ++ str
       --A constructor with no arguments
-      P.Con (UIdent con) -> desugarConAppE di con []
+      P.Con _loc (UIdent con) -> desugarConAppE di con []
       --Look up con info.
       --If the con does not exist, error.
       --If any of the fields are not fields of the con, error.
       --If there are duplicate fields, error.
       --If Con {field: e} is boxed, desugar to
       --ImplTyCon (allocValue (ImplCon {implTyCon_field: e}))
-      P.ConRecord (UIdent con) efields -> do
-        field_es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
+      P.ConRecord _loc (UIdent con) efields -> do
+        field_es <- mapM (\(P.EField _loc (Ident nm) pe) ->
+                            ((,) nm) <$> go pe)
               efields
         conE dtsi con field_es
       --I'll choose to disallow _ in an expr context for now
-      P.Wild -> throwError WildcardInExprContext
+      P.Wild _loc -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
       --because the p may contain exprs which should be evaluated once,
       --not twice) we can avoid having lets in E.
       --That simplifies initial desugaring, but complicates the type
       --checker slightly.
-      P.PlusPlusPost pp -> PPPost <$> desugarP di pp
-      P.MinusMinusPost pp -> MMPost <$> desugarP di pp
+      P.PlusPlusPost _loc pp -> PPPost <$> desugarP di pp
+      P.MinusMinusPost _loc pp -> MMPost <$> desugarP di pp
       --indexPtr must take the ptr as its first argument to preserve eval
       --order.
-      P.Index pptr pix -> do
+      P.Index _loc pptr pix -> do
         ptr <- go pptr
         ix <- go pix
         return $ Var "deref" :$ (Var "indexPtr" :$ tupleE [ptr,ix])
@@ -88,54 +96,52 @@ desugarE di@DInfo{diGlobalSet = gs,
       --bdt.boxedField desugars to not use boxed fields... so I can share the
       --desugaring and field validity check between exprs and patterns.
       --Params: component desugar (go), deref function, dot function
-      P.Dot struct f -> do
+      P.Dot _loc struct f -> do
         desugarDot (Var "deref" :$) dot go di struct f
-      P.Bang arr ix -> op2 "indexArray" arr ix
+      P.Bang _loc arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
-      P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
+      P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
       --First roll the P.Apps into f ...args to get a bird's eye view.
       --If f is a Con, go to desugarConApps
       --Otherwise desugar f and args and unroll.
-      P.App pf px -> do
-        let (pf',args) = rollPApps (P.App pf px)
+      app@(P.App _loc pf px) -> do
+        let (pf',args) = rollPApps app
         case pf' of
-          P.Con (UIdent con) -> desugarConAppE di con args
+          P.Con _loc (UIdent con) -> desugarConAppE di con args
           _ -> unrollApps <$> go pf' <*> mapM go args
-      P.PlusPlusPre p -> PPPre <$> desugarP di p
-      P.MinusMinusPre p -> MMPre <$> desugarP di p
-      P.Negate a -> op1 "negate" a
-      P.Not a -> op1 "lNot" a
-      P.BitwiseNot a -> op1 "bwNot" a
-      P.Deref a -> op1 "deref" a
-      P.AddressOf a -> op1 "addressOf" a
-      P.Mul a b -> op2 "multiply" a b
-      P.Div a b -> op2 "divide" a b
-      P.Mod a b -> op2 "modulo" a b
-      P.Plus a b -> op2 "plus" a b
-      P.Minus a b -> op2 "minus" a b
-      P.Shl a b -> op2 "shL" a b
-      P.Shr a b -> op2 "shR" a b
-      P.MyLT a b -> op2 "lt_" a b
-      P.LTE a b -> op2 "lte_" a b
-      P.MyGT a b -> op2 "gt_" a b
-      P.GTE a b -> op2 "gte_" a b
-      P.Eq a b -> op2 "eq_" a b
-      P.NEq a b -> op2 "neq_" a b
-      P.BitwiseAnd a b -> op2 "bwAnd" a b
-      P.BitwiseXor a b -> op2 "bwXor" a b
-      P.BitwiseOr a b -> op2 "bwOr" a b
-      P.And a b -> op2 "scAnd" a b
-      P.Or a b -> op2 "scOr" a b
-      P.Assign pp aop pe -> do
+      P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
+      P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
+      P.Negate _loc a -> op1 "negate" a
+      P.Not _loc a -> op1 "lNot" a
+      P.BitwiseNot _loc a -> op1 "bwNot" a
+      P.Deref _loc a -> op1 "deref" a
+      P.AddressOf _loc a -> op1 "addressOf" a
+      P.Mul _loc a b -> op2 "multiply" a b
+      P.Div _loc a b -> op2 "divide" a b
+      P.Mod _loc a b -> op2 "modulo" a b
+      P.Plus _loc a b -> op2 "plus" a b
+      P.Minus _loc a b -> op2 "minus" a b
+      P.Shl _loc a b -> op2 "shL" a b
+      P.Shr _loc a b -> op2 "shR" a b
+      P.MyLT _loc a b -> op2 "lt_" a b
+      P.LTE _loc a b -> op2 "lte_" a b
+      P.MyGT _loc a b -> op2 "gt_" a b
+      P.GTE _loc a b -> op2 "gte_" a b
+      P.Eq _loc a b -> op2 "eq_" a b
+      P.NEq _loc a b -> op2 "neq_" a b
+      P.BitwiseAnd _loc a b -> op2 "bwAnd" a b
+      P.BitwiseXor _loc a b -> op2 "bwXor" a b
+      P.BitwiseOr _loc a b -> op2 "bwOr" a b
+      P.And _loc a b -> op2 "scAnd" a b
+      P.Or _loc a b -> op2 "scOr" a b
+      P.Assign _loc pp aop pe -> do
         p <- desugarP di pp
         e <- go pe
-        if aop == P.EqEq
-          then return $ p := e
-          --Hacky but terse replacement for a big case:
-          else let Just op = aop2op aop
-               in return $ OPAssign Nothing p op e
+        case aop2op aop of
+          Nothing -> return $ p := e
+          Just op -> return $ OPAssign Nothing p op e
       --Coerce need no longer be part of the syntax
-      P.TypeAnnot pe pt -> do
+      P.TypeAnnot _loc pe pt -> do
         let t = desugarT pt
         e <- go pe
         return $ e ::: t
@@ -145,23 +151,26 @@ desugarE di@DInfo{diGlobalSet = gs,
       b <- go pb
       return $ Var fnm :$ tupleE [a,b]
 --EqEq does not correspond to an Op
-aop2op :: P.AOp -> Maybe Op
+--Maybe I should rename PlusEq-MinusEq to AddEq-SubEq to keep the name length
+--consistent for all ops except Or.
+aop2op :: P.AOp' loc -> Maybe Op
 aop2op = \case
-  P.EqEq -> Nothing
+  P.EqEq _loc -> Nothing
   aop -> Just $ case aop of
-                  P.PlusEq -> Plus
-                  P.MinusEq -> Minus
-                  P.MulEq -> Mul
-                  P.DivEq -> Div
-                  P.ModEq -> Mod
-                  P.ShlEq -> Shl
-                  P.ShrEq -> Shr
-                  P.AndEq -> And
-                  P.XorEq -> Xor
-                  P.OrEq -> Or
+                  P.PlusEq _loc  -> Plus
+                  P.MinusEq _loc -> Minus
+                  P.MulEq _loc   -> Mul
+                  P.DivEq _loc   -> Div
+                  P.ModEq _loc   -> Mod
+                  P.ShlEq _loc   -> Shl
+                  P.ShrEq _loc   -> Shr
+                  P.AndEq _loc   -> And
+                  P.XorEq _loc   -> Xor
+                  P.OrEq _loc    -> Or
 
-desugarDot :: (E -> e) -> (e -> Name -> e) -> (P.E -> Either DError e) ->
-  DInfo -> P.E -> Ident -> Either DError e
+desugarDot :: (E -> e) -> (e -> Name -> e) ->
+              (DeclBucket.E -> Either DError e) ->
+              DInfo -> DeclBucket.E -> Ident -> Either DError e
 desugarDot deref dot go di struct (Ident f) = do
   --Look up the field info
   let dtsi = diDTsInfo di
@@ -209,8 +218,8 @@ checkRecordValidity dtsi con field_as =
 --Gets the function being repeatedly applied and collects its arguments:
 --Given f a b ... z :: P.E , returns (f,[a,b,...z]).
 --Used to enforce that constructors must be fully applied.
-rollPApps :: P.E -> (P.E,[P.E])
-rollPApps = roll (\case P.App f x -> Just (f,x)
+rollPApps :: P.E' loc -> (P.E' loc, [P.E' loc])
+rollPApps = roll (\case P.App _loc f x -> Just (f,x)
                         _ -> Nothing)
 
 --A helper for constructor applications Con ...args,
@@ -226,7 +235,7 @@ rollPApps = roll (\case P.App f x -> Just (f,x)
 --pattern. I'll write a separate desugarConAppP for now and then compare...
 --The Array and Struct cases are almost identical, but Con args does not
 --permit overapplication in patterns.
-desugarConAppE :: DInfo -> Name -> [P.E] -> Either DError E
+desugarConAppE :: DInfo -> Name -> [DeclBucket.E] -> Either DError E
 desugarConAppE =
   desugarConApp desugarE (EArray Nothing) structE
   (\dtsi ci con len arity eargs erest -> do
@@ -239,7 +248,7 @@ desugarConAppE =
       return $ unrollApps record erest)
 --Con args => Con {field: e} regardless of whether it's boxed.
 --Overapplied constructors are never accepted.
-desugarConAppP :: DInfo -> Name -> [P.E] -> Either DError Pat
+desugarConAppP :: DInfo -> Name -> [DeclBucket.E] -> Either DError Pat
 desugarConAppP =
   desugarConApp desugarP (PArray Nothing) structP
   (\dtsi ci con len arity pargs prest -> do
@@ -250,11 +259,11 @@ desugarConAppP =
   )
 
 desugarConApp ::
-  (DInfo -> P.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
-  (DTsInfo P.E -> ConInfo -> Name -> Int -> Int -> [e] -> [e] ->
+  (DInfo -> DeclBucket.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
+  (DTsInfo DeclBucket.E -> ConInfo -> Name -> Int -> Int -> [e] -> [e] ->
    Either DError e) ->
   --end of P/E args
-  DInfo -> Name -> [P.E] -> Either DError e
+  DInfo -> Name -> [DeclBucket.E] -> Either DError e
 desugarConApp go array struct build
   di@(DInfo{diDTsInfo=dtsi}) con args =
   ifArrOrStruct go array struct di con args $
@@ -273,10 +282,10 @@ desugarConApp go array struct build
               --Everything above this can be shared.
               --Params: dtsi, con, eargs, erest
               build dtsi ci con len arity eargs erest
-ifArrOrStruct :: (DInfo -> P.E -> Either DError e) ->
+ifArrOrStruct :: (DInfo -> DeclBucket.E -> Either DError e) ->
                  ([e] -> e) ->
                  ([e] -> e) ->
-                 DInfo -> Name -> [P.E] ->
+                 DInfo -> Name -> [DeclBucket.E] ->
                  Either DError e ->
                  Either DError e
 ifArrOrStruct go array struct di con args alt
@@ -320,11 +329,12 @@ conE dtsi con field_es = do
 
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
-desugarTup :: DInfo -> (DInfo -> P.E -> Either DError a) -> P.E ->
-  Either DError (Maybe [a])
+desugarTup :: DInfo -> (DInfo -> DeclBucket.E -> Either DError a) ->
+              DeclBucket.E ->
+              Either DError (Maybe [a])
 desugarTup di handler = \case
-  P.EmptyTuple -> return $ Just []
-  P.Tuple pe pes -> Just <$> mapM (handler di) (pe:pes)
+  P.EmptyTuple _loc -> return $ Just []
+  P.Tuple _loc pe pes -> Just <$> mapM (handler di) (pe:pes)
   _ -> return Nothing
 
 {-
@@ -341,59 +351,60 @@ DInfo-dependent:
 bdt.f => *(...).fStructCon
 g => *g
 -}
-desugarP :: DInfo -> P.E -> Either DError Pat
+desugarP :: DInfo -> DeclBucket.E -> Either DError Pat
 desugarP di@DInfo{diGlobalSet = gs,
                   diDTsInfo = dtsi,
                   diStringNumbering = str2id
                  } = go
   where
     go = \case
-      P.Wild -> return $ PWild Nothing
-      P.Var (Ident v) ->
+      P.Wild _loc -> return $ PWild Nothing
+      P.Var _loc (Ident v) ->
         if S.member v gs
         then return $ Deref Nothing $ Var v
         else return $ PVar v
-      P.Deref e -> Deref Nothing <$> desugarE di e
-      P.EmptyTuple -> return $ tupleP []
-      P.Tuple e es -> tupleP <$> mapM go (e:es)
+      P.Deref _loc e -> Deref Nothing <$> desugarE di e
+      P.EmptyTuple _loc -> return $ tupleP []
+      P.Tuple _loc e es -> tupleP <$> mapM go (e:es)
       --bdt.field => look up field's parent tycon,
       -- *(bdt.unImpl<tycon>).impl<tycon>_field
       --Ooh, consequence: (f()).field becomes a valid LHS for assignment.
       --That's a bit surprising but fine; C++ allows it.
-      P.Dot struct f ->
+      P.Dot _loc struct f ->
         desugarDot (Deref Nothing) (:.) go di struct f
-      P.Bang arr ix -> (:!) <$> go arr <*> desugarE di ix
-      P.Arrow e (Ident f) -> go $ P.Deref e `P.Dot` Ident f
-      P.ConRecord (UIdent con) efields -> do
-        es <- mapM (\(P.EField (Ident nm) pe) -> ((,) nm) <$> go pe)
+      P.Bang _loc arr ix -> (:!) <$> go arr <*> desugarE di ix
+      P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
+      P.ConRecord _loc (UIdent con) efields -> do
+        es <- mapM (\(P.EField _loc (Ident nm) pe) -> ((,) nm) <$> go pe)
               efields
         return $ PCon con Nothing es
       pe -> do
         let (f,args) = rollPApps pe
         case f of
-          P.Con (UIdent con) -> do
+          P.Con _loc (UIdent con) -> do
             desugarConAppP di con args
           _ -> throwError $ BadConInPattern f
 
-desugarS :: DInfo -> P.S -> Either DError S
+desugarS :: DInfo -> DeclBucket.S -> Either DError S
 desugarS di = go
   where go = \case
-          P.SE pe -> SE <$> goe pe
-          P.If i t e -> Ifte <$> goe i <*> go t <*> go e
-          P.While e s -> While <$> goe e <*> go s
-          P.Return e -> Return <$> goe e
-          P.Do ss -> Block <$> mapM go ss
-          P.Case e cases -> Case <$> goe e <*>
+          P.SE _loc pe -> SE <$> goe pe
+          P.If _loc i t e -> Ifte <$> goe i <*> go t <*> go e
+          P.While _loc e s -> While <$> goe e <*> go s
+          P.Return _loc e -> Return <$> goe e
+          P.Do _loc ss -> Block <$> mapM go ss
+          P.Case _loc e cases -> Case <$> goe e <*>
             mapM desugarCase cases
-          P.Break -> return Break
-          P.Continue -> return Continue
-          P.For pre cond post body ->
-            go $ P.Do [pre,P.While cond $ P.Do [body,post]]
-          P.Declare vbs -> Declare <$> mapM desugarVB vbs
+          P.Break _loc -> return Break
+          P.Continue _loc -> return Continue
+          P.For loc pre cond post body ->
+            --Placeholder locs for now
+            go $ P.Do loc [pre,P.While loc cond $ P.Do loc [body,post]]
+          P.Declare _loc vbs -> Declare <$> mapM desugarVB vbs
         goe = desugarE di
         gop = desugarP di
-        desugarCase (P.C p s) = (,) <$> gop p <*> go s
+        desugarCase (P.C _loc p s) = (,) <$> gop p <*> go s
         desugarVB = \case
           --var x; => var x = null()
-          P.JustVar (Ident v) -> return (v,Var "null" :$ tupleE [])
-          P.VarIs (Ident v) e -> (,) v <$> goe e
+          P.JustVar _loc (Ident v) -> return (v,Var "null" :$ tupleE [])
+          P.VarIs _loc (Ident v) e -> (,) v <$> goe e

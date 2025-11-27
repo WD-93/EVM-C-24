@@ -17,6 +17,7 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
+import qualified DeclBucket as DB
 
 import Data.Set (Set(..))
 import Data.Map (Map(..))
@@ -24,10 +25,10 @@ import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 
 data DError = DuplicateDefun Name
             | BadOpInType String
-            | BadEInType P.E --catch-all error for desugarT
-            | BadEInPat P.E --same for desugarP
-            | BadDoInDesugarS [P.S]
-            | AssignIsNotAnE P.E P.E --for now
+            | BadEInType DB.E --catch-all error for desugarT
+            | BadEInPat DB.E --same for desugarP
+            | BadDoInDesugarS [DB.S]
+            | AssignIsNotAnE DB.E DB.E --for now
             | DuplicateDeclsForName Name
             -- | CoerceMixedWithOps [Name]
             | GenericDError String
@@ -43,7 +44,7 @@ data DError = DuplicateDefun Name
             --fuzzing for vulns
             -- | DuplicateEnumName Name Name
             | WildcardInExprContext
-            | MalformedPattern P.E
+            | MalformedPattern DB.E
             -- | DuplicateTySigs Name
             -- | DuplicateKindSigs Name
             | UnresolvedImport P.ModuleName
@@ -75,12 +76,12 @@ data DError = DuplicateDefun Name
             --Field access errors
             | UndefinedFieldInDot Name
             --Constructor errors
-            | ArrayAndStructTakeASyntacticTuple Name [P.E]
+            | ArrayAndStructTakeASyntacticTuple Name [DB.E]
             | NoSuchCon Name
             | UnderappliedCon Name Int Int --arity, actual
             | OverappliedNonMkFun Name Int [E]
             | OverappliedPatternCon Name Int [Pat]
-            | BadConInPattern P.E
+            | BadConInPattern DB.E
             | FieldsDoNotMatchConInRecord Name (Set Name)
             | DuplicateFieldsInRecord Name (Map Name Int)
   deriving (Eq,Ord,Read,Show)
@@ -121,6 +122,6 @@ deriving instance Data P.HexInteger
 --However, desugaring of BCon {f: p} = e must be deferred to the Core stage.
 data DInfo = DInfo {
   diGlobalSet :: Set Name,
-  diDTsInfo :: DTsInfo P.E, --used for field=>bcon, bcon=>fields
+  diDTsInfo :: DTsInfo DB.E, --used for field=>bcon, bcon=>fields
   diStringNumbering :: Map String Int
 }

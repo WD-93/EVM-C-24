@@ -2876,6 +2876,9 @@ For now put the types the compiler mentions in Types.evmc.
 TODO figure out the dependency hierarchy; it's all tangled together atm.
 
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
+ Get old desugaring working on stdlib, then update rules.
+ TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror
+ exprs and patterns.
  --Convert strings to inline byte array literals again? Yes.
   Global context I need currently:
    global set for g => *g
@@ -2885,6 +2888,8 @@ Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
     x.field => *(x.unImplCon).implTyCon_field
    string numbering --no longer needed
 Pair a b => Pair {fst:a, snd: b}
+Struct, Array desugaring can be done on pairs.
+Con args => Con fs can be deferred.
 How many transformations can I separate into their own traversals?
  --Prohibit memory global initializers
  --Also make WordPad the padding primitive
