@@ -14,6 +14,8 @@ import qualified Data.Set as S
 import qualified Data.Map as M hiding ((!))
 import Control.Monad.Except
 import Control.Arrow ((***))
+--String literals are now unboxed; conversion is done here.
+import Data.Char (ord) 
 
 --Change: I'll split the desugaring into a first pass that takes no context,
 --followed by a series of generic everywhereM rewrites on the Module.
@@ -41,11 +43,12 @@ import Control.Arrow ((***))
 --ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
 --HM may then assume Var nm is either a global or function; TODO remove
 --the logic for constructors.
-desugarE :: DInfo -> DeclBucket.E -> Either DError E
-desugarE di@DInfo{diGlobalSet = gs,
+desugarE :: --DInfo ->
+  DeclBucket.E -> Either DError E
+desugarE {-di@DInfo{diGlobalSet = gs,
                   diStringNumbering = str2id,
                   diDTsInfo = dtsi
-                 } = go
+                 }-} = go
   where
     dot e = Dot e Nothing
     go = \case
@@ -54,28 +57,53 @@ desugarE di@DInfo{diGlobalSet = gs,
       --Integers are sugar for fromWord #w, where w is :: Word
       P.HexInt loc (P.HexInteger str) -> go $ P.Int loc $ read str
       P.Int _loc n -> return $ Var "fromWord" :$ EInteger n
-      P.Var _loc (Ident nm)
+      --g => *g is deferred
+      P.Var _loc (Ident nm) -> return $ Var nm
         --g => *g
-        | S.member nm gs -> return $ Var "deref" :$ Var nm
-        | let -> return $ Var nm
-      P.String _loc str ->
+        -- | S.member nm gs -> return $ Var "deref" :$ Var nm
+        -- | let -> return $ Var nm
+      --Change: string literals are now unboxed.
+      --Pro: <=32B strings will be cheaper to use.
+      --Con: If you want to refer to them by code pointer, you need to manually
+      --declare a code global. For large strings, explicit reference by pointer
+      --becomes necessary. allocValue("large string...") should optimize to
+      --a codecopy...
+      --The advantage for the compiler is that initial desugaring doesn't need
+      --any context.
+      --The encoding is compatible with UTF-8 for ASCII chars; todo make it
+      --fully compatible with Solidity strings.
+      P.String _loc str -> do
+        let ns = map ord str
+        complainIf (any (>255) ns)
+          $ NonByteChar str
+        return $ EArray Nothing
+          [Var "fromWord" :$ EInteger (fromIntegral n)
+          | n <- ns]
+         
+        {-
         --str => *g
         case M.lookup str str2id of
           Just id -> return $ Var "deref" :$ (Var $ "$string"++show id)
           Nothing -> error $ "Compiler error: unmapped string " ++ str
+        -}
       --A constructor with no arguments
-      P.Con _loc (UIdent con) -> desugarConAppE di con []
+      --For now we generate an invalid Var; Con args will be converted to
+      --Con fields in a later context-dependent rewrite
+      P.Con _loc (UIdent con) -> return $ Var con --desugarConAppE di con []
       --Look up con info.
       --If the con does not exist, error.
       --If any of the fields are not fields of the con, error.
       --If there are duplicate fields, error.
       --If Con {field: e} is boxed, desugar to
       --ImplTyCon (allocValue (ImplCon {implTyCon_field: e}))
+      --New approach: defer that, just preserve structure in E for later
+      --context-dependent everywhereM rewrites.
       P.ConRecord _loc (UIdent con) efields -> do
         field_es <- mapM (\(P.EField _loc (Ident nm) pe) ->
                             ((,) nm) <$> go pe)
               efields
-        conE dtsi con field_es
+        return $ ConRecord con Nothing field_es
+        --conE dtsi con field_es
       --I'll choose to disallow _ in an expr context for now
       P.Wild _loc -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
@@ -83,8 +111,8 @@ desugarE di@DInfo{diGlobalSet = gs,
       --not twice) we can avoid having lets in E.
       --That simplifies initial desugaring, but complicates the type
       --checker slightly.
-      P.PlusPlusPost _loc pp -> PPPost <$> desugarP di pp
-      P.MinusMinusPost _loc pp -> MMPost <$> desugarP di pp
+      P.PlusPlusPost _loc pp -> PPPost <$> desugarP pp
+      P.MinusMinusPost _loc pp -> MMPost <$> desugarP pp
       --indexPtr must take the ptr as its first argument to preserve eval
       --order.
       P.Index _loc pptr pix -> do
@@ -96,21 +124,30 @@ desugarE di@DInfo{diGlobalSet = gs,
       --bdt.boxedField desugars to not use boxed fields... so I can share the
       --desugaring and field validity check between exprs and patterns.
       --Params: component desugar (go), deref function, dot function
-      P.Dot _loc struct f -> do
-        desugarDot (Var "deref" :$) dot go di struct f
+      --New approach: bdt.field => *(...).implTyCon_field is deferred, so
+      --we just preserve the structure here.
+      --What about .fst => .first.unWordPad?
+      P.Dot _loc struct (Ident f) -> do
+        s <- go struct
+        return $ Dot s Nothing f
+        --do desugarDot (Var "deref" :$) dot go di struct f
       P.Bang _loc arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
       P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
+      --Old approach:
       --First roll the P.Apps into f ...args to get a bird's eye view.
       --If f is a Con, go to desugarConApps
       --Otherwise desugar f and args and unroll.
-      app@(P.App _loc pf px) -> do
-        let (pf',args) = rollPApps app
+      --New approach: Con args => Con fields is deferred, so there's no need
+      --to do anything special here.
+      P.App _loc pf px -> (:$) <$> go pf <*> go px
+        {-do
+        let (pf',args) = rollPApps (P.App _loc pf px)
         case pf' of
           P.Con _loc (UIdent con) -> desugarConAppE di con args
-          _ -> unrollApps <$> go pf' <*> mapM go args
-      P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
-      P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
+          _ -> unrollApps <$> go pf' <*> mapM go args-}
+      P.PlusPlusPre _loc p -> PPPre <$> desugarP p
+      P.MinusMinusPre _loc p -> MMPre <$> desugarP p
       P.Negate _loc a -> op1 "negate" a
       P.Not _loc a -> op1 "lNot" a
       P.BitwiseNot _loc a -> op1 "bwNot" a
@@ -135,7 +172,7 @@ desugarE di@DInfo{diGlobalSet = gs,
       P.And _loc a b -> op2 "scAnd" a b
       P.Or _loc a b -> op2 "scOr" a b
       P.Assign _loc pp aop pe -> do
-        p <- desugarP di pp
+        p <- desugarP {-di-} pp
         e <- go pe
         case aop2op aop of
           Nothing -> return $ p := e
@@ -171,7 +208,7 @@ aop2op = \case
 desugarDot :: (E -> e) -> (e -> Name -> e) ->
               (DeclBucket.E -> Either DError e) ->
               DInfo -> DeclBucket.E -> Ident -> Either DError e
-desugarDot deref dot go di struct (Ident f) = do
+desugarDot deref dot go di struct (Ident f) = error "todo" {-do
   --Look up the field info
   let dtsi = diDTsInfo di
       fsi = fieldInfo dtsi
@@ -193,7 +230,7 @@ desugarDot deref dot go di struct (Ident f) = do
     return $ deref ((bdt `edot` ("unImpl" ++ tycon))) `dot` unboxedField
     else do
     dt <- go struct
-    return $ dt `dot` f
+    return $ dt `dot` f -}
 
 --Useful in both desugarE and desugarP; a is ignored.
 --If the con does not exist, error.
@@ -236,7 +273,7 @@ rollPApps = roll (\case P.App _loc f x -> Just (f,x)
 --The Array and Struct cases are almost identical, but Con args does not
 --permit overapplication in patterns.
 desugarConAppE :: DInfo -> Name -> [DeclBucket.E] -> Either DError E
-desugarConAppE =
+desugarConAppE = error "todo" {-
   desugarConApp desugarE (EArray Nothing) structE
   (\dtsi ci con len arity eargs erest -> do
       --If overapplied, require con == MkFun
@@ -245,11 +282,12 @@ desugarConAppE =
       --conE redundantly checks con validity, but it's convenient...
       --Besides, defensive programming is good.
       record <- conE dtsi con $ zip (map fst $ conFields ci) eargs
-      return $ unrollApps record erest)
+      return $ unrollApps record erest) -}
 --Con args => Con {field: e} regardless of whether it's boxed.
 --Overapplied constructors are never accepted.
-desugarConAppP :: DInfo -> Name -> [DeclBucket.E] -> Either DError Pat
-desugarConAppP =
+desugarConAppP :: --DInfo ->
+  Name -> [DeclBucket.E] -> Either DError Pat
+desugarConAppP = error "todo" {-
   desugarConApp desugarP (PArray Nothing) structP
   (\dtsi ci con len arity pargs prest -> do
       complainIf (len > arity)
@@ -257,6 +295,7 @@ desugarConAppP =
       let field_ps = zip (map fst $ conFields ci) pargs
       return $ PCon con Nothing field_ps
   )
+-}
 
 desugarConApp ::
   (DInfo -> DeclBucket.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
@@ -351,28 +390,34 @@ DInfo-dependent:
 bdt.f => *(...).fStructCon
 g => *g
 -}
-desugarP :: DInfo -> DeclBucket.E -> Either DError Pat
-desugarP di@DInfo{diGlobalSet = gs,
+desugarP :: --DInfo ->
+  DeclBucket.E -> Either DError Pat
+desugarP {-di@DInfo{diGlobalSet = gs,
                   diDTsInfo = dtsi,
                   diStringNumbering = str2id
-                 } = go
+                 }-} = go
   where
     go = \case
       P.Wild _loc -> return $ PWild Nothing
-      P.Var _loc (Ident v) ->
+      --g => *g substitution will be performed in a later pass
+      P.Var _loc (Ident v) -> return $ PVar v
+        {-
         if S.member v gs
         then return $ Deref Nothing $ Var v
         else return $ PVar v
-      P.Deref _loc e -> Deref Nothing <$> desugarE di e
+-}
+      P.Deref _loc e -> Deref Nothing <$> desugarE {-di-} e
       P.EmptyTuple _loc -> return $ tupleP []
       P.Tuple _loc e es -> tupleP <$> mapM go (e:es)
       --bdt.field => look up field's parent tycon,
       -- *(bdt.unImpl<tycon>).impl<tycon>_field
       --Ooh, consequence: (f()).field becomes a valid LHS for assignment.
       --That's a bit surprising but fine; C++ allows it.
-      P.Dot _loc struct f ->
-        desugarDot (Deref Nothing) (:.) go di struct f
-      P.Bang _loc arr ix -> (:!) <$> go arr <*> desugarE di ix
+      P.Dot _loc struct (Ident f) -> do
+        s <- go struct
+        return $ s :. f
+        --desugarDot (Deref Nothing) (:.) go di struct f
+      P.Bang _loc arr ix -> (:!) <$> go arr <*> desugarE {-di-} ix
       P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
       P.ConRecord _loc (UIdent con) efields -> do
         es <- mapM (\(P.EField _loc (Ident nm) pe) -> ((,) nm) <$> go pe)
@@ -382,11 +427,12 @@ desugarP di@DInfo{diGlobalSet = gs,
         let (f,args) = rollPApps pe
         case f of
           P.Con _loc (UIdent con) -> do
-            desugarConAppP di con args
+            desugarConAppP {-di-} con args
           _ -> throwError $ BadConInPattern f
 
-desugarS :: DInfo -> DeclBucket.S -> Either DError S
-desugarS di = go
+desugarS :: --DInfo ->
+  DeclBucket.S -> Either DError S
+desugarS {-di-} = go
   where go = \case
           P.SE _loc pe -> SE <$> goe pe
           P.If _loc i t e -> Ifte <$> goe i <*> go t <*> go e
@@ -401,8 +447,8 @@ desugarS di = go
             --Placeholder locs for now
             go $ P.Do loc [pre,P.While loc cond $ P.Do loc [body,post]]
           P.Declare _loc vbs -> Declare <$> mapM desugarVB vbs
-        goe = desugarE di
-        gop = desugarP di
+        goe = desugarE --di
+        gop = desugarP --di
         desugarCase (P.C _loc p s) = (,) <$> gop p <*> go s
         desugarVB = \case
           --var x; => var x = null()
