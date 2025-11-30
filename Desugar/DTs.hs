@@ -23,13 +23,15 @@ import Data.Set (Set(..))
 import Data.Map (Map(..))
 import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 
-data DError = DuplicateDefun Name
-            | BadOpInType String
+--TODO prune errors which are no longer thrown since I've changed the algo.
+--Go through the errors and ensure I enforce the ones which still belong...
+data DError = --DuplicateDefun Name
+             BadOpInType String
             | BadEInType DB.E --catch-all error for desugarT
             | BadEInPat DB.E --same for desugarP
             | BadDoInDesugarS [DB.S]
             | AssignIsNotAnE DB.E DB.E --for now
-            | DuplicateDeclsForName Name
+            -- | DuplicateDeclsForName Name
             -- | CoerceMixedWithOps [Name]
             | GenericDError String
             -- | BitPaddingDeprecated
@@ -37,32 +39,32 @@ data DError = DuplicateDefun Name
             | NegativeLengthArray Name Integer
             | TooLongArray Name Integer
             | StandaloneConstructorName String
-            | DuplicateConstructors Name
+            -- | DuplicateConstructors Name
             | BadPatternInCase P.E
-            -- | MoreThan256EnumNamesInOneEnum
-            -- ^A helpful message on the off chance whoever triggers it isn't
-            --fuzzing for vulns
-            -- | DuplicateEnumName Name Name
             | WildcardInExprContext
             | MalformedPattern DB.E
             -- | DuplicateTySigs Name
             -- | DuplicateKindSigs Name
-            | UnresolvedImport P.ModuleName
+            -- | UnresolvedImport P.ModuleName
             -- | DuplicateTyCons Name
             | NonByteChar String
-            | DuplicateFieldNames Name
+            -- | DuplicateFieldNames Name
             -- | DuplicateDefaults Name
             --TODO naming convention: Duplicate<singular>, not plural
             -- | DuplicateGlobal Name
             --Duplicate "Decl constructor" nm
-            | Duplicate String Name
+            -- | Duplicate String Name
             | DefunInstanceOverlap (Set Name)
             --Datatype desugaring errors:
             -- | CreatedConConflictsWithExisting (ConInfo P.E) (ConInfo P.E)
-            | TagDeclsofNonexistentDT (Set Name)
+            | TagDeclOfNonexistentDT Name
             | TagParamDTParamLengthMismatch Name [Name] [Name]
+            -- | ConTagOfNonexistentCon Name
+            | TagSetConSetMismatch Name (Set Name) (Set Name) --tycon,tags,cons
             | FreeVarInTagType Name T Name
-            | ConMismatchInTagAndData Name (Set Name) (Set Name)
+            | DuplicateTagDecls Name --for tycon, only occurs when
+            --tag ImplTyCon = t ... is declared.
+            -- | ConMismatchInTagAndData Name (Set Name) (Set Name)
             | BoxedTyConLacksKindSig Name
             | StructDTAlreadyGivenKindSig Name T
             --Final module check errors:

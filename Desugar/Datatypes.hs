@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Desugar.Datatypes where
+module Desugar.Datatypes (processDTs) where
 
 --A module for processing DT decls: set default tags, allocate tag DTs,
 --desugar boxed DTs.
@@ -10,6 +10,11 @@ import Desugar.T (desugarT)
 import qualified E.Abs as P
 import AST.Util
 import Desugar.Util (defaultFieldName)
+import DeclBucket (StaticThing(..))
+import qualified DeclBucket as DB (ConInfo(..),FieldInfo(..))
+import Import (PreModule(..))
+import Desugar.SEP (desugarP, desugarE)
+import Desugar.T (desugarT)
 
 import Control.Monad (forM_)
 import Control.Monad.State
@@ -22,9 +27,9 @@ import Control.Arrow ((***))
 {-
 New approach:
 The relevant info is stored in:
-  pmStatThings :: MNL StaticThing, --data TyCon params = [Con]
+  pmStatThings :: MNL StaticThing, --data TyCon params = [Con], region r
   pmTagTypes :: MNL ([Located Name],T), --tag TyCon params = t
-  pmConTags :: MNL E,                   --Con: e
+  pmConTags :: MNL (Name,E),            --Con of TyCon: e
   pmConstructors :: MNL ConInfo,        --Con {field: t}, boxity
   pmFields :: MNL FieldInfo             --Parent con, is tag
 in PreModule.
@@ -42,6 +47,210 @@ but we must still:
   from being accepted.
 -}
 
+processDTs :: PreModule -> Either DError (DTsInfo E)
+processDTs pm = do
+  --First we strip away location data
+  let dts = M.mapMaybe (\case (STDatatype lparams cons mlr,_loc) ->
+                                Just (map fst lparams,
+                                      map fst cons,
+                                      fst <$> mlr)
+                              _ -> Nothing) $ pmStatThings pm
+      --TODO fix inefficiency: I desugar each tag expr twice.
+  tagTs <- mapM (\((lparams,pt,lcon_es),_loc) -> do
+                    con_es <- mapM (\((con,_loc),pe) ->
+                                       (,) con <$> desugarE pe) lcon_es
+                    return (map fst lparams,
+                            desugarT pt,
+                            con_es)) $
+              pmTagTypes pm
+  --DeclBucket's FieldInfo contains Locs while AST.DT's does not...
+  --TODO move DB's definition to AST.DTs
+  let cons = M.map (stripConInfo . fst) $ pmConstructors pm
+      fields = M.map (stripFieldInfo . fst) $ pmFields pm
+  processDTs' dts tagTs cons fields
+  where stripConInfo :: DB.ConInfo -> ConInfo
+        stripConInfo (DB.CI
+                      boxed
+                      (parent,_loc)
+                      lnm_pts
+                      pt) = Con boxed parent
+                            (map (fst *** desugarT) lnm_pts)
+                            (desugarT pt)
+        stripFieldInfo :: DB.FieldInfo -> FieldInfo
+        stripFieldInfo = \case
+          DB.IsTag boxed (nm,_loc) -> IsTag boxed nm
+          DB.IsNormal boxed (tycon,_loc1) (con,_loc2) ->
+            IsNormal boxed tycon con
+{-
+Preconditions:
+Tag field exists => its parent dt exists
+Normal field exists => its parent dt and con exist
+Con tag exists => its parent tagType exists
+Con exists => its parent dt exists
+
+Require:
+A) For each tag TyCon params = t where {Con1: e; ...}:
+1) data TyCon params' = cons exists and has equally many params
+2) cons is exactly the cons in the tag decl
+That requires checking each tagType and conTag.
+B) If a boxed DT TyCon is declared, tag ImplTyCon may not be declared.
+
+Problem: the boxed cons in BDTs aren't listed in one place.
+Hack: look them up by dropping Impl from ImplTyCon's canonical cons.
+
+
+--Filling in missing tag schemes:
+For TyCon <- data:
+ if not in tagSchemes, tagSchemes[TyCon] =
+  if |cons| < 2: Nil
+  if <= 16: N16
+  else: N1 (log256 |cons|)
+
+For each tag TyCon params = t where con_es:
+ require data TyCon params' = cons
+ require |params'| == |params|
+ if the DT is boxed: 
+ i
+For each data TyCon params = cons, mr:
+ if boxed:
+  --tagged errors on param count mismatch
+  If tagged:
+   move tag decl to ImplTyCon
+   require a tag Con for each ImplCon exists
+   tag scheme = Nil
+ else:
+  If tagged:
+   require a conTag for each canonical con exists
+   tag scheme = Custom {...}
+  else:
+   tag scheme =
+    If 0-1 cons: Nil
+    If 2-16: N16
+    Else: N1 (log256 numCons)
+
+TODO: require each BDT TyCon has a kind sig, copy the kind sig to ImplTyCon,
+require ImplTyCon doesn't already have one.
+-}
+processDTs' :: Map Name ( --data TyCon params = [Con], region r
+  [Name], --params
+  [Name], --unboxed cons
+  Maybe Name --region
+  ) ->
+  Map Name ( --tag TyCon params = t
+  [Name], --params
+  T,
+  [(Name,E)] --con tags
+  ) ->
+  Map Name ConInfo ->   --cons
+  Map Name FieldInfo -> --fields
+  Either DError (DTsInfo E)
+processDTs' dts tagTs cons fields = do
+  --Custom tag schemes:
+  tycon2customTS <- execStateT (setTagSchemes dts tagTs) M.empty
+  --Filling in missing tag schemes:
+  let dtis = M.mapWithKey (\tycon (params,cons,mr) ->
+                              let ts = case M.lookup tycon tycon2customTS of
+                                         Just (t,con2e) -> Custom t con2e
+                                         Nothing ->
+                                           case length cons of
+                                             len | len < 2 -> Nil
+                                                 | len <= 16 -> N16
+                                                 | otherwise ->
+                                                   N1 $ log256 $
+                                                   fromIntegral len
+                              in DTInfo{
+                                dtParams = params,
+                                dtRegion = mr,
+                                dtBoxed = mr /= Nothing, --redundant...?
+                                dtTagScheme = ts,
+                                dtCanonicalCons = cons
+                                }) dts
+  --TODO require r exists in params for boxed data TyCon params ... region r
+  return DTsInfo{
+    datatypes = dtis,
+    conInfo = cons,
+    fieldInfo = fields
+    }
+
+--Set tag scheme monad
+--Only needs to deal with custom tag schemes
+type STS = StateT (Map Name (T, Map Name E)) (Either DError)
+{-
+Algo:
+tagSchemes = {}
+For TyCon <- union of tag and data keys:
+ if data does not exist: fail
+ if tag exists:
+  if TyCon is boxed:
+   look up ImplTyCon, require it has an ImplCon for each Con:e tag and vv
+   tagSchemes[ImplTyCon] = Custom{ImplCon:e}
+  else:
+   require TyCon has a Con for each Con:e tag and vv
+   tagSchemes[TyCon] = Custom{Con:e}
+Setting tagSchemes should fail if you try to do it twice for a key;
+since tag decls have been deconflicted, that's only possible if a tag has
+been declared for ImplTyCon.
+-}
+setTagSchemes :: Map Name ([Name],    --params
+                           [Name],    --canonical cons
+                           Maybe Name --region
+                          ) ->
+                 Map Name ([Name],    --params
+                           T,         --tag type
+                           [(Name,E)] --con tags
+                          ) ->
+                 STS ()
+setTagSchemes dts tags =
+  forM_ (S.union (M.keysSet dts) (M.keysSet tags))
+  (\tycon ->
+     case M.lookup tycon dts of
+       Nothing -> throwError $ TagDeclOfNonexistentDT tycon
+       Just (params,cons,mr) ->
+         case M.lookup tycon tags of
+           Nothing -> return ()
+           Just (params',t,con_es) -> do
+             complainIf (length params /= length params')
+               $ TagParamDTParamLengthMismatch tycon params' params
+             case mr of
+               Nothing ->
+                 setTagScheme tycon params params' t cons con_es
+               Just _ -> do
+                 let impltycon = "Impl"++tycon
+                 case M.lookup impltycon dts of
+                   Nothing -> error "Compiler error: this should never happen!"
+                   Just (_,implcons,_) ->
+                     setTagScheme impltycon params params' t implcons $
+                     map (("Impl"++)***id) con_es)
+--Duplicate con tags has already been caught
+--The tag type is in scope tagparams; they need to be substituted for dtparams
+--in t. No substitution need be done for con_es since they're not in scope
+--there.
+setTagScheme :: Name -> [Name] -> [Name] -> T -> [Name] -> [(Name,E)] ->
+  STS ()
+setTagScheme tycon dtparams tagparams tagT cons con_es = do
+  s <- get
+  case M.lookup tycon s of
+    Just ts' -> throwError $ DuplicateTagDecls tycon
+    Nothing -> do
+      --Precondition: they're of equal length
+      let tag2dtParams = M.fromList $ zip dtparams tagparams
+      --Note this'll break if I add rank-2 polymorphism
+      tagTNorm <- everywhereM (mkM $ \case
+                                  TyVar nm ->
+                                    case M.lookup nm tag2dtParams of
+                                      Nothing -> throwError $
+                                        FreeVarInTagType nm tagT tycon
+                                      Just nm' -> return $ TyVar nm'
+                                  t -> return t) tagT
+      --Precondition: no duplicate (con,E) pairs in con_es,
+      --no duplicate contructors in cons
+      let con2e = M.fromList con_es
+          conSet = S.fromList cons
+          taggedSet = M.keysSet con2e
+      complainIf (conSet /= taggedSet)
+        $ TagSetConSetMismatch tycon taggedSet conSet
+      modify $ M.insert tycon (tagTNorm,con2e)
+      
 -- ***********Copied from Desugar.Desugar:
 
 --Boxed datatype data TyCon params = Con1 args | ... region r =>
@@ -82,6 +291,7 @@ but we must still:
 --For each DT, its tag decl specifies the value of each constructor in its
 --listing (ImplCons is in List; Cons is not).
 
+{-
 processDTs :: Map Name ([Name],P.DataRHS) -> --datatypes
               Map Name ([Name], T, Map Name P.E) -> --tag decls
               Map Name T -> --kind signatures!
@@ -94,6 +304,8 @@ processDTs dts tds ks =
             do let (conspecs,mr) = desugarDataRHS datarhs
                processDT tycon params conspecs mr (M.lookup tycon tds)
             | (tycon,(params,datarhs)) <- dts']
+-}
+{-
 desugarDataRHS :: P.DataRHS -> ([(Name,Either [(Name,T)] [T])], Maybe Name)
 desugarDataRHS = \case
   P.Boxed urhs (Ident r) -> (desugarURHS urhs, Just r)
@@ -333,3 +545,4 @@ defaultKindSig tycon params mr = do
                  | param <- params
                  ]
     put (s, M.insert tycon k ks)
+-}

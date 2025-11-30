@@ -85,7 +85,11 @@ data ADecl = ADefault (B T)
            | AStatThing (B StaticThing)
            | ACon (B ConInfo)
            | AField (B FieldInfo)
-           | ATagType (B ([Located Name],T))
+           --By keeping the Con:e map in TagType we can avoid a traversal of
+           --all con tags later.
+           | ATagType (B ([Located Name],T,[(Located Name,E)]))
+           --The E is now redundant, but might as well cache it for cheaper
+           --error reporting.
            | AConTag (B (Name,E))
            | AImport (Located ModName)
   deriving (Eq,Ord,Read,Show)
@@ -96,7 +100,7 @@ data DeclBucket = DB {
   dbKindSigs :: MSL T,
   dbDynThings :: MSL DynamicThing,
   dbStatThings :: MSL StaticThing,
-  dbTagTypes :: MSL ([Located Name],T),
+  dbTagTypes :: MSL ([Located Name],T,[(Located Name, E)]),
   dbConTags :: MSL (Name,E),
   dbConstructors :: MSL ConInfo,
   dbFields :: MSL FieldInfo,
@@ -338,10 +342,13 @@ desugarDCA = (id *** reverse) . go
 -- }
 tagToADecls :: Loc -> ConArgs' Loc -> T -> [ConTag' Loc] -> [ADecl]
 tagToADecls loc ca t cts =
-  let (tycon,params) = desugarConArgs ca
-  in binding ATagType loc (fst tycon) (params,t) ++ do
-    ConTag loc (UIdent con) e <- cts
-    binding AConTag loc con (fst tycon,e)
+  let ((tycon,_loc),params) = desugarConArgs ca
+      lcon_es = do
+        ConTag loc (UIdent con) e <- cts
+        return ((con,loc),e)
+  in binding ATagType loc tycon (params,t,lcon_es) ++ do
+    ((con,loc),e) <- lcon_es
+    binding AConTag loc con (tycon,e)
 
 --TODO propagate the location info? When something goes wrong with a global's
 --region I can just report the location of the global binding...

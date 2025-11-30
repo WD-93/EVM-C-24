@@ -106,7 +106,7 @@ data PreModule = PreModule {
   --Each instance has its own location.
   pmDynThings :: Map Name PMDynamicThing,
   pmStatThings :: MNL StaticThing,
-  pmTagTypes :: MNL ([Located Name],T),
+  pmTagTypes :: MNL ([Located Name],T,[(Located Name, E)]),
   pmConTags :: MNL (Name,E), --parent tycon, tag expr
   pmConstructors :: MNL ConInfo,
   pmFields :: MNL FieldInfo
@@ -122,7 +122,8 @@ data ConflictingDecls = CDDefaults Name (SL T)
                       | CDKindSigs Name (SL T)
                       | CDDynThings Name (SL DynamicThing)
                       | CDStatThings Name (SL StaticThing)
-                      | CDTagTypes Name (SL ([Located Name],T))
+                      | CDTagTypes Name (SL ([Located Name],T,
+                                             [(Located Name,E)]))
                       | CDConTags Name (SL (Name,E))
                       | CDConstructors Name (SL ConInfo)
                       | CDFields Name (SL FieldInfo)

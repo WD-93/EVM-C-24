@@ -16,7 +16,7 @@ import qualified DeclBucket as DB
 import Import (PreModule(..),PMDynamicThing(..),MNL(..))
 import Desugar.DTs
 import Desugar.T (desugarT)
---import Desugar.Datatypes (processDTs)
+import Desugar.Datatypes (processDTs)
 import Desugar.SEP (desugarS,desugarE,desugarP)
 --AST -> AST
 
@@ -43,6 +43,9 @@ import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 --with an explicit type signature.
 --Drop for now, verbose but obvious > terse but obscure.
 
+--TODO ensure the kind sig of BDTs defaults to Type* -> Region -> Type* -> Type,
+--where the region param is Region. Give ImplTyCon the same kind.
+--Does FIKS already do that?
 desugar :: PreModule -> Either DError Module
 desugar pm = do
   let tsigs = M.map mkSig $ getTs pmTySigs
@@ -68,6 +71,9 @@ desugar pm = do
                             Just pe -> Just <$> desugarE pe) $
         M.mapMaybe (\case PMGlobal (r_mpe,_loc) -> Just r_mpe
                           _ -> Nothing) dthings
+  --TODO require each class fun has a tysig
+  --Do I already require each tysig corresponds to a dynthing
+  --and kindsig corresponds to a DT respectively?
   fs <- mapM (\case Left (pe,ps) -> Left <$>
                                     ((,) <$> desugarP pe <*> desugarS ps)
                     Right tess ->
@@ -85,13 +91,15 @@ desugar pm = do
         M.mapMaybe (\case PMDefun (e_s,_loc) -> Just $ Left e_s
                           PMInstances ltess -> Just $ Right $ S.map fst ltess
                           _ -> Nothing) dthings
+  dtsi <- processDTs pm
   return Module{tysigs = tsigs,
                 kindsigs = ksigs,
                 kinds = ks,
                 defaults = dflts,
                 tysyns = tsyns,
                 globals = gs,
-                defuns = fs
+                defuns = fs,
+                dtsInfo = dtsi
                }
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
 
