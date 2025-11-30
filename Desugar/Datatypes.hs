@@ -19,6 +19,29 @@ import qualified Data.Set as S
 import Data.Generics (everywhereM,mkM)
 import Control.Arrow ((***))
 
+{-
+New approach:
+The relevant info is stored in:
+  pmStatThings :: MNL StaticThing, --data TyCon params = [Con]
+  pmTagTypes :: MNL ([Located Name],T), --tag TyCon params = t
+  pmConTags :: MNL E,                   --Con: e
+  pmConstructors :: MNL ConInfo,        --Con {field: t}, boxity
+  pmFields :: MNL FieldInfo             --Parent con, is tag
+in PreModule.
+Most conflicts have been eliminated (tycon, con, field, tagtype, contag),
+but we must still:
+ Generate tag schemes for each DT:
+  Transfer tag decls from BoxedTyCon to ImplBoxedTyCon, checking for
+  conflict with a preexisting manually declared tag scheme.
+  Check the conTag ADecls from tag TyCon params = t where {Con1: e1, ...}
+  cover exactly the constructors of TyCon.
+  That requires the parent TyCon of the conTag ADecl is recorded, to prevent
+  e.g.
+   tag List r a = Byte where {False: 0, True: 1};
+   tag Bool = Byte where {Nil: 0, Cons: 1}
+  from being accepted.
+-}
+
 -- ***********Copied from Desugar.Desugar:
 
 --Boxed datatype data TyCon params = Con1 args | ... region r =>

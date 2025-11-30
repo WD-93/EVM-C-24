@@ -13,11 +13,11 @@ import qualified E.Abs as P
 import AST.DTs
 import AST.Util (rollTyApps,mkSig)
 import qualified DeclBucket as DB 
-import Import (PreModule(..),MNL(..))
+import Import (PreModule(..),PMDynamicThing(..),MNL(..))
 import Desugar.DTs
 import Desugar.T (desugarT)
 --import Desugar.Datatypes (processDTs)
---import Desugar.SEP (desugarS,desugarE,desugarP)
+import Desugar.SEP (desugarS,desugarE,desugarP)
 --AST -> AST
 
 import Data.Map (Map(..))
@@ -61,11 +61,37 @@ desugar pm = do
       --Now I need to desugar defuns, globals and dtsInfo
       --Perform as many context-dependent rewrites as possible in separate
       --traversals of the Module rather than baked into SEP desugaring.
+      dthings = pmDynThings pm
+  gs <- mapM (\(r,mpe) ->
+                (,) r <$> case mpe of
+                            Nothing -> return Nothing
+                            Just pe -> Just <$> desugarE pe) $
+        M.mapMaybe (\case PMGlobal (r_mpe,_loc) -> Just r_mpe
+                          _ -> Nothing) dthings
+  fs <- mapM (\case Left (pe,ps) -> Left <$>
+                                    ((,) <$> desugarP pe <*> desugarS ps)
+                    Right tess ->
+                      --Quirk: syntactically identical instances will be
+                      --merged since location info is removed. That will
+                      --change as I propagate locs into the AST.
+                      (Right . S.fromList) <$>
+                      mapM (\(pt,pe,ps) -> do
+                               p <- desugarP pe
+                               s <- desugarS ps
+                               return (desugarT pt, p, s)
+                           ) (S.toList tess)) $
+        --M.filter would be more succinct, but it's good practice to constrain
+        --repr as early as possible.
+        M.mapMaybe (\case PMDefun (e_s,_loc) -> Just $ Left e_s
+                          PMInstances ltess -> Just $ Right $ S.map fst ltess
+                          _ -> Nothing) dthings
   return Module{tysigs = tsigs,
                 kindsigs = ksigs,
                 kinds = ks,
                 defaults = dflts,
-                tysyns = tsyns
+                tysyns = tsyns,
+                globals = gs,
+                defuns = fs
                }
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
 

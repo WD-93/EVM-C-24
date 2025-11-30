@@ -86,7 +86,7 @@ data ADecl = ADefault (B T)
            | ACon (B ConInfo)
            | AField (B FieldInfo)
            | ATagType (B ([Located Name],T))
-           | AConTag (B E)
+           | AConTag (B (Name,E))
            | AImport (Located ModName)
   deriving (Eq,Ord,Read,Show)
 data DeclBucket = DB {
@@ -97,7 +97,7 @@ data DeclBucket = DB {
   dbDynThings :: MSL DynamicThing,
   dbStatThings :: MSL StaticThing,
   dbTagTypes :: MSL ([Located Name],T),
-  dbConTags :: MSL E,
+  dbConTags :: MSL (Name,E),
   dbConstructors :: MSL ConInfo,
   dbFields :: MSL FieldInfo,
   dbImports :: Set (Located ModName)
@@ -341,7 +341,7 @@ tagToADecls loc ca t cts =
   let (tycon,params) = desugarConArgs ca
   in binding ATagType loc (fst tycon) (params,t) ++ do
     ConTag loc (UIdent con) e <- cts
-    binding AConTag loc con e
+    binding AConTag loc con (fst tycon,e)
 
 --TODO propagate the location info? When something goes wrong with a global's
 --region I can just report the location of the global binding...
