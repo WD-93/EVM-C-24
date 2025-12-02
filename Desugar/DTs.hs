@@ -76,10 +76,13 @@ data DError = --DuplicateDefun Name
             | Clash String String (Set Name)
             | ClassFunctionsLackSignatures (Set Name)
             | TypeSignaturesLackBindings (Set Name)
+            | ConcreteKindSigsLackDTs (Set Name)
+            | DefaultsMustReferToKinds (Set Name)
+            | KindDeclKindSigCollisions (Set Name)
             --Global errors:
             | BadGlobalRegion Name Region
-            | MustNotHaveInitializer Name Region
-            | CodeGlobalMustHaveInitializer Name
+            | MustNotHaveInitializers (Map Name Region)
+            | CodeGlobalsMustHaveInitializers (Set Name)
             --Field access errors
             | UndefinedFieldInDot Name
             --Constructor errors

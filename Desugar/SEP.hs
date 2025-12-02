@@ -140,6 +140,8 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       --Otherwise desugar f and args and unroll.
       --New approach: Con args => Con fields is deferred, so there's no need
       --to do anything special here.
+      --Array (a,b,c) and Struct (a,b,c) should still be desugared here.
+      --TODO!
       P.App _loc pf px -> (:$) <$> go pf <*> go px
         {-do
         let (pf',args) = rollPApps (P.App _loc pf px)

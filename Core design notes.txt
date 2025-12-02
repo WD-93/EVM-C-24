@@ -2881,6 +2881,24 @@ NCons : Nat -> NatList -> NatList
 Memory : Region is a kind sig... NatList should be supported out of the box,
 otherwise Memory:Region would break.
 
+Now:
+Pair, Struct, Array desugaring.
+Pair a b => Append{first:WordPad a, second: WordPad b}
+Pair {fs:es} =>
+ map each f using {fst => first, snd => second}, fail if f not in the map.
+ result: Append{mapped fs:WordPad es}
+Struct and Array take only syntactic tuples (not Pair), fail on 
+Struct/Array{...} to prevent the user from using their own datatype with that name.
+Apply the same desugaring in Pat.
+Struct (a,b,c) must also be desugared in T; Array is an ordinary datatype
+there and Pair is a tysyn.
+
+Without memory var initializers,
+trueMain (stk,env) = jump main (stop*stk,env)
+If main is only called there, it can be inlined. Then even if main returns,
+the return should be inlinable to a stop branch.
+If it ignores $ret, it should be possible to avoid pushing stop.
+
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
  Get old desugaring working on stdlib, then update rules.
  TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror

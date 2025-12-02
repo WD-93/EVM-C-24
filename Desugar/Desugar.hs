@@ -11,7 +11,7 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
-import AST.Util (rollTyApps,mkSig)
+import AST.Util (rollTyApps,mkSig,kindIsConcrete)
 import qualified DeclBucket as DB 
 import Import (PreModule(..),PMDynamicThing(..),MNL(..))
 import Desugar.DTs
@@ -43,14 +43,6 @@ import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 --with an explicit type signature.
 --Drop for now, verbose but obvious > terse but obscure.
 
---TODO ensure the kind sig of BDTs defaults to Type* -> Region -> Type* -> Type,
---where the region param is Region. Give ImplTyCon the same kind.
---Does FIKS already do that?
---TODO enforce all class functions must have a tysig.
---TODO enforce all tysigs => a dyn thing.
---Not all kind sigs => a DT, consider Memory : Region... but all kind
---constructors which ultimately return a Type should have a runtime
---representation.
 desugar :: PreModule -> Either DError Module
 desugar pm = do
   let tsigs = M.map mkSig $ getTs pmTySigs
@@ -97,6 +89,7 @@ desugar pm = do
                           PMInstances ltess -> Just $ Right $ S.map fst ltess
                           _ -> Nothing) dthings
   (dtsi,defaultDTKinds) <- processDTs pm
+  --The module on which context-dependent desugaring will be performed
   let mod = Module{
         tysigs = tsigs,
         kindsigs = M.union defaultDTKinds ksigs,
@@ -107,8 +100,59 @@ desugar pm = do
         defuns = fs,
         dtsInfo = dtsi
         }
+  --Rules:
+  enforceRules mod
   error "todo"
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
+
+--A collection of simple restrictions on modules
+--1) All tysigs must correspond to a fun or global
+--2) All class functions must have a tysig
+--3) All concrete kind sigs must correspond to a DT
+--4) Code globals must have initializers; other regions must not.
+--5) All defaults must refer to an existing kind.
+--6) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
+--   and given a kind signature (e.g. Type -> Type).
+enforceRules :: Module -> Either DError ()
+enforceRules mod = do
+  --1) All tysigs must correspond to a fun or global
+  let nakedTySigs = S.filter (\k -> not $
+                                    M.member k (defuns mod) ||
+                                    M.member k (globals mod)
+                             ) $
+                    M.keysSet $ tysigs mod
+  reportOffenders TypeSignaturesLackBindings nakedTySigs
+  --2) All class functions must have a tysig
+  let nakedClasses = S.filter (\k -> not $ M.member k (tysigs mod)) $
+                     M.keysSet $ M.filter (\case Right _ -> True
+                                                 _ -> False) $ defuns mod
+  reportOffenders ClassFunctionsLackSignatures nakedClasses
+  --3) All concrete kind sigs must correspond to a DT
+  let nakedKindSigs = S.filter (\k -> not $ M.member k $
+                                      datatypes $ dtsInfo mod) $
+                      M.keysSet $ M.filter kindIsConcrete $ kindsigs mod
+  reportOffenders ConcreteKindSigsLackDTs nakedKindSigs
+  --4) Code globals must have initializers; other regions must not.
+  let uinitCodeGlobals = M.keysSet $ M.filter (\case (Co,Nothing) -> True
+                                                     _ -> False) $ globals mod
+  reportOffenders CodeGlobalsMustHaveInitializers uinitCodeGlobals
+  let initOtherGlobals = M.mapMaybe (\case (r,Just _) ->
+                                             if r /= Co
+                                             then Just r
+                                             else Nothing
+                                           _ -> Nothing)
+                         $ globals mod
+  complainIf (not $ M.null initOtherGlobals)
+    $ MustNotHaveInitializers initOtherGlobals
+  --5) All defaults must refer to an existing kind.
+  reportOffenders DefaultsMustReferToKinds $
+    M.keysSet (defaults mod) `S.difference` kinds mod
+  --6) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
+  --   and given a kind signature (e.g. Type -> Type).
+  reportOffenders KindDeclKindSigCollisions $
+    M.keysSet (kindsigs mod) `S.intersection` kinds mod
+       where
+         reportOffenders err s = complainIf (not $ S.null s) $ err s
 
 {-
 
