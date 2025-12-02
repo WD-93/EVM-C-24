@@ -86,7 +86,7 @@ data DError = --DuplicateDefun Name
             --Field access errors
             | UndefinedFieldInDot Name
             --Constructor errors
-            | ArrayAndStructTakeASyntacticTuple Name [DB.E]
+            | ArrayAndStructTakeASyntacticTuple Name DB.E
             | NoSuchCon Name
             | UnderappliedCon Name Int Int --arity, actual
             | OverappliedNonMkFun Name Int [E]

@@ -15,7 +15,8 @@ import qualified Data.Map as M hiding ((!))
 import Control.Monad.Except
 import Control.Arrow ((***))
 --String literals are now unboxed; conversion is done here.
-import Data.Char (ord) 
+import Data.Char (ord)
+import Control.Monad
 
 --Change: I'll split the desugaring into a first pass that takes no context,
 --followed by a series of generic everywhereM rewrites on the Module.
@@ -89,7 +90,14 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       --A constructor with no arguments
       --For now we generate an invalid Var; Con args will be converted to
       --Con fields in a later context-dependent rewrite
-      P.Con _loc (UIdent con) -> return $ Var con --desugarConAppE di con []
+      --We disallow the sugar constructors Struct, Array, Pair here;
+      --they should never be standalone.
+      P.Con _loc (UIdent con)
+        | con `elem` words "Struct Array Pair" ->
+            --TODO add proper error
+            throwError $ GenericDError $ "Standalone " ++ con
+        | otherwise -> 
+            return $ Var con --desugarConAppE di con []
       --Look up con info.
       --If the con does not exist, error.
       --If any of the fields are not fields of the con, error.
@@ -98,11 +106,27 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       --ImplTyCon (allocValue (ImplCon {implTyCon_field: e}))
       --New approach: defer that, just preserve structure in E for later
       --context-dependent everywhereM rewrites.
-      P.ConRecord _loc (UIdent con) efields -> do
+      --TODO desugar Pair {fs:es}
+      P.ConRecord _loc (UIdent con) efields
+        | con `elem` ["Struct","Array"] ->
+          throwError $ GenericDError $ con ++ " may not be used as a record"
+        | otherwise -> do
         field_es <- mapM (\(P.EField _loc (Ident nm) pe) ->
                             ((,) nm) <$> go pe)
               efields
-        return $ ConRecord con Nothing field_es
+        if con == "Pair"
+          then do
+          --Pair field to Append field map
+          let pf2af = M.fromList[("fst","first"),("snd","second")]
+          afs <- forM field_es $ \(field,e) ->
+            case M.lookup field pf2af of
+              Nothing -> throwError $ GenericDError $
+                         "Bad Pair field: " ++ field
+              Just afield -> return (afield,
+                                     ConRecord "WordPad" Nothing
+                                     [("unWordPad",e)])
+          return $ ConRecord "Append" Nothing afs
+          else return $ ConRecord con Nothing field_es
         --conE dtsi con field_es
       --I'll choose to disallow _ in an expr context for now
       P.Wild _loc -> throwError WildcardInExprContext
@@ -141,7 +165,16 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       --New approach: Con args => Con fields is deferred, so there's no need
       --to do anything special here.
       --Array (a,b,c) and Struct (a,b,c) should still be desugared here.
-      --TODO!
+      P.App _ (P.Con _ (UIdent con)) pe
+        | con `elem` ["Array","Struct"] -> do
+            mes <- desugarTup go pe
+            case mes of
+              Nothing -> throwError $
+                ArrayAndStructTakeASyntacticTuple con pe
+              Just es ->
+                return $ (case con of
+                            "Array" -> EArray Nothing
+                            "Struct" -> structE) es
       P.App _loc pf px -> (:$) <$> go pf <*> go px
         {-do
         let (pf',args) = rollPApps (P.App _loc pf px)
@@ -299,6 +332,7 @@ desugarConAppP = error "todo" {-
   )
 -}
 
+{-
 desugarConApp ::
   (DInfo -> DeclBucket.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
   (DTsInfo DeclBucket.E -> ConInfo -> Name -> Int -> Int -> [e] -> [e] ->
@@ -323,6 +357,8 @@ desugarConApp go array struct build
               --Everything above this can be shared.
               --Params: dtsi, con, eargs, erest
               build dtsi ci con len arity eargs erest
+-}
+{-
 ifArrOrStruct :: (DInfo -> DeclBucket.E -> Either DError e) ->
                  ([e] -> e) ->
                  ([e] -> e) ->
@@ -343,6 +379,7 @@ ifArrOrStruct go array struct di con args alt
           Nothing -> throwError err
       _ -> throwError err
   | otherwise = alt
+-}
 
 --A helper for generating the desugaring of boxed Con {field: e}
 --given datatype info. It takes dtsi rather than ci to make it possible to
@@ -370,12 +407,16 @@ conE dtsi con field_es = do
 
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
+{-
 desugarTup :: DInfo -> (DInfo -> DeclBucket.E -> Either DError a) ->
               DeclBucket.E ->
               Either DError (Maybe [a])
-desugarTup di handler = \case
+-}
+desugarTup :: (DeclBucket.E -> Either DError a) -> DeclBucket.E ->
+  Either DError (Maybe [a])
+desugarTup handler = \case
   P.EmptyTuple _loc -> return $ Just []
-  P.Tuple _loc pe pes -> Just <$> mapM (handler di) (pe:pes)
+  P.Tuple _loc pe pes -> Just <$> mapM handler (pe:pes)
   _ -> return Nothing
 
 {-
@@ -415,6 +456,13 @@ desugarP {-di@DInfo{diGlobalSet = gs,
       -- *(bdt.unImpl<tycon>).impl<tycon>_field
       --Ooh, consequence: (f()).field becomes a valid LHS for assignment.
       --That's a bit surprising but fine; C++ allows it.
+      --Oh no... that means I must know whether a field is boxed or not in
+      --order to avoid attempting to desugar f() as a pattern.
+      --I have two options:
+      --1) Convert to *($placeholderMark(e)).field,
+      --then convert the e to a pattern at a later stage.
+      --2) Pass in field boxity info.
+      --Fortunately I have that info available in pmFields.
       P.Dot _loc struct (Ident f) -> do
         s <- go struct
         return $ s :. f

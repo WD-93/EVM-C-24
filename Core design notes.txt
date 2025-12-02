@@ -2899,6 +2899,10 @@ If main is only called there, it can be inlined. Then even if main returns,
 the return should be inlinable to a stop branch.
 If it ignores $ret, it should be possible to avoid pushing stop.
 
+Special types the compiler is aware of:
+Int, Ptr, Fun
+Pair, Struct, Array, WordPad, Append
+
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
  Get old desugaring working on stdlib, then update rules.
  TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror
