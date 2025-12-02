@@ -23,6 +23,7 @@ import qualified Data.Map as M hiding ((!))
 import qualified Data.Set as S
 import Data.Generics (everywhereM,mkM)
 import Control.Arrow ((***))
+import Data.List (elemIndex)
 
 {-
 New approach:
@@ -47,7 +48,7 @@ but we must still:
   from being accepted.
 -}
 
-processDTs :: PreModule -> Either DError (DTsInfo E)
+processDTs :: PreModule -> Either DError (DTsInfo E, Map Name T)
 processDTs pm = do
   --First we strip away location data
   let dts = M.mapMaybe (\case (STDatatype lparams cons mlr,_loc) ->
@@ -67,7 +68,8 @@ processDTs pm = do
   --TODO move DB's definition to AST.DTs
   let cons = M.map (stripConInfo . fst) $ pmConstructors pm
       fields = M.map (stripFieldInfo . fst) $ pmFields pm
-  processDTs' dts tagTs cons fields
+      kindsigs = M.map (desugarT . fst) $ pmKindSigs pm
+  processDTs' dts tagTs cons fields kindsigs
   where stripConInfo :: DB.ConInfo -> ConInfo
         stripConInfo (DB.CI
                       boxed
@@ -143,10 +145,12 @@ processDTs' :: Map Name ( --data TyCon params = [Con], region r
   ) ->
   Map Name ConInfo ->   --cons
   Map Name FieldInfo -> --fields
-  Either DError (DTsInfo E)
-processDTs' dts tagTs cons fields = do
+  Map Name T -> --kind sigs prior to defaulting
+  Either DError (DTsInfo E, Map Name T)
+processDTs' dts tagTs cons fields kindsigs = do
   --Custom tag schemes:
-  tycon2customTS <- execStateT (setTagSchemes dts tagTs) M.empty
+  (tycon2customTS,kindout) <- execStateT (setTagSchemes dts tagTs kindsigs)
+    (M.empty,M.empty)
   --Filling in missing tag schemes:
   let dtis = M.mapWithKey (\tycon (params,cons,mr) ->
                               let ts = case M.lookup tycon tycon2customTS of
@@ -166,20 +170,27 @@ processDTs' dts tagTs cons fields = do
                                 dtCanonicalCons = cons
                                 }) dts
   --TODO require r exists in params for boxed data TyCon params ... region r
-  return DTsInfo{
-    datatypes = dtis,
-    conInfo = cons,
-    fieldInfo = fields
-    }
+  return (DTsInfo{
+             datatypes = dtis,
+             conInfo = cons,
+             fieldInfo = fields
+             },
+           kindout)
 
 --Set tag scheme monad
 --Only needs to deal with custom tag schemes
-type STS = StateT (Map Name (T, Map Name E)) (Either DError)
+type STS = StateT (Map Name (T, Map Name E), --tag schemes
+                   Map Name T --kindout
+                  ) (Either DError)
 {-
 Algo:
+TODO default kind sigs here
+TODO kindout = {}
 tagSchemes = {}
 For TyCon <- union of tag and data keys:
  if data does not exist: fail
+ TODO:
+  Set kindout
  if tag exists:
   if TyCon is boxed:
    look up ImplTyCon, require it has an ImplCon for each Con:e tag and vv
@@ -190,6 +201,21 @@ For TyCon <- union of tag and data keys:
 Setting tagSchemes should fail if you try to do it twice for a key;
 since tag decls have been deconflicted, that's only possible if a tag has
 been declared for ImplTyCon.
+
+If a DT is boxed, its kind should default to Type*->Region->Type*->Type,
+where r is Region. Enforce r in params here.
+If it's Impl, it should default to the same as its parent.
+Otherwise, it should default to Type*->Type.
+Unboxed default:
+ If kindout[tycon] hasn't already been set:
+  set based on params and kindin[tycon]
+Boxed default:
+ Set kindout[tycon] based on params and kindin[tycon]; it won't have been set.
+ Set kindout[ImplTyCon] to the same unless kindin[ImplTyCon] exists
+Dominance order for ImplTyCon: explicit kindsig > parent > boxed default.
+
+Enforce: r must be Region even if tycon is given an explicit kind signature.
+If it's not present in params, fail.
 -}
 setTagSchemes :: Map Name ([Name],    --params
                            [Name],    --canonical cons
@@ -199,28 +225,73 @@ setTagSchemes :: Map Name ([Name],    --params
                            T,         --tag type
                            [(Name,E)] --con tags
                           ) ->
+                 Map Name T -> --kind sigs before defaulting
                  STS ()
-setTagSchemes dts tags =
+setTagSchemes dts tags kindin =
   forM_ (S.union (M.keysSet dts) (M.keysSet tags))
-  (\tycon ->
-     case M.lookup tycon dts of
-       Nothing -> throwError $ TagDeclOfNonexistentDT tycon
-       Just (params,cons,mr) ->
-         case M.lookup tycon tags of
-           Nothing -> return ()
-           Just (params',t,con_es) -> do
-             complainIf (length params /= length params')
-               $ TagParamDTParamLengthMismatch tycon params' params
-             case mr of
-               Nothing ->
-                 setTagScheme tycon params params' t cons con_es
-               Just _ -> do
-                 let impltycon = "Impl"++tycon
-                 case M.lookup impltycon dts of
-                   Nothing -> error "Compiler error: this should never happen!"
-                   Just (_,implcons,_) ->
-                     setTagScheme impltycon params params' t implcons $
-                     map (("Impl"++)***id) con_es)
+  (\tycon -> 
+      case M.lookup tycon dts of
+        Nothing -> throwError $ TagDeclOfNonexistentDT tycon
+        Just (params,cons,mr) -> do
+          goKindSigs tycon params cons mr
+          goTagSchemes tycon params cons mr)
+  where
+    goKindSigs tycon params cons mr = error "todo"
+    goTagSchemes tycon params cons mr =
+      case M.lookup tycon tags of
+        Nothing -> return ()
+        Just (params',t,con_es) -> do
+          complainIf (length params /= length params')
+            $ TagParamDTParamLengthMismatch tycon params' params
+          case mr of
+            Nothing ->
+              setTagScheme tycon params params' t cons con_es
+            Just _ -> do
+              let impltycon = "Impl"++tycon
+              case M.lookup impltycon dts of
+                Nothing ->
+                  error "Compiler error: this should never happen!"
+                Just (_,implcons,_) ->
+                  setTagScheme impltycon params params' t implcons $
+                  map (("Impl"++)***id) con_es
+--Given maybe kind sig, params and maybe a region param r, returns the DT's
+--kind. Errors if:
+--1) r is not present in params
+--If there is a kind signature:
+--2) the given kind signature is not concrete (does not ultimately return a
+--Type) or has the wrong arity.
+--3) r is given a non-Region kind
+defaultKind :: Maybe T -> [Name] -> Maybe Name -> Either DError T
+defaultKind ksig params mr = do
+  --1)
+  mix <- case mr of
+           Nothing -> return Nothing
+           Just r ->
+             case elemIndex r params of
+               Nothing -> throwError $ RegionTyVarNotInParams r params
+               Just ix -> return $ Just ix
+  case ksig of
+    --If there is a kind signature
+    Just k -> do
+      let (ts,ret) = rollFunApps k
+      --2a)
+      complainIf (length ts /= length params)
+        $ KindSigParamArityMismatch k params
+      --2b)
+      complainIf (ret /= TyCon "Type")
+        $ DTKindSigIsNotConcrete k
+      --3)
+      case mix of
+        Nothing -> return ()
+        Just ix -> complainIf ((ts !! ix) /= TyCon "Region")
+                   $ RegionTyVarGivenNonRegionKind k mr params
+      return k
+    --Compute default
+    Nothing ->
+      let ts = [TyCon $ if Just param == mr then "Region" else "Type"
+               | param <- params]
+      in return $ unrollFunApps (ts, TyCon "Type")
+      
 --Duplicate con tags has already been caught
 --The tag type is in scope tagparams; they need to be substituted for dtparams
 --in t. No substitution need be done for con_es since they're not in scope
@@ -228,7 +299,7 @@ setTagSchemes dts tags =
 setTagScheme :: Name -> [Name] -> [Name] -> T -> [Name] -> [(Name,E)] ->
   STS ()
 setTagScheme tycon dtparams tagparams tagT cons con_es = do
-  s <- get
+  s <- gets fst
   case M.lookup tycon s of
     Just ts' -> throwError $ DuplicateTagDecls tycon
     Nothing -> do
@@ -249,8 +320,8 @@ setTagScheme tycon dtparams tagparams tagT cons con_es = do
           taggedSet = M.keysSet con2e
       complainIf (conSet /= taggedSet)
         $ TagSetConSetMismatch tycon taggedSet conSet
-      modify $ M.insert tycon (tagTNorm,con2e)
-      
+      modify (M.insert tycon (tagTNorm,con2e) *** id)
+
 -- ***********Copied from Desugar.Desugar:
 
 --Boxed datatype data TyCon params = Con1 args | ... region r =>

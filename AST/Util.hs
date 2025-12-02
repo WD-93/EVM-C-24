@@ -88,3 +88,23 @@ tyVarsListSet = everything (\(nms1,snms1) (nms2,snms2) ->
 --be ([a,b],a -> b)
 mkSig :: T -> ([Name],T)
 mkSig t = (tyVarsList t, t)
+
+--Returns whether a kind is concrete (ultimately returns a Type); used in
+--Desugar.
+kindIsConcrete :: T -> Bool
+kindIsConcrete = (== TyCon "Type") . snd. rollFunApps
+
+--t1 -> t2 ... -> t<n> -> ret => n
+typeArity = length . fst . rollFunApps
+
+--TODO deduplicate
+--a -> b -> c -> d => ([a,b,c],d)
+rollFunApps :: T -> ([T],T)
+rollFunApps = go
+  where go = \case
+          a :-> b ->
+            let (ts,ret) = go b
+            in (a:ts,ret)
+          t -> ([],t)
+unrollFunApps :: ([T],T) -> T
+unrollFunApps (ts,ret) = foldr (:->) ret ts

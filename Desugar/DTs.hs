@@ -64,8 +64,13 @@ data DError = --DuplicateDefun Name
             | FreeVarInTagType Name T Name
             | DuplicateTagDecls Name --for tycon, only occurs when
             --tag ImplTyCon = t ... is declared.
+            | RegionTyVarNotInParams Name [Name] --todo add loc info
+            | KindSigParamArityMismatch T [Name] --todo add loc info
+            | DTKindSigIsNotConcrete T
+            | RegionTyVarGivenNonRegionKind T (Maybe Name) [Name]
+            --mr is always Just here...
             -- | ConMismatchInTagAndData Name (Set Name) (Set Name)
-            | BoxedTyConLacksKindSig Name
+            -- | BoxedTyConLacksKindSig Name
             | StructDTAlreadyGivenKindSig Name T
             --Final module check errors:
             | Clash String String (Set Name)

@@ -2875,6 +2875,12 @@ separately. But Core relies on fixed global addrs...
 For now put the types the compiler mentions in Types.evmc.
 TODO figure out the dependency hierarchy; it's all tangled together atm.
 
+Q: What do I need to support NatList?
+Nil : NatList
+NCons : Nat -> NatList -> NatList
+Memory : Region is a kind sig... NatList should be supported out of the box,
+otherwise Memory:Region would break.
+
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
  Get old desugaring working on stdlib, then update rules.
  TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror

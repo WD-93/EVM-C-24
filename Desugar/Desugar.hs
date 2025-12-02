@@ -46,6 +46,11 @@ import Data.Generics (Data(..),everything,mkQ,everywhere,mkT)
 --TODO ensure the kind sig of BDTs defaults to Type* -> Region -> Type* -> Type,
 --where the region param is Region. Give ImplTyCon the same kind.
 --Does FIKS already do that?
+--TODO enforce all class functions must have a tysig.
+--TODO enforce all tysigs => a dyn thing.
+--Not all kind sigs => a DT, consider Memory : Region... but all kind
+--constructors which ultimately return a Type should have a runtime
+--representation.
 desugar :: PreModule -> Either DError Module
 desugar pm = do
   let tsigs = M.map mkSig $ getTs pmTySigs
@@ -91,16 +96,18 @@ desugar pm = do
         M.mapMaybe (\case PMDefun (e_s,_loc) -> Just $ Left e_s
                           PMInstances ltess -> Just $ Right $ S.map fst ltess
                           _ -> Nothing) dthings
-  dtsi <- processDTs pm
-  return Module{tysigs = tsigs,
-                kindsigs = ksigs,
-                kinds = ks,
-                defaults = dflts,
-                tysyns = tsyns,
-                globals = gs,
-                defuns = fs,
-                dtsInfo = dtsi
-               }
+  (dtsi,defaultDTKinds) <- processDTs pm
+  let mod = Module{
+        tysigs = tsigs,
+        kindsigs = M.union defaultDTKinds ksigs,
+        kinds = ks,
+        defaults = dflts,
+        tysyns = tsyns,
+        globals = gs,
+        defuns = fs,
+        dtsInfo = dtsi
+        }
+  error "todo"
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
 
 {-
