@@ -2903,6 +2903,10 @@ Special types the compiler is aware of:
 Int, Ptr, Fun
 Pair, Struct, Array, WordPad, Append
 
+Core compilation: keeping Core types (of kind Word and SElem) in T is fine.
+Fun a b => flatten a to ws,
+forall (stk : Words) . CoreFun (ws...stk s) Env
+
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
  Get old desugaring working on stdlib, then update rules.
  TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror

@@ -44,9 +44,9 @@ import Control.Monad
 --ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
 --HM may then assume Var nm is either a global or function; TODO remove
 --the logic for constructors.
-desugarE :: --DInfo ->
+desugarE :: DInfo ->
   DeclBucket.E -> Either DError E
-desugarE {-di@DInfo{diGlobalSet = gs,
+desugarE di{-@DInfo{diGlobalSet = gs,
                   diStringNumbering = str2id,
                   diDTsInfo = dtsi
                  }-} = go
@@ -135,8 +135,8 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       --not twice) we can avoid having lets in E.
       --That simplifies initial desugaring, but complicates the type
       --checker slightly.
-      P.PlusPlusPost _loc pp -> PPPost <$> desugarP pp
-      P.MinusMinusPost _loc pp -> MMPost <$> desugarP pp
+      P.PlusPlusPost _loc pp -> PPPost <$> desugarP di pp
+      P.MinusMinusPost _loc pp -> MMPost <$> desugarP di pp
       --indexPtr must take the ptr as its first argument to preserve eval
       --order.
       P.Index _loc pptr pix -> do
@@ -181,8 +181,8 @@ desugarE {-di@DInfo{diGlobalSet = gs,
         case pf' of
           P.Con _loc (UIdent con) -> desugarConAppE di con args
           _ -> unrollApps <$> go pf' <*> mapM go args-}
-      P.PlusPlusPre _loc p -> PPPre <$> desugarP p
-      P.MinusMinusPre _loc p -> MMPre <$> desugarP p
+      P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
+      P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
       P.Negate _loc a -> op1 "negate" a
       P.Not _loc a -> op1 "lNot" a
       P.BitwiseNot _loc a -> op1 "bwNot" a
@@ -207,7 +207,7 @@ desugarE {-di@DInfo{diGlobalSet = gs,
       P.And _loc a b -> op2 "scAnd" a b
       P.Or _loc a b -> op2 "scOr" a b
       P.Assign _loc pp aop pe -> do
-        p <- desugarP {-di-} pp
+        p <- desugarP di pp
         e <- go pe
         case aop2op aop of
           Nothing -> return $ p := e
@@ -433,12 +433,14 @@ DInfo-dependent:
 bdt.f => *(...).fStructCon
 g => *g
 -}
-desugarP :: --DInfo ->
+desugarP :: DInfo ->
   DeclBucket.E -> Either DError Pat
-desugarP {-di@DInfo{diGlobalSet = gs,
-                  diDTsInfo = dtsi,
-                  diStringNumbering = str2id
-                 }-} = go
+desugarP di@DInfo{
+  diBoxedFields = bfs
+  --diGlobalSet = gs,
+  --diDTsInfo = dtsi,
+  --diStringNumbering = str2id
+                 } = go
   where
     go = \case
       P.Wild _loc -> return $ PWild Nothing
@@ -449,7 +451,7 @@ desugarP {-di@DInfo{diGlobalSet = gs,
         then return $ Deref Nothing $ Var v
         else return $ PVar v
 -}
-      P.Deref _loc e -> Deref Nothing <$> desugarE {-di-} e
+      P.Deref _loc e -> Deref Nothing <$> desugarE di e
       P.EmptyTuple _loc -> return $ tupleP []
       P.Tuple _loc e es -> tupleP <$> mapM go (e:es)
       --bdt.field => look up field's parent tycon,
@@ -463,11 +465,16 @@ desugarP {-di@DInfo{diGlobalSet = gs,
       --then convert the e to a pattern at a later stage.
       --2) Pass in field boxity info.
       --Fortunately I have that info available in pmFields.
-      P.Dot _loc struct (Ident f) -> do
-        s <- go struct
-        return $ s :. f
+      P.Dot loc struct (Ident f)
+        | Just tycon <- M.lookup f bfs -> do
+            s <- desugarE di struct
+            return $ Deref Nothing (Dot s Nothing ("unImpl"++tycon)) :.
+              ("impl"++tycon++"_"++f)
+        | otherwise -> do
+            s <- go struct
+            return $ s :. f
         --desugarDot (Deref Nothing) (:.) go di struct f
-      P.Bang _loc arr ix -> (:!) <$> go arr <*> desugarE {-di-} ix
+      P.Bang _loc arr ix -> (:!) <$> go arr <*> desugarE di ix
       P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
       P.ConRecord _loc (UIdent con) efields -> do
         es <- mapM (\(P.EField _loc (Ident nm) pe) -> ((,) nm) <$> go pe)
@@ -480,9 +487,9 @@ desugarP {-di@DInfo{diGlobalSet = gs,
             desugarConAppP {-di-} con args
           _ -> throwError $ BadConInPattern f
 
-desugarS :: --DInfo ->
+desugarS :: DInfo ->
   DeclBucket.S -> Either DError S
-desugarS {-di-} = go
+desugarS di = go
   where go = \case
           P.SE _loc pe -> SE <$> goe pe
           P.If _loc i t e -> Ifte <$> goe i <*> go t <*> go e
@@ -497,8 +504,8 @@ desugarS {-di-} = go
             --Placeholder locs for now
             go $ P.Do loc [pre,P.While loc cond $ P.Do loc [body,post]]
           P.Declare _loc vbs -> Declare <$> mapM desugarVB vbs
-        goe = desugarE --di
-        gop = desugarP --di
+        goe = desugarE di
+        gop = desugarP di
         desugarCase (P.C _loc p s) = (,) <$> gop p <*> go s
         desugarVB = \case
           --var x; => var x = null()

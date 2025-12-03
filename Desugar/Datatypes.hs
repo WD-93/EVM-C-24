@@ -48,8 +48,8 @@ but we must still:
   from being accepted.
 -}
 
-processDTs :: PreModule -> Either DError (DTsInfo E, Map Name T)
-processDTs pm = do
+processDTs :: DInfo -> PreModule -> Either DError (DTsInfo E, Map Name T)
+processDTs di pm = do
   --First we strip away location data
   let dts = M.mapMaybe (\case (STDatatype lparams cons mlr,_loc) ->
                                 Just (map fst lparams,
@@ -59,7 +59,7 @@ processDTs pm = do
       --TODO fix inefficiency: I desugar each tag expr twice.
   tagTs <- mapM (\((lparams,pt,lcon_es),_loc) -> do
                     con_es <- mapM (\((con,_loc),pe) ->
-                                       (,) con <$> desugarE pe) lcon_es
+                                       (,) con <$> desugarE di pe) lcon_es
                     return (map fst lparams,
                             desugarT pt,
                             con_es)) $

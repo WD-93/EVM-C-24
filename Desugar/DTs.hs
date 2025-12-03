@@ -131,7 +131,8 @@ deriving instance Data P.HexInteger
 --ImplTyCon (allocValue (ImplBCon {implTyCon_f: e})).
 --However, desugaring of BCon {f: p} = e must be deferred to the Core stage.
 data DInfo = DInfo {
-  diGlobalSet :: Set Name,
-  diDTsInfo :: DTsInfo DB.E, --used for field=>bcon, bcon=>fields
-  diStringNumbering :: Map String Int
+  diBoxedFields :: Map Name Name --boxed field => its tycon
+  --diGlobalSet :: Set Name,
+  --diDTsInfo :: DTsInfo DB.E, --used for field=>bcon, bcon=>fields
+  --diStringNumbering :: Map String Int
 }

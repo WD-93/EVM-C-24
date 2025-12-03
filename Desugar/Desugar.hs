@@ -62,25 +62,32 @@ desugar pm = do
       --Perform as many context-dependent rewrites as possible in separate
       --traversals of the Module rather than baked into SEP desugaring.
       dthings = pmDynThings pm
+      --The map of boxed fields => their tycon is still essential.
+      di = DInfo {
+        diBoxedFields = M.mapMaybe (\(fi,_loc) ->
+                                       if DB.fiBoxed fi
+                                       then Just $ fst $ DB.fiParentTyCon fi
+                                       else Nothing) $ pmFields pm
+        }
   gs <- mapM (\(r,mpe) ->
                 (,) r <$> case mpe of
                             Nothing -> return Nothing
-                            Just pe -> Just <$> desugarE pe) $
+                            Just pe -> Just <$> desugarE di pe) $
         M.mapMaybe (\case PMGlobal (r_mpe,_loc) -> Just r_mpe
                           _ -> Nothing) dthings
   --TODO require each class fun has a tysig
   --Do I already require each tysig corresponds to a dynthing
   --and kindsig corresponds to a DT respectively?
   fs <- mapM (\case Left (pe,ps) -> Left <$>
-                                    ((,) <$> desugarP pe <*> desugarS ps)
+                                    ((,) <$> desugarP di pe <*> desugarS di ps)
                     Right tess ->
                       --Quirk: syntactically identical instances will be
                       --merged since location info is removed. That will
                       --change as I propagate locs into the AST.
                       (Right . S.fromList) <$>
                       mapM (\(pt,pe,ps) -> do
-                               p <- desugarP pe
-                               s <- desugarS ps
+                               p <- desugarP di pe
+                               s <- desugarS di ps
                                return (desugarT pt, p, s)
                            ) (S.toList tess)) $
         --M.filter would be more succinct, but it's good practice to constrain
@@ -88,7 +95,7 @@ desugar pm = do
         M.mapMaybe (\case PMDefun (e_s,_loc) -> Just $ Left e_s
                           PMInstances ltess -> Just $ Right $ S.map fst ltess
                           _ -> Nothing) dthings
-  (dtsi,defaultDTKinds) <- processDTs pm
+  (dtsi,defaultDTKinds) <- processDTs di pm
   --The module on which context-dependent desugaring will be performed
   let mod = Module{
         tysigs = tsigs,
