@@ -20,9 +20,12 @@ import System.Directory (doesPathExist,getCurrentDirectory)
 import Control.Monad.Reader
 import Control.Monad.State
 --The hardcoded modules
-import Stdlib.ImplicitImports (stdlibPrim,stdlibPrelude)
+import Stdlib.ImplicitImports (stdlib)
 --CST -> AST
 import AST.DTs (Module(..))
+import Import (sourceToBucket,createBucket,deconflictBucket,
+               PreModule(..),
+               ConflictingDecls(..),CreateBucketError(..))
 import Desugar.DTs (DError(..))
 import Desugar.Desugar (desugar)
 --Type checking
@@ -36,18 +39,24 @@ import Sizeof (computeSizeof)
 --Serialize constant expressions (global initializers and datatype tags)
 import Const.Serialize (serialize,SerError(..))
 --Convert C to structured IR
+
+{-
+Temporarily hiding to debug Desugar and stdlib
 import Structured.DTs (Structured(..))
 import Structured.Convert (convert,ConvertError(..))
 --FunVars (for debugging Structured)
 import Core.RestrictedCore (FunVar(..),fun2coreT)
+-}
 
 data CompilerError = ParserError String
+                   | CreateBucketError CreateBucketError
+                   | ConflictingDecls [ConflictingDecls]
                    | DesugarError DError
                    | TypeCheckError TCError
                    | MonoError MonoError
                    | CycleInSizeof [(Name,[T])]
                    | SerError SerError
-                   | StructuredError ConvertError
+--                   | StructuredError ConvertError
                    {-
                    | SeqError SeqError
                    | IllFormedCFG Name [IR]
@@ -55,6 +64,7 @@ data CompilerError = ParserError String
                    | BytecodeError AsmError -}
   deriving (Eq,Ord,Read,Show)
 
+{-
 --The compilation process is pure once you have the set of relevant modules...
 --but collecting it requires parsing them.
 --Also inserts Prim and Prelude from Stdlib; there is currently no way to
@@ -111,6 +121,7 @@ moduleName2Path :: [String] -> FilePath
 moduleName2Path = \case
   [nm] -> nm
   nm:nms -> nm ++ "/" ++ moduleName2Path nms
+-}
 
 --No compiler params for now, just pass a module through the pipeline
 {-
@@ -135,11 +146,19 @@ pureParams str = do
   return CompilerParams{cpModule = m, cpFlags = M.empty}
 -}
 
---We inject Prim and Prelude here
-pipeline2parse :: String -> Either CompilerError P.M
-pipeline2parse str = (do
-  P.Module ds <- parseModule str
-  return $ P.Module $ mPrim ++ mPrelude ++ ds) ? ParserError
+--New workflow for the test pipeline:
+--The given string is parsed, converted to a bucket and given the module name
+--Main using Import.sourceToBucket. Main is added to the stdlib namespace.
+--Main and its dependencies are merged into a single bucket using
+--createBucket. Note stdlib modules must be explicitly imported!
+--import Prelude loads default modules.
+--That bucket is then converted to a PreModule using deconflictBucket.
+pipeline2parse :: String -> Either CompilerError PreModule
+pipeline2parse str = do
+  db <- sourceToBucket ["Main"] str ? ParserError
+  let namespace = M.insert ["Main"] db stdlib
+  dbWithDeps <- createBucket namespace ["Main"] ? CreateBucketError
+  deconflictBucket dbWithDeps ? ConflictingDecls
 pipeline2desugar :: String -> Either CompilerError Module
 pipeline2desugar str = do
   m <- pipeline2parse str
@@ -163,10 +182,13 @@ pipeline2serialize str = do
   (m,monoS,monoT2Sz) <- pipeline2sizeof str
   serS <- serialize m monoS monoT2Sz ? SerError
   return (m,monoS,monoT2Sz,serS)
+{-
 pipeline2structured str = do
   v <- pipeline2serialize str
   convert v ? StructuredError
+-}
 
+{-
 --The prim and prelude modules, parsed and converted into [P.D]. If they fail
 --to parse, that's a compiler error.
 mPrim :: [P.D]
@@ -178,7 +200,7 @@ mPrelude = case parseModule stdlibPrelude of
           Right (P.Module ds) -> ds
           Left err ->
             error $ "Compiler error: Prelude.evmc doesn't parse! " ++ err
-
+-}
 {-
 import DTs
 import Data.Map (Map(..))

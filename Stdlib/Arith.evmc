@@ -29,7 +29,7 @@ sizeofPtrLen (p,n) := {
  p :: Ptr r a;
  var sz = sizeof (P :: P a);
  return (n*sz)
-}
+};
 
 //mask n returns a Word consisting of n 1-bits, left-padded with zeroes.
 //If its argument is >= 256, it returns ~0.
@@ -159,7 +159,7 @@ multiply : (Int a b, Int a b) -> Int a b;
 multiply (a,b) := return coerce (mul(coerce a, coerce b));
 divide : (Int a b, Int a b) -> Int a b;
 instance divide : (UInt a, UInt a) -> UInt a where
- (a,b) := return coerce (div(coerce a, coerce b))
+ (a,b) := return coerce (div(coerce a, coerce b));
 instance divide : (SInt a, SInt a) -> SInt a where
  (a,b) := return coerce (sdiv(extendToWord a, extendToWord b));
 //Like & and |, modulo doesn't require masking.

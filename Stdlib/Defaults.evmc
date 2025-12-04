@@ -2,7 +2,6 @@
 //is not rigid* then it is unified with its default if one exists.
 //These are sensible choices for the defaults.
 
-import Int; //Used for the Type default; imports TySyns
 import Kinds; //The things we're defaulting
 
 //Currently the EVM ops use the tysyn Word, which depends on Int;

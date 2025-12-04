@@ -340,5 +340,5 @@ enumerateModNames fp = map reverse <$> go [] fp
                dbgPrint $ "Ignore: " ++ filename
                return []
 
-dbgFlag = True
+dbgFlag = False
 dbgPrint str = if dbgFlag then putStrLn str else return ()

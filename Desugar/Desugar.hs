@@ -217,7 +217,7 @@ pairFieldDesugaring mod =
 --I'll keep it an Either in case more rewrites need to be added.
 contextDependentDesugar :: Module -> Either DError Module
 contextDependentDesugar mod =
-  return $ pairFieldDesugaring $ substGlobals mod
+  return $ boxedConDesugaring $ pairFieldDesugaring $ substGlobals mod
 
 {-
 

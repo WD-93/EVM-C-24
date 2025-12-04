@@ -16,7 +16,7 @@ returnValue a := {
  //Opt: after inlining, the default return block should be pruned.
  };
 
-returnPtr : MPtr a -> ()
+returnPtr : MPtr a -> ();
 returnPtr p := returnPtrLen (p,1);
 returnPtrLen : (MPtr a, Short) -> ();
 returnPtrLen (p,n) := {
