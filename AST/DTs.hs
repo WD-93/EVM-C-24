@@ -109,7 +109,12 @@ structP (p:ps) = PCon "Append" Nothing [("first",p),("second",structP ps)]
 
 tupleE :: [E] -> E
 tupleE [] = ConRecord "Unit" Nothing []
-tupleE (e:es) = ConRecord "Pair" Nothing [("fst",e), ("snd",tupleE es)]
+tupleE (e:es) = ConRecord "Append" Nothing
+                [("first", ConRecord "WordPad" Nothing
+                           [("unWordPad",e)])
+                ,("second", ConRecord "WordPad" Nothing
+                            [("unWordPad",tupleE es)])
+                ]
 tupleP :: [Pat] -> Pat
 tupleP [] = PCon "Unit" Nothing []
 tupleP (p:ps) = PCon "Pair" Nothing [("fst",p),("snd",tupleP ps)]

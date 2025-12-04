@@ -27,7 +27,7 @@ returnPtrLen (p,n) := {
 
 //TODO use WordPad
 revertValue : a -> ();
-reverValue a := {
+revertValue a := {
  var p = coerce 0;
  *p = a;
  revertPtr p

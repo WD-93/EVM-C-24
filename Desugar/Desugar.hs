@@ -181,7 +181,8 @@ substGlobals mod =
                           p -> p) mod
   where isGlobal v = M.member v $ globals mod
 --bdt.field has already been converted to *(bdt.unImplTyCon).implTyCon_field
---Undefined cons and bad fields have already been caught.
+--Undefined cons and bad fields should've already been caught.
+--Pair {fst: a, snd: b} records should've been converted to Appends.
 boxedConDesugaring :: Module -> Module
 boxedConDesugaring mod =
   everywhere (mkT $ \case
@@ -189,7 +190,8 @@ boxedConDesugaring mod =
                    let dtsi = dtsInfo mod
                        cis = conInfo dtsi
                    in case M.lookup con cis of
-                        Nothing -> error "Compiler error: should never happen!"
+                        Nothing ->
+                          error $ "No con info for " ++ con
                         Just ci ->
                           if conBoxed ci
                           then let tycon = conParent ci
@@ -199,7 +201,9 @@ boxedConDesugaring mod =
                                     ConRecord ("Impl"++con) Nothing
                                     (map ((("impl"++tycon++"_")++)***id)
                                      field_es))]
-                          else e)
+                          else e
+                 e -> e
+             )
   mod
 pairFieldDesugaring :: Module -> Module
 pairFieldDesugaring mod =
@@ -210,7 +214,8 @@ pairFieldDesugaring mod =
                           e -> e) $
   everywhere (mkT $ \case p :. f
                             | f `elem` ["fst","snd"] ->
-                              (p :. extend f) :. "unWordPad") mod
+                              (p :. extend f) :. "unWordPad"
+                          p -> p) mod
   where extend = \case
           "fst" -> "first"
           _ -> "second"

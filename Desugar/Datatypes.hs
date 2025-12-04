@@ -233,10 +233,13 @@ setTagSchemes dts tags kindin =
       case M.lookup tycon dts of
         Nothing -> throwError $ TagDeclOfNonexistentDT tycon
         Just (params,cons,mr) -> do
-          goKindSigs tycon params cons mr
+          goKindSigs tycon params mr
           goTagSchemes tycon params cons mr)
   where
-    goKindSigs tycon params cons mr = error "todo"
+    goKindSigs :: Name -> [Name] -> Maybe Name -> STS ()
+    goKindSigs tycon params mr = do
+      k <- lift $ defaultKind (M.lookup tycon kindin) params mr
+      modify (id *** M.insert tycon k)
     goTagSchemes tycon params cons mr =
       case M.lookup tycon tags of
         Nothing -> return ()
