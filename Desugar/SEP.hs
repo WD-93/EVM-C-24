@@ -97,7 +97,7 @@ desugarE di{-@DInfo{diGlobalSet = gs,
             --TODO add proper error
             throwError $ GenericDError $ "Standalone " ++ con
         | otherwise -> 
-            return $ Var con --desugarConAppE di con []
+            desugarConAppE di con []
       --Look up con info.
       --If the con does not exist, error.
       --If any of the fields are not fields of the con, error.
@@ -126,8 +126,7 @@ desugarE di{-@DInfo{diGlobalSet = gs,
                                      ConRecord "WordPad" Nothing
                                      [("unWordPad",e)])
           return $ ConRecord "Append" Nothing afs
-          else return $ ConRecord con Nothing field_es
-        --conE dtsi con field_es
+          else conE di con field_es
       --I'll choose to disallow _ in an expr context for now
       P.Wild _loc -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
@@ -158,29 +157,15 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       P.Bang _loc arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
       P.Arrow loc e (Ident f) -> go $ P.Dot loc (P.Deref loc e) $ Ident f
-      --Old approach:
       --First roll the P.Apps into f ...args to get a bird's eye view.
       --If f is a Con, go to desugarConApps
       --Otherwise desugar f and args and unroll.
-      --New approach: Con args => Con fields is deferred, so there's no need
-      --to do anything special here.
-      --Array (a,b,c) and Struct (a,b,c) should still be desugared here.
-      P.App _ (P.Con _ (UIdent con)) pe
-        | con `elem` ["Array","Struct"] -> do
-            mes <- desugarTup go pe
-            case mes of
-              Nothing -> throwError $
-                ArrayAndStructTakeASyntacticTuple con pe
-              Just es ->
-                return $ (case con of
-                            "Array" -> EArray Nothing
-                            "Struct" -> structE) es
-      P.App _loc pf px -> (:$) <$> go pf <*> go px
-        {-do
-        let (pf',args) = rollPApps (P.App _loc pf px)
-        case pf' of
-          P.Con _loc (UIdent con) -> desugarConAppE di con args
-          _ -> unrollApps <$> go pf' <*> mapM go args-}
+      P.App _loc pf px -> --(:$) <$> go pf <*> go px
+        do
+          let (pf',args) = rollPApps (P.App _loc pf px)
+          case pf' of
+            P.Con _loc (UIdent con) -> desugarConAppE di con args
+            _ -> unrollApps <$> go pf' <*> mapM go args
       P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
       P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
       P.Negate _loc a -> op1 "negate" a
@@ -271,12 +256,12 @@ desugarDot deref dot go di struct (Ident f) = error "todo" {-do
 --If the con does not exist, error.
 --If the record has a field that does not belong to the con, error.
 --If there are duplicate fields, error.
-checkRecordValidity :: DTsInfo e -> Name -> [(Name,a)] -> Either DError ()
-checkRecordValidity dtsi con field_as =
-  case M.lookup con $ conInfo dtsi of
+checkRecordValidity :: DInfo -> Name -> [(Name,a)] -> Either DError ()
+checkRecordValidity di con field_as =
+  case M.lookup con $ diConFields di of
     Nothing -> throwError $ NoSuchCon con
-    Just ci -> do
-      let expectedFields = S.fromList $ map fst $ conFields ci
+    Just fields -> do
+      let expectedFields = S.fromList fields
           fieldList = map fst field_as
           actualFields = S.fromList fieldList
           conflict = S.difference actualFields expectedFields
@@ -308,44 +293,70 @@ rollPApps = roll (\case P.App _loc f x -> Just (f,x)
 --The Array and Struct cases are almost identical, but Con args does not
 --permit overapplication in patterns.
 desugarConAppE :: DInfo -> Name -> [DeclBucket.E] -> Either DError E
-desugarConAppE = error "todo" {-
+desugarConAppE = {-do
+  es <- mapM (desugarE di) pes
+  case M.lookup con $ diConFields di of
+    Nothing -> throwError $ NoSuchCon con
+    Just fnms -> do
+      let flen = length fnms
+          elen = length es
+      complainIf (flen > elen)
+        $ UnderappliedCon con flen elen
+      let args = take flen es
+          rest = drop flen es
+      --If rest /= [] and con /= MkFun, this will type error later.
+      return $ unrollApps (ConRecord con Nothing $ zip fnms args) rest-}
   desugarConApp desugarE (EArray Nothing) structE
-  (\dtsi ci con len arity eargs erest -> do
+  (\a b rest -> return $
+    unrollApps (ConRecord "Append" Nothing
+                 [("first", ConRecord "WordPad" Nothing
+                            [("unWordPad",a)]),
+                   ("second", ConRecord "WordPad" Nothing
+                              [("unWordPad",b)])]) rest) --Pair a b handler
+  (\con fields len arity eargs erest -> do
       --If overapplied, require con == MkFun
       complainIf (len > arity && con /= "MkFun")
         $ OverappliedNonMkFun con arity (eargs ++ erest) --es reconstructed
       --conE redundantly checks con validity, but it's convenient...
       --Besides, defensive programming is good.
-      record <- conE dtsi con $ zip (map fst $ conFields ci) eargs
-      return $ unrollApps record erest) -}
+      --record <- conE dtsi con $ zip (map fst $ conFields ci) eargs
+      let record = ConRecord con Nothing $ zip fields eargs
+      return $ unrollApps record erest)
 --Con args => Con {field: e} regardless of whether it's boxed.
 --Overapplied constructors are never accepted.
-desugarConAppP :: --DInfo ->
+desugarConAppP :: DInfo ->
   Name -> [DeclBucket.E] -> Either DError Pat
-desugarConAppP = error "todo" {-
+desugarConAppP =
   desugarConApp desugarP (PArray Nothing) structP
-  (\dtsi ci con len arity pargs prest -> do
+  (\a b rest ->
+     case rest of
+       [] -> return $
+         PCon "Append" Nothing [("first", PCon "WordPad" Nothing
+                                          [("unWordPad",a)]),
+                                 ("second", PCon "WordPad" Nothing
+                                            [("unWordPad",b)])
+                               ]
+       _ -> throwError $ OverappliedPatternCon "Pair" 2 $ a:b:rest)
+  (\con fields len arity pargs prest -> do
       complainIf (len > arity)
-        $ OverappliedPatternCon con arity (pargs ++ prest)
-      let field_ps = zip (map fst $ conFields ci) pargs
-      return $ PCon con Nothing field_ps
+        $ OverappliedPatternCon con arity $ pargs ++ prest
+      return $ PCon con Nothing $ zip fields pargs
   )
--}
 
-{-
-desugarConApp ::
-  (DInfo -> DeclBucket.E -> Either DError e) -> ([e] -> e) -> ([e] -> e) ->
-  (DTsInfo DeclBucket.E -> ConInfo -> Name -> Int -> Int -> [e] -> [e] ->
-   Either DError e) ->
+desugarConApp :: (DInfo -> DeclBucket.E -> Either DError e) ->
+  ([e] -> e) ->
+  ([e] -> e) ->
+  (e -> e -> [e] -> Either DError e) ->
+  (Name -> [Name] -> Int -> Int -> [e] -> [e] -> Either DError e) ->
   --end of P/E args
   DInfo -> Name -> [DeclBucket.E] -> Either DError e
-desugarConApp go array struct build
-  di@(DInfo{diDTsInfo=dtsi}) con args =
-  ifArrOrStruct go array struct di con args $
-  case M.lookup con $ conInfo dtsi of
+desugarConApp go array struct pair build
+  di@(DInfo{diConFields=cfs}) con args =
+  ifArrOrStruct go array struct pair di con args $
+  case M.lookup con cfs of
             Nothing -> throwError $ NoSuchCon con
-            Just ci -> do
-              let arity = length $ conFields ci
+            Just fields -> do
+              let arity = length fields
                   len = length args
               --If underapplied, fail
               complainIf (arity > len)
@@ -356,16 +367,24 @@ desugarConApp go array struct build
               let (eargs,erest) = (take arity es, drop arity es)
               --Everything above this can be shared.
               --Params: dtsi, con, eargs, erest
-              build dtsi ci con len arity eargs erest
--}
-{-
+              build con fields len arity eargs erest
+--This should also handle Pair.
+--Pair, Pair a => underapplied con Pair
+--Pair a b => Append {first: WordPad a, second: WordPad b}
+--Overapplied: the pair handler errors for Pat
 ifArrOrStruct :: (DInfo -> DeclBucket.E -> Either DError e) ->
                  ([e] -> e) ->
                  ([e] -> e) ->
+                 (e -> e -> [e] -> Either DError e) ->
                  DInfo -> Name -> [DeclBucket.E] ->
                  Either DError e ->
                  Either DError e
-ifArrOrStruct go array struct di con args alt
+ifArrOrStruct go array struct pair di con args alt
+  | con == "Pair" = do
+      es <- mapM (go di) args
+      case es of
+        a:b:rest -> pair a b rest
+        _ -> throwError $ UnderappliedCon "Pair" 2 $ length es
   | con `elem` ["Array","Struct"] = do
     let err = ArrayAndStructTakeASyntacticTuple con args
     case args of
@@ -379,14 +398,22 @@ ifArrOrStruct go array struct di con args alt
           Nothing -> throwError err
       _ -> throwError err
   | otherwise = alt
--}
 
 --A helper for generating the desugaring of boxed Con {field: e}
 --given datatype info. It takes dtsi rather than ci to make it possible to
 --call without an in-place M.lookup.
 --If the Con is a boxed constructor of datatype TyCon, it desugars to
 --ImplTyCon (allocValue (ImplCon {implTyCon_field: e})).
-conE :: DTsInfo e -> Name -> [(Name,E)] -> Either DError E
+
+--New: just checks the given fields match the constructor and contain no
+--duplicates; does not desugar BCon to ImplBCon (...)
+conE :: --DTsInfo e ->
+  DInfo ->
+  Name -> [(Name,E)] -> Either DError E
+conE di con field_es = do
+  checkRecordValidity di con field_es
+  return $ ConRecord con Nothing field_es
+  {-
 conE dtsi con field_es = do
   checkRecordValidity dtsi con field_es
   case M.lookup con $ conInfo dtsi of
@@ -403,20 +430,16 @@ conE dtsi con field_es = do
             )
            ]
            --Unboxed: Con {field: e}
-      else ConRecord con Nothing field_es
+      else ConRecord con Nothing field_es-}
 
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
-{-
 desugarTup :: DInfo -> (DInfo -> DeclBucket.E -> Either DError a) ->
               DeclBucket.E ->
               Either DError (Maybe [a])
--}
-desugarTup :: (DeclBucket.E -> Either DError a) -> DeclBucket.E ->
-  Either DError (Maybe [a])
-desugarTup handler = \case
+desugarTup di handler = \case
   P.EmptyTuple _loc -> return $ Just []
-  P.Tuple _loc pe pes -> Just <$> mapM handler (pe:pes)
+  P.Tuple _loc pe pes -> Just <$> mapM (handler di) (pe:pes)
   _ -> return Nothing
 
 {-
@@ -479,12 +502,13 @@ desugarP di@DInfo{
       P.ConRecord _loc (UIdent con) efields -> do
         es <- mapM (\(P.EField _loc (Ident nm) pe) -> ((,) nm) <$> go pe)
               efields
+        checkRecordValidity di con es
         return $ PCon con Nothing es
       pe -> do
         let (f,args) = rollPApps pe
         case f of
           P.Con _loc (UIdent con) -> do
-            desugarConAppP {-di-} con args
+            desugarConAppP di con args
           _ -> throwError $ BadConInPattern f
 
 desugarS :: DInfo ->

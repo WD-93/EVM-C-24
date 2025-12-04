@@ -16,7 +16,4 @@ type SPtr = Ptr Storage;
 type TSPtr = Ptr TStorage;
 type CaPtr = Ptr Calldata;
 type RPtr = Ptr Returndata;
-type CoPtr = Ptr Code;
-
-//WordPad is now replaced by Pair as the word-padding primitive
-type WordPad a = (a,())
+type CoPtr = Ptr Code

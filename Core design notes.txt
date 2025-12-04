@@ -2906,6 +2906,20 @@ Pair, Struct, Array, WordPad, Append
 Core compilation: keeping Core types (of kind Word and SElem) in T is fine.
 Fun a b => flatten a to ws,
 forall (stk : Words) . CoreFun (ws...stk s) Env
+Note: since tag exprs may contain allocValue@Code (an instance which errors if called at runtime), the consts from the Serialize phase must be used in Structured for case,assign,Con. For now, fix global layout after Mono and serialize to bytes. Use the same DT for serialized consts as for push.
+Note multi-word consts will need to be split when pushed.
+
+TODO support general pattern matching for function lhses.
+
+Pat only supports record constructors; that means I also need to pass in
+constructor fields into desugar(S|E|P).
+
+Possibly worth writing about: was it a mistake to try to break out the
+desugaring steps into generic ops? The monolithic "one big desugarE function"
+approach was more concise, and it was clear in which function the work was
+being done. The downside was more context needed to be passed at once,
+necessitating a typaram for DTsInfo.
+Need to identify and express the underlying pattern for it to be interesting.
 
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
  Get old desugaring working on stdlib, then update rules.

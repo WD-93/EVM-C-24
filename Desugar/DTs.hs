@@ -86,7 +86,7 @@ data DError = --DuplicateDefun Name
             --Field access errors
             | UndefinedFieldInDot Name
             --Constructor errors
-            | ArrayAndStructTakeASyntacticTuple Name DB.E
+            | ArrayAndStructTakeASyntacticTuple Name [DB.E]
             | NoSuchCon Name
             | UnderappliedCon Name Int Int --arity, actual
             | OverappliedNonMkFun Name Int [E]
@@ -131,7 +131,8 @@ deriving instance Data P.HexInteger
 --ImplTyCon (allocValue (ImplBCon {implTyCon_f: e})).
 --However, desugaring of BCon {f: p} = e must be deferred to the Core stage.
 data DInfo = DInfo {
-  diBoxedFields :: Map Name Name --boxed field => its tycon
+  diBoxedFields :: Map Name Name, --boxed field => its tycon
+  diConFields :: Map Name [Name] --for Con args => Con fields
   --diGlobalSet :: Set Name,
   --diDTsInfo :: DTsInfo DB.E, --used for field=>bcon, bcon=>fields
   --diStringNumbering :: Map String Int

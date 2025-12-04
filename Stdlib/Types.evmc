@@ -16,14 +16,26 @@ data Ptr r a = {MkPtr (UInt 2)};
 //level (requiring special treatment).
 data Fun a b = {MkFun (Int Unsigned 2)};
 
+//OLD:
 //Pair is the word-padding primitive: the Bytestring# repr of Pair a b is
 //wordPad (toBS a) ++ wordPad (toBS b)
-//Tuples desugar to foldr Pair Unit.
+
 //Nested tuples are unique in that they can be deconstructed at no runtime
 //cost (well, any zero-sized serializable type has the same property as Unit).
 //They're therefore the only permissible let and lambda pattern in Core;
 //any other pattern matching is implemented using case and let x = y.field.
-data Pair a b = {Pair {fst: a, snd: b}};
+//data Pair a b = {Pair {fst: a, snd: b}};
+
+//NEW:
+//Tuples desugar to foldr Pair Unit.
+//Pair {fst: a, snd: b} and Pair a b are syntactic sugar for
+//Append {first: WordPad a, second: WordPad b}.
+//x.fst is sugar for x.first.unWordPad; snd is similar.
+//struct...fields.unWordPad = x can be optimized to
+//struct...fields = WordPad x.
+type Pair a b = Append (WordPad a) (WordPad b);
+//The word-padding primitive
+data WordPad a = {WordPad {unWordPad: a}};
 data Unit = {Unit};
 
 //Bytestring append without padding.

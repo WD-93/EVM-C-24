@@ -67,7 +67,9 @@ desugar pm = do
         diBoxedFields = M.mapMaybe (\(fi,_loc) ->
                                        if DB.fiBoxed fi
                                        then Just $ fst $ DB.fiParentTyCon fi
-                                       else Nothing) $ pmFields pm
+                                       else Nothing) $ pmFields pm,
+        diConFields = M.map (map (fst.fst) . DB.ciFields . fst) $
+                      pmConstructors pm
         }
   gs <- mapM (\(r,mpe) ->
                 (,) r <$> case mpe of
@@ -109,7 +111,8 @@ desugar pm = do
         }
   --Rules:
   enforceRules mod
-  error "todo"
+  --Time to apply context-dependent generic transformations:
+  contextDependentDesugar mod
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
 
 --A collection of simple restrictions on modules
@@ -160,6 +163,61 @@ enforceRules mod = do
     M.keysSet (kindsigs mod) `S.intersection` kinds mod
        where
          reportOffenders err s = complainIf (not $ S.null s) $ err s
+
+--1) g => *g in E and Pat
+--2) Constructor desugaring
+--a) Underapplied cons and overapplied pcons are handled in SEP
+--b) Pair a b => Append {first:WordPad a, second:WordPad b} handled in SEP
+--c) Con a1..aN => Con {field1:a1 .. fieldN:aN} handled in SEP
+--d) BCon fs => ImplTyCon (allocValue (ImplBCon implTyCon_fs))
+--3) Pair field desugaring: .fst => .first.unWordPad, .snd => .second.unWordPad
+substGlobals :: Module -> Module
+substGlobals mod =
+  everywhere (mkT $ \case Var v
+                            | isGlobal v -> Var "deref" :$ Var v
+                          e -> e) $
+  everywhere (mkT $ \case PVar v
+                            | isGlobal v -> Deref Nothing $ Var v
+                          p -> p) mod
+  where isGlobal v = M.member v $ globals mod
+--bdt.field has already been converted to *(bdt.unImplTyCon).implTyCon_field
+--Undefined cons and bad fields have already been caught.
+boxedConDesugaring :: Module -> Module
+boxedConDesugaring mod =
+  everywhere (mkT $ \case
+                 e@(ConRecord con _ field_es) ->
+                   let dtsi = dtsInfo mod
+                       cis = conInfo dtsi
+                   in case M.lookup con cis of
+                        Nothing -> error "Compiler error: should never happen!"
+                        Just ci ->
+                          if conBoxed ci
+                          then let tycon = conParent ci
+                               in ConRecord ("Impl"++tycon) Nothing
+                                  [("unImpl"++tycon,
+                                    Var "allocValue" :$
+                                    ConRecord ("Impl"++con) Nothing
+                                    (map ((("impl"++tycon++"_")++)***id)
+                                     field_es))]
+                          else e)
+  mod
+pairFieldDesugaring :: Module -> Module
+pairFieldDesugaring mod =
+  everywhere (mkT $ \case Dot e _ f
+                            | f `elem` ["fst","snd"] ->
+                              Dot (Dot e Nothing (extend f)) Nothing
+                              "unWordPad"
+                          e -> e) $
+  everywhere (mkT $ \case p :. f
+                            | f `elem` ["fst","snd"] ->
+                              (p :. extend f) :. "unWordPad") mod
+  where extend = \case
+          "fst" -> "first"
+          _ -> "second"
+--I'll keep it an Either in case more rewrites need to be added.
+contextDependentDesugar :: Module -> Either DError Module
+contextDependentDesugar mod =
+  return $ pairFieldDesugaring $ substGlobals mod
 
 {-
 
