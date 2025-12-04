@@ -173,12 +173,13 @@ enforceRules mod = do
 --3) Pair field desugaring: .fst => .first.unWordPad, .snd => .second.unWordPad
 substGlobals :: Module -> Module
 substGlobals mod =
-  everywhere (mkT $ \case Var v
-                            | isGlobal v -> Var "deref" :$ Var v
-                          e -> e) $
   everywhere (mkT $ \case PVar v
                             | isGlobal v -> Deref Nothing $ Var v
-                          p -> p) mod
+                          p -> p) $
+  everywhere (mkT $ \case Var v
+                            | isGlobal v -> Var "deref" :$ Var v
+                          e -> e)
+  mod
   where isGlobal v = M.member v $ globals mod
 --bdt.field has already been converted to *(bdt.unImplTyCon).implTyCon_field
 --Undefined cons and bad fields should've already been caught.

@@ -109,15 +109,17 @@ structP (p:ps) = PCon "Append" Nothing [("first",p),("second",structP ps)]
 
 tupleE :: [E] -> E
 tupleE [] = ConRecord "Unit" Nothing []
-tupleE (e:es) = ConRecord "Append" Nothing
-                [("first", ConRecord "WordPad" Nothing
-                           [("unWordPad",e)])
-                ,("second", ConRecord "WordPad" Nothing
-                            [("unWordPad",tupleE es)])
-                ]
+tupleE (e:es) =
+  let wp x = ConRecord "WordPad" Nothing [("unWordPad",x)]
+  in ConRecord "Append" Nothing
+     [("first", wp e)
+     ,("second", wp $ tupleE es)
+     ]
 tupleP :: [Pat] -> Pat
 tupleP [] = PCon "Unit" Nothing []
-tupleP (p:ps) = PCon "Pair" Nothing [("fst",p),("snd",tupleP ps)]
+tupleP (p:ps) =
+  let wp x = PCon "WordPad" Nothing [("unWordPad",x)]
+  in PCon "Append" Nothing [("first",wp p),("second",wp $ tupleP ps)]
 --tupleF :: [e] -> [Field e]
 --tupleF = map (\x -> ((Word,Word),Nothing,x))
 --Design change: generic structure rather than one constructor per type

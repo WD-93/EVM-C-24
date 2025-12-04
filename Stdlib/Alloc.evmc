@@ -10,19 +10,18 @@
 //that.
 
 //Allocates enough space for n of the given type.
-//Should Int s l be restricted to Short?
+//n is restricted to Size_T, i.e. Short.
 //Design choice: regions are treated as bytestrings, no assumption that a
 //Ptr r a actually points to a valid bitpattern for a is made. As such, alloc
 //can return a Ptr directly rather than a separate uninitialized ptr type.
-alloc : Int s l -> Ptr r a;
-instance alloc : UInt l -> MPtr a where
+alloc : Short -> Ptr r a;
+instance alloc : Short -> MPtr a where
  n := {
   var sz = sizeof (P :: P a),
       m = sz * n; //The product gets masked here...
   return coerce (allocRawMem (coerce m)) :: MPtr a
  };
 
-//TODO add wordpad global pragma
 memAllocPtr : Word;
 memory memAllocPtr;
 //Fateful decision: no overflow checking is done.

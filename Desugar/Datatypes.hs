@@ -239,7 +239,21 @@ setTagSchemes dts tags kindin =
     goKindSigs :: Name -> [Name] -> Maybe Name -> STS ()
     goKindSigs tycon params mr = do
       k <- lift $ defaultKind (M.lookup tycon kindin) params mr
-      modify (id *** M.insert tycon k)
+      case mr of
+        Nothing -> weakSet tycon k
+        Just r -> do
+          case M.lookup ("Impl"++tycon) kindin of
+            Nothing -> strongSet ("Impl"++tycon) k
+            _ -> return ()
+          strongSet tycon k
+    strongSet :: Name -> T -> STS ()
+    strongSet tycon k = modify $ id *** M.insert tycon k
+    weakSet :: Name -> T -> STS ()
+    weakSet tycon k = do
+      ks <- gets snd
+      if M.member tycon ks
+        then return ()
+        else strongSet tycon k
     goTagSchemes tycon params cons mr =
       case M.lookup tycon tags of
         Nothing -> return ()

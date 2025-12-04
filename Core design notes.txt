@@ -2921,7 +2921,26 @@ being done. The downside was more context needed to be passed at once,
 necessitating a typaram for DTsInfo.
 Need to identify and express the underlying pattern for it to be interesting.
 
-Modify Desugar to take PreModule (simplifying Desugar.Datatypes)
+Typechecking is surfacing bugs in Desugar and stdlib; good.
+IC why allocRawMem's (memAllocPtr = n + pw) generated **memAllocPtr = ...:
+PVar g => Deref (Var g), then Var g => Var "deref" :$ Var g --in
+Desugar.Desugar.substGlobals. Solution: switch the order.
+Nice catch: I'd missed defining returndatacopy.
+
+Problem: the type checker complains the tag of Addr is queried. Addr has tag
+scheme Nil, so TC expects no tag to exist. However, DeclBucket generates a
+tag field for every DT; inferring non-explicit tag schemes is done later in
+Desugar.Datatypes. The question is then: should types with tag scheme
+Nil have a Unit tag? Then Unit becomes a special case with itself as a tag.
+I need to detect clashes between ordinary fields data Foo = Foo{tagList: ...}
+and generated tags; that's done in deconflictBucket, so adding tags later
+would duplicate that work.
+Hackily removing tag fields once their tycon is known to have tag scheme Nil
+wouldn't work: it would falsely complain of a field clash if another DT
+had tag<TyCon> as a field.
+
+Modify Desugar to take PreModule (simplifying Desugar.Datatypes) --done,
+ --modulo debugging
  Get old desugaring working on stdlib, then update rules.
  TODO change Struct type syntax to Struct (a,b,c) from Struct a b c to mirror
  exprs and patterns.
@@ -2937,7 +2956,7 @@ Pair a b => Pair {fst:a, snd: b}
 Struct, Array desugaring can be done on pairs.
 Con args => Con fs can be deferred.
 How many transformations can I separate into their own traversals?
- --Prohibit memory global initializers
+ --Prohibit memory global initializers --done
  --Also make WordPad the padding primitive
   Pair a b in PET => Append (WordPad a) (WordPad b)
   Pair {fst: a, snd: a} => ditto

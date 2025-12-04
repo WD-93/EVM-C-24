@@ -88,16 +88,12 @@ desugarE di{-@DInfo{diGlobalSet = gs,
           Nothing -> error $ "Compiler error: unmapped string " ++ str
         -}
       --A constructor with no arguments
-      --For now we generate an invalid Var; Con args will be converted to
-      --Con fields in a later context-dependent rewrite
-      --We disallow the sugar constructors Struct, Array, Pair here;
-      --they should never be standalone.
-      P.Con _loc (UIdent con)
+      P.Con _loc (UIdent con) -> desugarConAppE di con [] {-
         | con `elem` words "Struct Array Pair" ->
             --TODO add proper error
             throwError $ GenericDError $ "Standalone " ++ con
         | otherwise -> 
-            desugarConAppE di con []
+            desugarConAppE di con [] -}
       --Look up con info.
       --If the con does not exist, error.
       --If any of the fields are not fields of the con, error.

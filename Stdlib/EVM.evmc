@@ -120,6 +120,8 @@ extcodecopy : (Word,Word,Word,Word) -> ();
 extcodecopy x := ();
 returndatasize : () -> Word;
 returndatasize x := ();
+returndatacopy : (Word,Word,Word) -> ();
+returndatacopy x := ();
 extcodehash : Word -> Word;
 extcodehash x := ();
 blockhash : Word -> Word;
