@@ -69,6 +69,7 @@ data DError = --DuplicateDefun Name
             | DTKindSigIsNotConcrete T
             | RegionTyVarGivenNonRegionKind T (Maybe Name) [Name]
             --mr is always Just here...
+            | NormalFieldsClashWithTags (Set Name)
             -- | ConMismatchInTagAndData Name (Set Name) (Set Name)
             -- | BoxedTyConLacksKindSig Name
             | StructDTAlreadyGivenKindSig Name T
@@ -131,7 +132,7 @@ deriving instance Data P.HexInteger
 --ImplTyCon (allocValue (ImplBCon {implTyCon_f: e})).
 --However, desugaring of BCon {f: p} = e must be deferred to the Core stage.
 data DInfo = DInfo {
-  diBoxedFields :: Map Name Name, --boxed field => its tycon
+  diFields :: Map Name FieldInfo, --used for desugaring bdt.field, bdt.tagDT
   diConFields :: Map Name [Name] --for Con args => Con fields
   --diGlobalSet :: Set Name,
   --diDTsInfo :: DTsInfo DB.E, --used for field=>bcon, bcon=>fields

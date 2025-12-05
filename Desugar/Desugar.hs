@@ -63,11 +63,15 @@ desugar pm = do
       --traversals of the Module rather than baked into SEP desugaring.
       dthings = pmDynThings pm
       --The map of boxed fields => their tycon is still essential.
-      di = DInfo {
-        diBoxedFields = M.mapMaybe (\(fi,_loc) ->
-                                       if DB.fiBoxed fi
-                                       then Just $ fst $ DB.fiParentTyCon fi
-                                       else Nothing) $ pmFields pm,
+  --I need to add tags to pmFields here and error on conflict.
+  --That unfortunately duplicates some of the logic from tag scheme inference
+  --in processDTs.
+  fieldsWithTags <- addTags (M.map fst $ pmFields pm)
+                    (M.keysSet $ pmTagTypes pm) sthings
+  --There are now two types of boxed field that desugaring needs to care about:
+  --tag and normal; each has its own desugaring treatment.
+  let di = DInfo {
+        diFields = fieldsWithTags,
         diConFields = M.map (map (fst.fst) . DB.ciFields . fst) $
                       pmConstructors pm
         }
@@ -115,6 +119,41 @@ desugar pm = do
   contextDependentDesugar mod
     where getTs field = M.map (\(pt,_loc) -> desugarT pt) $ field pm
 
+--For each DT in sthings:
+--If it is boxed, it has a boxed tag iff it has a tag decl or its ImplDT
+--has a tag.
+--If it is unboxed, it has a boxed tag iff it has a tag decl or >1 constructor.
+--No, the type checker expects no BDTs have tags. To add .tagList I'll need
+--to modify the TC.
+addTags :: Map Name DB.FieldInfo -> Set Name -> Map Name DB.StaticThing ->
+  Either DError (Map Name FieldInfo)
+addTags fs tagged sthings = do
+  let fi = M.map (\case DB.IsTag a (b,_) -> IsTag a b
+                        DB.IsNormal a (b,_) (c,_) -> IsNormal a b c) fs
+  --DT info
+  let di = M.mapMaybe (\case DB.STDatatype _params cons Nothing ->
+                               Just $ length cons
+                             _ -> Nothing) sthings
+        {-
+      lookupImplDT tycon =
+        case M.lookup ("Impl"++tycon) di of
+          Nothing -> error "Eh!?"
+          Just (len,_) -> if (("Impl"++tycon) `elem` tagged) || len > 1
+                          then Just $ IsTag {fiBoxed = True,
+                                             fiParentTyCon = tycon
+                                            }
+                          else Nothing-}
+      tagFields = M.mapKeys ("tag"++) $ M.mapMaybeWithKey
+                  (\tycon len ->
+                      if (tycon `elem` tagged) || len > 1
+                      then Just $ IsTag {fiBoxed = False,
+                                         fiParentTyCon = tycon
+                                        }
+                      else Nothing) di
+  reportOffenders NormalFieldsClashWithTags $
+    S.intersection (M.keysSet fi) $ M.keysSet tagFields
+  return $ M.union tagFields fi
+
 --A collection of simple restrictions on modules
 --1) All tysigs must correspond to a fun or global
 --2) All class functions must have a tysig
@@ -161,8 +200,8 @@ enforceRules mod = do
   --   and given a kind signature (e.g. Type -> Type).
   reportOffenders KindDeclKindSigCollisions $
     M.keysSet (kindsigs mod) `S.intersection` kinds mod
-       where
-         reportOffenders err s = complainIf (not $ S.null s) $ err s
+reportOffenders :: (Set a -> err) -> Set a -> Either err ()
+reportOffenders err s = complainIf (not $ S.null s) $ err s
 
 --1) g => *g in E and Pat
 --2) Constructor desugaring

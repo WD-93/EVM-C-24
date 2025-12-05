@@ -67,7 +67,9 @@ processDTs di pm = do
   --DeclBucket's FieldInfo contains Locs while AST.DT's does not...
   --TODO move DB's definition to AST.DTs
   let cons = M.map (stripConInfo . fst) $ pmConstructors pm
-      fields = M.map (stripFieldInfo . fst) $ pmFields pm
+      --Since DInfo now must contain field info, we can just use that
+      fields = diFields di
+      --fields = M.map (stripFieldInfo . fst) $ pmFields pm
       kindsigs = M.map (desugarT . fst) $ pmKindSigs pm
   processDTs' dts tagTs cons fields kindsigs
   where stripConInfo :: DB.ConInfo -> ConInfo
@@ -77,12 +79,12 @@ processDTs di pm = do
                       lnm_pts
                       pt) = Con boxed parent
                             (map (fst *** desugarT) lnm_pts)
-                            (desugarT pt)
+                            (desugarT pt) {-
         stripFieldInfo :: DB.FieldInfo -> FieldInfo
         stripFieldInfo = \case
           DB.IsTag boxed (nm,_loc) -> IsTag boxed nm
           DB.IsNormal boxed (tycon,_loc1) (con,_loc2) ->
-            IsNormal boxed tycon con
+            IsNormal boxed tycon con -}
 {-
 Preconditions:
 Tag field exists => its parent dt exists

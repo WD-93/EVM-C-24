@@ -2938,6 +2938,44 @@ would duplicate that work.
 Hackily removing tag fields once their tycon is known to have tag scheme Nil
 wouldn't work: it would falsely complain of a field clash if another DT
 had tag<TyCon> as a field.
+Decision: it's best to minimize the impact of the new Desugar on the rest of
+the pipeline; typecheck should be able to accept its output without changes.
+DT's with tag scheme Nil should therefore have no tag.
+But SEP must know whether tagList is boxed in order to compile
+xs.tagList = v... but SEP di is used in Desugar.Datatypes!
+Solution: infer separately which DTs have tags and whether they're boxed.
+Currently BDTs have tag scheme Nil... should that change?
+IsTag has a fiBoxed flag, suggesting I intended them to be tag.
+The current issue seems to be caused by .tagAddr being added to fields after
+Desugar, probably in FIKS.
+The problem with giving BDTs a non-Nil tag scheme is that ImplList should have a nil tag.
+Possible solution: desugar away .tag<BDT>. What should you be able to do with
+it? Cons{tagList: 255} should not be accepted, either in E or Pat; Cons implicitly sets it to 1.
+The only remaining use is xs.tagList, which could be desugared to
+*(xs.unImplList).tagImplList. Annoyingly, that's not exactly the same scheme
+as for xs.hd, which would result in implList_tagList.
+OK, so I pass in richer info than diBoxedFields: for the purposes of desugaring, a field can either be unboxed or boxed (normal | tag).
+The type checker must be aware of normal boxed fields since they occur in
+patterns Cons{hd: x, tl: xs}, but not of boxed tag fields.
+TODO remove fields from tysigs + the FIKS step, it's cruft.
+tagList can still be in fieldInfo for interface purposes, it should never be
+interacted with after desugar.
+A BDT has a boxed tag iff its ImplDT has a tag.
+A UBDT has an unboxed tag iff it has an explicit tag decl or >1 constructors.
+I can add the tag fields after processDTs, then the criterion becomes:
+if boxed, ImplDT has tag scheme /= Nil
+if unboxed, DT has tag scheme /= Nil
+Oh no... there's a cyclical dependency there: before the pattern bdt.tagTyCon  can be safely desugared, you need to know the full set of boxed tags.
+So it needs to be in DInfo!
+Inefficient solution: infer which DTs have tags before processDTs.
+Turns out TC doesn't accept boxed tags yet anyway... oh well, the desugaring
+code for them will be ready when I adapt TC  to support them.
+
+TODO add support for boxed tags, eliminate FISK.
+Next: rest of pipeline, global layout.
+
+Generating calldata using the interface: support allocValue@Calldata a la
+allocValue@Code in Const?
 
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes) --done,
  --modulo debugging

@@ -289,10 +289,12 @@ mkUBCons loc tycon params lcon_fields mr =
   --data TyCon params = ...
   binding AStatThing loc tycon (STDatatype params
                                  (map fst lcon_fields) mr) ++
+  --EDIT: not every DT has a tag! I instead generate the tags and check for
+  --clashes in Desugar.Desugar, after tag scheme generation.
   --tagTyCon is a tag field; it's boxed iff mr /= Nothing
-  binding AField loc ("tag"++tycon) IsTag{fiBoxed = mr /= Nothing,
-                                          fiParentTyCon = (tycon,loc)
-                                         } ++
+  --binding AField loc ("tag"++tycon) IsTag{fiBoxed = mr /= Nothing,
+  --                                        fiParentTyCon = (tycon,loc)
+  --} ++
   --For Con fields
   do ((con,cloc),fields) <- lcon_fields
      binding ACon loc con (CI {ciBoxed = False,

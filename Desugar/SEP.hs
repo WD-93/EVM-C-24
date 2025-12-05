@@ -148,7 +148,17 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       --What about .fst => .first.unWordPad?
       P.Dot _loc struct (Ident f) -> do
         s <- go struct
-        return $ Dot s Nothing f
+        --Handling boxed fields and tags...
+        case M.lookup f $ diFields di of
+          Just fi | fiBoxed fi -> do
+                      let tycon = fiParentTyCon fi
+                      return $ Dot (Var "deref" :$
+                                    (Dot s Nothing "unWordPad")) Nothing $
+                        case fi of
+                          IsTag {} -> "tagImpl" ++ tycon
+                          IsNormal {} -> "impl"++tycon++"_"++f
+          _ ->
+            return $ Dot s Nothing f
         --do desugarDot (Var "deref" :$) dot go di struct f
       P.Bang _loc arr ix -> op2 "indexArray" arr ix
       --e->field => (*e).field as in C
@@ -455,7 +465,7 @@ g => *g
 desugarP :: DInfo ->
   DeclBucket.E -> Either DError Pat
 desugarP di@DInfo{
-  diBoxedFields = bfs
+  diFields = fs
   --diGlobalSet = gs,
   --diDTsInfo = dtsi,
   --diStringNumbering = str2id
@@ -484,12 +494,17 @@ desugarP di@DInfo{
       --then convert the e to a pattern at a later stage.
       --2) Pass in field boxity info.
       --Fortunately I have that info available in pmFields.
-      P.Dot loc struct (Ident f)
-        | Just tycon <- M.lookup f bfs -> do
-            s <- desugarE di struct
-            return $ Deref Nothing (Dot s Nothing ("unImpl"++tycon)) :.
-              ("impl"++tycon++"_"++f)
-        | otherwise -> do
+      P.Dot loc struct (Ident f) ->
+        case M.lookup f fs of
+          Just fi
+            | fiBoxed fi -> do
+                s <- desugarE di struct
+                let tycon = fiParentTyCon fi
+                return $ Deref Nothing (Dot s Nothing ("unImpl"++tycon)) :.
+                  (case fi of
+                      IsTag {} -> "tagImpl" ++ tycon
+                      IsNormal {} -> "impl"++tycon++"_"++f)
+          _ -> do
             s <- go struct
             return $ s :. f
         --desugarDot (Deref Nothing) (:.) go di struct f
