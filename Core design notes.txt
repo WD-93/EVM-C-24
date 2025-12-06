@@ -2990,7 +2990,16 @@ tysigs?
 It's in HM.AddConsAndFieldsToTySigs... and HM uses tysigs for both fields and cons. 
 It's debatable whether that's a bad idea... I'd need to cache the
 signatures somewhere anyway. I'll leave well enough alone for now.
-Next: rest of pipeline, global layout.
+Next: global layout, treat global pointers as constants in Serialize and
+Structured.
+How to support memOffset et al? They should be constants so they can be used
+in const expressions, so they shouldn't be functions.
+One solution: memOffset : (); memory memOffset; always place *Offset last.
+Then the pointer can be used as &memOffset.
+The same approach could be used for end: end : (); code end = ();
+I'll rename it to codeOffset for consistency.
+All code global pointers must compile to labels, so it can be treated
+consistently (except that it's always placed last).
 
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?

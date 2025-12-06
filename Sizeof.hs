@@ -13,6 +13,17 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except
 
+--A convenience type for computing the size of a monomorphic type; to be used
+--in GlobalLayout, Serialize and Structured.
+--If sizeofT returns Nothing, that means there's a bug in the Mono step.
+sizeofT :: Sizeof -> T -> Maybe Integer
+sizeofT sizeof monoT =
+  case rollTyApps monoT of
+    (TyCon tycon, ts)
+      | Just sz <- M.lookup (tycon,ts) sizeof ->
+        Just sz
+    _ -> Nothing
+
 --Simply computes the size of every mentioned monotype, failing if there's
 --a cycle where A contains B contains C ... contains A.
 --More detailed info such as field offset is computed from DTsInfo and size
@@ -43,10 +54,17 @@ sizeofM = go [] S.empty
             (len *) <$>  goWithT stk set a
           ("Int",[_s, TyNat len]) ->
             return len
+          --Pair replaced with WordPad support; Append needs no special
+          --treatment.
+          {-
           ("Pair",[a,b]) -> do
             sza <- goWithT stk set a
             szb <- goWithT stk set b
             return $ sum $ map (`roundedUpMod` 32) [sza,szb]
+-}
+          ("WordPad",[a]) -> do
+            sza <- goWithT stk set a
+            return $ sza `roundedUpMod` 32
           --tycon is a datatype which follows the default
           --rules.
           (tycon,ts) -> do

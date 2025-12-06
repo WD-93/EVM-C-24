@@ -36,6 +36,8 @@ import Mono.Mono --(monomorphize, MonoError(..))
 import Unshadow.Unshadow (unshadow)
 --Computing the byte size of all mentioned DTs (and failing on cycles)
 import Sizeof (computeSizeof)
+--Fix the layout of non-Code globals
+import GlobalLayout (globalLayout,LayoutError(..))
 --Serialize constant expressions (global initializers and datatype tags)
 import Const.Serialize (serialize,SerError(..))
 --Convert C to structured IR
@@ -55,6 +57,7 @@ data CompilerError = ParserError String
                    | TypeCheckError TCError
                    | MonoError MonoError
                    | CycleInSizeof [(Name,[T])]
+                   | GlobalLayoutError LayoutError
                    | SerError SerError
 --                   | StructuredError ConvertError
                    {-
@@ -180,6 +183,7 @@ pipeline2sizeof str = do
   return (m,monoS,monoT2Sz)
 pipeline2serialize str = do
   (m,monoS,monoT2Sz) <- pipeline2sizeof str
+  gl <- globalLayout m monoS monoT2Sz ? GlobalLayoutError
   serS <- serialize m monoS monoT2Sz ? SerError
   return (m,monoS,monoT2Sz,serS)
 {-
