@@ -22,6 +22,7 @@ instance alloc : Short -> MPtr a where
   return coerce (allocRawMem (coerce m)) :: MPtr a
  };
 
+//TODO make memAllocPtr : WordPad (MPtr Byte)?
 memAllocPtr : Word;
 memory memAllocPtr;
 //Fateful decision: no overflow checking is done.
@@ -40,3 +41,14 @@ allocValue a := {
  return p
  };
 //Add alloc from pointer?
+
+//The *Offset values will be implemented as globals for now; to get the
+//memory offset, use &memOffset. That avoids defining a new kind of dynamic
+//thing beyond functions and globals.
+memOffset : ();
+memory memOffset;
+stoOffset : ();
+storage stoOffset;
+tstoOffset : ();
+tstorage tstoOffset;
+code codeOffset = ();
