@@ -93,7 +93,9 @@ data SerError = MalformedConstExpr E
 data SerR = SerR {
   serrTagValues :: Map (Name,[T]) (TagScheme E),
   serrSizeof :: Map (Name,[T]) Integer,
-  serrDTSI :: DTsInfo E --used to map con => datatype
+  serrDTSI :: DTsInfo E, --used to map con => datatype
+  serrGlobals :: Map Name Integer --used to map &g => 0xNNNN
+  --Contains only the non-Code globals
       }
 data SerS = SerS {
   sersAllocPtr :: Int, --for static allocation of Code BDTs
@@ -140,8 +142,9 @@ type SerM = ReaderT SerR (StateT SerS (Except SerError))
 serialize :: Module -> --layout info
              MonoS ->     --global and monoDT sets
              Map (Name,[T]) Integer -> --sizeof info
+             Map Name Integer -> --non-Code global layout
              Either SerError SerS
-serialize m monoS monoT2sz =
+serialize m monoS monoT2sz gl =
   let dtsi = dtsInfo m in
     runExcept $ flip execStateT (SerS {sersAllocPtr = 1,
                                        sersCodeInits = M.empty,
@@ -151,7 +154,8 @@ serialize m monoS monoT2sz =
                                       }) $
     flip runReaderT (SerR {serrTagValues = exploredDTs monoS,
                            serrSizeof = monoT2sz,
-                           serrDTSI = dtsi
+                           serrDTSI = dtsi,
+                           serrGlobals = gl
                           }) $ do
     --For each global that has an initializer, run serGlobal
     let gset = S.toList $ exploredGlobals monoS
@@ -242,11 +246,24 @@ serializeE = go
   where go e =
           case e of
             --f, g
-            TyApp nm ts ->
-              ret (e,Serialized {serLength = 2,
-                                 serSizeof = 2,
-                                 serContent = [Right (2, mkLabel nm ts)]
-                                })
+            --Non-Code globals must now be converted to consts, requiring
+            --SerM contain g => (Region,Integer)
+            TyApp nm ts -> do
+              moff <- asks $ M.lookup nm . serrGlobals
+              case moff of
+                Nothing -> 
+                  ret (e,Serialized {serLength = 2,
+                                     serSizeof = 2,
+                                     serContent = [Right (2, mkLabel nm ts)]
+                                    })
+                --[] <- ts not checked
+                Just off -> ret (e,Serialized {serLength = 2,
+                                               serSizeof = 2,
+                                               serContent =
+                                               --Is the normalizeContent
+                                               --load-bearing...?
+                                               [Left $ serInt 2 off]
+                                              })
             --k
             --Now where did I put the Integer => bytes function...?
             TyApp "fromWord" [s,TyNat len] :$ EInteger k ->

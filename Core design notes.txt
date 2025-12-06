@@ -3001,6 +3001,36 @@ I'll rename it to codeOffset for consistency.
 All code global pointers must compile to labels, so it can be treated
 consistently (except that it's always placed last).
 
+IC why I used normalizeContent in fromWord k: an Int s 0 should return an
+empty list of content when serialized, not a Left [].
+
+main _ := foo; code foo = &memOffset
+--complains Ptr Memory uint32 isn't mentioned...
+Sizeof must catch cycles, but caching the sizes of all types feels like a
+code smell... it invites this sort of error, especially if I use new monotypes in Structured.
+Alternatives:
+1) Try to catch all monotypes, including those that will be generated in
+Structured.
+2) Smarter *potential* cycle detection for any combination of well-kinded
+tycons; lazy computation and caching of sizeof.
+Potential cycle detection seems challenging, consider
+data Foo a b c d = Con a (Foo b c d ()). That has a bounded size, but looks
+problematic since it's recursive.
+Then there's datatypes which take tycons as params, e.g.
+data Rose f a = Leaf a | Node (f (Rose f a)), which diverges for some f but
+not all.
+There are also divergent datatypes which are recursive in tycon but not in
+params, e.g. data Diverge a = D (a, Diverge (a,a)).
+Hacky solution: forget identifying divergent DTs just from datatype
+descriptions, instead compute+cache sizeof incrementally and detect divergence using an arbitrarily chosen stack height limit (e.g. 100).
+It's analogous to GHC's strict bounds on type family recursion; you'd only
+encounter the limit if you're deliberately messing with the type system.
+The con would be 1) arbitrary recursion limit, which is a pain even if the
+user can increase it; 2) the need to pass around the cache.
+The cache can be dropped, it's just inefficient to do so.
+The solution for now might be mundane: the error is triggered by &memOffset,
+but its type shouldn't be Ptr Memory Word anyway...
+
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?
 

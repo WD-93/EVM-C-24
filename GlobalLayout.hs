@@ -1,6 +1,6 @@
 module GlobalLayout (globalLayout,LayoutError(..)) where
 
-import AST.DTs (Module(..),Region(..),Name(..))
+import AST.DTs (Module(..),Region(..),Name(..),T(..))
 import AST.Util (rollTyApps)
 import Mono.Mono (MonoS(..))
 import Sizeof (Sizeof(..),sizeofT)
@@ -31,6 +31,10 @@ import Control.Monad.State
 
 --TODO present the already placed globals of the offending region in order.
 data LayoutError = AddressSpaceExhausted Region
+                 | CompilerErrorUnmentionedT Name Sizeof T
+                 --I'm changing my policy of using error for all compiler
+                 --errors, allowing me to programmatically inspect the bad
+                 --values.
   deriving (Eq,Ord,Read,Show)
 data Layout = Layout {globalOffsets :: Map Name Integer,
                       regionOffsets :: Map Region Integer
@@ -66,12 +70,15 @@ globalLayout mod monoS sizeof = do
             Nothing -> return () --It's a code global
             Just off ->
               case M.lookup g $ tysigs mod of
-                Just ([],monoT)
-                  | Just sz <- sizeofT sizeof monoT -> do
-                    let newOff = off + sz
-                    if newOff > 65535
-                      then lift $ Left $ AddressSpaceExhausted r
-                      else put Layout{globalOffsets = M.insert g off go,
-                                      regionOffsets = M.insert r newOff ro
-                                     }
+                Just ([],monoT) ->
+                  case sizeofT sizeof monoT of
+                    Just sz -> do
+                      let newOff = off + sz
+                      if newOff > 65535
+                        then lift $ Left $ AddressSpaceExhausted r
+                        else put Layout{globalOffsets = M.insert g off go,
+                                        regionOffsets = M.insert r newOff ro
+                                       }
+                    Nothing -> lift $ Left $
+                               CompilerErrorUnmentionedT g sizeof monoT
                 _ -> error "This won't happen either"

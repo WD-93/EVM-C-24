@@ -184,7 +184,7 @@ pipeline2sizeof str = do
 pipeline2serialize str = do
   (m,monoS,monoT2Sz) <- pipeline2sizeof str
   gl <- globalLayout m monoS monoT2Sz ? GlobalLayoutError
-  serS <- serialize m monoS monoT2Sz ? SerError
+  serS <- serialize m monoS monoT2Sz gl ? SerError
   return (m,monoS,monoT2Sz,serS)
 {-
 pipeline2structured str = do
