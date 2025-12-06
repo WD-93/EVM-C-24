@@ -2971,7 +2971,25 @@ Inefficient solution: infer which DTs have tags before processDTs.
 Turns out TC doesn't accept boxed tags yet anyway... oh well, the desugaring
 code for them will be ready when I adapt TC  to support them.
 
-TODO add support for boxed tags, eliminate FISK.
+TODO add support for boxed tags. 
+I can't eliminate FIKS because it must run after tysyn subst, otherwise
+"import Prelude; type R = Region; List : R -> Type -> Type; main _ := ()"
+fails. Recall: kind sigs used to be mandatory for BDTs; I just copied the
+kind sig from BDT to ImplBDT.
+I can still auto-generate the kind sig of BDTs and copy it to ImplBDT, but I
+should not check the given kind for validity in Desugar.Datatypes.
+The check that tycons with a concrete kind have a data definition should also
+be deferred until FIKS! The arity check must also be deferred, since
+type Arity1 = Type -> Type --hides arity.
+Must be checked after tysyn:
+ BDT region param is Region --FIKS checks
+ DT kind arity matches params, is concrete --FIKS checks
+ tycons with concrete kinds have DTs --FIKS checks
+OK, I'll keep FIKS as it is for now... but where are the fields added to
+tysigs?
+It's in HM.AddConsAndFieldsToTySigs... and HM uses tysigs for both fields and cons. 
+It's debatable whether that's a bad idea... I'd need to cache the
+signatures somewhere anyway. I'll leave well enough alone for now.
 Next: rest of pipeline, global layout.
 
 Generating calldata using the interface: support allocValue@Calldata a la

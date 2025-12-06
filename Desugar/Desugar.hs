@@ -11,7 +11,7 @@ import qualified E.Abs as P
 
 --CST -> AST
 import AST.DTs
-import AST.Util (rollTyApps,mkSig,kindIsConcrete)
+import AST.Util (rollTyApps,mkSig)
 import qualified DeclBucket as DB 
 import Import (PreModule(..),PMDynamicThing(..),MNL(..))
 import Desugar.DTs
@@ -157,10 +157,9 @@ addTags fs tagged sthings = do
 --A collection of simple restrictions on modules
 --1) All tysigs must correspond to a fun or global
 --2) All class functions must have a tysig
---3) All concrete kind sigs must correspond to a DT
---4) Code globals must have initializers; other regions must not.
---5) All defaults must refer to an existing kind.
---6) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
+--3) Code globals must have initializers; other regions must not.
+--4) All defaults must refer to an existing kind.
+--5) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
 --   and given a kind signature (e.g. Type -> Type).
 enforceRules :: Module -> Either DError ()
 enforceRules mod = do
@@ -176,12 +175,14 @@ enforceRules mod = do
                      M.keysSet $ M.filter (\case Right _ -> True
                                                  _ -> False) $ defuns mod
   reportOffenders ClassFunctionsLackSignatures nakedClasses
+  {-
   --3) All concrete kind sigs must correspond to a DT
   let nakedKindSigs = S.filter (\k -> not $ M.member k $
                                       datatypes $ dtsInfo mod) $
                       M.keysSet $ M.filter kindIsConcrete $ kindsigs mod
   reportOffenders ConcreteKindSigsLackDTs nakedKindSigs
-  --4) Code globals must have initializers; other regions must not.
+-}
+  --3) Code globals must have initializers; other regions must not.
   let uinitCodeGlobals = M.keysSet $ M.filter (\case (Co,Nothing) -> True
                                                      _ -> False) $ globals mod
   reportOffenders CodeGlobalsMustHaveInitializers uinitCodeGlobals
@@ -193,10 +194,10 @@ enforceRules mod = do
                          $ globals mod
   complainIf (not $ M.null initOtherGlobals)
     $ MustNotHaveInitializers initOtherGlobals
-  --5) All defaults must refer to an existing kind.
+  --4) All defaults must refer to an existing kind.
   reportOffenders DefaultsMustReferToKinds $
     M.keysSet (defaults mod) `S.difference` kinds mod
-  --6) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
+  --5) No TyCon may be both declared as a root kind (Region, Nat, Type etc)
   --   and given a kind signature (e.g. Type -> Type).
   reportOffenders KindDeclKindSigCollisions $
     M.keysSet (kindsigs mod) `S.intersection` kinds mod

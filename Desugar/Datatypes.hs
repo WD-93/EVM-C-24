@@ -276,35 +276,16 @@ setTagSchemes dts tags kindin =
 --Given maybe kind sig, params and maybe a region param r, returns the DT's
 --kind. Errors if:
 --1) r is not present in params
---If there is a kind signature:
---2) the given kind signature is not concrete (does not ultimately return a
---Type) or has the wrong arity.
---3) r is given a non-Region kind
 defaultKind :: Maybe T -> [Name] -> Maybe Name -> Either DError T
 defaultKind ksig params mr = do
   --1)
-  mix <- case mr of
-           Nothing -> return Nothing
-           Just r ->
-             case elemIndex r params of
-               Nothing -> throwError $ RegionTyVarNotInParams r params
-               Just ix -> return $ Just ix
+  case mr of
+    Just r | not $ r `elem` params ->
+             throwError $ RegionTyVarNotInParams r params
+    _ -> return ()
   case ksig of
     --If there is a kind signature
-    Just k -> do
-      let (ts,ret) = rollFunApps k
-      --2a)
-      complainIf (length ts /= length params)
-        $ KindSigParamArityMismatch k params
-      --2b)
-      complainIf (ret /= TyCon "Type")
-        $ DTKindSigIsNotConcrete k
-      --3)
-      case mix of
-        Nothing -> return ()
-        Just ix -> complainIf ((ts !! ix) /= TyCon "Region")
-                   $ RegionTyVarGivenNonRegionKind k mr params
-      return k
+    Just k -> return k
     --Compute default
     Nothing ->
       let ts = [TyCon $ if Just param == mr then "Region" else "Type"
