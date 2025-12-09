@@ -298,17 +298,24 @@ serializeE = go
               --Note using foldl would be quadratic
               ret (EArray (Just t) $ map fst esers,
                    foldr concatSer emptySer $ map snd esers)
+            --TODO support WordPad here
+            ConRecord "WordPad" (Just [a]) [("unWordPad",e)] -> do
+              (e',ser) <- go e
+              ret (ConRecord "WordPad" (Just [a]) [("unWordPad",e')],
+                   leftPadSer ser)
             --Note missing fields of type TyCon params become sz zero bytes,
             --where sz is sizeof (TyCon params). That means Mono must consider
             --every con argument datatype mentioned!
             --Fields may also appear out of order in ConRecords; they must be
             --placed in canonical order when serializing.
             --Pair is a special case: both fst and snd are word-padded
+            {-
             ConRecord "Pair" (Just [a,b]) field_es -> do
               field_e_sers <- serializeFields [("fst",a),("snd",b)] field_es
               ret (ConRecord "Pair" (Just [a,b]) $
                    map (id *** fst) field_e_sers
                 , concatSers $ map (leftPadSer . snd . snd) field_e_sers)
+-}
             --Con {field: c}
             -- Get tag (possibly empty) and fields, concat args in field order
             -- and prepend tag.

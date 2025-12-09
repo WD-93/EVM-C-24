@@ -3030,6 +3030,64 @@ user can increase it; 2) the need to pass around the cache.
 The cache can be dropped, it's just inefficient to do so.
 The solution for now might be mundane: the error is triggered by &memOffset,
 but its type shouldn't be Ptr Memory Word anyway...
+No, it's triggered by memAllocPtr. Perhaps because it lacks an initializer?
+It must be in exploredGlobals, so it's monoGlobal that failed.
+Sizeof.computeSizeof takes a set of monoTs; it's fed exploredDTs monoS by
+pipeline2sizeof. Evidently the global tysigs weren't explored.
+As I suspected, main _ := D (); data D a = {D a; E (D (a,a))}" leads to an
+infinite loop rather than a detected cycle error.
+I could explore the global tysigs, but it's rearranging deck chairs on the
+Titanic: the one-and-done sizeof calculation must go.
+Replace with an incremental sizeof with a cache + recursion limit.
+Consider data D a = {D1 (D(Left a)); D2 (D(Right a))}... that would lead to
+exponentially many datatypes with a BFS, but thankfully DFS is simpler.
+With n typarams I can encode a counter:
+data D a1 .. aN = D (a1, D a2 .. aN ()). However, without a clever trick to
+recognize D () .. () has sizeof zero, that'll hit the recursion limit.
+With no GADTs, a datatype which contains any parameterization of itself
+unboxed should fail... as such, there's no need for a recursion limit, just
+a stack of tycons.
+I can make a type which leads to exponentially many parameterizations anyway,
+using datatypes D1..DN as a counter:
+data D1 a = D1 a;
+data D<n> a = D<n> (D<n-1> (Left a), D<n-1> (Right a))
+TODO document that the compiler does not guarantee O(n) cost for crafted
+programs, and that anyone running the compiler as a service should sandbox it.
+Q: Even if you detect and prevent trivial recursion (D params indirectly containing D params'), can that be defeated with a Y combinator-like
+construction?
+D : (Type -> Type) -> Type -> Type
+data D f a = D (f (D f a))
+f may or may not contain D f a (cf Proxy or Maybe). Recursion can still be
+trivially detected for a particular instantiation.
+New API:
+new :: DTsInfo E -> Either [Name] SizeofCache
+--Failure mode: trivial cycle (D params contains D params')
+query :: SizeofCache -> MonoT -> Either SizeofError (Integer,SizeofCache)
+Failure modes: recursion depth exceeded (100), cache size limit reached (1000).
+Note a parameterized type may contain another parameterization of itself,
+e.g. Maybe (Maybe Byte); that's not an error.
+Statically detecting simple cycles is nontrivial; consider
+data D = D (D,D). The top-level con is Pair, not D. Cycle detection must
+operate on monomorphic datatypes.
+main _ := D (); data D a = D a | E (D (a,a)) diverges in mono, not sizeof...
+Mono also needs a recursion limit.
+main _ := f (); f : a -> (); f x := f (x,x) also diverges.
+Why can't I drop exploredDTs from Mono? Because DTs aren't side-effect free,
+they can alloc code globals.
+Radical proposal: fuse the Mono, GlobalLayout, Serialize, Sizeof and Structured steps.
+After a function is instantiated to be monomorphic, convert it to Structured.
+Place globals as they're encountered, replace global pointers with constants.
+Exploring code globals triggers serialization of their initializer;
+exploring any global triggers sizeof of its monoT.
+Any use of a monoT triggers exploration of it (including null(), since you
+need to know its word size), which in turn triggers exploration of its
+field types, tag type and tag scheme.
+TyApp f ts => explore f@ts, vf <- push2 (label f@ts), return vf
+Nice: if Structured is fused with Serialize, it's easy to use the same Content type for code globals, tags and pushes.
+I'll start without support for allocValue@Code in consts.
+Unshadow operates on MonoS... todo move it before HM.
+Mono, Sizeof, Layout, Serialize, Structured... that's 5 stages getting
+merged... hopefully it'll be simpler the second time around.
 
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?

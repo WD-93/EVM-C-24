@@ -35,7 +35,7 @@ import Mono.Mono --(monomorphize, MonoError(..))
 --Unshadowing (TODO move before HM)
 import Unshadow.Unshadow (unshadow)
 --Computing the byte size of all mentioned DTs (and failing on cycles)
-import Sizeof (computeSizeof)
+import Sizeof (computeSizeof,SizeofError(..))
 --Fix the layout of non-Code globals
 import GlobalLayout (globalLayout,LayoutError(..))
 --Serialize constant expressions (global initializers and datatype tags)
@@ -56,7 +56,7 @@ data CompilerError = ParserError String
                    | DesugarError DError
                    | TypeCheckError TCError
                    | MonoError MonoError
-                   | CycleInSizeof [(Name,[T])]
+                   | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
                    | GlobalLayoutError LayoutError
                    | SerError SerError
 --                   | StructuredError ConvertError
@@ -179,7 +179,7 @@ pipeline2unshadow str = do
 pipeline2sizeof str = do
   (m,monoS) <- pipeline2unshadow str
   monoT2Sz <- computeSizeof (dtsInfo m) (M.keysSet $ exploredDTs monoS) ?
-              CycleInSizeof
+              SizeofError
   return (m,monoS,monoT2Sz)
 pipeline2serialize str = do
   (m,monoS,monoT2Sz) <- pipeline2sizeof str

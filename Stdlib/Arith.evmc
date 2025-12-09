@@ -1,6 +1,10 @@
 //The arithmetic functions; C operators desugar to these.
 //Functions which don't fit in Alloc or Terminate also go here for now.
 
+//A function that returns a zero bytestring; analogous to undefined in Haskell
+null : () -> a;
+null _ := return coerce ();
+
 //Given a type a (passed via proxy), returns its size % 2^256.
 //Must be primitive.
 sizeofWord : P a -> Word;
@@ -140,7 +144,7 @@ instance copyBytes : (MPtr a, Ptr Code a, Short) -> () where
 //Integer constants desugar to fromWord w, because all overloading is captured
 //in polymorphic functions (which are then type applied during type inference).
 fromWord : Word -> Int s len;
-fromWord _ := ();
+fromWord w := return coerce w;
 
 //Since pointer "addition" is moved to indexPtr, plus and minus can now have
 //nice types.

@@ -31,7 +31,24 @@ sizeofT sizeof monoT =
 type Size = Integer
 type MonoT = (Name,[T]) --A monomorphic type of form TyCon ts
 type Sizeof = Map MonoT Size
-type SizeofError = [MonoT] --A cycle
+data SizeofError = CycleDetected [MonoT]
+                 | RecursionDepthExceeded
+                 | CacheSizeLimitExceeded
+  deriving (Eq,Ord,Read,Show)
+data SizeofCache = SC (DTsInfo E) Sizeof
+  deriving (Eq,Ord,Read,Show)
+--No static cycle detection is done.
+newSizeofCache :: DTsInfo E -> SizeofCache
+newSizeofCache dtsi = SC dtsi M.empty
+
+sizeof :: SizeofCache -> MonoT -> Either SizeofError (Integer,SizeofCache)
+sizeof (SC dtsi m) t = do
+  (n,m') <- runExcept $
+            flip runStateT m $
+            flip runReaderT dtsi $
+            sizeofM t
+  return (n, SC dtsi m')
+
 computeSizeof :: DTsInfo E -> --Info about all DTs, includes placeholders 4 prim
                  Set MonoT ->
                  Either SizeofError Sizeof
@@ -48,7 +65,7 @@ sizeofM :: MonoT -> SizeM Size
 sizeofM = go [] S.empty
   where
     go :: [MonoT] -> Set MonoT -> MonoT -> SizeM Size
-    go stk set = memoize
+    go stk set = error "todo" --memoize
       (\case
           ("Array",[TyNat len, a]) ->
             (len *) <$>  goWithT stk set a
@@ -110,7 +127,7 @@ sizeofM = go [] S.empty
     goWith :: [MonoT] -> Set MonoT -> MonoT -> SizeM Size
     goWith stk set p =
       if S.member p set
-      then throwError $ reverse (p:stk)
+      then throwError $ CycleDetected $ reverse (p:stk)
       else go (p:stk) (S.insert p set) p
     goWithT :: [MonoT] -> Set MonoT -> T -> SizeM Size
     goWithT stk set t =

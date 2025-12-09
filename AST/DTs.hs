@@ -144,7 +144,7 @@ pattern Array n a = "Array" :$$ n :$$ a
 
 pattern Unit = TyCon "Unit"
 --Note: this is no longer tuple cons
-pattern Pair a b = TyCon "Pair" :$$ a :$$ b
+pattern Pair a b = Append (WordPad a) (WordPad b) --TyCon "Pair" :$$ a :$$ b
 pattern Append a b = TyCon "Append" :$$ a :$$ b
 pattern WordPad a = TyCon "WordPad" :$$ a
 --(a,b) desugars to Pair a (Pair b Nil), not Pair a b
