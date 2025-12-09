@@ -28,12 +28,14 @@ import Import (sourceToBucket,createBucket,deconflictBucket,
                ConflictingDecls(..),CreateBucketError(..))
 import Desugar.DTs (DError(..))
 import Desugar.Desugar (desugar)
+import Unshadow.Unshadow (unshadow)
 --Type checking
 import Typecheck.TC (typecheck, TCError(..))
+--TODO replace Mono, Sizeof, GlobalLayout, Serialize, Structured with Fused.
+{-
 --Monomorphization
 import Mono.Mono --(monomorphize, MonoError(..))
---Unshadowing (TODO move before HM)
-import Unshadow.Unshadow (unshadow)
+
 --Computing the byte size of all mentioned DTs (and failing on cycles)
 import Sizeof (computeSizeof,SizeofError(..))
 --Fix the layout of non-Code globals
@@ -41,6 +43,7 @@ import GlobalLayout (globalLayout,LayoutError(..))
 --Serialize constant expressions (global initializers and datatype tags)
 import Const.Serialize (serialize,SerError(..))
 --Convert C to structured IR
+-}
 
 {-
 Temporarily hiding to debug Desugar and stdlib
@@ -55,10 +58,12 @@ data CompilerError = ParserError String
                    | ConflictingDecls [ConflictingDecls]
                    | DesugarError DError
                    | TypeCheckError TCError
+                   {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
                    | GlobalLayoutError LayoutError
                    | SerError SerError
+-}
 --                   | StructuredError ConvertError
                    {-
                    | SeqError SeqError
@@ -166,9 +171,12 @@ pipeline2desugar :: String -> Either CompilerError Module
 pipeline2desugar str = do
   m <- pipeline2parse str
   desugar m ? DesugarError
+pipeline2unshadow :: String -> Either CompilerError Module
+pipeline2unshadow str = unshadow <$> pipeline2desugar str
 pipeline2typechecked str = do
-  m <- pipeline2desugar str
+  m <- pipeline2unshadow str
   typecheck m ? TypeCheckError
+{-
 pipeline2mono str = do
   m <- pipeline2typechecked str
   monoS <- monomorphize m ? MonoError
@@ -186,7 +194,7 @@ pipeline2serialize str = do
   gl <- globalLayout m monoS monoT2Sz ? GlobalLayoutError
   serS <- serialize m monoS monoT2Sz gl ? SerError
   return (m,monoS,monoT2Sz,serS)
-{-
+
 pipeline2structured str = do
   v <- pipeline2serialize str
   convert v ? StructuredError

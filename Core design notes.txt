@@ -3089,8 +3089,12 @@ Unshadow operates on MonoS... todo move it before HM.
 Mono, Sizeof, Layout, Serialize, Structured... that's 5 stages getting
 merged... hopefully it'll be simpler the second time around.
 
+Next: move unshadow before TC. --done
+
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?
+Export f@ts, global addresses in interface. TODO support marking functions
+exported to force placement.
 
 Modify Desugar to take PreModule (simplifying Desugar.Datatypes) --done,
  --modulo debugging

@@ -31,6 +31,7 @@ import Mono.Mono (MonoS(..))
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Control.Monad.State
 import Data.Generics
 import Control.Arrow ((***))
@@ -45,12 +46,28 @@ Block resets scope; ifte, while, case have implicit blocks.
 var x = e => transform e, scope[x]++
 E and Pat are trivial since they don't affect scope; just apply the scope map.
 -}
+
+--unshadow must now operate on Module... only defuns is affected.
+--Apply unshadowFun to each ordinary defun and instance.
+unshadow :: Module -> Module
+unshadow mod = mod{defuns = M.map (\case
+                                      Left ps -> Left $ unshadowFun ps
+                                      Right tpses ->
+                                        --Note unshadowFun is injective
+                                        Right $ S.map
+                                        (\(t,p,s) ->
+                                            let (p',s') = unshadowFun (p,s)
+                                            in (t,p',s')) tpses
+                                      ) $
+                    defuns mod
+                  }
+{-
 unshadow :: MonoS -> MonoS
 unshadow ms = ms{exploredFuns =
                     M.map (id *** unshadowFun) $
                     exploredFuns ms
                 }
-              
+-}              
 
 type Unshadow = State (Map Name Int)
 --Precondition: no name in m contains #
