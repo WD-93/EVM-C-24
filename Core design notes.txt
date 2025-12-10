@@ -3090,6 +3090,18 @@ Mono, Sizeof, Layout, Serialize, Structured... that's 5 stages getting
 merged... hopefully it'll be simpler the second time around.
 
 Next: move unshadow before TC. --done
+Trivial exception vs throwError bugs:
+ghci> pipeline2typechecked "main:()->();main _ := ()"
+*** Exception: No con info for Unit
+CallStack (from HasCallStack):
+  error, called at .\Desugar\Desugar.hs:235:27 in evmc-0.1.0.0-inplace:Desugar.Desugar
+--main _ := Unit correctly throws NoSuchCon. Solution: convert tuples to CST
+--Pair/Unit and recurse on them rather than to AST directly.
+Pat does not have the same problem: "main () := {}" fails with a throwError in TC.
+ghci> pipeline2typechecked "main _ := {}"
+*** Exception: Compiler error: tycon "Fun" not in scope despite FIKS
+CallStack (from HasCallStack):
+  error, called at .\Typecheck\HM.hs:780:18 in evmc-0.1.0.0-inplace:Typecheck.HM
 
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?

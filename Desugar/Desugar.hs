@@ -232,7 +232,7 @@ boxedConDesugaring mod =
                        cis = conInfo dtsi
                    in case M.lookup con cis of
                         Nothing ->
-                          error $ "No con info for " ++ con
+                          error $ "Compiler error: No con info for " ++ con
                         Just ci ->
                           if conBoxed ci
                           then let tycon = conParent ci

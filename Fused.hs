@@ -2,6 +2,33 @@ module Fused where
 
 --Monomorphization, structured IR generation, datatype sizeof calculation,
 --const serialization and global layout interleaved in one phase.
+--Simple solution: a RWSE monad
+type FusedM = ReaderT Module (
+  WriterT [Structured] (
+      StateT FusedS (
+          Except FusedError
+          )
+      )
+  )
+data FusedS = FS {
+  --To prevent infinite loops in recursive funs
+  fsVisitedFuns :: Set (Name,[T]),
+  fsDefuns :: Map (Name,[T]) [Structured],
+  --To prevent infinite loops in code g = <e that depends on g>
+  fsVisitedGlobals :: Set Name,
+  --Code global g => label g(offset: 0, len: 2) : Ptr Code t
+  --other g => off : Ptr r t
+  --The code global's initializer is also included.
+  fsGlobals :: Map Name (Either (T,Const) (Region,T,Integer)),
+  --Datatypes:
+  fsVisitedDatatypes :: Set MonoT,
+  --We currently don't record internal padding
+  fsSizeof :: Map MonoT Integer,
+  --Monomorphized E recorded for symbolic opts
+  fsTags :: Map (Name,[T]) (E,Const), --Con@ts => tag
+  fsOffsets :: Map (Name,[T]) Integer --field@ts => off for UBCons
+  }
+  deriving (Eq,Ord,Read,Show)
 
 --Typechecked module =>
 --f@ts => structured IR

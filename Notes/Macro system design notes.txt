@@ -1,0 +1,54 @@
+Potential new feature (could do concurrently with Fused): smart hygienic macros akin to Haskell pattern synonyms. Operates on the CST before desugaring, takes and returns E.
+Decl syntax: macro Con {e => e; ...}
+Use: Con e
+That avoids type-checking hassle and preempts Desugar's context-dependent
+desugaring of (a,b,c) (to array in Array, Append in Struct, Append WordPad in
+vanilla). CST exprs already support the use syntax and are used for both E and Pat.
+A simple but powerful semantics: match argument CST against patterns,
+instantiate rhs and recursively macro-expand!
+That makes divergence possible, but it's worth it for the expressive power and convenience. Fail on >k macro expansions or depth for configurable k.
+
+Useful example:
+JTEntry f = MkJTEntry (Jumpdest, Push2, f, Jump)
+--where MkJTEntry : (Jumpdest, Push2, a -> b, Jump) -> JE a b
+Or without defining a DT for each opcode: (Opcode, Opcode, a -> b, Opcode)
+That gets around the limitation that constructors can only prepend a constant
+byte pattern to their argument, not append (e.g. the Jump after the f).
+This would let me use function-like features in const expressions, making
+defining jump tables in static data (code globals) ergonomic.
+NOTE: For that to work, I need an executable pragma to ensure the global is stored in .text, not .data. Ensuring that malformed data marked executable doesn't trash the subsequent code should be the user's responsibility, it's
+an advanced feature.
+FW: support redundant inlining at the bytecode level to enable inlining of
+executable data if the user jumps to it: (coerce &codeG :: () -> b)().
+It might make sense to do so if generating low-level code with macros.
+
+Pattern matching:
+_ treated as wild
+Vars x treated as template vars by default.
+Other constructs treated as constructors, e.g. (x + y) matches (1 + 2).
+Special macros:
+Quote x --exactly x, enables matching on vars + cons shadowed by macros
+Unquote --undoes quoting
+Bidirectional:
+Var nm --matches x, binds nm to "x"
+Con nm --analogous
+String str --string expr <=> list of chars
+Tuple es --tuple expr <=> list of exprs
+Nil, Cons --patterns on lists
+Dot (struct,string) => struct.string
+Compile-time computation:
+Concat(xs,ys)
+--Pair a b can't be represented as a one-argument macro, but Struct can.
+--Array can't, because the CST has no concept of EArray.
+
+Matching a macro lhs with a CST E gives a mapping from template vars to
+data TemplateVal = list of templateVals | char | integer (?) | e
+Dynamic typing keeps the system simple; complain if a macro instantiation
+makes a (CST) type error.
+
+Using recursive macro expansion and primitive bidirectional macros:
+Jumptable (Tuple fs) = Array (Map (JTEntry, fs)) --or Struct if you want
+--heterogenous fs.
+macro Map {(_,Nil) => Nil; (f,Cons x xs) => Cons (f x) (Map f xs)}
+
+code jt = Jumptable (i1,i2,...)

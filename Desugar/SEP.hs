@@ -8,7 +8,7 @@ import Desugar.DTs
 import Util
 import Desugar.Util (defaultFieldName)
 import Desugar.T
-import qualified DeclBucket --for the E' Loc, T' Loc etc synonyms
+import qualified DeclBucket as DB --for the E' Loc, T' Loc etc synonyms
 
 import qualified Data.Set as S
 import qualified Data.Map as M hiding ((!))
@@ -45,7 +45,7 @@ import Control.Monad
 --HM may then assume Var nm is either a global or function; TODO remove
 --the logic for constructors.
 desugarE :: DInfo ->
-  DeclBucket.E -> Either DError E
+  DB.E -> Either DError E
 desugarE di{-@DInfo{diGlobalSet = gs,
                   diStringNumbering = str2id,
                   diDTsInfo = dtsi
@@ -53,8 +53,8 @@ desugarE di{-@DInfo{diGlobalSet = gs,
   where
     dot e = Dot e Nothing
     go = \case
-      P.EmptyTuple _loc -> return $ tupleE []
-      P.Tuple _loc pe pes -> tupleE <$> (mapM go $ pe:pes)
+      P.EmptyTuple loc -> go $ cstTupleE loc []
+      P.Tuple loc pe pes -> go $ cstTupleE loc $ pe:pes
       --Integers are sugar for fromWord #w, where w is :: Word
       P.HexInt loc (P.HexInteger str) -> go $ P.Int loc $ read str
       P.Int _loc n -> return $ Var "fromWord" :$ EInteger n
@@ -213,6 +213,23 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       a <- go pa
       b <- go pb
       return $ Var fnm :$ tupleE [a,b]
+
+--If Append, WordPad or Unit are not defined, desugaring tuples should throw
+--NoSuchCon; failing to do so will lead to a compiler error in
+--Desugar.Desugar.boxedConDesugaring.
+--Instead of converting CST tuples to AST con applications directly, we must
+--convert to CST con applications and recurse.
+--tupleE considered harmful? No, it's still useful in later phases.
+--Need to pass origin loc as well...
+cstTupleE :: DB.Loc -> [DB.E] -> DB.E
+cstTupleE loc = go
+  where go = \case
+          [] -> con "Unit"
+          e:es -> (con "Append" $$ (con "WordPad" $$ e)) $$
+                  (con "WordPad" $$ go es)
+        con nm = P.Con loc (UIdent nm)
+        ($$) = P.App loc
+
 --EqEq does not correspond to an Op
 --Maybe I should rename PlusEq-MinusEq to AddEq-SubEq to keep the name length
 --consistent for all ops except Or.
@@ -232,8 +249,8 @@ aop2op = \case
                   P.OrEq _loc    -> Or
 
 desugarDot :: (E -> e) -> (e -> Name -> e) ->
-              (DeclBucket.E -> Either DError e) ->
-              DInfo -> DeclBucket.E -> Ident -> Either DError e
+              (DB.E -> Either DError e) ->
+              DInfo -> DB.E -> Ident -> Either DError e
 desugarDot deref dot go di struct (Ident f) = error "todo" {-do
   --Look up the field info
   let dtsi = diDTsInfo di
@@ -298,7 +315,7 @@ rollPApps = roll (\case P.App _loc f x -> Just (f,x)
 --pattern. I'll write a separate desugarConAppP for now and then compare...
 --The Array and Struct cases are almost identical, but Con args does not
 --permit overapplication in patterns.
-desugarConAppE :: DInfo -> Name -> [DeclBucket.E] -> Either DError E
+desugarConAppE :: DInfo -> Name -> [DB.E] -> Either DError E
 desugarConAppE = {-do
   es <- mapM (desugarE di) pes
   case M.lookup con $ diConFields di of
@@ -331,7 +348,7 @@ desugarConAppE = {-do
 --Con args => Con {field: e} regardless of whether it's boxed.
 --Overapplied constructors are never accepted.
 desugarConAppP :: DInfo ->
-  Name -> [DeclBucket.E] -> Either DError Pat
+  Name -> [DB.E] -> Either DError Pat
 desugarConAppP =
   desugarConApp desugarP (PArray Nothing) structP
   (\a b rest ->
@@ -349,13 +366,13 @@ desugarConAppP =
       return $ PCon con Nothing $ zip fields pargs
   )
 
-desugarConApp :: (DInfo -> DeclBucket.E -> Either DError e) ->
+desugarConApp :: (DInfo -> DB.E -> Either DError e) ->
   ([e] -> e) ->
   ([e] -> e) ->
   (e -> e -> [e] -> Either DError e) ->
   (Name -> [Name] -> Int -> Int -> [e] -> [e] -> Either DError e) ->
   --end of P/E args
-  DInfo -> Name -> [DeclBucket.E] -> Either DError e
+  DInfo -> Name -> [DB.E] -> Either DError e
 desugarConApp go array struct pair build
   di@(DInfo{diConFields=cfs}) con args =
   ifArrOrStruct go array struct pair di con args $
@@ -378,11 +395,11 @@ desugarConApp go array struct pair build
 --Pair, Pair a => underapplied con Pair
 --Pair a b => Append {first: WordPad a, second: WordPad b}
 --Overapplied: the pair handler errors for Pat
-ifArrOrStruct :: (DInfo -> DeclBucket.E -> Either DError e) ->
+ifArrOrStruct :: (DInfo -> DB.E -> Either DError e) ->
                  ([e] -> e) ->
                  ([e] -> e) ->
                  (e -> e -> [e] -> Either DError e) ->
-                 DInfo -> Name -> [DeclBucket.E] ->
+                 DInfo -> Name -> [DB.E] ->
                  Either DError e ->
                  Either DError e
 ifArrOrStruct go array struct pair di con args alt
@@ -440,8 +457,8 @@ conE dtsi con field_es = do
 
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
-desugarTup :: DInfo -> (DInfo -> DeclBucket.E -> Either DError a) ->
-              DeclBucket.E ->
+desugarTup :: DInfo -> (DInfo -> DB.E -> Either DError a) ->
+              DB.E ->
               Either DError (Maybe [a])
 desugarTup di handler = \case
   P.EmptyTuple _loc -> return $ Just []
@@ -463,7 +480,7 @@ bdt.f => *(...).fStructCon
 g => *g
 -}
 desugarP :: DInfo ->
-  DeclBucket.E -> Either DError Pat
+  DB.E -> Either DError Pat
 desugarP di@DInfo{
   diFields = fs
   --diGlobalSet = gs,
@@ -523,7 +540,7 @@ desugarP di@DInfo{
           _ -> throwError $ BadConInPattern f
 
 desugarS :: DInfo ->
-  DeclBucket.S -> Either DError S
+  DB.S -> Either DError S
 desugarS di = go
   where go = \case
           P.SE _loc pe -> SE <$> goe pe
