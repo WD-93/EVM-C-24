@@ -8,6 +8,7 @@ import Desugar.DTs
 import Util
 import Desugar.Util (defaultFieldName)
 import Desugar.T
+import DeclBucket (Loc(..))
 import qualified DeclBucket as DB --for the E' Loc, T' Loc etc synonyms
 
 import qualified Data.Set as S
@@ -88,7 +89,7 @@ desugarE di{-@DInfo{diGlobalSet = gs,
           Nothing -> error $ "Compiler error: unmapped string " ++ str
         -}
       --A constructor with no arguments
-      P.Con _loc (UIdent con) -> desugarConAppE di con [] {-
+      P.Con loc (UIdent con) -> desugarConAppE di loc con [] {-
         | con `elem` words "Struct Array Pair" ->
             --TODO add proper error
             throwError $ GenericDError $ "Standalone " ++ con
@@ -103,26 +104,26 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       --New approach: defer that, just preserve structure in E for later
       --context-dependent everywhereM rewrites.
       --TODO desugar Pair {fs:es}
-      P.ConRecord _loc (UIdent con) efields
+      P.ConRecord loc (UIdent con) efields
         | con `elem` ["Struct","Array"] ->
           throwError $ GenericDError $ con ++ " may not be used as a record"
-        | otherwise -> do
-        field_es <- mapM (\(P.EField _loc (Ident nm) pe) ->
-                            ((,) nm) <$> go pe)
-              efields
+        | otherwise ->
         if con == "Pair"
           then do
           --Pair field to Append field map
           let pf2af = M.fromList[("fst","first"),("snd","second")]
-          afs <- forM field_es $ \(field,e) ->
-            case M.lookup field pf2af of
+          afs <- forM efields $ \(P.EField loc (Ident nm) pe) ->
+            case M.lookup nm pf2af of
               Nothing -> throwError $ GenericDError $
-                         "Bad Pair field: " ++ field
-              Just afield -> return (afield,
-                                     ConRecord "WordPad" Nothing
-                                     [("unWordPad",e)])
-          return $ ConRecord "Append" Nothing afs
-          else conE di con field_es
+                         "Bad Pair field: " ++ nm
+              Just afield -> return $ P.EField loc (Ident afield) $
+                             P.ConRecord loc (UIdent "WordPad")
+                             [P.EField loc (Ident "unWordPad") pe]
+          go $ P.ConRecord loc (UIdent "Append") afs
+          else do
+          field_es <- mapM (\(P.EField _loc (Ident nm) pe) ->
+                              ((,) nm) <$> go pe) efields
+          conE di con field_es
       --I'll choose to disallow _ in an expr context for now
       P.Wild _loc -> throwError WildcardInExprContext
       --By deferring decomposition of p++ et al to lets (necessary
@@ -170,7 +171,7 @@ desugarE di{-@DInfo{diGlobalSet = gs,
         do
           let (pf',args) = rollPApps (P.App _loc pf px)
           case pf' of
-            P.Con _loc (UIdent con) -> desugarConAppE di con args
+            P.Con loc (UIdent con) -> desugarConAppE di loc con args
             _ -> unrollApps <$> go pf' <*> mapM go args
       P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
       P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
@@ -221,14 +222,21 @@ desugarE di{-@DInfo{diGlobalSet = gs,
 --convert to CST con applications and recurse.
 --tupleE considered harmful? No, it's still useful in later phases.
 --Need to pass origin loc as well...
-cstTupleE :: DB.Loc -> [DB.E] -> DB.E
-cstTupleE loc = go
-  where go = \case
-          [] -> con "Unit"
-          e:es -> (con "Append" $$ (con "WordPad" $$ e)) $$
-                  (con "WordPad" $$ go es)
+cstTupleE :: Loc -> [DB.E] -> DB.E
+cstTupleE loc = foldr (cstPair loc) $ P.Con loc $ UIdent "Unit"
+cstPair :: Loc -> DB.E -> DB.E -> DB.E
+cstPair loc a b = (con "Append" $$ (con "WordPad" $$ a)) $$
+                  (con "WordPad" $$ b)
+  where con nm = P.Con loc (UIdent nm)
+        ($$) = P.App loc
+cstStruct :: Loc -> [DB.E] -> DB.E
+cstStruct loc = foldr append $ con "Unit"
+  where append a b = (con "Append" $$ a) $$ b
         con nm = P.Con loc (UIdent nm)
         ($$) = P.App loc
+unrollCSTApps :: Loc -> DB.E -> [DB.E] -> DB.E
+unrollCSTApps loc f = foldl ($$) f
+  where ($$) = P.App loc
 
 --EqEq does not correspond to an Op
 --Maybe I should rename PlusEq-MinusEq to AddEq-SubEq to keep the name length
@@ -315,27 +323,16 @@ rollPApps = roll (\case P.App _loc f x -> Just (f,x)
 --pattern. I'll write a separate desugarConAppP for now and then compare...
 --The Array and Struct cases are almost identical, but Con args does not
 --permit overapplication in patterns.
-desugarConAppE :: DInfo -> Name -> [DB.E] -> Either DError E
-desugarConAppE = {-do
-  es <- mapM (desugarE di) pes
-  case M.lookup con $ diConFields di of
-    Nothing -> throwError $ NoSuchCon con
-    Just fnms -> do
-      let flen = length fnms
-          elen = length es
-      complainIf (flen > elen)
-        $ UnderappliedCon con flen elen
-      let args = take flen es
-          rest = drop flen es
-      --If rest /= [] and con /= MkFun, this will type error later.
-      return $ unrollApps (ConRecord con Nothing $ zip fnms args) rest-}
-  desugarConApp desugarE (EArray Nothing) structE
+desugarConAppE :: DInfo -> Loc -> Name -> [DB.E] -> Either DError E
+desugarConAppE =
+  desugarConApp desugarE (EArray Nothing)
+  {-
   (\a b rest -> return $
     unrollApps (ConRecord "Append" Nothing
                  [("first", ConRecord "WordPad" Nothing
                             [("unWordPad",a)]),
                    ("second", ConRecord "WordPad" Nothing
-                              [("unWordPad",b)])]) rest) --Pair a b handler
+                              [("unWordPad",b)])]) rest)-} --Pair a b handler
   (\con fields len arity eargs erest -> do
       --If overapplied, require con == MkFun
       complainIf (len > arity && con /= "MkFun")
@@ -348,9 +345,10 @@ desugarConAppE = {-do
 --Con args => Con {field: e} regardless of whether it's boxed.
 --Overapplied constructors are never accepted.
 desugarConAppP :: DInfo ->
-  Name -> [DB.E] -> Either DError Pat
+  Loc -> Name -> [DB.E] -> Either DError Pat
 desugarConAppP =
-  desugarConApp desugarP (PArray Nothing) structP
+  desugarConApp desugarP (PArray Nothing)
+  {-
   (\a b rest ->
      case rest of
        [] -> return $
@@ -360,6 +358,7 @@ desugarConAppP =
                                             [("unWordPad",b)])
                                ]
        _ -> throwError $ OverappliedPatternCon "Pair" 2 $ a:b:rest)
+-}
   (\con fields len arity pargs prest -> do
       complainIf (len > arity)
         $ OverappliedPatternCon con arity $ pargs ++ prest
@@ -368,14 +367,14 @@ desugarConAppP =
 
 desugarConApp :: (DInfo -> DB.E -> Either DError e) ->
   ([e] -> e) ->
-  ([e] -> e) ->
-  (e -> e -> [e] -> Either DError e) ->
+  --([e] -> e) -> --struct
+  --(DB.E -> DB.E -> [DB.E] -> Either DError e) -> --pair
   (Name -> [Name] -> Int -> Int -> [e] -> [e] -> Either DError e) ->
   --end of P/E args
-  DInfo -> Name -> [DB.E] -> Either DError e
-desugarConApp go array struct pair build
-  di@(DInfo{diConFields=cfs}) con args =
-  ifArrOrStruct go array struct pair di con args $
+  DInfo -> Loc -> Name -> [DB.E] -> Either DError e
+desugarConApp go array build
+  di@(DInfo{diConFields=cfs}) loc con args =
+  ifArrOrStruct go array di loc con args $
   case M.lookup con cfs of
             Nothing -> throwError $ NoSuchCon con
             Just fields -> do
@@ -397,27 +396,32 @@ desugarConApp go array struct pair build
 --Overapplied: the pair handler errors for Pat
 ifArrOrStruct :: (DInfo -> DB.E -> Either DError e) ->
                  ([e] -> e) ->
-                 ([e] -> e) ->
-                 (e -> e -> [e] -> Either DError e) ->
-                 DInfo -> Name -> [DB.E] ->
+                 --([e] -> e) -> --struct
+                 -- (DB.E -> DB.E -> [DB.E] -> Either DError e) -> --pair
+                 DInfo -> Loc -> Name -> [DB.E] ->
                  Either DError e ->
                  Either DError e
-ifArrOrStruct go array struct pair di con args alt
+ifArrOrStruct go array di loc con args alt
   | con == "Pair" = do
-      es <- mapM (go di) args
-      case es of
-        a:b:rest -> pair a b rest
-        _ -> throwError $ UnderappliedCon "Pair" 2 $ length es
+      --Only the first two args of Pair get word-padded before application
+      --Because we're generating a new CST, we need a loc param...
+      --Inefficiency: we roll CST apps, then unroll, only to roll again in go.
+      case args of
+        a:b:rest -> go di $ unrollCSTApps loc (cstPair loc a b) rest
+        _ -> throwError $ UnderappliedCon "Pair" 2 $ length args
   | con `elem` ["Array","Struct"] = do
     let err = ArrayAndStructTakeASyntacticTuple con args
+    --Because Struct (...) should complain when Append is undefined,
+    --struct must operate on CSTs so we can recurse on it with go.
     case args of
       [ptup] -> do
-        mes <- desugarTup di go ptup 
-        case mes of
-          Just es ->
-            return $ case con of
-              "Array" -> array es
-              "Struct" -> struct es
+        let mpes = cstTup ptup
+        case mpes of
+          Just pes ->
+            case con of
+              "Array" -> do
+                array <$> mapM (go di) pes
+              "Struct" -> go di $ cstStruct loc pes
           Nothing -> throwError err
       _ -> throwError err
   | otherwise = alt
@@ -457,13 +461,18 @@ conE dtsi con field_es = do
 
 --Used for Struct (a,b,c...) and Array (a,b,c...) in both
 --desugarE and desugarP.
+cstTup :: DB.E -> Maybe [DB.E]
+cstTup = \case
+  P.EmptyTuple _ -> Just []
+  P.Tuple _ pe pes -> Just $ pe:pes
+  _ -> Nothing
 desugarTup :: DInfo -> (DInfo -> DB.E -> Either DError a) ->
               DB.E ->
               Either DError (Maybe [a])
-desugarTup di handler = \case
-  P.EmptyTuple _loc -> return $ Just []
-  P.Tuple _loc pe pes -> Just <$> mapM (handler di) (pe:pes)
-  _ -> return Nothing
+desugarTup di handler pe =
+  case cstTup pe of
+    Just es -> Just <$> mapM (handler di) es
+    _ -> return Nothing
 
 {-
 Valid patterns:
@@ -535,8 +544,8 @@ desugarP di@DInfo{
       pe -> do
         let (f,args) = rollPApps pe
         case f of
-          P.Con _loc (UIdent con) -> do
-            desugarConAppP di con args
+          P.Con loc (UIdent con) -> do
+            desugarConAppP di loc con args
           _ -> throwError $ BadConInPattern f
 
 desugarS :: DInfo ->

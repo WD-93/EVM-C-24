@@ -3098,6 +3098,13 @@ CallStack (from HasCallStack):
 --main _ := Unit correctly throws NoSuchCon. Solution: convert tuples to CST
 --Pair/Unit and recurse on them rather than to AST directly.
 Pat does not have the same problem: "main () := {}" fails with a throwError in TC.
+main x := Pair {} and Pair {fst: x, snd: x} now throwError, complaining
+NoSuchCon Append and WordPad respectively. That's correct, but confusing;
+TODO explain the cause may be desugaring when rendering the error message.
+Struct () () --should be an overapplied con, either a desugar error for Pat
+or type error for E. I'll leave it as it is for now; TODO explain
+overapplication is also wrong when rendering.
+
 ghci> pipeline2typechecked "main _ := {}"
 *** Exception: Compiler error: tycon "Fun" not in scope despite FIKS
 CallStack (from HasCallStack):
