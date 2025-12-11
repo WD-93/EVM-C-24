@@ -220,6 +220,7 @@ data HMError = Can'tConstructTheInfiniteType Name T --a ~ T a
              | HMAnnotPath String HMError
              --A single constructor for debug tracing
              | InvalidAmpersandExpr E
+             | KindNotInScope Name
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -773,12 +774,13 @@ kindOf = \case
   -}
   --f x := return 3 fails because kindOf encounters (->) Word... but why!?
   --Hotfix: give (->) a kind
-  TyCon "->" -> return $ "Type" :-> "Type" :-> "Type"
+  --TyCon "Fun" -> return $ "Type" :-> "Type" :-> "Type"
   TyCon nm -> do
     mk <- asks (M.lookup nm . hmKindSigs)
     case mk of
-      Nothing -> error $ "Compiler error: tycon " ++ show nm ++ " not in scope "
-                 ++ "despite FIKS"
+      --Should not be a compiler error; the user may simply have failed to
+      --define the given kind.
+      Nothing -> throwError $ KindNotInScope nm
       Just k -> return k
   --Each tyvar maps to a kind... but what about when you need to recursively
   --get kindOf for kf kx or a -> b?

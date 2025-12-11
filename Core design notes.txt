@@ -3109,6 +3109,9 @@ ghci> pipeline2typechecked "main _ := {}"
 *** Exception: Compiler error: tycon "Fun" not in scope despite FIKS
 CallStack (from HasCallStack):
   error, called at .\Typecheck\HM.hs:780:18 in evmc-0.1.0.0-inplace:Typecheck.HM
+Removing the special-casing for -> in the kind check ensures it correctly
+complains iff Type and Fun are not in scope.
+What if one gave Fun a different representation...?
 
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?
