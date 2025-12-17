@@ -3113,6 +3113,94 @@ Removing the special-casing for -> in the kind check ensures it correctly
 complains iff Type and Fun are not in scope.
 What if one gave Fun a different representation...?
 
+TODO: memory x : T sugar?
+An 'immutable' global region would work as an import decl. They'd need to be
+exempted from g => *g desugaring.
+
+Implementing Fused...
+Oh no: memOffset etc must be placed last if at all, so placing mutable globals incrementally won't work. Solution: emit a placeholder label instead
+of bytes, place and substitute once Structured is complete.
+f :$ x: need to get type of f to infer what should be put on the stack.
+The type cannot in general be inferred from returned words (consider
+zero-sized types); need to return it separately.
+Whenever an e of type T is returned, you must explore T to get its word count; ditto when a function whose argument size depends on T is compiled,
+even if it's never called uncoerced.
+Is a concept of words vs T essential in Core fun types? Yes, because after
+opt a Core function may not correspond to a valid C function: an unused word
+may be dropped from a multi-word value, or words may be reordered.
+State vars must also be present in the type signature because some of them
+may be dropped.
+Because I mono and compile to structured at the same time, I can't reuse
+the exploredFuns map as the visited set; computing the structured IR would
+trigger recursive exploration (unlike instT which is pure).
+I can monomorphize the C definition purely. Function and global values in
+Structured are independent of exploration (they're labels), but offsets are
+dependent on DT exploration (which may trigger f,g or DT exploration).
+Reuse TagScheme E; don't bother caching con->tag directly yet?
+Cache field@ts->left-offset.
+WordPad {unWordPad: e} --eval vs <- e, copy
+Con@ts {fields: es} compilation:
+ First evaluate vss <- es, then order vss canonically.
+ Given sizeof TyCon ts and field offsets, compute right-offsets; place
+ words appropriately using shl, shr, or. Result words with no specified   
+ fields default to null without the need for a null call. 
+Field values known to be partially zero can lead to less stitching work. 
+Oh, don't forget to respond to EArray when exploring!
+
+Compiling indexArray: *p!ix need not liven on an on-stack indexArray.
+Support only <=1-word indexArray for now; otherwise it requires a JT to select the relevant word(s). Elements which are not 2^n bytes would be a PITA.
+
+At the start of a stmt, scope is determined by locals. That doesn't justify
+a whole new monad, though...
+Insert block-end jumps to ensure the start and end scope of an ifte block
+are the same?
+Consider:
+while (1) {
+ var x = 1;
+ if cond
+ then {}
+ else ...
+ end
+} --the {} would then jump to end (scope: x), and from there continue
+(scope: ()). That simplifies Core generation: consider only immediate scope,
+then inline to eliminate the jumps.
+When compiling block, remember the start scope and reset it.
+The next cont of a statement always takes its initial scope. That's not
+relevant during structured compilation.
+
+Cont (stk : Words) State : Word? Yes.
+
+Where does scope matter in Structured? Potentially in each op, since
+Call is treated as an op. It's also simplest to generate a Core fun for each
+op to start with, then inline them away.
+That would mean primops would need to modify scope... not good.
+Perhaps IR.Ifte should include the cond instrs as a block; then its scope
+effect is locals => locals.
+Cond's effect is locals => w:locals
+The same could be done for case; the e's effect would be locals => vs++locals. The case and jumpi branches should take a single BranchValue
+param (i.e. w/vs on the stack).
+truthy in ifte should be a proper function to ensure consistent scope
+treatment.
+p += e has a temporary scope effect dependent on p, as its expr components
+must be saved.
+case e of
+ cases
+=> vs <- eval e, t <- tag vs, scope = t:vs++scope
+Scope is vs++scope in each case; the first action is to assign vs to p,
+resulting in scope remaining.
+Difference vs (=) assign: vs is computed before p's exprs.
+assign doesn't need to perform any function calls.
+
+Unoptimized stack effect of f :$ x:
+push ret, push f, push x, swap (f,x) and jump; the cont receives the returned
+value.
+EArray: push es in textual order, reverse and concat. To save on stack space,
+concat eagerly.
+Only call and control flow stmts need scope; embed it in them and lift call
+to Stmt. Eliminate declare.
+
+Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
+
 Generating calldata using the interface: support allocValue@Calldata a la
 allocValue@Code in Const?
 Export f@ts, global addresses in interface. TODO support marking functions

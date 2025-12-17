@@ -52,3 +52,6 @@ Jumptable (Tuple fs) = Array (Map (JTEntry, fs)) --or Struct if you want
 macro Map {(_,Nil) => Nil; (f,Cons x xs) => Cons (f x) (Map f xs)}
 
 code jt = Jumptable (i1,i2,...)
+
+Would type macros make sense? T can support them... E macros need :: to
+support T params.

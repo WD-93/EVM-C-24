@@ -16,13 +16,18 @@ import AST.DTs
 --as memory, calldata etc) are also passed; that is intended to enable
 --reasoning about side effects.
 --New: I'll replace -># with Cont#.
---Cont : Type -> State -> Type
+--Cont : Words -> State -> Word#
 --jump : Arg (Cont a s * a) s -> End
---Consequence: Type can contain State
 pattern Cont a s = TyCon "Cont#" :$$ a :$$ s
---(*) means Pair, but the problem with that is Pair : Type^2 -> Type doesn't
---enforce linked-list normal form as SPair does for SElems.
---Introduce a new Stack kind? Not for now.
+
+--New:
+--WPair : Word# -> Words -> Words
+pattern WPair w ws = TyCon "WPair#" :$$ w :$$ ws
+--WUnit : Words
+pattern WUnit = TyCon "WUnit#"
+--W : Type -> Nat -> Word#
+pattern W t n = TyCon "W#" :$$ t :$$ n
+--Making Cont a Word# separates it from C types.
 
 --The stack is a single tuple of kind Type. State variables don't live on
 --the stack and have no size; they're of kind SElem. Examples include
@@ -31,10 +36,10 @@ pattern Cont a s = TyCon "Cont#" :$$ a :$$ s
 --Side-effecting ops are represented as pure functions which consume and
 --produce state.
 --Because they must manipulate both stack values and state, all ops take and
---return an Arg : Type -> State -> Argument
+--return an Arg : Words -> State -> Argument
 --a are the dynamic values, s the state vars
 pattern Arg a s = TyCon "Arg#" :$$ a :$$ s
---SPair : SElem -> State -> State 
+--SPair : SElem -> State -> State
 pattern SPair selem st = TyCon "SPair#" :$$ selem :$$ st
 --SUnit : State
 pattern SUnit = TyCon "SUnit#"

@@ -5,14 +5,14 @@ module Structured.DTs where
 --exprs into explicit sequences of bind statements.
 
 import AST.DTs
-import Const.Serialize
-import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),Pattern(..),
-                            FunVar(..),ConstSet(..))
+import Const.Const
+import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),
+                            FunVar(..),BranchValue(..),ConstSet(..))
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
 --A difference from the old structured IR: Structured uses type-tagged vars
---for everything. It's also not word-level.
+--for everything.
 
 --Problem: to use forward traversal (declarations rather than liveness) to
 --determine scope, I need to capture that only one value escapes from exprs.
@@ -34,7 +34,7 @@ import Data.Set (Set(..))
 data Structured = Structured {
   --defuns
   --includes $trueMain, which initializes memory globals and then calls main().
-  sdefuns :: Map FunVar (Pattern,[Stmt]),
+  sdefuns :: Map FunVar (BranchValue,[Stmt]),
   --pointers: globals and static values
   sglobals :: Map Name T,
   sstatic :: Map Name Const, --code or mem global => its initializer
@@ -56,7 +56,7 @@ data Stmt = Value := RHS
           | CaseTag [Var] ConstSet [(Const,[Stmt])] [Stmt]
           | Break
           | Continue
-          | Return [Var]
+          | Return [Var] --v1..vN
           | Declare [Var]
           --declares the scope, defining what the subsequent code expects
           --Each non-Declare Stmt must be preceded by a Declare

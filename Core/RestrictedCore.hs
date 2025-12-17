@@ -3,6 +3,7 @@ module Core.RestrictedCore where
 
 import AST.DTs (T(..),Name(..),E(),tupleT)
 import qualified AST.DTs as T (pattern Pair, pattern Unit)
+import Const.Const
 import Core.PrimTypes
 
 import Data.Map (Map(..))
@@ -29,7 +30,7 @@ import Data.Generics
 --Why a Pattern rather than a Var in let? Because functions such as
 --writePtr# return values you want to extract and treat individually.
 
--- $trueMain takes calldata, ext, sto etc, sets up globals and calls main
+-- $trueMain takes calldata, ext, sto etc and calls main
 --Every mapping corresponds to a letrec; all letrecs are lifted
 --Design Q: include all necessary state for compilation (less compiler flags)?
 --Con: the state exists elsewhere already.
@@ -38,15 +39,17 @@ import Data.Generics
 data Core = Core {
   --The basic blocks, including $trueMain
   coreDefuns :: Map FunVar (BranchValue, --lhs
-                            [(Value,OpE)], --body, in SSA form
-                             Branch),
+                            FunRHS),
   --Region implicit in type
   coreGlobals :: Map Name T,
   --Code global => its initializer
-  --Mem global initialization is done in trueMain
   coreStatic :: Map Name Const
   }
 --Rewrites: letrec merge, let merge, inline
+
+type FunRHS = ([(Value,OpE)] --let ops
+              ,Branch        --in branch
+              )
           
 --Straight-line expressions
 type OpE = (PrimOp,Value)
@@ -56,7 +59,7 @@ type OpE = (PrimOp,Value)
 --to compilation (modulo padding info enabling opts).
 --Side-effecting ops such as mstore implicitly consume state, requiring any
 --readers be scheduled before it. However, Core needn't care about that.
-data PrimOp = Const Const --k, f, g, Con{consts}; takes ()
+data PrimOp = Push Serialized --k, f, g, Con{consts}; takes ()
             | Op Name --copy is dup ([x],[])
   deriving (Eq,Ord,Read,Show,Data)
 --Branching expressions
@@ -66,13 +69,17 @@ data PrimOp = Const Const --k, f, g, Con{consts}; takes ()
 --datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
 data Branch = Jump BranchValue
             --The cond and then branch are dynamic and part of the value.
-            --The else branch is static (since JUMPI falls through), so it must
-            --be a FunVar.
+            --The else branch is static (since JUMPI falls through).
+            --To be able to easily estimate the size of the straight-line
+            --skeleton for inlining + express whether the else cont is
+            --inlined or not, the ops of the else branch are included in the
+            --jumpi. If jumpi's scope is (cond*th*rest), the else branch's
+            --scope is rest.
             --jumpi el (cond*th*scope,st) =
             -- if cond > 0
             -- then th (scope,st)
             -- else el (scope,st)
-            | Jumpi FunVar BranchValue
+            | Jumpi FunRHS BranchValue
             --The compilation of case depends on the range of possible values,
             --which is not determined by the type of the var being inspected
             --(many DTs have tag :: Byte but fewer than 256 constructors).
