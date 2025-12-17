@@ -50,7 +50,8 @@ data Core = Core {
 type FunRHS = ([(Value,OpE)] --let ops
               ,Branch        --in branch
               )
-          
+type Scope = [Var] --Doesn't include the State vars
+
 --Straight-line expressions
 type OpE = (PrimOp,Value)
 --The non-branching Core ops

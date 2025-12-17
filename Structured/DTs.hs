@@ -7,7 +7,8 @@ module Structured.DTs where
 import AST.DTs
 import Const.Const
 import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),
-                            FunVar(..),BranchValue(..),ConstSet(..))
+                            FunVar(..),BranchValue(..),ConstSet(..),
+                            Scope(..))
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
@@ -45,22 +46,21 @@ data Structured = Structured {
   ssizeof :: Map (Name,[T]) Integer
   }
   deriving (Eq,Ord,Read,Show)
---ifte : (Word:s) (s => s) (s => s) -> (s => s)
+--ifte : (s => Word:s) (s => s) (s => s) -> (s => s)
 --while : (s => Word:s) (s => s) -> (s => s)
---case : (s => s) -> (tag:s => s)
-data Stmt = Value := RHS
-          | Ifte Var [Stmt] [Stmt]
-          | While [Stmt] Var [Stmt]
+--case : (s => tag:struct:s) [s => s] -> (s => s)
+--Invariant: if a Stmt has a scope, that scope = locals,$ret,stk
+data Stmt = Value := OpE --a straight-line primop
+          | Call Scope [Var] Var [Var] --scope, retval, f, x (but no ret cont)
+          --The BB will need to be split across calls later!
+          | Ifte Scope [Stmt] Var [Stmt] [Stmt]
+          --Initial scope, expr, var to branch on, th, el
+          | While Scope [Stmt] Var [Stmt]
           --Why are the cases a list rather than a map? Because we can't elide
           --redundant cases at this stage.
-          | CaseTag [Var] ConstSet [(Const,[Stmt])] [Stmt]
-          | Break
-          | Continue
-          | Return [Var] --v1..vN
-          | Declare [Var]
-          --declares the scope, defining what the subsequent code expects
-          --Each non-Declare Stmt must be preceded by a Declare
-  deriving (Eq,Ord,Read,Show)
-data RHS = OpE OpE --a straight-line primop
-         | Call Var [Var] --the BB will need to be split across this later!
+          | Case Scope [Stmt] [Var] ConstSet [(Const,[Stmt])] [Stmt]
+          --Initial scope, (tag,expr), its vars, tag scheme, cases, default
+          | Break Scope
+          | Continue Scope
+          | Return Scope [Var] -- $ret, v1..vN
   deriving (Eq,Ord,Read,Show)

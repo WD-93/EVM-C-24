@@ -110,6 +110,23 @@ serInt len k = paddedBs
         bs = reverse $ n2rbs k''
         paddedBs = replicate (fromInteger len - length bs) 0 ++ bs
 
+--A utility function used to compile EInteger in Fused.Monad.
+--n larger than 2^256-1 is silently truncated.
+--Precondition: n is non-negative
+serWord :: Integer -> Serialized
+serWord n
+  | n < 0 = error $ "Compiler error: serWord expects non-negative n but got "
+            ++ show n
+  | let = let bs = reverse $ take 32 $ go n
+              len = fromIntegral $ length bs
+          in Serialized {serLength = len,
+                         serSizeof = len,
+                         serContent = [Left bs]
+                        }
+          where go = \case
+                  0 -> []
+                  n -> fromInteger (n `mod` 256) : go (n `div` 256)
+
 --Serialized is used to represent static bytestrings in code global initializers
 --and DT tags, where the bytestring may be of length >32.
 --However, when pushing a long constant it must be split into 32B words.

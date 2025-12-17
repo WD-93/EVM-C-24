@@ -131,10 +131,16 @@ copy t v = do
   w <- newVar t
   copyTo [w] [v]
   return w
+--Copy vars without modifying the type
+copyVars :: [Var] -> FFM [Var]
+copyVars xs = do
+  let ys = mapM (\(Mono x t) -> newVar t) xs
+  copyTo ys xs
+  return ys
 
 --Emits a primop with the given lhs and rhs
 emitPrim :: Value -> Name -> Value -> FusedFunM ()
-emitPrim lhs primop rhs = tell [lhs IR.:= OpE (Op primop, rhs)]
+emitPrim lhs primop rhs = tell [lhs IR.:= (Op primop, rhs)]
 
 --Emits an EVM op that consumes two words and pushes a Word, with no additional
 --effects to track. Autogens the lhs.
@@ -149,16 +155,22 @@ op1 primop a = do
   v <- newVar (W (UInt 32) 1)
   emitPrim ([v],[]) primop ([a],[])
   return v
+--Always returns a W (UInt 32) 1, i.e. a Word.
+--Truncated to 32B.
+--Precondition: n >= 0 (EVMC expresses negative numbers as negation of
+--positive ones).
 pushK :: Integer -> FusedFunM Var
-pushK n = let 
+pushK n = do
+  let ser = serWord n
+  w <- newVar (W (UInt 32) 1)
+  tell [([w],[]) IR.:= (Push ser, ([],[]))]
+  return w
 
---Declares the preceding scope and emits the IR stmt
-emitStmt :: Stmt -> FusedFunM ()
-emitStmt stmt = do
-  scope <- getScope
-  tell [IR.Declare scope, stmt]
+--The scope information is embedded in the stmt by the caller
+emitStmt :: Stmt -> FFM ()
+emitStmt stmt = tell [stmt]
 
---Generates a new Var with the given type
+--Generates a new Var with the given Core type
 newVar :: T -> FusedFunM Var
 newVar t = do
   n <- liftFused alloc

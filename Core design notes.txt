@@ -3198,6 +3198,30 @@ EArray: push es in textual order, reverse and concat. To save on stack space,
 concat eagerly.
 Only call and control flow stmts need scope; embed it in them and lift call
 to Stmt. Eliminate declare.
+Core funs (Conts) don't strictly need a forall type... the label Serialized
+doesn't have a type, just a size. The C function is (a->b); it can be coerced
+to Cont (a...Cont (b*stk) Env*stk) Env for any stk.
+Is there ever a reason to share a non-C Core fun across multiple calls with
+different stk?
+
+Should I add IR.Block scope stmts constructor? Both branches of an ifte must
+expect scope scope... empty blocks should be compiled to
+\parentScope ->
+ jump fnext nextScope
+The scope change from leaving a block will always expect a suffix of the
+current scope; there are no gotos.
+When compiling Structured [Stmt] blocks, pass a next branch rather than a
+(cont,scope) pair? You need to pass a jumpi to the if/while cond and
+a case to the case scrutinee. Passing in a non-jump poses a problem: what
+cont function to pass to Call? Either alloc on demand or always alloc... the
+latter seems simpler.
+Ifte and while implicitly block-scope their branches, e.g.
+if cond then var x = 3 else {} end. Am I correct in assuming passing in a
+next which expects less scope is unproblematic?
+Core compilation: Scope -> [Stmt] -> next:(FunVar,Scope) -> m (FunVar,Scope)
+The enclosing scope from the if/while/case lets you compile empty blocks to
+functions; the initial scope is the function argument + $ret.
+The final (cont,scope) is (null@[retType], $ret).
 
 Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
 

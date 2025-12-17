@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Fused where
 
 import AST.DTs
@@ -104,34 +105,111 @@ convertS s = cleanup $
     SE e -> convertE e >> return ()
     A.Return e -> do
       (vs,t) <- convertE e
-      emitStmt $ IR.Return vs
+      scope <- getScope
+      emitStmt $ IR.Return scope vs
     A.Ifte e th el -> do
       scope <- getScope
-      (vs,_t) <- convertE e
-      w <- truthy vs
+      (w,cond) <- collectCond scope e
       --The then and else branch have starting scope = scope
       ths <- block scope th
       els <- block scope el
-      putScope $ w:scope
-      emitStmt $ IR.Ifte w ths els
-    A.While e body -> error "todo"
-    A.Case e cases -> error "todo"
-    Block ss -> error "todo"
-    A.Break -> error "todo"
-    A.Continue -> error "todo"
+      emitStmt $ IR.Ifte scope cond w ths els
+    A.While e body -> do
+      scope <- getScope
+      (vs,cond) <- collectCond scope e
+      bcode <- block scope body
+      emitStmt $ IR.While scope cond vs bcode
+    A.Case e cases -> do
+      scope <- getScope
+      --Need to eval e in scope (pushing it to the stack), then push its
+      --tag as well.
+      error "todo"
+    --A stmt with higher scope (suffix) may safely follow one with lower; no
+    --special construct is needed for blocks or block end in Structured.
+    Block ss -> do
+      scope <- getScope
+      mapM_ convertS ss
+      putScope scope
+    A.Break -> getScope >>= (emitStmt . IR.Break)
+    A.Continue -> getScope >>= (emitStmt . IR.Continue)
   where cleanup m = do
           scope <- getScope
           m
           putScope scope
-convertE :: E -> FusedFunM ([Var],T)
-convertE = error "todo"
+--Evaluates an e in the given scope and applies truthy to it, returning the
+--result and body.
+collectCond :: Scope -> E -> FFM (Var,[Stmt])
+collectCond scope e =
+  collect scope $ do
+  (vs,_t) <- convertE e
+  truthy vs
+
+--Invariants: if it returns (vs,t), length vs is the word length of t and
+--the scope effect is (vs++).
+convertE :: E -> FFM ([Var],T)
+convertE e = pushScope $ go e
+  where go = \case
+          EInteger n -> do
+            w <- pushK n
+            return ([w], UInt 32)
+          --A local variable; find its wordlen n, then result = copy
+          --x.1 .. x.n
+          --Not copying would lead to a subtle bug:
+          --var y = x;
+          --x++ //would be visible in y
+          TypedVar (Just t) x -> do
+            xs <- localToVars t x
+            ys <- copyVars xs
+            return (ys,t)
+          f :$ x -> do
+            (fs,a2b) <- convertE f
+            let [fv] = fs
+                a :-> b = a2b
+            (xs,_) <- convertE x
+            scope <- getScope --will be xs++fs++original scope
+            res <- newVars b
+            emitStmt $ Call scope res fv xs
+            return res
+          -- ::: eliminated in HM
+          p A.:= e -> error "todo"
+          EArray (Just t) es -> error "todo"
+          --Either g or f.
+          TyApp nm ts -> error "todo"
+          CaseE e cases -> error "todo"
+          --What is the me for again?
+          OpAssign me p op e -> error "todo"
+        pushScope :: FFM ([Var],T) -> FFM ([Var],T)
+        pushScope m = do
+          scope <- getScope
+          (vs,t) <- m
+          putScope $ vs ++ scope
+          return (vs,t)
+
+--TODO reuse at the other location I use "."
+localToVars :: T -> Name -> FFM [Var]
+localToVars t x = do
+  wlen <- numWords t
+  return [Mono (x++"."++show n) t | n <- [1..wlen]]
+
+--These must be here because they trigger DT exploration; Fused.Monad is for
+--basic stuff.
+--Generates new vars with the given C type
+newVars :: T -> FFM [Var]
+newVars t = do
+  wlen <- numWords t
+  mapM newVar [W t n | n <- [1..wlen]]
+--Explore the given monomorphic t, then return its size
+sizeof :: T -> FusedM Integer
+sizeof = error "todo"
+numWords :: T -> FusedM Integer
+numWords t = ((`div` 32) . (`roundedUpMod` 32)) <$> sizeof t
 
 --Inline disjunction of the given word vars using the OR opcode
 --If the vars are empty, returns the identify of OR: 0.
 truthy :: [Var] -> FusedFunM Var
 truthy [] = pushK 0
-truthy ws = go w ws
-  where go ws = \case
+truthy ws = go ws
+  where go = \case
           --Copy rather than reuse avoids a scope where several vars with
           --the same name are on the stack.
           --Also, the result should be coerced to a Word...
@@ -142,8 +220,17 @@ truthy ws = go w ws
 
 --Collect the stmts of a block, isolating the writer effect and resetting the
 --scope.
-block :: [Var] -> S -> FFM [Stmt]
-block = error "todo"
+block :: Scope -> S -> FFM [Stmt]
+block scope s = snd <$> collect scope (convertS s)
+--Ditto but more general.
+collect :: Scope -> FFM a -> FFM (a,[Stmt])
+collect scope ffm = do
+  cache <- getScope
+  pass $ do
+    putScope scope
+    (a,stmts) <- listen ffm --collect the emitted stmts
+    putScope cache
+    return ((a,stmts), const []) --intercept them
 
 --Typechecked module =>
 --f@ts => structured IR
