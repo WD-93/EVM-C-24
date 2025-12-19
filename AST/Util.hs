@@ -36,19 +36,27 @@ roll sel a = go [] a
 --The free vars (all of which should be locals in scope) of a pattern.
 --Free vars in subexprs such as in *e are not included.
 --Therefore naive everything won't work.
-freeVarsPatG :: (a -> a -> a) -> (Name -> a) -> a -> Pat -> a
+freeVarsPatG :: (a -> a -> a) -> (Maybe T -> Name -> a) -> a -> Pat -> a
 freeVarsPatG f2 f1 f0 = go
   where go = \case
           PWild _ -> f0
-          TypedPVar _ nm -> f1 nm
+          TypedPVar mt nm -> f1 mt nm
           Deref _ _ -> f0
           PDot _ p _ -> go p
           PBang _ p _ -> go p
           PCon _ _ nmps -> foldr f2 f0 $ map (go . snd) nmps
 freeVarsPat :: Pat -> Set Name
-freeVarsPat = freeVarsPatG (S.union) S.singleton S.empty
+freeVarsPat = freeVarsPatG (S.union) (const S.singleton) S.empty
 freeVarsPatList :: Pat -> [Name]
-freeVarsPatList = freeVarsPatG (++) (:[]) []
+freeVarsPatList = freeVarsPatG (++) (const (:[])) []
+--Used in compiling the pattern matching of the lhs in Fused.
+--Errors if any PVar isn't typed.
+freeTypedVarsPatList :: Pat -> [(Name,T)]
+freeTypedVarsPatList = freeVarsPatG (++)
+  (\mt nm ->
+      case mt of
+        Nothing -> error "Compiler error: untyped PVar after HM"
+        Just t -> [(nm,t)]) []
 
 --The function name to which each constructor of Op corresponds
 op2fun :: Op -> Name

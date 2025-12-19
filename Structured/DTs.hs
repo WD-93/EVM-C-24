@@ -7,7 +7,7 @@ module Structured.DTs where
 import AST.DTs
 import Const.Const
 import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),
-                            FunVar(..),BranchValue(..),ConstSet(..),
+                            FunVar(..),BranchValue(..),
                             Scope(..))
 
 import Data.Map (Map(..))
@@ -34,7 +34,7 @@ import Data.Set (Set(..))
 --Core program.
 data Structured = Structured {
   --defuns
-  --includes $trueMain, which initializes memory globals and then calls main().
+  --includes $trueMain, which calls main() and then stop()s.
   sdefuns :: Map FunVar (BranchValue,[Stmt]),
   --pointers: globals and static values
   sglobals :: Map Name T,
@@ -58,9 +58,10 @@ data Stmt = Value := OpE --a straight-line primop
           | While Scope [Stmt] Var [Stmt]
           --Why are the cases a list rather than a map? Because we can't elide
           --redundant cases at this stage.
-          | Case Scope [Stmt] [Var] ConstSet [(Const,[Stmt])] [Stmt]
+          --TODO change args; dropped for now
+          -- | Case Scope [Stmt] [Var] ConstSet [(Const,[Stmt])] [Stmt]
           --Initial scope, (tag,expr), its vars, tag scheme, cases, default
           | Break Scope
           | Continue Scope
-          | Return Scope [Var] -- $ret, v1..vN
+          | Return Scope [Var] --v1..vN
   deriving (Eq,Ord,Read,Show)

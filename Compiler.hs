@@ -31,6 +31,10 @@ import Desugar.Desugar (desugar)
 import Unshadow.Unshadow (unshadow)
 --Type checking
 import Typecheck.TC (typecheck, TCError(..))
+--Structured IR
+import Structured.DTs (Structured(..))
+import Fused.Monad (FusedError(..))
+import Fused (compileStructured)
 --TODO replace Mono, Sizeof, GlobalLayout, Serialize, Structured with Fused.
 {-
 --Monomorphization
@@ -58,6 +62,7 @@ data CompilerError = ParserError String
                    | ConflictingDecls [ConflictingDecls]
                    | DesugarError DError
                    | TypeCheckError TCError
+                   | FusedError FusedError
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -176,6 +181,10 @@ pipeline2unshadow str = unshadow <$> pipeline2desugar str
 pipeline2typechecked str = do
   m <- pipeline2unshadow str
   typecheck m ? TypeCheckError
+pipeline2structured :: String -> Either CompilerError Structured
+pipeline2structured str = do
+  m <- pipeline2typechecked str
+  compileStructured m ? FusedError
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str

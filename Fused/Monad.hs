@@ -97,7 +97,14 @@ newtype FusedFunM a = FFM {runFFM :: ReaderT FusedFunR
             MonadError FusedError)
 liftFused :: FusedM a -> FusedFunM a
 liftFused m = FFM $ lift $ lift $ lift m
-
+unliftFFM :: FFM a -> FusedFunR -> FusedFunS ->
+             FusedM (a,FusedFunS,[Stmt])
+unliftFFM ffm ffr ffs = do
+  ((a,stmts),ffs') <- flip runStateT ffs $
+                      runWriterT $
+                      flip runReaderT ffr $
+                      runFFM ffm
+  return (a,ffs',stmts)
 --Alloc off the general-purpose counter
 alloc :: FusedM Integer
 alloc = do

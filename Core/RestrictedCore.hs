@@ -86,11 +86,14 @@ data Branch = Jump BranchValue
             --(many DTs have tag :: Byte but fewer than 256 constructors).
             --The range of possible values must either be inferred from
             --context or passed as an argument.
+            --TODO change arguments; dropped for now
+            {-
             | Case Var              --tag inspected
                    ConstSet         --An upper bound on possible consts
                    (Map Const FunVar) --cases
                    FunVar           --default case
                    BranchValue      --scope
+            -}
             --Change: revert and return take off, len, state vars
             --They are equivalent to variants which take a bytestring
             --and persisted state vars in the case of return
@@ -104,6 +107,8 @@ data Branch = Jump BranchValue
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.
 
+--Redundant: TagScheme (E,Serialized) contains the same info
+{-
 data ConstSet = Consts [Const]
               --The sets of possible values for DTs with tag scheme N1 and N16
               --are represented compactly.
@@ -116,9 +121,14 @@ data ConstSet = Consts [Const]
                       csHi :: Integer
                      }
   deriving (Eq,Ord,Read,Show,Data)
+-}
 --Dynamic value names, as distinct from functions and globals.
 data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
   deriving (Eq,Ord,Read,Show,Data)
+
+--Core functions have string labels...
+type FunVar = Name
+{-
 --Note that now Core functions are polymorphic in stk (except in possible edge
 --cases where they don't take stack at all) the name FMono is misleading;
 --FPoly represents the equivalent of C functions, whose names take an additional
@@ -126,6 +136,7 @@ data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
 data FunVar = FMono Name T --for auto-generated BBs
             | FPoly Name [T] T --for user-level functions
   deriving (Eq,Ord,Read,Show,Data)
+-}
 --Arg : Type -> State -> Argument
 --State, Argument : Kind
 --SUnit : State
@@ -154,12 +165,15 @@ type BranchValue = ([Var],Maybe Var,[Var])
 --Validity:
 --All content bytes are 0 <= b < 256.
 --Label slices are in the range of the given label.
+type Const = Serialized
+{-
 newtype Const = MkConst [(Int, --byte length
                           Either (String,Int) --label name, slice offset
                           [Int] --bytes
                          )
                         ]
   deriving (Eq,Ord,Read,Show,Data)
+-}
 
 --Minimal env: (stackScope,($mem,$cd) :: Env)
 --type Env = (Memory#,Calldata#)
@@ -177,6 +191,13 @@ envT = sTupleT [MemSlice, CalldataState]
 envV :: [Var]
 envV = [Mono "$mem" MemSlice,
         Mono "$cd" CalldataState]
+
+--The type of $ret for a C function : a -> b
+--Fused knows the wordsize, so it passes it. 
+returnContT :: Integer -> T -> T
+returnContT wlen b =
+  let bs = [W b (TyNat n) | n <- [1..wlen]]
+  in Cont (foldr SPair (TyVar "stk") bs) envT
 --Core functions, in which Env passing is made explicit:
 --(->#) : Type -> Type -> Type
 --data a -># b

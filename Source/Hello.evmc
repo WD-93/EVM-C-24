@@ -1,0 +1,13 @@
+//Hello World in the new EVMC dialect; used to test minimal compiler pipeline
+import Prelude;
+
+main : () -> ();
+main () := {
+     var p = coerce 0 :: MPtr (Array 12 Byte);
+     copy(p,&hello,1);
+     returnPtr p
+};
+//Instead of using an inline string (which would be incredibly inefficient
+//before constant expansion opts), we use a code global.
+hello : Array 12 Byte;
+code hello = "Hello World!";

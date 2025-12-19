@@ -2,7 +2,7 @@
 module Fused where
 
 import AST.DTs
-import AST.Util (unrollTyApps)
+import AST.Util (rollTyApps,unrollTyApps,freeTypedVarsPatList)
 import qualified AST.DTs as A
 import Const.Const
 import Structured.DTs
@@ -95,10 +95,101 @@ exploreF f ts =
             Left _ -> instClass f ts ft tpss
             Right v2t -> let Right ps' = instT v2t (p,s)
                          in return ps'
+--Generate the Structured definition of a given C function, store it in
+--fsDefuns.
+--Primfuns are handled in Core rather than Structured (which can only express
+--normal return, not e.g. stop).
+--Calling convention for a -> b:
+--Type: Cont (a#1..a#n,Cont (b#..b#m,stk) Env,stk) Env
+--where n, m is wordsize a, b
+--LHS: (($arg.1..$arg.n,$ret,$stk),<env>)
+--That also gives the initial scope.
+--First declare every local in p, then match $arg with it and set the scope
+--to the locals in order of occurrence.
+--(x,y,z) patterns should have zero-overhead matching.
+--Consequence: f(x,*x) := ... --the x in *x will eval to 0; exprs in patterns
+--are fully evaluated before any matching is done.
 convertF :: Name -> [T] -> T -> (Pat,S) -> FusedM ()
-convertF f ts ft = do
-  let funvar = FPoly f ts ft
-  error "todo"
+convertF f ts ft ps = do
+  let flabel = mkLabel f ts
+  --Generate structured definition
+  sdef <- convertDef f ts ft ps
+  modify (\fs -> fs{fsDefuns = M.insert flabel sdef $ fsDefuns fs})
+convertDef :: Name -> [T] -> T -> (Pat,S) -> FusedM (BranchValue,[Stmt])
+convertDef f ts ft@(a :-> b) (p,s) = do
+  scope <- initialScope a b --triggers DT exploration
+  ((),_ffs,stmts) <- unliftFFM (compileF f ts a b p s) (FFR (f,ts))
+                     FFS {ffsScope = scope,
+                           ffsInLoop = False
+                         }
+  return ((scope,Just $ Mono ("$stk") (TyVar "stk"), envV),stmts)
+-- $arg.1..$arg.n,ret,stk
+initialScope :: T -> T -> FusedM Scope
+initialScope a b = do
+  --Annoying... I should've implemented capab classes. TODO
+  (arg,_,_) <- unliftFFM (localToVars a "$arg")
+               (error "ignored") (error "ignored")
+  wlen <- numWords b
+  return $ arg ++ [Mono "$ret" (returnContT wlen b)]
+  
+compileF :: Name -> [T] -> T -> T -> Pat -> S -> FFM ()
+compileF f ts a b p s = do
+  --The last word is $ret
+  scope <- getScope
+  let arg = init scope
+  --Mistake: freeVarsPatList returns [Name] rather than [(Name,Maybe T)]
+  --I'll have to make a variant.
+  let vts = freeTypedVarsPatList p
+  --Each local is declared as null()
+  z <- pushK 0
+  localVars <- concat <$> mapM (\(nm,t) -> localToVars t nm) vts
+  copyTo localVars $ replicate (length localVars) z
+  --We need the vars on the stack now for pattern eval to work...
+  --this will need to be optimized away.
+  putScope $ localVars ++ scope
+  --Eval the pattern p's exprs and assign the preexisting arg to it
+  assignValue p arg
+  --Generate the function body
+  putScope localVars
+  convertS s
+  returnNull b
+
+--Assigns vs to the given pattern
+assignValue :: Pat -> [Var] -> FFM ()
+assignValue p vs = do
+  ep <- evaluatePat p
+  assignEP ep vs
+--Consider the expression ptr[f()]++. To avoid repeating the side effect of
+--f() and storing to a different address than was loaded from,
+--it must be evaluated and bound to vars.
+--EvaluatedPat replaces every expr in a Pat with its evaluated result.
+evaluatePat :: Pat -> FFM EvaluatedPat
+evaluatePat = error "todo"
+--p++ => ep <- evaluatePat p; x <- evalEP ep, assignEP ep (inc x)
+--Do I also need to return a t?
+evalEP :: EvaluatedPat -> FFM [Var]
+evalEP = error "todo"
+assignEP :: EvaluatedPat -> [Var] -> FFM ()
+assignEP = error "todo"
+data EvaluatedPat = EPPlaceholder
+  deriving (Eq,Ord,Read,Show)
+
+--Generates the code to return null. Huh, I actually don't need to make null
+--a primitive: its code will be auto-generated given an empty body.
+returnNull :: T -> FFM ()
+returnNull t = do
+  scope <- getScope --we only need $ret
+  ret <- cNull t
+  emitStmt $ IR.Return (ret ++ [last scope]) ret
+--Inline null()
+--I can't call it null, it collides with Prelude...
+cNull :: T -> FFM [Var]
+cNull t = do
+  --It's better for opt purposes to copy a single var
+  z <- pushK 0 -- :: Word
+  ret <- newVars t
+  copyTo ret $ replicate (length ret) z
+  return ret
 
 exploreG :: Name -> FusedM ()
 exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
@@ -320,7 +411,13 @@ newVars t = do
   mapM newVar [W t $ TyNat n | n <- [1..wlen]]
 --Explore the given monomorphic t, then return its size
 sizeof :: T -> FusedM Integer
-sizeof = error "todo"
+sizeof t = do
+  let (TyCon tycon, ts) = rollTyApps t
+  exploreD (tycon,ts)
+  sizes <- gets fsSizeof
+  case M.lookup (tycon,ts) sizes of
+    Nothing -> error "!?"
+    Just sz -> return sz
 numWords :: T -> FusedM Integer
 numWords t = ((`div` 32) . (`roundedUpMod` 32)) <$> sizeof t
 
@@ -352,6 +449,7 @@ collect scope ffm = do
     putScope cache
     return ((a,stmts), const []) --intercept them
 
+-------------------------------------------------------------------------------
 --Typechecked module =>
 --f@ts => structured IR
 --non-code g => offset
