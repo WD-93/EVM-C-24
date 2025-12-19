@@ -3221,7 +3221,56 @@ next which expects less scope is unproblematic?
 Core compilation: Scope -> [Stmt] -> next:(FunVar,Scope) -> m (FunVar,Scope)
 The enclosing scope from the if/while/case lets you compile empty blocks to
 functions; the initial scope is the function argument + $ret.
-The final (cont,scope) is (null@[retType], $ret).
+The final (cont,scope) is (null@[retType], $ret). Nice, if it's not inlined
+away you can share the null return for the same type (FW: for equivalent
+bytecode graphs).
+
+Note for writeup: nesting all blocks within non-op Stmts and annotating them
+with Scope was the key choice that made the rest easy.
+
+On symbolic eval/constant expansion: should I represent bytestrings as
+Integers rather than [Int]? That would be more memory-efficient and would make constant expansion simpler and cheaper.
+
+FW: closed typeclasses allowing one to specify the order in which instances
+are tried. That would let you implement eqtype : (P a, P b) -> Bool.
+
+Problem: I push function labels, not FunVars, in convertE.
+Labels make Serialized behavior obvious, but I need to recognize them as
+functions when inlining.
+Structured functions correspond to C functions:
+they're identified by (Name,[T]) and take a Scope = 
+as++[$ret : Cont (bs*stk) Env]. They always take a stk... so stop must as
+well. The stop branch doesn't, however.
+Their type is forall stk . Cont (as...Cont (bs...stk) Env*stk) Env
+Every Structured function has a label... even if the function later gets
+optimized away.
+Map from label to function? Then I can recognize function pushes, though the
+results could get wacky if the function is coerced. But sometimes it makes
+sense to coerce a function, e.g.
+(a -> b) => (a,(b,c) -> d,c) -> d
+Alt: a new PushFun op.
+Serialized is a subset of symbolic exprs without a type annot.
+If I change anything, it should be to extend Serialized; it still makes sense to push functions.
+
+TODO special-case primfuns, check they have correct tysig and empty body to
+avoid generating ill-typed code when a different definition is given.
+Plan: narrow pipeline, just enough for Hello World.
+Locals, constants, Ptr read and write for whole words.
+Constructor support: Pair (Append with whole-word args, WordPad), Unit, Ptr, Int.
+No case, no opts.
+
+Compiling case: Structured handles primop generation, so isn't it needlessly
+complex to generate more in later stages? No, the case functions are Core,
+not structured - Structured can't generate the code because the functions
+don't exist yet.
+For UBDTs:
+Nil: coerce value, assign.
+N16: push JT, shr by tag, mask 16, jump --can be DCE'd to static jump
+N1 (binary): a simple ifte, Structured could handle that
+N1 (>2): push &JT, add 5*tag, jump. Needs a concept of JTs in Core.
+Custom: start with an O(n) switch since the ordering of constants can't in
+general be known (they might contain functions and code global pointers).
+Best to leave case compilation to Core rather than split it.
 
 Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
 

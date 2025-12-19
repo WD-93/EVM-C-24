@@ -21,10 +21,11 @@ data Serialized = Serialized {serLength :: Integer, --length in bytes
 emptySer = Serialized 0 0 []
 --Invariant: Content is in normal form, i.e. there are no adjacent [Int]
 --regions, no empty [Int] regions nor zero-size labels.
-type Content = [Either [Int] (Int,   --off
-                              Int,   --len
-                              String --label name
-                             )]
+type Content = [SerElem]
+type SerElem = Either [Int] (Int,   --off
+                          Int,   --len
+                          String --label name
+                         )
 --Quick-and-dirty solution: apply separate normalization function rather than
 --merging it with concatenation and other ops.
 normalizeContent :: Content -> Content
@@ -93,6 +94,14 @@ leftPadSer s =
 mkLabel :: Name -> [T] -> String
 mkLabel nm ts = nm ++ show ts
 
+--A serialized function or global label; non-code global labels will be
+--replaced with constants before Core optimization.
+serLabel2 :: Name -> [T] -> Serialized
+serLabel2 nm ts = Serialized {serLength = 2,
+                              serSizeof = 2,
+                              serContent = [Right (0,2,mkLabel nm ts)]
+                             }
+
 --Convert an Integer to an n-byte big-endian two's complement bytestring.
 --Silently truncates if the number doesn't fit; TODO warn on precision loss.
 --TODO deduplicate with existing Asm.integer2Bytes, though this one is more
@@ -126,6 +135,83 @@ serWord n
           where go = \case
                   0 -> []
                   n -> fromInteger (n `mod` 256) : go (n `div` 256)
+
+--Split a Serialized with sizeof n into ceil(n/32) words; used for pushing
+--constructor tags.
+--Note length may be < sizeof, indicating Serialized contains a constructor
+--smaller than the sizeof its type (e.g. Nil or Nothing).
+--In that case, zero-valued right-padding words may be added.
+splitSer :: Serialized -> [Serialized]
+splitSer ser = map stripZeroes $ go $ rightPadSer ser
+  where go ser
+          | serSizeof ser == 0 = []
+          | serSizeof ser < 32 = [ser]
+          | let = let (w,rest) = takeDropSer 32 ser
+                  in w : go rest
+--Problem: serSizeof > serLength indicates right-padding, but stripZeroes
+--removes left-padding zero bytes. That's OK for now since we'll just be
+--pushing the Serialized, not concatenating it.
+--TODO make two Serialized types with different invariants: a left-padded and
+--right-padded version?
+stripZeroes :: Serialized -> Serialized
+stripZeroes ser =
+  case serContent ser of
+    Left bs : rest -> 
+      let len = serLength ser
+          bs' = dropWhile (==0) bs
+          dropped = fromIntegral $ length $ takeWhile (==0) bs
+      in Serialized {
+        serLength = len - dropped,
+        serSizeof = serSizeof ser, --irrelevant
+        serContent = if null bs' then rest else Left bs' : rest
+        }
+    _ -> ser
+
+--Precondition: serLength ser > len, len >= 0
+--Splits ser into the first len bytes and the rest.
+--Algo: while len > lengthContent of the next content, consume it and len-=lc.
+--If len == 0, stop.
+--Otherwise split the content and stop.
+takeDropSer :: Integer -> Serialized -> (Serialized,Serialized)
+takeDropSer len ser
+  | serLength ser < len || len < 0 = error "takeDropSer precondition violated"
+  | let = let (c1,c2) = go (fromInteger len) $ serContent ser
+          in (Serialized {
+                 serLength = len,
+                 serSizeof = len,
+                 serContent = normalizeContent c1
+                 },
+              Serialized {
+                 serLength = serLength ser - len,
+                 serSizeof = serLength ser - len,
+                 serContent = normalizeContent c2
+                 }
+             )
+          where go :: Int -> Content -> (Content,Content)
+                go len cs
+                  | len == 0 = ([],cs)
+                  | c:cs' <- cs =
+                      let lc = lengthContent c
+                      in if len > lc
+                         then let (prefix,suffix) = go (len-lc) cs'
+                              in (c:prefix,suffix)
+                         else let (prec,sufc) = splitContent len c
+                              in ([prec],sufc:cs')
+                  | let = error "len > serLength in takeDropSer!"
+
+--The length of a single Content element (a label slice or bytestring)
+lengthContent :: SerElem -> Int
+lengthContent = \case
+  Left bs -> length bs
+  Right (_off,len,lab) -> len
+--Precondition: the content's length >= len
+splitContent :: Int -> SerElem -> (SerElem,SerElem)
+splitContent len c
+  | lengthContent c < len = error "len > length of content in splitContent!"
+  | let = case c of
+            Left bs -> (Left $ take len bs, Left $ drop len bs) 
+            Right (off,lc,lab) ->
+              (Right (off,len,lab), Right (off+len,lc-len,lab))
 
 --Serialized is used to represent static bytestrings in code global initializers
 --and DT tags, where the bytestring may be of length >32.

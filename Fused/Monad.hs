@@ -134,7 +134,7 @@ copy t v = do
 --Copy vars without modifying the type
 copyVars :: [Var] -> FFM [Var]
 copyVars xs = do
-  let ys = mapM (\(Mono x t) -> newVar t) xs
+  ys <- mapM (\(Mono x t) -> newVar t) xs
   copyTo ys xs
   return ys
 
@@ -162,9 +162,23 @@ op1 primop a = do
 pushK :: Integer -> FusedFunM Var
 pushK n = do
   let ser = serWord n
-  w <- newVar (W (UInt 32) 1)
+  w <- newVar $ W (UInt 32) 1
   tell [([w],[]) IR.:= (Push ser, ([],[]))]
   return w
+--Pushes a global or function label of C type T
+pushLabel2 :: Name -> [T] -> T -> FFM Var
+pushLabel2 nm ts t = do
+  let ser = serLabel2 nm ts
+  w <- newVar $ W t 1
+  tell [([w],[]) IR.:= (Push ser, ([],[]))]
+  return w
+--Pushes the lower 32B of a Serialized value
+pushSerWord :: Serialized -> T -> FFM Var
+pushSerWord = error "todo"
+--Used for pushing a tag, which may be 0 or more words
+--First split the serialized into words, then pushSer them
+pushMultiWordSer :: Serialized -> T -> FFM [Var]
+pushMultiWordSer = error "todo"
 
 --The scope information is embedded in the stmt by the caller
 emitStmt :: Stmt -> FFM ()

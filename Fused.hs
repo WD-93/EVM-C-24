@@ -2,6 +2,7 @@
 module Fused where
 
 import AST.DTs
+import AST.Util (unrollTyApps)
 import qualified AST.DTs as A
 import Const.Const
 import Structured.DTs
@@ -19,6 +20,7 @@ import Control.Monad.Reader
 import Control.Monad.Writer
 import Control.Monad.State
 import Control.Monad.Except
+import Control.Monad
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod =
@@ -61,8 +63,42 @@ compileStructuredM = do
 --recursively explored.
 --TODO reuse code from Mono.Mono
 exploreF :: Name -> [T] -> FusedM ()
-exploreF f ts = idempotent fsVisitedFuns (\fs x->fs{fsVisitedFuns=x}) (f,ts) $
-                error "todo"
+exploreF f ts =
+  idempotent fsVisitedFuns (\fs x->fs{fsVisitedFuns=x}) (f,ts) $ do
+  mod <- ask
+  def <- case M.lookup f $ defuns mod of
+           Just def -> return def
+           _ -> throwError $ GenericFE "Missing f in exploreF"
+  (params,t) <- case M.lookup f $ tysigs mod of
+                  Just sig -> return sig
+                  _ -> throwError $ GenericFE "Missing sig in exploreF"
+  --Assumption: length params == length ts
+  let v2t = M.fromList $ zip params ts
+      Right ft = instT v2t t --f@ts's monotype
+  monoDef <- case def of
+               --A normal defun:
+               Left ps -> let Right ps' = instT v2t ps
+                          in return ps'
+               --A class function:
+               --Find the first instance which matches
+               Right tpsset ->
+                 let tpss = S.toList tpsset
+                 in instClass f ts ft tpss
+  --Generate the Structured definition
+  convertF f ts ft monoDef
+    where
+      instClass :: Name -> [T] -> T -> [(T,Pat,S)] -> FusedM (Pat,S)
+      instClass f ts ft = \case
+        [] -> throwError $ GenericFE $ "No instance for "++f++"@"++show ts
+        (t,p,s):tpss ->
+          case bindT t ft of
+            Left _ -> instClass f ts ft tpss
+            Right v2t -> let Right ps' = instT v2t (p,s)
+                         in return ps'
+convertF :: Name -> [T] -> T -> (Pat,S) -> FusedM ()
+convertF f ts ft = do
+  let funvar = FPoly f ts ft
+  error "todo"
 
 exploreG :: Name -> FusedM ()
 exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
@@ -71,6 +107,37 @@ exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
 exploreD :: MonoT -> FusedM ()
 exploreD mt = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x})mt$
               error "todo"
+
+--nm is either a function or global; explore it.
+exploreTyApp  :: Name -> [T] -> FusedM ()
+exploreTyApp nm ts = do
+  mod <- ask
+  case () of
+    _ | M.member nm $ globals mod, null ts -> exploreG nm
+      | M.member nm $ defuns mod -> exploreF nm ts
+      | otherwise ->
+        error $ "Compiler error in exploreTyApp: undefined "++nm++"@"++show ts
+
+--Return the type of nm@ts
+--TODO write instScheme, put it somewhere appropriate
+typeTyApp :: Name -> [T] -> FusedM T
+typeTyApp nm ts = do
+  mod <- ask
+  case M.lookup nm $ tysigs mod of
+    Just (params,ty)
+      | length params /= length ts ->
+        error "Compiler error in typeTyApp: param len mismatch"
+      | let -> let v2t = M.fromList $ zip params ts
+                   Right t = instT v2t ty
+               in return t
+    _ -> error $ "Compiler error in typeTyApp: no tysig for " ++ nm
+--The type of Con@ts {...} = TyCon ...ts
+typeCon :: Name -> [T] -> FusedM T
+typeCon con ts = do
+  mod <- ask
+  case M.lookup con $ conInfo $ dtsInfo mod of
+    Just ci -> return $ unrollTyApps (TyCon $ conParent ci) ts
+    _ -> error $ "Compiler error in typeCon: nonexistent con " ++ con
 
 --Given a getter, setter and key, ensures an idempotent action is run only
 --once for the given set and key.
@@ -161,6 +228,7 @@ convertE e = pushScope $ go e
             xs <- localToVars t x
             ys <- copyVars xs
             return (ys,t)
+          --Push f, push x, call f x
           f :$ x -> do
             (fs,a2b) <- convertE f
             let [fv] = fs
@@ -169,15 +237,50 @@ convertE e = pushScope $ go e
             scope <- getScope --will be xs++fs++original scope
             res <- newVars b
             emitStmt $ Call scope res fv xs
-            return res
+            return (res,b)
           -- ::: eliminated in HM
           p A.:= e -> error "todo"
+          --Eval es in textual order, reverse and concat
+          --Need to optimize to avoid dups and swaps out of range... eagerly
+          --shift and or, CE.
           EArray (Just t) es -> error "todo"
-          --Either g or f.
-          TyApp nm ts -> error "todo"
-          CaseE e cases -> error "todo"
+          --Either g or f; either way push a 2B label.
+          --Storing only typarams and not the type in TyApp was a mistake...
+          --To get type: fetch scheme from tysigs, instantiate.
+          TyApp nm ts -> do
+            liftFused $ exploreTyApp nm ts
+            t <- liftFused $ typeTyApp nm ts
+            w <- pushLabel2 nm ts t
+            return ([w],t)
+          --caseE not supported yet
+          --CaseE e cases -> error "todo"
           --What is the me for again?
-          OpAssign me p op e -> error "todo"
+          OPAssign me p op e -> error "todo"
+          --PPPre et al mostly the same
+          --Special case: WordPad {unWordPad: e} has zero runtime overhead.
+          ConRecord "WordPad" (Just [a]) [("unWordPad",e)] -> do
+            (vs,_a) <- convertE e
+            res <- newVars $ WordPad a
+            copyTo res vs
+            return (res, WordPad a)
+          --All Con {} with tag scheme nil are null(), but that can be achieved
+          --via constant expansion anyway.
+          --Standard:
+          --eval fields, concat with tag if any, stitch in canonical field order
+          --default value if field missing: 0
+          --Need opts to shift/or eagerly to avoid blowing up the stack. 
+          ConRecord con (Just ts) field_es -> do
+            (ser,t) <- liftFused $ getTag con ts
+            --TODO double-check repeated fields have already been ruled out.
+            field2vs <- M.fromList <$> forM field_es (\(field,e) -> do
+                                                         vs <- convertE e
+                                                         return (field,vs))
+            tag <- pushMultiWordSer ser t --May be 0 or >1 words
+            --If the constructor has tag scheme Nil, tag will be 0 words
+            t <- liftFused $ typeCon con ts --TyCon ts
+            res <- constructCon con ts tag field2vs
+            return (res,t)
+          Dot e (Just ts) field -> error "todo"
         pushScope :: FFM ([Var],T) -> FFM ([Var],T)
         pushScope m = do
           scope <- getScope
@@ -185,10 +288,27 @@ convertE e = pushScope $ go e
           putScope $ vs ++ scope
           return (vs,t)
 
+--TODO place helpers in sensible order
+--Gets the serialized constructor tag (a single, potentially multi-word
+--bytestring).
+getTag :: Name -> [T] -> FusedM (Serialized,T)
+getTag = error "todo"
+
+--Concat tag and fields in canonical order;
+--same procedure as for array construction.
+--FW opt: use knowledge about zero bytes in the element types to avoid
+--stitching work.
+--Ex: Struct(WordPad Short, Short) --that's two words on the stack, but the
+--top word is always 0 because it only contains two padding bytes from
+--WordPad Short.
+constructCon :: Name -> [T] -> [Var] ->
+                Map Name ([Var], T) -> FusedFunM [Var]
+constructCon con ts = error "todo"
+
 --TODO reuse at the other location I use "."
 localToVars :: T -> Name -> FFM [Var]
 localToVars t x = do
-  wlen <- numWords t
+  wlen <- liftFused $ numWords t
   return [Mono (x++"."++show n) t | n <- [1..wlen]]
 
 --These must be here because they trigger DT exploration; Fused.Monad is for
@@ -196,8 +316,8 @@ localToVars t x = do
 --Generates new vars with the given C type
 newVars :: T -> FFM [Var]
 newVars t = do
-  wlen <- numWords t
-  mapM newVar [W t n | n <- [1..wlen]]
+  wlen <- liftFused $ numWords t
+  mapM newVar [W t $ TyNat n | n <- [1..wlen]]
 --Explore the given monomorphic t, then return its size
 sizeof :: T -> FusedM Integer
 sizeof = error "todo"
