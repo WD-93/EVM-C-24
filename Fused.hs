@@ -21,6 +21,7 @@ import Control.Monad.Writer
 import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad
+import Data.List (elemIndex)
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod =
@@ -157,22 +158,84 @@ compileF f ts a b p s = do
 --Assigns vs to the given pattern
 assignValue :: Pat -> [Var] -> FFM ()
 assignValue p vs = do
-  ep <- evaluatePat p
-  assignEP ep vs
+  mep <- evaluatePat p
+  case mep of
+    Nothing -> return ()
+    Just ep -> assignEP ep vs
 --Consider the expression ptr[f()]++. To avoid repeating the side effect of
 --f() and storing to a different address than was loaded from,
 --it must be evaluated and bound to vars.
 --EvaluatedPat replaces every expr in a Pat with its evaluated result.
-evaluatePat :: Pat -> FFM EvaluatedPat
-evaluatePat = error "todo"
+--Nothing indicates a wildcard.
+--The exprs may include function calls, so evaluatePat must modify scope.
+--Note when the tag check is removed from the case Con {}, it becomes a
+--wildcard.
+--Argh, TODO support boxed cons.
+evaluatePat :: Pat -> FFM (Maybe EvaluatedPat)
+evaluatePat = go
+  where go = \case
+          PWild _ -> return Nothing
+          PArray (Just a) ps -> do
+            meps <- mapM go ps
+            let ixeps = [(ix,ep) | (ix, Just ep) <- zip [0..] meps]
+            if null ixeps
+              then return Nothing
+              else return $ Just $ EPArray (fromIntegral $ length ps) a ixeps
+          PCon con (Just ts) fieldps -> do
+            fieldmeps <- mapM (\(field,p) ->
+                                 (,) field <$> go p) fieldps
+            let fieldeps = [(field,ep) | (field, Just ep) <- fieldmeps]
+            --Set checkTag if the datatype has >1 canonical constructor
+            --(implies tag scheme /= Nil).
+            mod <- liftFused ask
+            let Just Con{conParent=tycon} =
+                  M.lookup con $ conInfo $ dtsInfo mod
+                Just DTInfo{dtCanonicalCons=cons} =
+                  M.lookup tycon $ datatypes $ dtsInfo mod
+                checkTag = length cons > 1
+            --Explore con's datatype
+            liftFused $ exploreD [] S.empty (tycon,ts)
+            return $ epcon con ts checkTag fieldeps
+--A smart constructor for Maybe EPCon
+epcon :: Name -> [T] -> Bool -> [(Name,EvaluatedPat)] -> Maybe EvaluatedPat
+epcon con ts checkTag fieldeps
+  | not checkTag, null fieldeps = Nothing
+  | let = Just $ EPCon con ts checkTag fieldeps
 --p++ => ep <- evaluatePat p; x <- evalEP ep, assignEP ep (inc x)
 --Do I also need to return a t?
+--Note: does not modify the scope.
 evalEP :: EvaluatedPat -> FFM [Var]
 evalEP = error "todo"
+--No assumption is made about the location of the EP vars or the rhs on the
+--stack; they may be in either order depending on whether you assign via
+--p = e or case e of {p => s}
 assignEP :: EvaluatedPat -> [Var] -> FFM ()
 assignEP = error "todo"
-data EvaluatedPat = EPPlaceholder
+--Compilable pattern forms:
+--local (.field | !ix)*
+-- *p --all .field and !ixs have been rolled into the pointer
+--Array (ix=>p) --wildcards omitted
+--Con {field: p} --con tag check omitted in case
+--Can I do the same for local that I do for *p? The issue is WordPad.
+--local.field!ix where ix is outside the range of the field is UB
+--(though I'll accept it without complaint for (*p).field!ix).
+--A datatype with tag scheme Nil or only one constructor will never have its
+--tag checked. Consequence: for datatype
+--data Con = {Con}; tag Con = Array 4 Byte where {Con: "good"};
+--Con = coerce "bad!" --will be accepted!
+--EPCon Con ts False [] is equivalent to wild, so it's invalid.
+--EParray _ _ [] is also invalid.
+data EvaluatedPat = EPLocal Name T IndexPath
+                  | EPDeref Var --a pointer
+                  | EPArray Integer T --array len and elem type
+                    [(Int,EvaluatedPat)] --non-wild indices in ascending order
+                  | EPCon Name [T] --monomorphic con
+                    Bool --must check tag
+                    [(Name,EvaluatedPat)] --non-wild fields
   deriving (Eq,Ord,Read,Show)
+type IndexPath = [Either (Name,[T]) --field
+                  Var --index (Short)
+                 ]
 
 --Generates the code to return null. Huh, I actually don't need to make null
 --a primitive: its code will be auto-generated given an empty body.
@@ -195,17 +258,84 @@ exploreG :: Name -> FusedM ()
 exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
              error "todo"
 
-exploreD :: MonoT -> FusedM ()
-exploreD mt = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x})mt$
-              error "todo"
-
+--Map monomorphic fields to offsets; that info is not required after
+--Structured. Is sizeof used in post-Structured case compilation? Add it later
+--if so.
+--Given TyCon Ts, look up data TyCon ts = {Con {field: t}; ...} and monomorphize
+--each field. If it has a non-Nil tag scheme (boxed has Nil), .tagTyCon has
+--offset 0. For each con, each field has offset = sum of sizes of preceding
+--fields (including tag if any).
+--The DT's size is the maximum of each constructor's size.
+--Takes a tycon stack :: [Name] to detect loops; tyconset = S.fromList tycons
+--and is used to accelerate cycle detection.
+exploreD :: [Name] -> Set Name -> MonoT -> FusedM ()
+exploreD tycons tyconset mt@(tycon,ts)
+  | S.member tycon tyconset =
+    throwError $ CyclicalDatatypes $ reverse $ tycon:tycons
+  | let = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x}) mt $
+          do mod <- ask
+             --TODO throw compiler error on DT missing
+             let Just DTInfo{
+                   dtParams = params,
+                   dtTagScheme = tagScheme,
+                   dtCanonicalCons = cons
+                   } = M.lookup tycon $ datatypes $ dtsInfo mod
+                 v2t = if length ts /= length params
+                   then error "!!?"
+                   else M.fromList $ zip params ts
+             --If tag scheme is custom, each tag expr must be monomorphized and
+             --serialized; don't support custom tags just yet...
+             --or initializers in globals.
+             (monoTagScheme,tagSz) <- case tagScheme of
+                                        Nil -> return (Nil,0)
+                                        N1 len -> return (N1 len,
+                                                          fromIntegral len)
+                                        N16 -> return (N16, 1)
+                                        Custom t con2tag -> error "todo"
+             --Store the monomorphized tag scheme
+             modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts) monoTagScheme $
+                                            fsTagSchemes fs
+                            })
+             --If tag scheme /= Nil, add .tagTyCon offset (0)
+             modify (\fs->fs{fsOffsets = M.insert ("tag"++tycon,ts) 0 $
+                              fsOffsets fs
+                            })
+             --Get the field names and types for each constructor
+             --TODO throw compiler error if con missing
+             fieldss <- forM cons (\con ->
+                                     let Just Con{conFields = fields} =
+                                           M.lookup con $ conInfo $ dtsInfo mod
+                                     in return fields)
+             --for each fields in fieldss:
+             --for each field in fields:
+             --its offset = the sum of sizes of preceding fields
+             --We also return the total size
+             conszs <- forM fieldss $ setFieldOffsets ts tagSz
+             let dtSz = if not $ null conszs
+                        then maximum conszs
+                        else tagSz
+             --Store the sizeof the DT
+             modify (\fs->fs{fsSizeof = M.insert (tycon,ts) dtSz $
+                              fsSizeof fs
+                            })
+               where setFieldOffsets ts off = \case
+                       [] -> return off
+                       (field,t):fields -> do
+                         --Note we push tycon to the tycon stack in order to
+                         --detect cyclical DTs
+                         sz <- sizeof' (tycon:tycons)
+                               (S.insert tycon tyconset) t
+                         modify (\fs-> fs{fsOffsets = M.insert (field,ts) off $
+                                           fsOffsets fs
+                                         })
+                         setFieldOffsets ts (off+sz) fields
 --nm is either a function or global; explore it.
 exploreTyApp  :: Name -> [T] -> FusedM ()
 exploreTyApp nm ts = do
   mod <- ask
   case () of
-    _ | M.member nm $ globals mod, null ts -> exploreG nm
-      | M.member nm $ defuns mod -> exploreF nm ts
+    _ | M.member nm $ globals mod, null ts -> spawnExploreG nm
+      | M.member nm $ defuns mod -> spawnExploreF (nm,ts)
       | otherwise ->
         error $ "Compiler error in exploreTyApp: undefined "++nm++"@"++show ts
 
@@ -382,16 +512,48 @@ convertE e = pushScope $ go e
 --TODO place helpers in sensible order
 --Gets the serialized constructor tag (a single, potentially multi-word
 --bytestring).
+--Returns the empty Serialized if the datatype has tag scheme Nil or a custom
+--zero-sized tag; currently doesn't handle custom.
 getTag :: Name -> [T] -> FusedM (Serialized,T)
-getTag = error "todo"
+getTag con ts = do
+  --TODO turn into combinator...
+  mod <- ask
+  let dtsi = dtsInfo mod
+      Just Con{conParent=tycon} = M.lookup con $ conInfo dtsi
+      Just DTInfo{dtTagScheme = tagScheme,
+                  dtCanonicalCons = cons
+                 } = M.lookup tycon $ datatypes dtsi
+  exploreD [] S.empty (tycon,ts)
+  --Will fail for a boxed constructor...
+  let Just conIx = elemIndex con cons
+  return $ case tagScheme of
+             Nil -> (emptySer, TyCon "Unit")
+             Custom {} -> error "todo custom tag schemes in getTag"
+             N1 len ->
+               --TODO make a combinator for Serialized from serInt...
+               let leni = fromIntegral len
+               in (Serialized {
+                      serLength = leni,
+                      serSizeof = leni,
+                      serContent = 
+                          [Left $ serInt leni $ fromIntegral conIx]
+                      },
+                    UInt leni)
+             N16 -> (Serialized {
+                        serLength = 1,
+                        serSizeof = 1,
+                        serContent = 
+                            [Left $ serInt 1 $ fromIntegral conIx]
+                        },
+                      UInt 1)
 
 --Concat tag and fields in canonical order;
 --same procedure as for array construction.
 --FW opt: use knowledge about zero bytes in the element types to avoid
 --stitching work.
---Ex: Struct(WordPad Short, Short) --that's two words on the stack, but the
+--Ex: Struct (WordPad Short, Short) --that's two words on the stack, but the
 --top word is always 0 because it only contains two padding bytes from
---WordPad Short.
+--WordPad Short. That's solved by symbolic eval opt...
 constructCon :: Name -> [T] -> [Var] ->
                 Map Name ([Var], T) -> FusedFunM [Var]
 constructCon con ts = error "todo"
@@ -410,14 +572,22 @@ newVars t = do
   wlen <- liftFused $ numWords t
   mapM newVar [W t $ TyNat n | n <- [1..wlen]]
 --Explore the given monomorphic t, then return its size
+--sizeof called as part of datatype exploration needs to check for cycles,
+--but the stack of tycons is always empty when exploring a function or
+--global. Consequence: we need two sizeof variants.
+--sizeof for f, g:
 sizeof :: T -> FusedM Integer
-sizeof t = do
+sizeof = sizeof' [] S.empty
+--sizeof for D
+sizeof' :: [Name] -> Set Name -> T -> FusedM Integer
+sizeof' tycons tyconset t = do
   let (TyCon tycon, ts) = rollTyApps t
-  exploreD (tycon,ts)
+  exploreD tycons tyconset (tycon,ts)
   sizes <- gets fsSizeof
   case M.lookup (tycon,ts) sizes of
     Nothing -> error "!?"
     Just sz -> return sz
+--Used only in function compilation since it needs to deal with the stack
 numWords :: T -> FusedM Integer
 numWords t = ((`div` 32) . (`roundedUpMod` 32)) <$> sizeof t
 

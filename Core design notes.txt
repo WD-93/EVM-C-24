@@ -3258,6 +3258,28 @@ Plan: narrow pipeline, just enough for Hello World.
 Locals, constants, Ptr read and write for whole words.
 Constructor support: Pair (Append with whole-word args, WordPad), Unit, Ptr, Int.
 No case, no opts.
+When I do add case, I need to improve Core's concept of it...
+Add a JT map for N1, jump normally into JT+5*ix (or add a JTJump branch).
+3 more bytes would save 2 gas per case... but since non-ifte N1 is only
+applicable for >16 cons it probably won't be worth it, even for X000 execs.
+
+Naive DT cycle (data Foo = {Foo Foo}) avoidance: have a stack of MonoTs.
+But that overapproximates problematic cycles in the presence of custom tags, consider
+data Foo = Foo; tag Foo = ()->() where {Foo: f}; f () := Foo.
+tag Foo = Ptr Code Foo where {Foo: &g}; code g = Foo //would have the same
+effect.
+Solution: defer exploring functions and globals in convertE and
+serialization, instead spawn an async task. I used the same pattern earlier.
+That works because their serialization and push code is the same regardless
+of their definition (just the label).
+Datatype info OTOH unavoidably depends on their contained types and is
+nonsensical when there's a cycle. Type sizeof and field offsets are also
+immediately needed.
+f,g -> D exploration is synchronous and always has DT stack = {}.
+Recursive D->D exploration (triggered by sizeof on fields) requires tracking the stack. Solution: two variants of sizeof, with and without a stack param.
+A datatype can never safely store another parameterization of itself, even
+if the params would lead to a finite size, e.g.
+data Foo a = {Foo a (Foo ())}.
 
 Compiling case: Structured handles primop generation, so isn't it needlessly
 complex to generate more in later stages? No, the case functions are Core,

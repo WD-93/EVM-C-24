@@ -55,12 +55,43 @@ data FusedS = FS {
   --We currently don't record internal padding
   fsSizeof :: Map MonoT Integer,
   --Monomorphized E recorded for symbolic opts
-  fsTags :: Map (Name,[T]) (E,Serialized), --Con@ts => tag
+  --fsTags :: Map (Name,[T]) (E,Serialized), --Con@ts => tag
+  fsTagSchemes :: Map (Name,[T]) (TagScheme (E,Serialized)),
   fsOffsets :: Map (Name,[T]) Integer, --field@ts => off for UBCons
   --A general-purpose counter; used for allocating IR var names to start with.
-  fsCtr :: Integer
+  fsCtr :: Integer,
+  --All functions, globals and datatypes reachable from main:()->() must be
+  --explored. Each category may mention any of the others.
+  --A cyclical unboxed datatype such as data Foo = {Foo Foo} should trigger
+  --an exception, so we need to use a stack of tycons to detect loops when
+  --exploring datatypes.
+  --However, data Foo = {Foo}; tag Foo = ()->() where {Foo: f}; f() := Foo
+  --should *not* raise an exception.
+  --Similarly, tag Foo = Ptr Code Foo where {Foo: &g}; code g = Foo should
+  --work.
+  --A naive recursive exploration therefore won't do; we must spawn function
+  --and code global exploration tasks instead of running them directly.
+  --fsRunQueue is the queue of such tasks.
+  fsRunQueue :: [AsyncTask]
   }
   deriving (Eq,Ord,Read,Show)
+--All globals must be spawned; though non-code globals don't have an
+--initializer to explore, the sizeof their referenced type must be determined
+--to be finite.
+--TODO: cache defs in task constructor
+data AsyncTask = ExploreGlobal Name
+               | ExploreFunction (Name,[T])
+  deriving (Eq,Ord,Read,Show)
+spawnExploreG :: Name -> FusedM ()
+spawnExploreG = spawn . ExploreGlobal
+spawnExploreF :: (Name,[T]) -> FusedM ()
+spawnExploreF = spawn . ExploreFunction
+--Note we don't need a fair scheduler, exploration should be order-independent.
+spawn :: AsyncTask -> FusedM ()
+spawn task = do
+  s <- get
+  put s{fsRunQueue = task : fsRunQueue s}
+
 initFusedS = FS {
   fsVisitedFuns = S.empty,
   fsDefuns = M.empty,
@@ -68,13 +99,16 @@ initFusedS = FS {
   fsGlobals = M.empty,
   fsVisitedDatatypes = S.empty,
   fsSizeof = M.empty,
-  fsTags = M.empty,
+  --fsTags = M.empty,
+  fsTagSchemes = M.empty,
   fsOffsets = M.empty,
-  fsCtr = 0
+  fsCtr = 0,
+  fsRunQueue = []
   }
 data FusedError = GenericFE String
                 | NoMain
                 | IlltypedMain BindError T
+                | CyclicalDatatypes [Name]
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -179,13 +213,24 @@ pushLabel2 nm ts t = do
   w <- newVar $ W t 1
   tell [([w],[]) IR.:= (Push ser, ([],[]))]
   return w
+--Pushes a Serialized value (assumed to be of sizeof <= 32)
+pushSer :: Serialized -> T -> FFM Var
+pushSer ser t = do
+  w <- newVar t
+  tell [([w],[]) IR.:= (Push ser, ([],[]))]
+  return w
 --Pushes the lower 32B of a Serialized value
 pushSerWord :: Serialized -> T -> FFM Var
-pushSerWord = error "todo"
+pushSerWord ser t
+  | serSizeof ser == 0 = pushSer emptySer t
+  | let = let w = last $ splitSer ser
+          in pushSer w t
 --Used for pushing a tag, which may be 0 or more words
 --First split the serialized into words, then pushSer them
 pushMultiWordSer :: Serialized -> T -> FFM [Var]
-pushMultiWordSer = error "todo"
+pushMultiWordSer ser t = do
+  let ixsers = zip [1..] $ splitSer ser
+  forM ixsers (\(n,ser) -> pushSerWord ser (W t $ TyNat n))
 
 --The scope information is embedded in the stmt by the caller
 emitStmt :: Stmt -> FFM ()

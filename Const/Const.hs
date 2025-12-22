@@ -141,13 +141,21 @@ serWord n
 --Note length may be < sizeof, indicating Serialized contains a constructor
 --smaller than the sizeof its type (e.g. Nil or Nothing).
 --In that case, zero-valued right-padding words may be added.
+--Bugfix: if sizeof ser % 32 /= 0, it's the first word that should be partial,
+--not the last.
 splitSer :: Serialized -> [Serialized]
-splitSer ser = map stripZeroes $ go $ rightPadSer ser
-  where go ser
-          | serSizeof ser == 0 = []
-          | serSizeof ser < 32 = [ser]
-          | let = let (w,rest) = takeDropSer 32 ser
-                  in w : go rest
+splitSer ser = map stripZeroes $ splitPartial $ rightPadSer ser
+  where splitPartial ser =
+          let m = serSizeof ser `mod` 32
+          in if m > 0
+             then let (partial,whole) = takeDropSer m ser
+                  in partial:splitWords whole
+             else splitWords ser
+        splitWords ser =
+          if serSizeof ser == 0
+          then []
+          else let (w,rest) = takeDropSer 32 ser
+               in w : splitWords rest
 --Problem: serSizeof > serLength indicates right-padding, but stripZeroes
 --removes left-padding zero bytes. That's OK for now since we'll just be
 --pushing the Serialized, not concatenating it.
