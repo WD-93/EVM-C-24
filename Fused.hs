@@ -489,7 +489,8 @@ convertE e = pushScope $ go e
           --Standard:
           --eval fields, concat with tag if any, stitch in canonical field order
           --default value if field missing: 0
-          --Need opts to shift/or eagerly to avoid blowing up the stack. 
+          --Need opts to shift/or eagerly to avoid blowing up the stack.
+          --Note boxed con Es have been desugared away.
           ConRecord con (Just ts) field_es -> do
             (ser,t) <- liftFused $ getTag con ts
             --TODO double-check repeated fields have already been ruled out.
@@ -499,7 +500,7 @@ convertE e = pushScope $ go e
             tag <- pushMultiWordSer ser t --May be 0 or >1 words
             --If the constructor has tag scheme Nil, tag will be 0 words
             t <- liftFused $ typeCon con ts --TyCon ts
-            res <- constructCon con ts tag field2vs
+            res <- constructCon con ts tag field2vs t
             return (res,t)
           Dot e (Just ts) field -> error "todo"
         pushScope :: FFM ([Var],T) -> FFM ([Var],T)
@@ -554,9 +555,26 @@ getTag con ts = do
 --Ex: Struct (WordPad Short, Short) --that's two words on the stack, but the
 --top word is always 0 because it only contains two padding bytes from
 --WordPad Short. That's solved by symbolic eval opt...
+--What info do I need? Just the var lists and their offsets + the total size.
 constructCon :: Name -> [T] -> [Var] ->
-                Map Name ([Var], T) -> FusedFunM [Var]
-constructCon con ts = error "todo"
+                Map Name ([Var], T) -> Name ->
+                FusedFunM [Var]
+constructCon con ts tag field2vst resT = do
+  sz <- sizeof resT
+  --Look up fields of con and their offsets
+  --For field in fields:
+  -- If field in field2vst: (off,vs,sizeof t)
+  -- Else: t = infer type; (off,null,sizeof t)
+  error "todo"
+--Problem: we have n bytestrings represented as words on the stack.
+--Each bytestring has a length and is right-aligned in the words.
+--IOW, a bs with length len will have an offset of (-len)%32 bytes in its
+--word repr.
+--They must be concatenated into the same representation, consisting of
+--ceil(totalBytes/32) words. Their left-offset into the output bytestring is
+--given.
+--Each of those output words is the disjunction of shifted input words.
+--Solution: a module (again). TODO look up the old module.
 
 --TODO reuse at the other location I use "."
 localToVars :: T -> Name -> FFM [Var]

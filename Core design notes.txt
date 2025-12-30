@@ -3281,6 +3281,39 @@ A datatype can never safely store another parameterization of itself, even
 if the params would lead to a finite size, e.g.
 data Foo a = {Foo a (Foo ())}.
 
+Dot compilation: shl k, shr k has equivalent effect to and 0xff..., trading
+6 gas for a smaller code size (6 bytes without dups). However, 0xff... could
+also be reused.
+Assuming most code is executed and exec intensity is high (>1000), the main
+reason to golf code is the size limit, not creation cost.
+If I annotate code with projected execution intensity, it needs to apply to
+a particular monomorphic instantiation...
+Error paths due to user error/malice can be given exec count 1.
+Overall for struct.field@ts:
+Infer type of field t, explore DT
+If sizeof t = 0: return ([],t)
+Otherwise: use Construct, shl/mask top word.
+
+.unWordPad being zero-cost can be generalized to any subword slice where
+everything to the left is left-padding. FW.
+Array index: it could be worth left-shifting there as well... but the dynamic
+shr makes it more costly.
+Note higher index => lower shift.
+To handle multi-word arrays on stack, I need integer constant cases and a
+range < constructors.
+Since the memory model is currently simple (a byte array where alloc is an
+ordinary function rather than a source of fresh pointers), spilling stack
+words into memory is not semantically equivalent.
+Rejecting arrays larger than 16 words (one spare for the index) would
+therefore be a pragmatic decision.
+Accessing a zero-sized field or array index is ofc trivial.
+A one-word nested array can be up to 5 levels deep; a 16-word array 9.
+A *p(.field | !ix) pattern can always be converted to a *p when evaluated
+(taking up only one word), but local(.field | !ix) is less trivial - how to
+minimize its word usage when indices and fields are interleaved? FW...
+For now keep each pattern expr in separate words on stack, allow only 1-word
+local array index.
+
 Compiling case: Structured handles primop generation, so isn't it needlessly
 complex to generate more in later stages? No, the case functions are Core,
 not structured - Structured can't generate the code because the functions
