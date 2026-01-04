@@ -11,6 +11,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
+import Construct (construct,dot)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -267,7 +268,7 @@ exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
 --fields (including tag if any).
 --The DT's size is the maximum of each constructor's size.
 --Takes a tycon stack :: [Name] to detect loops; tyconset = S.fromList tycons
---and is used to accelerate cycle detection.
+--is used to accelerate cycle detection.
 exploreD :: [Name] -> Set Name -> MonoT -> FusedM ()
 exploreD tycons tyconset mt@(tycon,ts)
   | S.member tycon tyconset =
@@ -286,20 +287,26 @@ exploreD tycons tyconset mt@(tycon,ts)
              --If tag scheme is custom, each tag expr must be monomorphized and
              --serialized; don't support custom tags just yet...
              --or initializers in globals.
-             (monoTagScheme,tagSz) <- case tagScheme of
-                                        Nil -> return (Nil,0)
-                                        N1 len -> return (N1 len,
-                                                          fromIntegral len)
-                                        N16 -> return (N16, 1)
-                                        Custom t con2tag -> error "todo"
+             (monoTagScheme,tagSz,mtagT) <-
+               case tagScheme of
+                 Nil -> return (Nil,0, Nothing)
+                 N1 len -> return (N1 len,
+                                   fromIntegral len,
+                                   Just $ UInt $ fromIntegral len)
+                 N16 -> return (N16, 1, Just $ UInt 1)
+                 Custom t con2tag -> error "todo"
              --Store the monomorphized tag scheme
              modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts) monoTagScheme $
                                             fsTagSchemes fs
                             })
              --If tag scheme /= Nil, add .tagTyCon offset (0)
-             modify (\fs->fs{fsOffsets = M.insert ("tag"++tycon,ts) 0 $
-                              fsOffsets fs
-                            })
+             case mtagT of
+               Just tagT -> 
+                 modify (\fs->fs{fsOffsets = M.insert ("tag"++tycon,ts)
+                                  (0,tagSz,tagT) $
+                                  fsOffsets fs
+                                })
+               Nothing -> return ()
              --Get the field names and types for each constructor
              --TODO throw compiler error if con missing
              fieldss <- forM cons (\con ->
@@ -325,7 +332,8 @@ exploreD tycons tyconset mt@(tycon,ts)
                          --detect cyclical DTs
                          sz <- sizeof' (tycon:tycons)
                                (S.insert tycon tyconset) t
-                         modify (\fs-> fs{fsOffsets = M.insert (field,ts) off $
+                         modify (\fs-> fs{fsOffsets = M.insert (field,ts)
+                                           (off,sz,t) $
                                            fsOffsets fs
                                          })
                          setFieldOffsets ts (off+sz) fields
@@ -492,23 +500,80 @@ convertE e = pushScope $ go e
           --Need opts to shift/or eagerly to avoid blowing up the stack.
           --Note boxed con Es have been desugared away.
           ConRecord con (Just ts) field_es -> do
-            (ser,t) <- liftFused $ getTag con ts
+            --Should I just return the sizeof the tag here?
+            (ser,tagT) <- liftFused $ getTag con ts
+            tagSz <- liftFused $ sizeof tagT
             --TODO double-check repeated fields have already been ruled out.
             field2vs <- M.fromList <$> forM field_es (\(field,e) -> do
                                                          vs <- convertE e
                                                          return (field,vs))
-            tag <- pushMultiWordSer ser t --May be 0 or >1 words
+            tag <- pushMultiWordSer ser tagT --May be 0 or >1 words
             --If the constructor has tag scheme Nil, tag will be 0 words
-            t <- liftFused $ typeCon con ts --TyCon ts
-            res <- constructCon con ts tag field2vs t
-            return (res,t)
-          Dot e (Just ts) field -> error "todo"
+            resT <- liftFused $ typeCon con ts --TyCon ts
+            res <- constructCon con ts tag tagSz field2vs resT
+            return (res,resT)
+          --Boxed fields have been desugared away.
+          --For now, I make no use of padding info: the entire field is assumed
+          --to be potentially nonzero, as is the rest of the struct.
+          Dot e (Just ts) field -> do
+            (vs,tycon_ts) <- convertE e
+            let (TyCon tycon, _ts) = rollTyApps tycon_ts
+            --mono dt
+            szStruct <- liftFused $ sizeof tycon_ts
+            --the field has a type t and size sz
+            (off,szField,t) <- liftFused $ getFieldInfo field ts
+            if szField == 0
+              --The field is zero-sized; dot is trivial
+              then return ([],t)
+              else do
+              --Select the words containing the field
+              --Note off is the offset of the field from the left in memory;
+              --on the stack there may be additional left-padding.
+              let leftPad = (szStruct `roundedUpMod` 32) - szStruct
+                  stackOff = leftPad + off
+                  startIx = stackOff `div` 32
+                  endIx = (stackOff + szStruct - 1) `div` 32
+                  relVs = drop (fromInteger startIx) $
+                          take (fromInteger $ endIx-startIx+1) vs
+                  --right-offset mod 32
+                  rightOff = (szStruct - off - szField + 1) `mod` 32
+                  --Output words = disjunction (input << +-k)
+                  wshifts = dot (fromIntegral rightOff)
+                            (fromIntegral szField) relVs
+              --The leftmost input word containing the field may also have
+              --garbage to the left of it; mask it out.
+              let whd:wtl = wshifts
+                  (top,sh):wrest = whd
+                  garb = stackOff `mod` 32
+              vtop <-
+                if garb == 0
+                then top <<< sh --no need to shift out garbage
+                else if sh > 0
+                     then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
+                          --shift out garbage, then shift back
+                     else maskBytes (32-garb) top
+                          --can't use shift trick, must use code-intensive
+                          --and 0xff... instead.
+              vrest <- forM wrest (\(v,sh) -> v <<< sh)
+              vhd <- disjunction $ vtop:vrest
+              vtl <- (forM wtl (\wshs ->
+                                 forM wshs (\(w,sh) -> w <<< sh)))
+                     >>= mapM disjunction
+              return (vhd:vtl, t)
         pushScope :: FFM ([Var],T) -> FFM ([Var],T)
         pushScope m = do
           scope <- getScope
           (vs,t) <- m
           putScope $ vs ++ scope
           return (vs,t)
+
+--Get off, sz, t of .field@ts; errors if the datatype has not been explored.
+getFieldInfo :: Name -> [T] -> FusedM (Integer, Integer, T)
+getFieldInfo field ts = do
+  s <- get
+  case M.lookup (field,ts) $ fsOffsets s of
+    Just x -> return x
+    Nothing -> throwError $ CompilerErrorFieldInfoBeforeExploreD field ts
 
 --TODO place helpers in sensible order
 --Gets the serialized constructor tag (a single, potentially multi-word
@@ -557,15 +622,36 @@ getTag con ts = do
 --WordPad Short. That's solved by symbolic eval opt...
 --What info do I need? Just the var lists and their offsets + the total size.
 constructCon :: Name -> [T] -> [Var] ->
-                Map Name ([Var], T) -> Name ->
+                Integer -> Map Name ([Var], T) -> T ->
                 FusedFunM [Var]
-constructCon con ts tag field2vst resT = do
-  sz <- sizeof resT
+constructCon con ts tag tagSz field2vst resT = do
+  sz <- liftFused $ sizeof resT
   --Look up fields of con and their offsets
+  fields <- do
+    mod <- liftFused ask
+    let cis = conInfo $ dtsInfo mod
+        Just ci = M.lookup con cis
+    return $ map fst $ conFields ci
+  --Argh: the tag also needs a size and right-offset.
+  let tagOff = sz - tagSz
   --For field in fields:
-  -- If field in field2vst: (off,vs,sizeof t)
-  -- Else: t = infer type; (off,null,sizeof t)
-  error "todo"
+  offLenVs <- (((fromInteger tagOff, fromInteger tagSz,tag):) <$>
+              forM fields (\field -> do
+                              (off,len,t) <- liftFused $ getFieldInfo field ts
+                              let rightOff = sz-off-len
+                              vs <-  case M.lookup field field2vst of
+                                       --Field is present
+                                       Just (vs,_t) -> return vs
+                                       --Default if absent: null()
+                                       --cNull redundantly gets t's wordsize;
+                                       --I could use len instead.
+                                       Nothing -> cNull t
+                              return (fromInteger rightOff,
+                                      fromInteger len,vs)
+                          )) :: FFM [(Int,Int,[Var])]
+  --For each output word, a list (input,sh) to or together
+  let wshss = construct (fromIntegral sz) offLenVs
+  mapM (\wshs -> (mapM (uncurry (<<<)) wshs) >>= disjunction) wshss
 --Problem: we have n bytestrings represented as words on the stack.
 --Each bytestring has a length and is right-aligned in the words.
 --IOW, a bs with length len will have an offset of (-len)%32 bytes in its

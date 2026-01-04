@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase #-}
 module Fused.Monad where
 
 --The monads used for implementing the fused phase
@@ -57,7 +57,11 @@ data FusedS = FS {
   --Monomorphized E recorded for symbolic opts
   --fsTags :: Map (Name,[T]) (E,Serialized), --Con@ts => tag
   fsTagSchemes :: Map (Name,[T]) (TagScheme (E,Serialized)),
-  fsOffsets :: Map (Name,[T]) Integer, --field@ts => off for UBCons
+  --field@ts => ...
+  fsOffsets :: Map (Name,[T]) (Integer, --off for UBCons
+                               Integer, --size of field
+                               T --monomorphic type
+                              ),
   --A general-purpose counter; used for allocating IR var names to start with.
   fsCtr :: Integer,
   --All functions, globals and datatypes reachable from main:()->() must be
@@ -109,6 +113,8 @@ data FusedError = GenericFE String
                 | NoMain
                 | IlltypedMain BindError T
                 | CyclicalDatatypes [Name]
+                --Ran getFieldInfo before exploreD
+                | CompilerErrorFieldInfoBeforeExploreD Name [T]
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -196,6 +202,41 @@ op1 primop a = do
   v <- newVar (W (UInt 32) 1)
   emitPrim ([v],[]) primop ([a],[])
   return v
+
+--TODO take FFM's as argument to allow ergonomic expr construction?
+--shl by k bytes; negative k => shr instead.
+--Always zero for k > 31 or < -31
+--Note shr, shl take the shift value first!
+(<<<) :: Integral n => Var -> n -> FFM Var
+v <<< k
+  | k <= -32 = pushK 0
+  | k < 0 = do
+      vk <- pushK (fromIntegral k * (-8))
+      op2 "shr" vk v
+  | k == 0 = return v
+  | k < 32 = do
+      vk <- pushK (fromIntegral k*8)
+      op2 "shl" vk v
+  | k >= 32 = pushK 0
+maskBytes :: Integer -> Var -> FFM Var
+maskBytes k v
+  | k < 0 = pushK 0
+  | k >= 32 = return v
+  | let = do
+          vk <- pushK (256^k-1)
+          op2 "and" vk v
+
+--Ors the given vars together
+disjunction :: [Var] -> FFM Var
+disjunction = \case
+  [] -> pushK 0
+  v:vs -> go v vs
+    where go v = \case
+            [] -> return v
+            v':vs -> do
+              w <- go v' vs
+              op2 "or" v w
+          
 --Always returns a W (UInt 32) 1, i.e. a Word.
 --Truncated to 32B.
 --Precondition: n >= 0 (EVMC expresses negative numbers as negation of
