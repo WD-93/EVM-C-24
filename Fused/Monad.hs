@@ -49,14 +49,14 @@ data FusedS = FS {
   --other g => off : Ptr r t
   --The code global's initializer is also included.
   --Q: Should I trim right-padding when placing datatypes in bytecode?
-  fsGlobals :: Map Name (Either (T,Serialized) (Region,T,Integer)),
+  fsGlobals :: Map Name (Region, T, Maybe Serialized),
   --Datatypes:
   fsVisitedDatatypes :: Set MonoT,
   --We currently don't record internal padding
   fsSizeof :: Map MonoT Integer,
   --Monomorphized E recorded for symbolic opts
   --fsTags :: Map (Name,[T]) (E,Serialized), --Con@ts => tag
-  fsTagSchemes :: Map (Name,[T]) (TagScheme (E,Serialized)),
+  fsTagSchemes :: Map (Name,[T]) ([Name], TagScheme (E,Serialized)),
   --field@ts => ...
   fsOffsets :: Map (Name,[T]) (Integer, --off for UBCons
                                Integer, --size of field

@@ -37,8 +37,8 @@ data Structured = Structured {
   --includes $trueMain, which calls main() and then stop()s.
   sdefuns :: Map FunVar (BranchValue,[Stmt]),
   --pointers: globals and static values
-  sglobals :: Map Name T,
-  sstatic :: Map Name Const, --code or mem global => its initializer
+  --TODO also include E for symbolic opt of *codeG
+  sglobals :: Map Name (Region, T, Maybe Serialized),
   --DT tags, fields etc per monotype
   stagSchemes :: Map (Name, [T]) ([Name], TagScheme (E, Serialized)),
   sdtsInfo :: DTsInfo E,

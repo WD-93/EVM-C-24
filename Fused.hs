@@ -25,14 +25,25 @@ import Control.Monad
 import Data.List (elemIndex)
 
 compileStructured :: Module -> Either FusedError Structured
-compileStructured mod =
-  fusedS2Structured <$> (runExcept $
-                          flip execStateT initFusedS $
-                          flip runReaderT mod $
-                          runFusedM $
-                          compileStructuredM)
-fusedS2Structured :: FusedS -> Structured
-fusedS2Structured = error "todo"
+compileStructured mod = do
+  fs <- runExcept $
+        flip execStateT initFusedS $
+        flip runReaderT mod $
+        runFusedM $
+        compileStructuredM
+  return $ fusedS2Structured mod fs
+fusedS2Structured :: Module -> FusedS -> Structured
+fusedS2Structured m fs = Structured {
+  sdefuns = fsDefuns fs,
+  --For code globals: Ptr Code t
+  --For r globbals: Ptr r t
+  --The Integer in state is pointless since global placement is
+  --done later?
+  sglobals = fsGlobals fs,
+  stagSchemes = fsTagSchemes fs,
+  sdtsInfo = dtsInfo m,
+  ssizeof = fsSizeof fs
+  }
 compileStructuredM :: FusedM ()
 compileStructuredM = do
   --First, find params for main that yield () -> ().
@@ -296,7 +307,8 @@ exploreD tycons tyconset mt@(tycon,ts)
                  N16 -> return (N16, 1, Just $ UInt 1)
                  Custom t con2tag -> error "todo"
              --Store the monomorphized tag scheme
-             modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts) monoTagScheme $
+             modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts)
+                                            (cons,monoTagScheme) $
                                             fsTagSchemes fs
                             })
              --If tag scheme /= Nil, add .tagTyCon offset (0)

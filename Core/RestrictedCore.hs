@@ -40,10 +40,13 @@ data Core = Core {
   --The basic blocks, including $trueMain
   coreDefuns :: Map FunVar (BranchValue, --lhs
                             FunRHS),
+  --Core does not need to record the global set; they have already been erased
+  --in Structured.
   --Region implicit in type
-  coreGlobals :: Map Name T,
+  --coreGlobals :: Map Name T,
   --Code global => its initializer
   coreStatic :: Map Name Const
+  --TODO add JTs for N1 here
   }
 --Rewrites: letrec merge, let merge, inline
 

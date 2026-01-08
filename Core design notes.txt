@@ -3327,6 +3327,23 @@ Custom: start with an O(n) switch since the ordering of constants can't in
 general be known (they might contain functions and code global pointers).
 Best to leave case compilation to Core rather than split it.
 
+Restructuring Core and Structured: do I need a globals set?
+Non-code globals are substituted for constants. For now I'll do that
+substitution after the Structured step, using the exploredGs set.
+Code globals are keys in the static map; they appear in code as labels in
+Consts and can be recognized by their map membership (analogous to functions).
+I can do the global->const substitution immediately after Structured gen using FusedS, so I don't need to track globals in Structured.
+Does Core need monomorphized DTsInfo for opts?
+Structured needs it, certainly.
+
+Next steps:
+Fix bugs in "import Prelude; main _ := ()":
+One word containing an empty Serialized is pushed for () - it should be 0.
+Return [*** Exception: Prelude.last: empty list --perhaps it wrongly expects
+Unit is one word?
+Need ppr of Structured for debug... also add comment ops.
+Later: expr serialization for tags and initializers, global layout.
+
 Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
 
 Generating calldata using the interface: support allocValue@Calldata a la
