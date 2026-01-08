@@ -150,6 +150,7 @@ compileF f ts a b p s = do
   --The last word is $ret
   scope <- getScope
   let arg = init scope
+      ret = last scope -- $ret
   --Mistake: freeVarsPatList returns [Name] rather than [(Name,Maybe T)]
   --I'll have to make a variant.
   let vts = freeTypedVarsPatList p
@@ -163,9 +164,66 @@ compileF f ts a b p s = do
   --Eval the pattern p's exprs and assign the preexisting arg to it
   assignValue p arg
   --Generate the function body
-  putScope localVars
+  --Found the missing $ret bug! Ofc, localVars isn't enough
+  putScope $ localVars ++ [ret]
   convertS s
   returnNull b
+
+{-
+Updated pattern-matching rules:
+Case:
+Each case pattern is either fallible or infallible.
+A fallible pattern is of the form Con fields, where:
+a) Con is unboxed, the DT has >=2 constructors and its tag is not zero-sized;
+b) Con is boxed, ImplDT has >=2 constructors and its tag is not zero-sized
+NB: that means if a DT has 1 constructor but a custom tag scheme, Con fields
+will match values with a corrupt tag - that's the price of efficiency.
+
+case e of {p => s} (i.e. a single case) become:
+x <- e;
+p = x; --ordinary assignment
+s. Then we don't need to branch on the tag, which is fortunate since p doesn't
+necessarily tell us where the tag is.
+
+Since the case is well-typed, all fallible cons will belong to the same type.
+First simplify the cases:
+Repeated instances of the same TLC are omitted. Cases occurring after an
+infallible case are also omitted. If there is no infallible case, add
+_ => revertValue() as an implicit default.
+What remains is a map possible tag value -> [Stmt], where the tag value may be
+either e.tagTyCon for a UBDT or *(e.unImplTyCon).tagImplTyCon for a BDT.
+
+Note case on a UBDT is *not* equivalent to
+case *(e.unImplTyCon) of {UBCon fields => s;[infallible => s]}, since that
+would bind the infallible case to the ImplDT rather than the DT.
+
+In a case we branch only on the top-level con (if at all). That's not just
+because intelligently selecting an order of subexprs to check in nested patterns
+is tricky: since patterns may have side effects when evaluated, it would not be
+obvious when they should be run. Side effects can also change whether a
+boxed constructor pattern matches, which is another can of worms.
+After a branch to determine which case to apply, the pattern is assigned to
+normally (with top-level tag check omitted).
+
+Assignment:
+--If the tag has already been branched on, the tag check can be omitted.
+UBCon {fields: ps} = v => check tag v.tagTyCon; p = v.field for field in fields
+BCon {fields: ps} = v =>
+ ptr = v.unImplTyCon
+ check tag ptr->tagImplTyCon
+ p = ptr->implTyCon_field for field in fields
+*ptr = v => write ptr v --(*ptr)(.field | !ix)* reduces to *ptr
+ Type errors for immutable region
+local(.field|!ix)*:
+ --Applies for both .field and !ix:
+ local(path).field = v =>
+  tmp = local(path); tmp.field = v; local(path) = tmp
+ local = v => copy op
+
+tmp.field = v --ez, shift and mask with static offset
+tmp!ix = v --reject arrays >1 word, shift and mask
+
+-}
 
 --Assigns vs to the given pattern
 assignValue :: Pat -> [Var] -> FFM ()

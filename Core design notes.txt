@@ -3340,7 +3340,9 @@ Next steps:
 Fix bugs in "import Prelude; main _ := ()":
 One word containing an empty Serialized is pushed for () - it should be 0.
 Return [*** Exception: Prelude.last: empty list --perhaps it wrongly expects
-Unit is one word?
+Unit is one word? Probable cause: scope is not correctly set to $ret
+initially. The initial scope is $ret... it was the setScope after function
+lhs assignment to ToS that was missing $ret.
 Need ppr of Structured for debug... also add comment ops.
 Later: expr serialization for tags and initializers, global layout.
 
