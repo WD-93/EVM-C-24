@@ -64,4 +64,6 @@ data Stmt = Value := OpE --a straight-line primop
           | Break Scope
           | Continue Scope
           | Return Scope [Var] --v1..vN
+          --For debugging purposes; todo replace String with a richer DT
+          | Comment String
   deriving (Eq,Ord,Read,Show)

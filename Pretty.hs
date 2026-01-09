@@ -85,10 +85,13 @@ prettyStmt = \case
   Structured.DTs.Return scope vs ->
     ["//scope = " ++ showVars scope,
      "return " ++ showVars vs]
+  --I distinguish comments (which have no semantic import)
+  --from scope info by using // instead of /#
+  Structured.DTs.Comment str -> ["//"++str]
 indentBlock :: [Stmt] -> [String]
 indentBlock stmts = indent (stmts >>= prettyStmt)
     
-showScope scope = "//scope = " ++ showVars scope
+showScope scope = "/#scope = " ++ showVars scope
 --(x,y,z)#(s1,s2,...)
 showValue :: Value -> String
 showValue (stackVs,stateVs) =
@@ -296,7 +299,7 @@ prettyAsm = \case
   DefLabel lab lv -> prettyAsmLabel lab ++ " = " ++ show lv
   Bytes bs -> "bytes " ++ show bs
   UseLabel len lab -> prettyAsmLabel lab ++ ":" ++ show len
-  Comment str -> "; " ++ str
+  A.Comment str -> "; " ++ str
 prettyAsmLabel = \case
   LAnon n -> show $ "anon" ++ show n
   LNamed str -> str

@@ -155,9 +155,11 @@ compileF f ts a b p s = do
   --I'll have to make a variant.
   let vts = freeTypedVarsPatList p
   --Each local is declared as null()
+  comment "setting locals to null:"
   z <- pushK 0
   localVars <- concat <$> mapM (\(nm,t) -> localToVars t nm) vts
   copyTo localVars $ replicate (length localVars) z
+  comment "end setting locals"
   --We need the vars on the stack now for pattern eval to work...
   --this will need to be optimized away.
   putScope $ localVars ++ scope
@@ -318,10 +320,12 @@ returnNull t = do
 --I can't call it null, it collides with Prelude...
 cNull :: T -> FFM [Var]
 cNull t = do
+  comment "null:"
   --It's better for opt purposes to copy a single var
   z <- pushK 0 -- :: Word
   ret <- newVars t
   copyTo ret $ replicate (length ret) z
+  comment "end null"
   return ret
 
 exploreG :: Name -> FusedM ()

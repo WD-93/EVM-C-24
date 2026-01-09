@@ -276,6 +276,9 @@ pushMultiWordSer ser t = do
 --The scope information is embedded in the stmt by the caller
 emitStmt :: Stmt -> FFM ()
 emitStmt stmt = tell [stmt]
+--For embedding debugging info in the generated code:
+comment :: String -> FFM ()
+comment = emitStmt . Comment
 
 --Generates a new Var with the given Core type
 newVar :: T -> FusedFunM Var

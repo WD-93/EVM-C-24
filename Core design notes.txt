@@ -3343,7 +3343,8 @@ Return [*** Exception: Prelude.last: empty list --perhaps it wrongly expects
 Unit is one word? Probable cause: scope is not correctly set to $ret
 initially. The initial scope is $ret... it was the setScope after function
 lhs assignment to ToS that was missing $ret.
-Next: () is 1 word when it should be 0.
+Next: () is 1 word when it should be 0. IC, it wasn't a bug at all: the zero
+pushes were from the nulls in arg local initialization and null return.
 Need ppr of Structured for debug... also add comment ops.
 Later: expr serialization for tags and initializers, global layout.
 
