@@ -12,6 +12,8 @@ import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (construct,dot)
+--For debugging:
+import Util (unsafePrint)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -65,6 +67,8 @@ compileStructuredM = do
   --When rewriting to support library mode, will instead need to explore the
   --given exported functions.
   exploreF "main" params
+  --Ensure spawned tasks get run:
+  scheduler
 
 --Converts the given monomorphic function to a Structured function.
 --Idempotent, is a noop when repeated.
@@ -78,6 +82,7 @@ compileStructuredM = do
 exploreF :: Name -> [T] -> FusedM ()
 exploreF f ts =
   idempotent fsVisitedFuns (\fs x->fs{fsVisitedFuns=x}) (f,ts) $ do
+  unsafePrint $ "Exploring " ++ f ++ show ts
   mod <- ask
   def <- case M.lookup f $ defuns mod of
            Just def -> return def
@@ -414,10 +419,15 @@ exploreD tycons tyconset mt@(tycon,ts)
 --nm is either a function or global; explore it.
 exploreTyApp  :: Name -> [T] -> FusedM ()
 exploreTyApp nm ts = do
+  unsafePrint $ "exploreTyApp " ++ nm ++ show ts
   mod <- ask
   case () of
-    _ | M.member nm $ globals mod, null ts -> spawnExploreG nm
-      | M.member nm $ defuns mod -> spawnExploreF (nm,ts)
+    _ | M.member nm $ globals mod, null ts -> do
+          unsafePrint "It's a global!"
+          spawnExploreG nm
+      | M.member nm $ defuns mod -> do
+          unsafePrint "It's a function!"
+          spawnExploreF (nm,ts)
       | otherwise ->
         error $ "Compiler error in exploreTyApp: undefined "++nm++"@"++show ts
 
@@ -796,6 +806,30 @@ collect scope ffm = do
     (a,stmts) <- listen ffm --collect the emitted stmts
     putScope cache
     return ((a,stmts), const []) --intercept them
+
+--Cyclical datatype (where a tycon indirectly contains itself,
+--potentially resulting in an infinite sizeof) are detected by tracking a
+--stack of tycons. The datatypes, functions and globals relevant to codegen
+--are identified by recursive traversal.
+--Since fs and gs may mention datatypes and vice versa, exploring a function
+--directly from a datatype may trigger a false cycle.
+--Instead, exploration of fs and gs is deferred by pushing the tasks to a
+--runQueue. For those tasks to be run at all, we need a scheduler.
+--This is that scheduler.
+--Behavior: while there is a task in the runQueue, pop it off and run it.
+scheduler :: FusedM ()
+scheduler = do
+  fs <- get
+  let rq = fsRunQueue fs
+  case rq of
+    task:tasks -> do
+      put fs{fsRunQueue = tasks}
+      --Run the task:
+      case task of
+        ExploreGlobal g -> exploreG g
+        ExploreFunction (f,ts) -> exploreF f ts
+      scheduler
+    _ -> return ()
 
 -------------------------------------------------------------------------------
 --Typechecked module =>

@@ -3347,9 +3347,15 @@ Next: () is 1 word when it should be 0. IC, it wasn't a bug at all: the zero
 pushes were from the nulls in arg local initialization and null return.
 Need ppr of Structured for debug... also add comment ops.
 Later: expr serialization for tags and initializers, global layout.
+Bug: in "...;main _ := f(); f x := return x", only main is in the sdefuns!
+Why isn't exploreF adding f? Time for some print statements...
+IC, I'm spawning exploreG and F but have no scheduler! Fixed.
+Next: complete evaluatePat.
 
 Note for style guide: internal modules should be imported above package
 modules; they're reversed in the old code...
+Avoid referring to tycons as TyCons, it can give the misleading impression
+there's a TyCon type in the Haskell.
 
 Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
 
