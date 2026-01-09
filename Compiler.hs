@@ -35,27 +35,9 @@ import Typecheck.TC (typecheck, TCError(..))
 import Structured.DTs (Structured(..))
 import Fused.Monad (FusedError(..))
 import Fused (compileStructured)
---TODO replace Mono, Sizeof, GlobalLayout, Serialize, Structured with Fused.
-{-
---Monomorphization
-import Mono.Mono --(monomorphize, MonoError(..))
 
---Computing the byte size of all mentioned DTs (and failing on cycles)
-import Sizeof (computeSizeof,SizeofError(..))
---Fix the layout of non-Code globals
-import GlobalLayout (globalLayout,LayoutError(..))
---Serialize constant expressions (global initializers and datatype tags)
-import Const.Serialize (serialize,SerError(..))
---Convert C to structured IR
--}
-
-{-
-Temporarily hiding to debug Desugar and stdlib
-import Structured.DTs (Structured(..))
-import Structured.Convert (convert,ConvertError(..))
---FunVars (for debugging Structured)
-import Core.RestrictedCore (FunVar(..),fun2coreT)
--}
+--Poor man's pretty-printing for debugging
+import Pretty
 
 data CompilerError = ParserError String
                    | CreateBucketError CreateBucketError

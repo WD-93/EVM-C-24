@@ -3343,8 +3343,12 @@ Return [*** Exception: Prelude.last: empty list --perhaps it wrongly expects
 Unit is one word? Probable cause: scope is not correctly set to $ret
 initially. The initial scope is $ret... it was the setScope after function
 lhs assignment to ToS that was missing $ret.
+Next: () is 1 word when it should be 0.
 Need ppr of Structured for debug... also add comment ops.
 Later: expr serialization for tags and initializers, global layout.
+
+Note for style guide: internal modules should be imported above package
+modules; they're reversed in the old code...
 
 Is there a clean, concise way to distinguish polymorphic and monomorphic type ASTs at the (Haskell) type level? A tyvar is somewhat like an effect...
 

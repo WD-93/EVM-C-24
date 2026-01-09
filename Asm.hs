@@ -1,6 +1,8 @@
 {-# Language LambdaCase, DeriveDataTypeable #-}
 module Asm where
 
+import Opcodes (mnemonics)
+
 import Data.Data
 import Data.Generics.Aliases (mkT)
 import Data.Generics.Schemes (everywhere)
@@ -13,8 +15,7 @@ import qualified Data.Set as S
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.Trans.Except
-
-import Opcodes (mnemonics)
+import Control.Monad (filterM)
 
 --A datatype for generating asm for the codegen; todo a monad for codegen
 --Goal: keep the DT minimal while supporting linking

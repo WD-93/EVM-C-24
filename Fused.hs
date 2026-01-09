@@ -133,7 +133,7 @@ convertDef f ts ft@(a :-> b) (p,s) = do
   scope <- initialScope a b --triggers DT exploration
   ((),_ffs,stmts) <- unliftFFM (compileF f ts a b p s) (FFR (f,ts))
                      FFS {ffsScope = scope,
-                           ffsInLoop = False
+                          ffsInLoop = False
                          }
   return ((scope,Just $ Mono ("$stk") (TyVar "stk"), envV),stmts)
 -- $arg.1..$arg.n,ret,stk

@@ -1,21 +1,125 @@
 {-# LANGUAGE LambdaCase, PatternSynonyms #-}
 module Pretty where
 
+import AST.DTs (Name(..),T(..),
+                pattern (:->),pattern UInt, pattern SInt,
+                unTupleT)
+import Core.RestrictedCore
+import Structured.DTs
+import Const.Const (Serialized(..),SerElem(..))
+--import IR1
+--import ToyCFG
+import Asm hiding (Asm(Opcode,Push),Label())
+import qualified Asm as A
+
 import Data.List (intercalate)
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Char (intToDigit)
-
-import DTs (Name(..),T(..),Padding(..),pattern (:->),pattern UInt, pattern SInt,
-           unTupleT)
-import IR1
-import ToyCFG
-import Asm hiding (Asm(Opcode,Push),Label())
-import qualified Asm as A
+import Control.Monad (filterM)
 
 --Just a test module for viewing intermediate compiler output
+--Updating it to print the DTs of the new compiler... TODO use actual ppr.
+prettyStructured :: Structured -> [String]
+prettyStructured s =
+  prettyStructuredFuns (sdefuns s)
+prettyStructuredFuns :: Map FunVar (BranchValue,[Stmt]) -> [String]
+prettyStructuredFuns f2def = do
+  (f,(bv,stmts)) <- M.toList f2def
+  [f ++ " " ++ showBranchValue bv ++ " := "]
+    ++ indent (stmts >>= prettyStmt)
+--(x * y * z * (stk | ()), s1 * s2 * ())
+showBranchValue :: BranchValue -> String
+showBranchValue (stackWords,mstk,stateVars) =
+  "(" ++
+  intercalate " * " (map showVar stackWords ++ [showMStk mstk]) ++ ", "
+  ++ intercalate " * " (map showVar stateVars ++ ["()"])
+  ++ ")"
+--nm:t
+showVar :: Var -> String
+showVar v = nameOfVar v ++ ":" ++ show (typeOfVar v)
+showVars :: [Var] -> String
+showVars = showTup showVar
+showMStk :: Maybe Var -> String
+showMStk = \case
+  Nothing -> "()"
+  Just v -> showVar v
+--TODO
+prettyStmt :: Stmt -> [String]
+prettyStmt = \case
+  v1 := (primop,v2) ->
+    [showValue v1 ++ " = " ++ showPrimOp primop ++ showValue v2]
+  Call scope lhs f rhs ->
+    --(x,y,z) = call f(a,b,c) ...scope
+    [showVars lhs ++ " = call " ++ showVar f ++ showVars rhs
+    ++ " ..." ++ showVars scope]
+  -- //scope = (x,y,z) 
+  --if condvar in {
+  -- cond...
+  --} then {
+  -- th...
+  -- } else {
+  -- el...
+  --}
+  Ifte scope cond condvar th el ->
+    [showScope scope,
+     "if " ++ showVar condvar ++ " in {"] ++
+    indentBlock cond ++
+    ["} then {"] ++
+    indentBlock th ++
+    ["} else {"] ++
+    indentBlock el ++
+    ["}"]
+  While scope cond condvar body ->
+    [showScope scope,
+     "while " ++ showVar condvar ++ " in {"] ++
+    indentBlock cond ++
+    ["} do {"] ++
+    indentBlock body ++
+    ["}"]
+  Break scope -> [showScope scope, "break"]
+  Continue scope -> [showScope scope, "continue"]
+  --Scope shown for debugging purposes
+  --return (x,y,z) //scope = (a,b,c)
+  Structured.DTs.Return scope vs ->
+    ["//scope = " ++ showVars scope,
+     "return " ++ showVars vs]
+indentBlock :: [Stmt] -> [String]
+indentBlock stmts = indent (stmts >>= prettyStmt)
+    
+showScope scope = "//scope = " ++ showVars scope
+--(x,y,z)#(s1,s2,...)
+showValue :: Value -> String
+showValue (stackVs,stateVs) =
+  showVars stackVs ++ "#" ++ showVars stateVs
 
+showPrimOp :: PrimOp -> String
+showPrimOp = \case
+  Push ser -> "push " ++ showSerialized ser
+  Op nm -> nm
+--(hex | label)* : sizeof
+--We don't show len
+showSerialized :: Serialized -> String
+showSerialized ser =
+  "["++ (serContent ser >>= showSerElem) ++ "]:" ++ show (serSizeof ser)
+showSerElem :: SerElem -> String
+showSerElem = \case
+  Left bytes -> bytes >>= showHex
+  Right lab -> showLabel lab
+--If off == 0: lab:len
+--else: lab(off):len
+showLabel :: (Int,Int,String) -> String
+showLabel (off,len,lab) =
+  lab ++ (if off /= 0 then "("++show off++")" else "") ++ ":" ++ show len
+
+--Generic helpers
+indent = map (' ':)
+showTup f xs = "(" ++ intercalate ", " (map f xs) ++ ")"
+--Precondition: the b is in 0..255
+showHex b = map intToDigit [b `div` 16, b `mod` 16]
+
+{-
 prettyIRM :: IRModule -> [String]
 prettyIRM irm =
   let ds = M.toList $ irDefuns irm
@@ -180,6 +284,7 @@ prettyMap showK showV m =
 prettySSA :: SSAName -> String
 prettySSA (ix,nm) = nm ++ "[" ++ show ix ++ "]"
 
+-}
 prettyAsm :: A.Asm -> String
 prettyAsm = \case
   A.Push len n -> "push" ++ show len ++ " " ++ show n
