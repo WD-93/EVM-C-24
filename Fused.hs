@@ -234,6 +234,7 @@ tmp!ix = v --reject arrays >1 word, shift and mask
 -}
 
 --Assigns vs to the given pattern
+--Can't be used in = since the lhs should be evaluated before the rhs
 assignValue :: Pat -> [Var] -> FFM ()
 assignValue p vs = do
   mep <- evaluatePat p
@@ -617,9 +618,18 @@ cNull t = do
   comment "end null"
   return ret
 
+--Iff g is a code global then its initializer must be serialized; otherwise
+--just add the global to fsGlobals.
 exploreG :: Name -> FusedM ()
-exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $
-             error "todo"
+exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
+  unsafePrint $ "Exploring global " ++ g ++ ":"
+  mod <- ask
+  let Just (r,me) = M.lookup g $ globals mod
+      Just ([],t) = M.lookup g $ tysigs mod
+  if r == Co
+    then error "todo support code globals"
+    else modify (\fs->
+                   fs{fsGlobals = M.insert g (r,t,Nothing) $ fsGlobals fs})
 
 --Map monomorphic fields to offsets; that info is not required after
 --Structured. Is sizeof used in post-Structured case compilation? Add it later
@@ -836,7 +846,14 @@ convertE e = pushScope $ go e
             emitStmt $ Call scope res fv xs
             return (res,b)
           -- ::: eliminated in HM
-          p A.:= e -> error "todo"
+          p A.:= e -> do
+            mep <- evaluatePat p
+            case mep of
+              Nothing -> convertE e
+              Just ep -> do
+                (vs,t) <- convertE e
+                assignEP ep vs
+                return (vs,t)
           --Eval es in textual order, reverse and concat
           --Need to optimize to avoid dups and swaps out of range... eagerly
           --shift and or, CE.
