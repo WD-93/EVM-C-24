@@ -115,6 +115,7 @@ data FusedError = GenericFE String
                 | CyclicalDatatypes [Name]
                 --Ran getFieldInfo before exploreD
                 | CompilerErrorFieldInfoBeforeExploreD Name [T]
+                | AssignmentToImmutableRegion T 
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -236,6 +237,28 @@ disjunction = \case
             v':vs -> do
               w <- go v' vs
               op2 "or" v w
+
+--Adds k to the given word
+addK :: Integer -> Var -> FFM Var
+--This opt will become redundant once I add symbolic eval opt
+addK 0 v = return v
+addK k v = do
+  kv <- pushK k
+  op2 "add" kv v
+--In addition to their stack arguments,
+--the mem write ops consume $mem : MemSlice# and update it.
+--In the optimizer, I'll need to mark the ops as consuming rather than simply
+--taking their SElem argument.
+mstore :: Var -> Var -> FFM ()
+mstore off w = memOp "mstore" [off,w]
+mstore8 :: Var -> Var -> FFM ()
+mstore8 off b = memOp "mstore8" [off,b]
+mcopy :: Var -> Var -> Var -> FFM ()
+mcopy dst src len = memOp "mcopy" [dst,src,len]
+--A helper for the mem write ops
+memOp opnm vs = do
+  let mem = Mono "$mem" MemSlice
+  emitPrim ([],[mem]) opnm (vs,[mem])
           
 --Always returns a W (UInt 32) 1, i.e. a Word.
 --Truncated to 32B.

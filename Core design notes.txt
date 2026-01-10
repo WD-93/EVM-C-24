@@ -3355,6 +3355,7 @@ Next: complete evaluatePat.
 TODO split the decls that are essential to the compiler into their own
 EVMC module in Stdlib so that the user doesn't need to import all of Prelude
 just to be safe.
+The essential module should be mandatory...
 
 Note for style guide: internal modules should be imported above package
 modules; they're reversed in the old code...

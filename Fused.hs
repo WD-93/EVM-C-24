@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, OverloadedStrings #-}
 module Fused where
 
 import AST.DTs
@@ -377,7 +377,11 @@ assignEP ep vs =
     -- x(.field@ts | !@[len,a] ix)* = vs
     EPLocal t x ixs -> updateLocal t x ixs vs
     -- *(ptr :: Ptr r a) = vs
-    EPDeref r a ptr -> error "todo"
+    EPDeref r a ptr
+      | not $ r `elem` ["Memory", "Storage", "TStorage"] ->
+        --TODO add more context
+        throwError $ AssignmentToImmutableRegion r
+      | let -> assignPtr r a ptr vs
     -- Array (p1,p2,...) = vs
     EPArray len a ixPs -> error "todo"
     -- Con@ts {field: p, ...} = vs
@@ -491,6 +495,75 @@ setDot :: [Var] -> Name -> [T] -> [Var] -> FFM [Var]
 setDot = error "todo"
 setBang :: [Var] -> T -> T -> Var -> [Var] -> FFM [Var]
 setBang = error "todo"
+
+{-
+There are three mutable regions: Memory, Storage and TStorage.
+Memory is the simplest to write to, since it's byte-addressed.
+Storage and TStorage map 256b slots to 256b values; to maintain consistency
+between pointer types and allow field access, we implement byte-addressing on
+top of that as a costly abstraction.
+That means storage pointer writes require an ifte to check whether the value
+to write overlaps slots; for constant pointer writes (e.g. globals) that
+check should be optimized away via constant expansion + DCE.
+It also leads to a performance footgun: a 2-byte write might require two
+slot accesses! The programmer must be careful to lay out their data in storage
+efficiently if using pointers.
+-}
+{-
+Memory write:
+If the written type is a whole number of words, great!
+We write each word to ptr, ptr+32... using mstore
+If it's m+32*n bytes, then it consists of an m-byte word followed by
+n whole words. We perform a partial word write of the m-byte word,
+then write the remaining words to ptr+n, ptr+n+32, ...
+A one-byte partial write is achieved using mstore8; otherwise:
+ If n > 0: left-shift to the top and mstore. The 32-m zeroes will be
+  overwritten for free by the subsequent whole-word writes.
+ Otherwise (sz < 32): mstore to scratch, then mcopy into place
+-}
+assignPtr :: T -> T -> Var -> [Var] -> FFM ()
+assignPtr r a ptr vs = do
+  sz <- liftFused $ sizeof a
+  let m = sz `mod` 32
+      wholeWs = sz `div` 32
+  if sz == 0
+    then return ()
+    else case r of
+           "Memory" -> do
+             let v:vs' = vs
+             writePtrPartialWord ptr v m (wholeWs > 0)
+             --Write the remaining whole words
+             forM_ (zip [m,m+32..] vs')
+                 (\(off,v) -> do
+                     ptr' <- addK off ptr
+                     mstore ptr' v)
+writePtrPartialWord :: Var -> Var -> Integer -> Bool -> FFM ()
+writePtrPartialWord ptr v len mayClobber
+  | len == 1 = mstore8 ptr v
+  --If remaining > 0, just left-shift and mstore
+  | mayClobber = do
+      sh <- pushK $ (32-len)*8
+      v' <- op2 "shl" sh v
+      mstore ptr v'
+  --The expensive case: mstore to scratch, then mcopy
+  --If ptr overlaps with scratch that's the programmer's fault.
+  | otherwise = do
+      s <- scratchPtr
+      mstore s v
+      --v's value is in the least significant bytes of the word, so we must
+      --mcopy from an offset off scratch.
+      off <- pushK $ 32-len
+      lenw <- pushK len
+      --This addition should ofc be constant-expanded away
+      s' <- op2 "add" off s
+      mcopy ptr s' lenw
+
+--Computes the scratch pointer without doing any scope shenanigans a la
+--convertE. Note this makes declaring memory scratch : Word mandatory!
+scratchPtr :: FFM Var
+scratchPtr = do
+  liftFused $ exploreTyApp "scratch" []
+  pushLabel2 "scratch" [] (Ptr Memory (UInt 32))
     
 --Compilable pattern forms:
 --local (.field | !ix)*
