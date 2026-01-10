@@ -25,6 +25,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad
 import Data.List (elemIndex)
+import Data.Foldable (foldlM)
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do
@@ -239,9 +240,9 @@ assignValue p vs = do
   case mep of
     Nothing -> return ()
     Just ep -> assignEP ep vs
---Consider the expression ptr[f()]++. To avoid repeating the side effect of
+--Consider the expression (arr!f())++. To avoid repeating the side effect of
 --f() and storing to a different address than was loaded from,
---it must be evaluated and bound to vars.
+--it must be evaluated and bound to a temp var.
 --EvaluatedPat replaces every expr in a Pat with its evaluated result.
 --Nothing indicates a wildcard.
 --The exprs may include function calls, so evaluatePat must modify scope.
@@ -258,6 +259,7 @@ evaluatePat = go
             if null ixeps
               then return Nothing
               else return $ Just $ EPArray (fromIntegral $ length ps) a ixeps
+          --TODO support boxed constructors
           PCon con (Just ts) fieldps -> do
             fieldmeps <- mapM (\(field,p) ->
                                  (,) field <$> go p) fieldps
@@ -265,14 +267,97 @@ evaluatePat = go
             --Set checkTag if the datatype has >1 canonical constructor
             --(implies tag scheme /= Nil).
             mod <- liftFused ask
-            let Just Con{conParent=tycon} =
+            let Just Con{conParent=tycon, conBoxed = boxed} =
                   M.lookup con $ conInfo $ dtsInfo mod
                 Just DTInfo{dtCanonicalCons=cons} =
                   M.lookup tycon $ datatypes $ dtsInfo mod
                 checkTag = length cons > 1
+            if boxed
+              then error "TODO support boxed constructors"
+              else return ()
             --Explore con's datatype
             liftFused $ exploreD [] S.empty (tycon,ts)
             return $ epcon con ts checkTag fieldeps
+          --The remaining patterns are of the form
+          --(local | *e)(.field | !e)*.
+          p -> do
+            --First parse p into root and index path 
+            let (root,indexPath) = rollPat p
+            case root of
+              --A local: eval the ixs in indexPath to get an IndexPath
+              TypedPVar (Just t) x -> do
+                path <- mapM evalIndex indexPath
+                return $ Just $ EPLocal t x path
+              -- *e(...) is converted to an EPDeref of a single pointer;
+              -- each .field or !e bumps that pointer (without masking it!).
+              --Evaluating &(*e(...)) using convertE isn't straightforward,
+              --since we don't know the typarams to give addressOf.
+              --However, we'd like to share code... so we'll use the same
+              --indexPath-using helper in convertE later.
+              Deref (Just ts) ptr -> do
+                (ptr',ptrT) <- computeAddressOf ptr indexPath
+                let Ptr r a = ptrT
+                return $ Just $ EPDeref r a ptr'
+              --Precondition: wild, array, con have been excluded
+              where rollPat :: Pat -> (Pat, [EIndex])
+                    rollPat = go []
+                    go rp = \case
+                     PDot (Just ts) p field -> go (EDot field ts : rp) p
+                     PBang (Just [len,a]) p e -> go (EBang len a e : rp) p
+                     p -> (p, reverse rp)
+                    --Should I really throw away len and a here..?
+                    evalIndex :: EIndex -> FFM Index
+                    evalIndex = \case
+                      EDot field ts -> return $ IDot field ts
+                      EBang len a ix -> do
+                        (vs,_short) <- convertE ix
+                        --ix is a short, and shorts are 1 word.
+                        let [v] = vs
+                        return $ IBang len a v
+
+--First eval the root pointer. Then for each index operation:
+-- .field@ts: look up the field's offset, bump the pointer by that
+-- !@[len,a] ix:
+--  sz <- pushK (sizeof a)
+--  ix' <- eval ix --a short
+--  bump pointer by sz*ix'
+--Note no masking is done!
+--We also compute the return type at the same time.
+computeAddressOf :: E -> [EIndex] -> FFM (Var,T)
+computeAddressOf ptrE indexPath = do
+  (ptrWs,ptrT) <- convertE ptrE
+  let [ptr] = ptrWs
+      Ptr r referent = ptrT
+  --The region r remains constant, so it's not updated in the loop
+  --Note boxed fields have already been desugared away
+  --Annoyance: _ref is always thrown away unless it's the last index.
+  (ptr',ref') <-
+    foldlM (\(p,_ref) index ->
+              case index of
+                -- .field@ts
+                EDot field ts -> do
+                  --Explore the datatype of .field!
+                  --If it's boxed, throw a compiler error.
+                  --Look up field index and type in fsOffsets
+                  offs <- liftFused $ gets fsOffsets
+                  let Just (off,sz,t) = M.lookup (field,ts) offs
+                  --Bump the pointer:
+                  szw <- pushK sz
+                  p' <- op2 "add" szw p
+                  return (p',t)
+                --len is ignored because we do no bounds checking
+                EBang _len ref ixE -> do
+                  (ixWs,_short) <- convertE ixE
+                  let [ixW] = ixWs --shorts are one word
+                  --No check sz is <=16b is done
+                  sz <- liftFused (sizeof ref) >>= pushK
+                  --Bump the pointer by ix*sz:
+                  product <- op2 "mul" sz ixW
+                  p' <- op2 "add" product p
+                  return (p',ref)
+           ) (ptr,ptrT) indexPath
+  return (ptr', Ptr r ref')
+                    
 --A smart constructor for Maybe EPCon
 epcon :: Name -> [T] -> Bool -> [(Name,EvaluatedPat)] -> Maybe EvaluatedPat
 epcon con ts checkTag fieldeps
@@ -287,7 +372,126 @@ evalEP = error "todo"
 --stack; they may be in either order depending on whether you assign via
 --p = e or case e of {p => s}
 assignEP :: EvaluatedPat -> [Var] -> FFM ()
-assignEP = error "todo"
+assignEP ep vs =
+  case ep of
+    -- x(.field@ts | !@[len,a] ix)* = vs
+    EPLocal t x ixs -> updateLocal t x ixs vs
+    -- *(ptr :: Ptr r a) = vs
+    EPDeref r a ptr -> error "todo"
+    -- Array (p1,p2,...) = vs
+    EPArray len a ixPs -> error "todo"
+    -- Con@ts {field: p, ...} = vs
+    EPCon con ts checkTag fieldPs -> error "todo"
+{-
+Copied from comment at line 275:
+local(.field|!ix)*:
+ --Applies for both .field and !ix:
+ local(path).field = v =>
+  tmp = local(path); tmp.field = v; local(path) = tmp
+ local = v => copy op
+
+^ that does a quadratic number of index get ops due to tmp = local(path)!
+
+A better approach for local.a.b...z = vs:
+First expand stack: local, that.a, that.b... that.z
+Then replace that.z with vs, set that.b to the new value and work backward.
+
+Recursive function:
+update x path vs = do
+ xws <- get local x
+ xws' <- go xws vs path
+ set local x xws'
+
+go ws vs = \case
+ [] -> return vs
+ index:indices -> do
+  fld <- get index ws
+  fld' <- go fld vs indices
+  return ws{index = fld'}
+-}
+updateLocal :: T -> Name -> [Index] -> [Var] -> FFM ()
+updateLocal t x path vs = do
+  xws <- localToVars t x
+  xws' <- go xws vs path
+  copyTo xws xws'
+  where go ws vs = \case
+          [] -> return vs
+          index:indices -> do
+            fld <- getIndex ws index
+            fld' <- go fld vs indices
+            setIndex ws fld' index
+--Index is last argument to enable \case
+getIndex :: [Var] -> Index -> FFM [Var]
+getIndex ws = \case
+  IDot field ts -> fst <$> getDot ws field ts
+  IBang len a ix -> getBang ws len a ix
+--Dot has already been implemented in Construct and for convertE... need to
+--share the definition in a helper.
+--Since we no longer get the type of the struct from convertE (and the type
+--in the Vars may be misleading), we instead infer it from the field.
+getDot :: [Var] -> Name -> [T] -> FFM ([Var],T)
+getDot vs field ts = do
+  --Infer struct type from field
+  tycon <- do mod <- liftFused ask
+              let Just fi = M.lookup field $ fieldInfo $ dtsInfo mod
+              return $ fiParentTyCon fi
+  let tycon_ts = unrollTyApps (TyCon tycon) ts
+  --mono dt
+  szStruct <- liftFused $ sizeof tycon_ts
+  --the field has a type t and size sz
+  (off,szField,t) <- liftFused $ getFieldInfo field ts
+  if szField == 0
+    --The field is zero-sized; dot is trivial
+    then return ([],t)
+    else do
+    --Select the words containing the field
+    --Note off is the offset of the field from the left in memory;
+    --on the stack there may be additional left-padding.
+    let leftPad = (szStruct `roundedUpMod` 32) - szStruct
+        stackOff = leftPad + off
+        startIx = stackOff `div` 32
+        endIx = (stackOff + szStruct - 1) `div` 32
+        relVs = drop (fromInteger startIx) $
+                take (fromInteger $ endIx-startIx+1) vs
+        --right-offset mod 32
+        rightOff = (szStruct - off - szField + 1) `mod` 32
+        --Output words = disjunction (input << +-k)
+        wshifts = dot (fromIntegral rightOff)
+                  (fromIntegral szField) relVs
+        --The leftmost input word containing the field may also have
+        --garbage to the left of it; mask it out.
+    let whd:wtl = wshifts
+        (top,sh):wrest = whd
+        garb = stackOff `mod` 32
+    vtop <-
+      if garb == 0
+      then top <<< sh --no need to shift out garbage
+      else if sh > 0
+           then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
+                --shift out garbage, then shift back
+           else maskBytes (32-garb) top
+                --can't use shift trick, must use code-intensive
+                --and 0xff... instead.
+    vrest <- forM wrest (\(v,sh) -> v <<< sh)
+    vhd <- disjunction $ vtop:vrest
+    vtl <- (forM wtl (\wshs ->
+                         forM wshs (\(w,sh) -> w <<< sh)))
+           >>= mapM disjunction
+    return (vhd:vtl, t)
+        
+getBang :: [Var] -> T -> T -> Var -> FFM [Var]
+getBang = error "todo"
+--Note it returns a new value rather than updating the old vars; the only
+--update is the copyTo at the end of updateLocal
+setIndex :: [Var] -> [Var] -> Index -> FFM [Var]
+setIndex ws fld = \case
+  IDot field ts -> setDot ws field ts fld
+  IBang len a ix -> setBang ws len a ix fld
+setDot :: [Var] -> Name -> [T] -> [Var] -> FFM [Var]
+setDot = error "todo"
+setBang :: [Var] -> T -> T -> Var -> [Var] -> FFM [Var]
+setBang = error "todo"
+    
 --Compilable pattern forms:
 --local (.field | !ix)*
 -- *p --all .field and !ixs have been rolled into the pointer
@@ -302,17 +506,24 @@ assignEP = error "todo"
 --Con = coerce "bad!" --will be accepted!
 --EPCon Con ts False [] is equivalent to wild, so it's invalid.
 --EParray _ _ [] is also invalid.
-data EvaluatedPat = EPLocal Name T IndexPath
-                  | EPDeref Var --a pointer
+data EvaluatedPat = EPLocal T Name [Index]
+                  | EPDeref T T Var --region, pointed type, pointer
+                  --Why record r,a? To guard against Var being given the wrong
+                  --type in codegen (which otherwise has no runtime impact).
                   | EPArray Integer T --array len and elem type
                     [(Int,EvaluatedPat)] --non-wild indices in ascending order
                   | EPCon Name [T] --monomorphic con
                     Bool --must check tag
                     [(Name,EvaluatedPat)] --non-wild fields
   deriving (Eq,Ord,Read,Show)
-type IndexPath = [Either (Name,[T]) --field
-                  Var --index (Short)
-                 ]
+--Index ops after evaluation
+data Index = IDot Name [T] --field@ts
+           | IBang T T Var --len, a, index (Short)
+  deriving (Eq,Ord,Read,Show)
+--Index ops before evaluation:
+data EIndex = EDot Name [T] --field@ts
+            | EBang T T E --len, a, index
+  deriving (Eq,Ord,Read,Show)
 
 --Generates the code to return null. Huh, I actually don't need to make null
 --a primitive: its code will be auto-generated given an empty body.
@@ -600,50 +811,8 @@ convertE e = pushScope $ go e
           --For now, I make no use of padding info: the entire field is assumed
           --to be potentially nonzero, as is the rest of the struct.
           Dot e (Just ts) field -> do
-            (vs,tycon_ts) <- convertE e
-            let (TyCon tycon, _ts) = rollTyApps tycon_ts
-            --mono dt
-            szStruct <- liftFused $ sizeof tycon_ts
-            --the field has a type t and size sz
-            (off,szField,t) <- liftFused $ getFieldInfo field ts
-            if szField == 0
-              --The field is zero-sized; dot is trivial
-              then return ([],t)
-              else do
-              --Select the words containing the field
-              --Note off is the offset of the field from the left in memory;
-              --on the stack there may be additional left-padding.
-              let leftPad = (szStruct `roundedUpMod` 32) - szStruct
-                  stackOff = leftPad + off
-                  startIx = stackOff `div` 32
-                  endIx = (stackOff + szStruct - 1) `div` 32
-                  relVs = drop (fromInteger startIx) $
-                          take (fromInteger $ endIx-startIx+1) vs
-                  --right-offset mod 32
-                  rightOff = (szStruct - off - szField + 1) `mod` 32
-                  --Output words = disjunction (input << +-k)
-                  wshifts = dot (fromIntegral rightOff)
-                            (fromIntegral szField) relVs
-              --The leftmost input word containing the field may also have
-              --garbage to the left of it; mask it out.
-              let whd:wtl = wshifts
-                  (top,sh):wrest = whd
-                  garb = stackOff `mod` 32
-              vtop <-
-                if garb == 0
-                then top <<< sh --no need to shift out garbage
-                else if sh > 0
-                     then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
-                          --shift out garbage, then shift back
-                     else maskBytes (32-garb) top
-                          --can't use shift trick, must use code-intensive
-                          --and 0xff... instead.
-              vrest <- forM wrest (\(v,sh) -> v <<< sh)
-              vhd <- disjunction $ vtop:vrest
-              vtl <- (forM wtl (\wshs ->
-                                 forM wshs (\(w,sh) -> w <<< sh)))
-                     >>= mapM disjunction
-              return (vhd:vtl, t)
+            (vs,_) <- convertE e
+            getDot vs field ts
         pushScope :: FFM ([Var],T) -> FFM ([Var],T)
         pushScope m = do
           scope <- getScope
