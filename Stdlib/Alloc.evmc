@@ -52,3 +52,8 @@ storage stoOffset;
 tstoOffset : ();
 tstorage tstoOffset;
 code codeOffset = ();
+
+//Adding the scratch global here since it deals with pointers; TODO place it
+//somewhere more logical.
+scratch : Word;
+memory scratch;

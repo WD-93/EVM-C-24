@@ -3352,6 +3352,18 @@ Why isn't exploreF adding f? Time for some print statements...
 IC, I'm spawning exploreG and F but have no scheduler! Fixed.
 Next: complete evaluatePat.
 
+Interesting bug: memory sh; sh : Short; main _ := sh = 42 raises a type
+error: (TypeCheckError (TCModuleError (InCheckSignature "shL" (RigidUnificationError (RigidVarBoundToNonVar "c" Unsigned).
+But main _ := () does not! The error is raised regardless of whether main
+uses sh.
+It's not a bug per se, but a footgun in the language design: globals may be
+in the lhs of an assignment, and function lhses accept any pattern.
+shL's lhs is (n,sh), so declaring sh to be a global changes the meaning of
+the function. sh becomes a global with a monomorphic type rather than a local
+with a flexible one, leading to the rigid unification error since shL is
+polymorphic. Note to users that they must be careful to use globals that
+don't overlap with function parameters.
+
 TODO split the decls that are essential to the compiler into their own
 EVMC module in Stdlib so that the user doesn't need to import all of Prelude
 just to be safe.
