@@ -603,6 +603,7 @@ data EIndex = EDot Name [T] --field@ts
 --a primitive: its code will be auto-generated given an empty body.
 returnNull :: T -> FFM ()
 returnNull t = do
+  comment "return null by default:"
   scope <- getScope --we only need $ret
   ret <- cNull t
   emitStmt $ IR.Return (ret ++ [last scope]) ret
@@ -646,59 +647,84 @@ exploreD tycons tyconset mt@(tycon,ts)
   | S.member tycon tyconset =
     throwError $ CyclicalDatatypes $ reverse $ tycon:tycons
   | let = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x}) mt $
-          do mod <- ask
-             --TODO throw compiler error on DT missing
-             let Just DTInfo{
-                   dtParams = params,
-                   dtTagScheme = tagScheme,
-                   dtCanonicalCons = cons
-                   } = M.lookup tycon $ datatypes $ dtsInfo mod
-                 v2t = if length ts /= length params
-                   then error "!!?"
-                   else M.fromList $ zip params ts
-             --If tag scheme is custom, each tag expr must be monomorphized and
-             --serialized; don't support custom tags just yet...
-             --or initializers in globals.
-             (monoTagScheme,tagSz,mtagT) <-
-               case tagScheme of
-                 Nil -> return (Nil,0, Nothing)
-                 N1 len -> return (N1 len,
-                                   fromIntegral len,
-                                   Just $ UInt $ fromIntegral len)
-                 N16 -> return (N16, 1, Just $ UInt 1)
-                 Custom t con2tag -> error "todo"
-             --Store the monomorphized tag scheme
-             modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts)
-                                            (cons,monoTagScheme) $
-                                            fsTagSchemes fs
-                            })
-             --If tag scheme /= Nil, add .tagTyCon offset (0)
-             case mtagT of
-               Just tagT -> 
-                 modify (\fs->fs{fsOffsets = M.insert ("tag"++tycon,ts)
-                                  (0,tagSz,tagT) $
-                                  fsOffsets fs
+          --Special-casing Int and WordPad, which have nonstandard repr:
+          --Note custom tag schemes are ignored!
+          --Neither type is problematic from a cycle perspective, so we don't
+          --update the stack.
+          case tycon of
+            --Int s len has size len, no constructors and no fields.
+            --It has tag scheme nil.
+            "Int" -> do
+              let [_signedness, TyNat len] = ts
+              modify (\fs->fs{fsSizeof = M.insert ("Int",ts) len $
+                               fsSizeof fs,
+                              fsTagSchemes = M.insert ("Int",ts) ([],Nil) $
+                               fsTagSchemes fs})
+            --WordPad a has a's size, rounded up modulo 32.
+            --data WordPad a = {WordPad {unWordPad: a}}
+            --WordPad a has the same representation as a on the stack, but
+            --the left-padding is part of its sizeof. That means unWordPad
+            --is at offset 32-modulus.
+            "WordPad" -> do
+              let [a] = ts
+              sza <- sizeof' tycons tyconset a
+              let sz = sza `roundedUpMod` 32
+              error "todo"
+            _ -> 
+              do mod <- ask
+                 --TODO throw compiler error on DT missing
+                 let Just DTInfo{
+                       dtParams = params,
+                       dtTagScheme = tagScheme,
+                       dtCanonicalCons = cons
+                       } = M.lookup tycon $ datatypes $ dtsInfo mod
+                     v2t = if length ts /= length params
+                       then error "!!?"
+                       else M.fromList $ zip params ts
+                 --If tag scheme is custom, each tag expr must be monomorphized
+                 --and serialized; don't support custom tags just yet...
+                 --or initializers in globals.
+                 (monoTagScheme,tagSz,mtagT) <-
+                   case tagScheme of
+                     Nil -> return (Nil,0, Nothing)
+                     N1 len -> return (N1 len,
+                                       fromIntegral len,
+                                       Just $ UInt $ fromIntegral len)
+                     N16 -> return (N16, 1, Just $ UInt 1)
+                     Custom t con2tag -> error "todo"
+                 --Store the monomorphized tag scheme
+                 modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts)
+                                                (cons,monoTagScheme) $
+                                                fsTagSchemes fs
                                 })
-               Nothing -> return ()
-             --Get the field names and types for each constructor
-             --TODO throw compiler error if con missing
-             fieldss <- forM cons (\con ->
-                                     let Just Con{conFields = fields} =
-                                           M.lookup con $ conInfo $ dtsInfo mod
-                                     in return fields)
-             --for each fields in fieldss:
-             --for each field in fields:
-             --its offset = the sum of sizes of preceding fields
-             --We also return the total size
-             conszs <- forM fieldss $ setFieldOffsets ts tagSz
-             let dtSz = if not $ null conszs
-                        then maximum conszs
-                        else tagSz
-             --Store the sizeof the DT
-             modify (\fs->fs{fsSizeof = M.insert (tycon,ts) dtSz $
-                              fsSizeof fs
-                            })
-               where setFieldOffsets ts off = \case
+                 --If tag scheme /= Nil, add .tagTyCon offset (0)
+                 case mtagT of
+                   Just tagT -> 
+                     modify (\fs->fs{fsOffsets = M.insert ("tag"++tycon,ts)
+                                      (0,tagSz,tagT) $
+                                      fsOffsets fs
+                                    })
+                   Nothing -> return ()
+                 --Get the field names and types for each constructor
+                 --TODO throw compiler error if con missing
+                 fieldss <- forM cons (\con ->
+                                         let Just Con{conFields = fields} =
+                                               M.lookup con $ conInfo $
+                                               dtsInfo mod
+                                         in return fields)
+                 --for each fields in fieldss:
+                 --for each field in fields:
+                 --its offset = the sum of sizes of preceding fields
+                 --We also return the total size
+                 conszs <- forM fieldss $ setFieldOffsets ts tagSz
+                 let dtSz = if not $ null conszs
+                            then maximum conszs
+                            else tagSz
+                 --Store the sizeof the DT
+                 modify (\fs->fs{fsSizeof = M.insert (tycon,ts) dtSz $
+                                  fsSizeof fs
+                                })
+          where setFieldOffsets ts off = \case
                        [] -> return off
                        (field,t):fields -> do
                          --Note we push tycon to the tycon stack in order to

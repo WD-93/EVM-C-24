@@ -3364,6 +3364,36 @@ with a flexible one, leading to the rigid unification error since shL is
 polymorphic. Note to users that they must be careful to use globals that
 don't overlap with function parameters.
 
+Bug in main _ := f 255; f : Word -> Word; f x := return x: every function
+(coerce, fromWord etc)
+takes only $ret*stk as its lhs and returns ()! Calls also pass and take no
+arguments. Is the size of Int wrongly returned as 0? Yes, ssizeof of the
+generated Structured reveals UInt 32 is given size 0.
+I need to special-case Int and WordPad! Done for Int, next: WordPad.
+
+Potential bug in exploreD: an innocent datatype which can be parameterized to
+contain itself might falsely trigger the cycle detection.
+Ex: Maybe (Maybe Bool).
+How to address that? Quick and dirty sol: turn off cycle detection.
+More sustainable solution: accurately report cycles.
+Using (tycon,ts) for the stack won't catch cyclical types which vary the
+recursion param, e.g. data D a = {D (D (a,a))}.
+Params may also be the top-level tycon of fields, e.g.
+data Apply f a = {Apply (f a)}. But kind checks should prevent any
+Y combinator-like shenanigans right? Need to check the theory again.
+A type which indirectly syntactically contains itself is clearly ill-founded,
+but that can also occur indirectly via Apply.
+Temporary compromise solution: use (tycon,ts) in the stack, set an arbitrary
+stack depth limit to prevent blowup.
+Attempting to trigger bug:
+ghci> pipeline2structured "import Prelude; main _ := Nothing :: Maybe (Maybe Bool)"
+Exploring main[(),()]
+*** Exception: Fused.hs:1057:7-38: Non-exhaustive patterns in (TyCon tycon, ts)
+Looks like I'll have to fix that bug first.
+
+Bug: "import Prelude; main _ := A; data D a = {A;B (D (a,a))}" complains of
+an unbound kind var in main.
+
 TODO split the decls that are essential to the compiler into their own
 EVMC module in Stdlib so that the user doesn't need to import all of Prelude
 just to be safe.

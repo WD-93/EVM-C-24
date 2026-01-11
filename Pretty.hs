@@ -21,6 +21,8 @@ import Control.Monad (filterM)
 
 --Just a test module for viewing intermediate compiler output
 --Updating it to print the DTs of the new compiler... TODO use actual ppr.
+--TODO add a verbosity flag so I can read args and scope without type
+--boilerplate.
 prettyStructured :: Structured -> [String]
 prettyStructured s =
   prettyStructuredFuns (sdefuns s)
@@ -83,7 +85,7 @@ prettyStmt = \case
   --Scope shown for debugging purposes
   --return (x,y,z) //scope = (a,b,c)
   Structured.DTs.Return scope vs ->
-    ["//scope = " ++ showVars scope,
+    [showScope scope,
      "return " ++ showVars vs]
   --I distinguish comments (which have no semantic import)
   --from scope info by using // instead of /#
