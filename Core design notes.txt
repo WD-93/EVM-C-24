@@ -3394,6 +3394,14 @@ sizeof' is being passed a TyVar despite monomorphization...
 The definition was monomorphized correctly... so what gives? Perhaps the
 returnNull. The error is in the convertS.
 main _ := Nil throws the same error.
+main _ := Just True now generates correct output, but := Nil fails with a
+todo.
+First: investigate the type error in := Nothing. It's the a from Maybe a that
+isn't getting bound... does Maybe not have a kindsig?
+KindVarUnbound is thrown in allKindsBound, but the failure to bind $a_6 is
+in inferDefs. It's definitely the var for Nothing's typaram, since 
+main _ := Foo; data Foo foo = {Foo} complains about $foo_6 instead.
+I'm presumably not unifying ConRecord's type's kind with Type.
 
 Bug: "import Prelude; main _ := A; data D a = {A;B (D (a,a))}" complains of
 an unbound kind var in main.

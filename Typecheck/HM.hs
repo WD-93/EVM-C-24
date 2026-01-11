@@ -551,6 +551,9 @@ typeOf = go
                                 Just t' -> unify t t')
             rhsT' <- zonk rhsT
             params <- mapM (zonk . TyVar) vars
+            --Bugfix: unifying rhsT''s kind with Type
+            k <- kindOf rhsT'
+            unifyK k "Type"
             return (ConRecord con (Just params) fielde's, rhsT')
           Dot e Nothing field -> do
             tysigs <- asks hmTySigs
@@ -1282,7 +1285,9 @@ inferSCC nms m =
                                  $ NonFunctionMustBeMonomorphic nm t
                                return (nm,t)) nms
             let nm2sig = M.map prettifyType nm2uglySig
+            --unsafePrint "About to allKindsBound"
             allKindsBound
+            --unsafePrint "Succeeded!"
             --zonk all tyapps in the defs
             (funs',globs') <- everywhereM (mkM zonk) (funs,globs)
             --Default unbound tyvars *on a per-function basis*
@@ -1364,6 +1369,15 @@ inferDefs m = go
                     (pats',t) <- typeOfFun m pats
                     --unsafePrint "Got here B2"
                     tauOf nm >>= unify t
+                    {-
+                    if nm == "main"
+                      then do
+                      unsafePrint "Def of main:"
+                      unsafePrint $ show pats
+                      unsafePrint "TC'd def of main, type:"
+                      unsafePrint $ show (pats',t)
+                      else return ()
+                    -}
                     return (M.insert nm pats' funs,globs)
                     {-
                 | Just e <- M.lookup nm $ static m -> do
