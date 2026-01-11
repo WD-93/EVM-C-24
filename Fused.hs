@@ -673,7 +673,17 @@ exploreD tycons tyconset mt@(tycon,ts)
               let [a] = ts
               sza <- sizeof' tycons tyconset a
               let sz = sza `roundedUpMod` 32
-              error "todo"
+              --Store the tag scheme Nil with cons = [WordPad],
+              --the sole field unWordPad and the size of the DT
+              modify (\fs->fs{fsTagSchemes = M.insert ("WordPad",ts)
+                                             (["WordPad"],Nil) $
+                                             fsTagSchemes fs,
+                              fsOffsets = M.insert ("unWordPad",ts)
+                                          (sz-sza,sza,a) $
+                                          fsOffsets fs,
+                              fsSizeof = M.insert ("WordPad",ts) sz $
+                                         fsSizeof fs
+                             })
             _ -> 
               do mod <- ask
                  --TODO throw compiler error on DT missing
