@@ -3408,6 +3408,23 @@ Now it fails with a different todo; progress!
 TODO: exploreD will need to call getTag when serializing custom con tags.
 Need to add a getTag' with a monoT stack parameter.
 
+The programs that can run are now getting too large to read (pre-opt).
+Bug in main _ := {var x = False; x = True}: False is assigned to x#1.1:W 1 uint1, but True is correctly assigned to Bool!?
+{var x = False, y = False; (x,y) = (True,True)} --dot involves shift when it
+shouldn't. A problem in desugaring? Unlikely, TC would catch.
+(True,False) looks correct.
+var x = False and True both seem to incorrectly give x#1.1 the type Byte;
+presumably I failed to copy to the right type in Declare.
+That makes sense, since Declare lacks type info for the var!
+I need to fix that, otherwise it creates a bug where the original var x = e
+is ignored (so any subsequent use before the first assignment is a scope
+error) if e's words have a misleading type.
+f():=return True shows Bool constructors return a byte variable (the tag type) on creation.
+e shouldn't have a misleading type, but I shouldn't rely on the type being
+correct.
+Those are two separate issues; I need to fix both.
+Bug in True = False: *** Exception: Fused.hs:593:18-27: Non-exhaustive patterns in v : vs'
+
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
 not optimized away, the code size limit should catch them...
 TODO update null()'s definition to {}; it doesn't need to be return coerce().

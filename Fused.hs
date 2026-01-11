@@ -420,9 +420,32 @@ assignEP ep vs =
             (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
             eq <- equals actualTag desiredTag
             --Now we need an ifte!
-            error "todo ifte"
+            require eq
           else return ()
-        error "todo assign p to vs.field for field in fields"
+        forM_ fieldPs (\(field,p) -> do
+                          fld <- fst <$> getDot vs field ts
+                          assignEP p fld)
+
+--A helper for reverting if the cond is zero. Structured has no
+--concept of branching or divergence, so we call revertValue() instead.
+--revertValue writes the given value to zero (TODO ensure it does), so
+--it should compile to push0, push0, revert once the stack drop opt is
+--added.
+--Since Structured uses Ifte to simulate jumpis, it's essential that
+--standalone if(cond)revertValue() statements be optimized so that they
+--can all jump to the same revertValue@[()].
+--The else body just jumps to the subsequent code; that should be
+--inlined once it's recognized that the jump is the only edge.
+require :: Var -> FFM ()
+require cond = do
+  --code inspired by convertE A.Ifte; TODO make shared helper?
+  scope <- getScope
+  --Can I safely use block here or do I need a callCFun helper?
+  els <- block scope $ SE $
+    TyApp "revertValue" [Unit] :$
+    ConRecord "Unit" (Just []) []
+  emitStmt $ IR.Ifte scope [] cond [] els
+
 {-
 Copied from comment at line 275:
 local(.field|!ix)*:

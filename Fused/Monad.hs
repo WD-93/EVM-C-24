@@ -271,6 +271,15 @@ memOp opnm vs = do
   emitPrim ([],[mem]) opnm (vs,[mem])
 
 --The C == operator inlined; returns a Bool
+--TODO Core opts: move branch earlier if a_i /= b_i is likely, speculatively
+--short-circuiting the computation.
+--Opt 2: as != bs :: Word = the disjunction of their pairwise xors, avoiding an
+--iszero if reverting on inequality (as in tag checks on assignment).
+--jumpi cond fail, fail: jump revertValue,... can be optimized to jumpi cond
+--revertValue@[()] via inlining.
+--Opt 3: negate the jumpi cond if that leads to a nicer code layout, e.g.
+--fallthrough to code that other functions jump to (so no fallthrough
+--contention).
 equals :: [Var] -> [Var] -> FFM Var
 equals as bs
   --TODO move the Fused.Monad datatypes to a lower module so Pretty can import
