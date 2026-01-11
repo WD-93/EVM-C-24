@@ -646,15 +646,20 @@ exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
 --The DT's size is the maximum of each constructor's size.
 --Takes a tycon stack :: [Name] to detect loops; tyconset = S.fromList tycons
 --is used to accelerate cycle detection.
-exploreD :: [Name] -> Set Name -> MonoT -> FusedM ()
-exploreD tycons tyconset mt@(tycon,ts)
-  | S.member tycon tyconset =
-    throwError $ CyclicalDatatypes $ reverse $ tycon:tycons
+exploreD :: [MonoT] -> Set MonoT -> MonoT -> FusedM ()
+exploreD monoTs monoTset mt@(tycon,ts)
+  | S.member mt monoTset =
+    throwError $ CyclicalDatatypes $ reverse $ mt:monoTs
+  --Hack to catch data D a = {D (D (a,a))}: an arbitrary stack depth limit
+  --We only report the first monoT of the offending sequence because otherwise
+  --the error gets ludicrously large.
+  | S.size monoTset == 100 =
+    throwError $ ArbitraryDatatypeStackDepthExceeded $ last monoTs
   | let = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x}) mt $
           --Special-casing Int and WordPad, which have nonstandard repr:
           --Note custom tag schemes are ignored!
-          --Neither type is problematic from a cycle perspective, so we don't
-          --update the stack.
+          --While neither type is problematic from a cycle perspective, we
+          --update the stack to make the error more informative.
           case tycon of
             --Int s len has size len, no constructors and no fields.
             --It has tag scheme nil.
@@ -671,7 +676,8 @@ exploreD tycons tyconset mt@(tycon,ts)
             --is at offset 32-modulus.
             "WordPad" -> do
               let [a] = ts
-              sza <- sizeof' tycons tyconset a
+              --Note stack is updated
+              sza <- sizeof' (mt:monoTs) (S.insert mt monoTset) a
               let sz = sza `roundedUpMod` 32
               --Store the tag scheme Nil with cons = [WordPad],
               --the sole field unWordPad and the size of the DT
@@ -695,8 +701,8 @@ exploreD tycons tyconset mt@(tycon,ts)
                      v2t = if length ts /= length params
                        then error "!!?"
                        else M.fromList $ zip params ts
-                 unsafePrint $ "Reached exploreD " ++ tycon ++ " " ++ show ts
-                 unsafePrint $ "v2t: " ++ show v2t
+                 --unsafePrint $ "Reached exploreD " ++ tycon ++ " " ++ show ts
+                 --unsafePrint $ "v2t: " ++ show v2t
                  --If tag scheme is custom, each tag expr must be monomorphized
                  --and serialized; don't support custom tags just yet...
                  --or initializers in globals.
@@ -745,10 +751,10 @@ exploreD tycons tyconset mt@(tycon,ts)
           where setFieldOffsets ts off = \case
                        [] -> return off
                        (field,t):fields -> do
-                         --Note we push tycon to the tycon stack in order to
+                         --Note we push mt to the tycon stack in order to
                          --detect cyclical DTs
-                         sz <- sizeof' (tycon:tycons)
-                               (S.insert tycon tyconset) t
+                         sz <- sizeof' (mt:monoTs)
+                               (S.insert mt monoTset) t
                          modify (\fs-> fs{fsOffsets = M.insert (field,ts)
                                            (off,sz,t) $
                                            fsOffsets fs
@@ -1074,7 +1080,7 @@ newVars t = do
 sizeof :: T -> FusedM Integer
 sizeof = sizeof' [] S.empty
 --sizeof for D
-sizeof' :: [Name] -> Set Name -> T -> FusedM Integer
+sizeof' :: [MonoT] -> Set MonoT -> T -> FusedM Integer
 sizeof' tycons tyconset t = do
   let (tctycon, ts) = rollTyApps t
   case tctycon of

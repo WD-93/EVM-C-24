@@ -112,10 +112,12 @@ initFusedS = FS {
 data FusedError = GenericFE String
                 | NoMain
                 | IlltypedMain BindError T
-                | CyclicalDatatypes [Name]
-                --Ran getFieldInfo before exploreD
+                | CyclicalDatatypes [MonoT]
+                | ArbitraryDatatypeStackDepthExceeded MonoT
+                --Ran getFieldInfo before exploreD:
                 | CompilerErrorFieldInfoBeforeExploreD Name [T]
-                | AssignmentToImmutableRegion T 
+                | AssignmentToImmutableRegion T
+                
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

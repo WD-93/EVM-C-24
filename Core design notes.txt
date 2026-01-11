@@ -3403,6 +3403,8 @@ in inferDefs. It's definitely the var for Nothing's typaram, since
 main _ := Foo; data Foo foo = {Foo} complains about $foo_6 instead.
 I'm presumably not unifying ConRecord's type's kind with Type.
 
+TODO update null()'s definition to {}; it doesn't need to be return coerce().
+
 Bug: "import Prelude; main _ := A; data D a = {A;B (D (a,a))}" complains of
 an unbound kind var in main.
 Ditto for main _ := Nothing.
