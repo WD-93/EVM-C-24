@@ -231,14 +231,22 @@ maskBytes k v
 
 --Ors the given vars together
 disjunction :: [Var] -> FFM Var
-disjunction = \case
-  [] -> pushK 0
+disjunction = foldlOp "or" (pushK 0) 
+conjunction :: [Var] -> FFM Var
+conjunction = foldlOp "and" (pushK 1)
+--Combines the given words with a primop; returns a default expr if the list
+--is empty.
+--Can be used for conjunction, disjunction, sum...
+foldlOp :: Name -> FFM Var -> [Var] -> FFM Var
+foldlOp op dflt = \case
+  [] -> dflt
   v:vs -> go v vs
     where go v = \case
             [] -> return v
             v':vs -> do
               w <- go v' vs
-              op2 "or" v w
+              op2 op v w
+
 
 --Adds k to the given word
 addK :: Integer -> Var -> FFM Var
@@ -261,6 +269,21 @@ mcopy dst src len = memOp "mcopy" [dst,src,len]
 memOp opnm vs = do
   let mem = Mono "$mem" MemSlice
   emitPrim ([],[mem]) opnm (vs,[mem])
+
+--The C == operator inlined; returns a Bool
+equals :: [Var] -> [Var] -> FFM Var
+equals as bs
+  --TODO move the Fused.Monad datatypes to a lower module so Pretty can import
+  --them and the combinators can use ppr'd vars without a cycle?
+  --Better alt: turn GenericFE calls into separate error constructors,
+  --do the string-processing in the CLI UI.
+  | length as /= length bs =
+    throwError $ GenericFE $
+    "Compiler error: as and bs have different lengths in Fused.Monad.equals: "
+    ++ show (as,bs)
+  | let = zipWithM (op2 "eq") as bs >>=
+          conjunction >>=
+          copy (W 1 $ TyCon "Bool")
           
 --Always returns a W (UInt 32) 1, i.e. a Word.
 --Truncated to 32B.

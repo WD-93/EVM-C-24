@@ -390,7 +390,39 @@ assignEP ep vs =
     -- Array (p1,p2,...) = vs
     EPArray len a ixPs -> error "todo"
     -- Con@ts {field: p, ...} = vs
-    EPCon con ts checkTag fieldPs -> error "todo"
+    EPCon con ts checkTag fieldPs -> do
+      --TODO support boxed cons; error with a todo for now
+      boxed <- liftFused $ getConBoxed con
+      if boxed
+        then error "TODO support assignEP for boxed cons"
+        else do
+        --Check unboxed tag:
+        if checkTag --does *not* imply tag scheme /= Nil
+          then do
+          --TODO make a helper for getting the tag of a value; if
+          --tagScheme is Nil it could return () as getTag does.
+          tycon <- liftFused $ getConParent con
+          --TODO split exploreD into exploreD and exploreD' to avoid
+          --passing [], S.empty everywhere
+          unsafePrint "Got here! assignEP EPCon unboxed"
+          liftFused $ exploreD [] S.empty (tycon,ts)
+          (cons,tagScheme) <- liftFused $ getTagScheme tycon ts
+          if tagScheme == Nil
+            then return ()
+            --If the tag scheme is custom but zero-sized, the equality
+            --check should be optimized to True.
+            --Potential future opt: knowing the tag has only one of
+            --n possible values, optimize the equality check.
+            --That would make checks on corrupt tags UB.
+            else do
+            (serTag,tagT) <- liftFused $ getTag con ts
+            desiredTag <- pushMultiWordSer serTag tagT
+            (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
+            eq <- equals actualTag desiredTag
+            --Now we need an ifte!
+            error "todo ifte"
+          else return ()
+        error "todo assign p to vs.field for field in fields"
 {-
 Copied from comment at line 275:
 local(.field|!ix)*:
@@ -977,16 +1009,17 @@ getFieldInfo field ts = do
 --zero-sized tag; currently doesn't handle custom.
 getTag :: Name -> [T] -> FusedM (Serialized,T)
 getTag con ts = do
-  --TODO turn into combinator...
-  mod <- ask
-  let dtsi = dtsInfo mod
-      Just Con{conParent=tycon} = M.lookup con $ conInfo dtsi
-      Just DTInfo{dtTagScheme = tagScheme,
-                  dtCanonicalCons = cons
-                 } = M.lookup tycon $ datatypes dtsi
-  unsafePrint $ "Reached getTag " ++ con ++ " " ++ show ts
+  --Bugfix: I was using the polymorphic tag scheme, not the
+  --monomorphized one.
+  tycon <- getConParent con
+  --Subtle point: should getTagScheme call exploreD, eliminating bugs
+  --caused by missing that at the call site? It depends if
+  --getTagScheme is ever called from within exploreD. For now it's
+  --safest to exploreD at every call site.
   exploreD [] S.empty (tycon,ts)
-  unsafePrint "exploreD (tycon,ts) succeeded"
+  --Bug: I was getting the tag scheme of con rather than tycon, which
+  --was masked since ImplList is both a con and tycon
+  (cons,tagScheme) <- getTagScheme tycon ts
   --Will fail for a boxed constructor...
   let Just conIx = elemIndex con cons
   return $ case tagScheme of
@@ -1009,6 +1042,29 @@ getTag con ts = do
                             [Left $ serInt 1 $ fromIntegral conIx]
                         },
                       UInt 1)
+--Used in assignEP EPCon as well; TODO move to logical location
+--Gets the monomorphized tag scheme of the given MonoT.
+getTagScheme :: Name -> [T] -> FusedM ([Name], TagScheme (E,Serialized))
+getTagScheme tycon ts = do
+  tss <- gets fsTagSchemes
+  case M.lookup (tycon,ts) tss of
+    Nothing -> throwError $ GenericFE $
+      "Compiler error: getTagScheme before exploreD "++tycon++" "++
+      show ts
+    Just x -> return x
+--Helpers, TODO use it to shrink code everywhere they can be used.
+getConParent :: Name -> FusedM Name
+getConParent con = conParent <$> getModConInfo "getConParent" con
+getConBoxed :: Name -> FusedM Bool
+getConBoxed con = conBoxed <$> getModConInfo "getConBoxed" con
+getModConInfo :: String -> Name -> FusedM ConInfo
+getModConInfo caller con = do
+  mci <- asks (M.lookup con . conInfo . dtsInfo)
+  case mci of
+    Nothing -> throwError $ GenericFE $
+      "Compiler error: no con info for " ++ con ++
+      " (requested by " ++ caller ++ ")"
+    Just ci -> return ci
 
 --Concat tag and fields in canonical order;
 --same procedure as for array construction.

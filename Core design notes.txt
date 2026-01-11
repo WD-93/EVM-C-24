@@ -3403,7 +3403,18 @@ in inferDefs. It's definitely the var for Nothing's typaram, since
 main _ := Foo; data Foo foo = {Foo} complains about $foo_6 instead.
 I'm presumably not unifying ConRecord's type's kind with Type.
 
+Next: main _ := Nil fails with a todo on assignEP (EPCon ...) vs.
+Now it fails with a different todo; progress!
+TODO: exploreD will need to call getTag when serializing custom con tags.
+Need to add a getTag' with a monoT stack parameter.
+
+TODO add an arbitrary limit for monomorphic functions to generate? If they're
+not optimized away, the code size limit should catch them...
 TODO update null()'s definition to {}; it doesn't need to be return coerce().
+Unit test suite: make a number of bad programs for each stage demonstrating
+each error construct, as well as good programs + their intended behavior.
+Ask for pointers on programmatic program generation from QC people once
+compiler runs.
 
 Bug: "import Prelude; main _ := A; data D a = {A;B (D (a,a))}" complains of
 an unbound kind var in main.
