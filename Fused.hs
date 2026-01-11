@@ -103,6 +103,7 @@ exploreF f ts =
                Right tpsset ->
                  let tpss = S.toList tpsset
                  in instClass f ts ft tpss
+  unsafePrint $ "Monomorphic definition: " ++ show monoDef
   --Generate the Structured definition
   convertF f ts ft monoDef
     where
@@ -136,6 +137,7 @@ convertF f ts ft ps = do
   modify (\fs -> fs{fsDefuns = M.insert flabel sdef $ fsDefuns fs})
 convertDef :: Name -> [T] -> T -> (Pat,S) -> FusedM (BranchValue,[Stmt])
 convertDef f ts ft@(a :-> b) (p,s) = do
+  unsafePrint $ "Monomorphized type: " ++ show ft
   scope <- initialScope a b --triggers DT exploration
   ((),_ffs,stmts) <- unliftFFM (compileF f ts a b p s) (FFR (f,ts))
                      FFS {ffsScope = scope,
@@ -174,7 +176,9 @@ compileF f ts a b p s = do
   --Generate the function body
   --Found the missing $ret bug! Ofc, localVars isn't enough
   putScope $ localVars ++ [ret]
+  unsafePrint $ "ConvertS: " ++ show s
   convertS s
+  unsafePrint $ "Returning null :: " ++ show b
   returnNull b
 
 {-
@@ -681,6 +685,8 @@ exploreD tycons tyconset mt@(tycon,ts)
                      v2t = if length ts /= length params
                        then error "!!?"
                        else M.fromList $ zip params ts
+                 unsafePrint $ "Reached exploreD " ++ tycon ++ " " ++ show ts
+                 unsafePrint $ "v2t: " ++ show v2t
                  --If tag scheme is custom, each tag expr must be monomorphized
                  --and serialized; don't support custom tags just yet...
                  --or initializers in globals.
@@ -716,7 +722,9 @@ exploreD tycons tyconset mt@(tycon,ts)
                  --for each field in fields:
                  --its offset = the sum of sizes of preceding fields
                  --We also return the total size
-                 conszs <- forM fieldss $ setFieldOffsets ts tagSz
+                 --Bugfix: I'd forgotten to instantiate the field types here.
+                 let Right instFieldss = instT v2t fieldss
+                 conszs <- forM instFieldss $ setFieldOffsets ts tagSz
                  let dtSz = if not $ null conszs
                             then maximum conszs
                             else tagSz
@@ -911,8 +919,10 @@ convertE e = pushScope $ go e
           --Need opts to shift/or eagerly to avoid blowing up the stack.
           --Note boxed con Es have been desugared away.
           ConRecord con (Just ts) field_es -> do
+            unsafePrint $ "Reached ConRecord " ++ con ++ " " ++ show ts
             --Should I just return the sizeof the tag here?
             (ser,tagT) <- liftFused $ getTag con ts
+            unsafePrint $ "tag type: " ++ show tagT
             tagSz <- liftFused $ sizeof tagT
             --TODO double-check repeated fields have already been ruled out.
             field2vs <- M.fromList <$> forM field_es (\(field,e) -> do
@@ -958,7 +968,9 @@ getTag con ts = do
       Just DTInfo{dtTagScheme = tagScheme,
                   dtCanonicalCons = cons
                  } = M.lookup tycon $ datatypes dtsi
+  unsafePrint $ "Reached getTag " ++ con ++ " " ++ show ts
   exploreD [] S.empty (tycon,ts)
+  unsafePrint "exploreD (tycon,ts) succeeded"
   --Will fail for a boxed constructor...
   let Just conIx = elemIndex con cons
   return $ case tagScheme of
@@ -1054,12 +1066,15 @@ sizeof = sizeof' [] S.empty
 --sizeof for D
 sizeof' :: [Name] -> Set Name -> T -> FusedM Integer
 sizeof' tycons tyconset t = do
-  let (TyCon tycon, ts) = rollTyApps t
-  exploreD tycons tyconset (tycon,ts)
-  sizes <- gets fsSizeof
-  case M.lookup (tycon,ts) sizes of
-    Nothing -> error "!?"
-    Just sz -> return sz
+  let (tctycon, ts) = rollTyApps t
+  case tctycon of
+    TyCon tycon -> do
+      exploreD tycons tyconset (tycon,ts)
+      sizes <- gets fsSizeof
+      case M.lookup (tycon,ts) sizes of
+        Nothing -> error "!?"
+        Just sz -> return sz
+    _ -> error $ "Compiler error: non-DT in sizeof ("++show t++")"
 --Used only in function compilation since it needs to deal with the stack
 numWords :: T -> FusedM Integer
 numWords t = ((`div` 32) . (`roundedUpMod` 32)) <$> sizeof t
