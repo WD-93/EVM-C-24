@@ -3439,6 +3439,22 @@ computeAddressOf ptr indexPath returns a MPtr (MPtr ())
 indexPath is [] as expected. Fixed that bug, I was passing the wrong type to
 the foldlM in addressOf.
 
+True = False or mul(1,2) generates a tremendous amount of prints and code, but that's because I haven't simplified it yet.
+FW Q: how to simplify without losing structure info as Structured->Core
+compilation followed by opt does?
+Bug: mul's def takes $arg.1:(uint32,uint32), $arg.2:(uint32,uint32), $stk...
+I must be declaring it wrong in initialScope. The problem is in localToVars,
+which is a keystone function called in tons of places: it was parameterizing
+the name, not the type of the returned vars.
+{var x = True} is enough to demonstrate it:
+ ($anon1:W# (uint1) (1))#() = push [01]:1()#()
+ ($anon2:W# (Bool) (1))#() = copy($anon1:W# (uint1) (1))#()
+ (x#1.1:Bool)#() = copy($anon2:W# (Bool) (1))#()
+Note W# is not applied to x#1.1!
+I missed that in all the cruft... need to simplify.
+That was a bug, but didn't fix the problem in declares... fixed, it was the
+same bug in two places due to code near-duplication (as an opt).
+
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
 not optimized away, the code size limit should catch them...
 TODO update null()'s definition to {}; it doesn't need to be return coerce().

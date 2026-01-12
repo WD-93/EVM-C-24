@@ -889,7 +889,10 @@ convertS (AST.DTs.Declare nmes) = mapM_ declare nmes
           --copy vs to x.1..n : W t 1..n
           --Bugfix: xs will now have the correct type even if vs does not
           --(which it should...).
-          let xs = [Mono (x++"."++show n) t | n <- [1 .. length vs]]
+          --Bug: it didn't have W. Not using localToVars because it does a
+          --new sizeof, whereas we already know the word length |vs|.
+          let xs = [Mono (x++"."++show n) $ W t $ TyNat $ fromIntegral n
+                   | n <- [1 .. length vs]]
           copyTo xs vs
           putScope (xs ++ scope)
 convertS s = cleanup $
@@ -1158,7 +1161,7 @@ constructCon con ts tag tagSz field2vst resT = do
 localToVars :: T -> Name -> FFM [Var]
 localToVars t x = do
   wlen <- liftFused $ numWords t
-  return [Mono (x++"."++show n) t | n <- [1..wlen]]
+  return [Mono (x++"."++show n) (W t (TyNat n)) | n <- [1..wlen]]
 
 --These must be here because they trigger DT exploration; Fused.Monad is for
 --basic stuff.
