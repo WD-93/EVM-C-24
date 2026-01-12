@@ -305,9 +305,11 @@ data S = SE E --required because := has been moved to E
        | Block [S] --Standalone do, scopes locals
        | Break
        | Continue
-       --mandatory variable declaration; vars enter scope in textual order,
-       --so var x = 1, y = x + x; is valid
-       | Declare [(Name,E)] 
+       --Mandatory variable declaration; vars enter scope one-by-one in textual
+       --order, so var x = 1, y = x + x; is valid.
+       --Added a Maybe T to ensure type info is nearby when compiling the
+       --type-checked function to the structured IR.
+       | Declare [(Name,Maybe T,E)] 
   deriving (Eq,Ord,Read,Show,Data)
 --Determines whether an expr is a valid LHS for assignment
 --Anonymous structs removed, so no struct patterns or #ix

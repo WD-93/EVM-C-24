@@ -570,5 +570,5 @@ desugarS di = go
         desugarCase (P.C _loc p s) = (,) <$> gop p <*> go s
         desugarVB = \case
           --var x; => var x = null()
-          P.JustVar _loc (Ident v) -> return (v,Var "null" :$ tupleE [])
-          P.VarIs _loc (Ident v) e -> (,) v <$> goe e
+          P.JustVar _loc (Ident v) -> return (v,Nothing,Var "null" :$ tupleE [])
+          P.VarIs _loc (Ident v) e -> (\e->(v,Nothing,e)) <$> goe e

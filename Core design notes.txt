@@ -3424,6 +3424,9 @@ e shouldn't have a misleading type, but I shouldn't rely on the type being
 correct.
 Those are two separate issues; I need to fix both.
 Next: add types to vars in S.Declare.
+Potential HM refinement: now that I unshadow and each local has a unique
+name, is there scope management code I can remove?
+Also: add a type annot param to Module and SEP to fix whether the AST has tysigs or not; () for no type annot, T for annot? g,f have either () or [T]... perhaps use a tyfam.
 
 Bug in True = False: *** Exception: Fused.hs:593:18-27: Non-exhaustive patterns in v : vs'
 

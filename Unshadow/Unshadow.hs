@@ -105,7 +105,7 @@ unshadowS = go
           Continue -> return Continue
           --The tricky part. Note the same var may be declared multiple times.
           Declare varEs -> Declare <$>
-                           forM varEs (\(var,e) -> do
+                           forM varEs (\(var,Nothing,e) -> do
                                           e' <- ue e --it's in the old scope
                                           vm <- get
                                           let oldver = case M.lookup var vm of
@@ -113,7 +113,9 @@ unshadowS = go
                                                          Just n -> n
                                               ver = oldver + 1
                                           modify (M.insert var ver)
-                                          return (var++"#"++show ver, e'))
+                                          return (var++"#"++show ver,
+                                                  Nothing,
+                                                  e'))
         ue :: Data a => a -> Unshadow a
         ue = gets . flip unshadowTerm
         block m = do

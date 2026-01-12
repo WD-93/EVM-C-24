@@ -1466,7 +1466,7 @@ inferBlock' ret ss =
    (\case
        [] -> return []
        s:ss -> case s of
-                 Declare ves -> withDeclares ves $ inferBlock' ret ss
+                 Declare vmtes -> withDeclares vmtes $ inferBlock' ret ss
                  _ -> (:) <$> go s <*> inferBlock' ret ss) ss
   --go handles all the cases but declare since they don't modify scope
   where go = \case
@@ -1496,11 +1496,11 @@ inferBlock' ret ss =
 --A name is invalid if it's one of the statically defined lowercase things:
 --a function, static or global
 --If a local is redeclared it's shadowed
-withDeclares :: [(Name,E)] -> HM [S] -> HM [S]
+withDeclares :: [(Name, Maybe T, E)] -> HM [S] -> HM [S]
 withDeclares [] hm = hm
-withDeclares ((v,e):ves) hm = do
+withDeclares ((v,Nothing,e):ves) hm = do
   (e',t) <- typeOf e
-  (Declare [(v,e')] :) <$> withReaderT
+  (Declare [(v,Just t,e')] :) <$> withReaderT
     (\hmr->hmr{hmLocals=M.insert v t $ hmLocals hmr}) (withDeclares ves hm)
 --Assigns a pretty tyvar from a,b..z, a1,b1..z1 for each tyvar in order of
 --occurrence.
