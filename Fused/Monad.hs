@@ -175,12 +175,22 @@ copyTo dst src
                              emitPrim ([to],[]) "copy" ([from],[])) dst src
 --I got tired of typing FusedFunM
 type FFM = FusedFunM
---Copies the given word var to a new var with the given type.
+--Copies the given word var to a new var with the given type; TODO rename to
+--coerceVar.
 copy :: T -> Var -> FFM Var
 copy t v = do
   w <- newVar t
   copyTo [w] [v]
   return w
+--Copies the given vars to new vars of type W t 1..n; is valid to use when
+--the number of source vars matches the word size of t.
+--To be used in word-shuffling ops which change type such as construct or
+--destruct.
+coerceVars :: T -> [Var] -> FFM [Var]
+coerceVars t vs =
+  let wts = [W t $ TyNat $ fromIntegral n | n <- [1..]]
+  in zipWithM copy wts vs
+  
 --Copy vars without modifying the type
 copyVars :: [Var] -> FFM [Var]
 copyVars xs = do

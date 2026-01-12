@@ -3435,6 +3435,11 @@ not optimized away, the code size limit should catch them...
 TODO update null()'s definition to {}; it doesn't need to be return coerce().
 Unit test suite: make a number of bad programs for each stage demonstrating
 each error construct, as well as good programs + their intended behavior.
+I can't just adapt manual tests without specifying how to "look at the
+output". That could be done hackily by using recognizable var names
+and checkpoints, e.g. e; endTestCode() => capture n output vars before the
+call.
+That cases that shouldn't fail still do is easy to test.
 Ask for pointers on programmatic program generation from QC people once
 compiler runs.
 Q: Given properties such as "the compiler should complain iff the DTs have

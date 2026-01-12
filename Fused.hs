@@ -541,7 +541,9 @@ getDot vs field ts = do
     vtl <- (forM wtl (\wshs ->
                          forM wshs (\(w,sh) -> w <<< sh)))
            >>= mapM disjunction
-    return (vhd:vtl, t)
+    --Bugfix: the result vars of s.field will now have the correct type.
+    ws <- coerceVars t $ vhd:vtl
+    return (ws, t)
         
 getBang :: [Var] -> T -> T -> Var -> FFM [Var]
 getBang = error "todo"
@@ -984,8 +986,9 @@ convertE e = pushScope $ go e
           --Special case: WordPad {unWordPad: e} has zero runtime overhead.
           ConRecord "WordPad" (Just [a]) [("unWordPad",e)] -> do
             (vs,_a) <- convertE e
-            res <- newVars $ WordPad a
-            copyTo res vs
+            --res <- newVars $ WordPad a
+            --copyTo res vs
+            res <- coerceVars (WordPad a) vs
             return (res, WordPad a)
           --All Con {} with tag scheme nil are null(), but that can be achieved
           --via constant expansion anyway.
@@ -1102,6 +1105,7 @@ getModConInfo caller con = do
 --top word is always 0 because it only contains two padding bytes from
 --WordPad Short. That's solved by symbolic eval opt...
 --What info do I need? Just the var lists and their offsets + the total size.
+--Bugfix: should now return vars of the result type.
 constructCon :: Name -> [T] -> [Var] ->
                 Integer -> Map Name ([Var], T) -> T ->
                 FusedFunM [Var]
@@ -1132,7 +1136,8 @@ constructCon con ts tag tagSz field2vst resT = do
                           )) :: FFM [(Int,Int,[Var])]
   --For each output word, a list (input,sh) to or together
   let wshss = construct (fromIntegral sz) offLenVs
-  mapM (\wshs -> (mapM (uncurry (<<<)) wshs) >>= disjunction) wshss
+  res <- mapM (\wshs -> (mapM (uncurry (<<<)) wshs) >>= disjunction) wshss
+  coerceVars resT res
 --Problem: we have n bytestrings represented as words on the stack.
 --Each bytestring has a length and is right-aligned in the words.
 --IOW, a bs with length len will have an offset of (-len)%32 bytes in its
