@@ -3423,6 +3423,8 @@ f():=return True shows Bool constructors return a byte variable (the tag type) o
 e shouldn't have a misleading type, but I shouldn't rely on the type being
 correct.
 Those are two separate issues; I need to fix both.
+Next: add types to vars in S.Declare.
+
 Bug in True = False: *** Exception: Fused.hs:593:18-27: Non-exhaustive patterns in v : vs'
 
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
@@ -3432,6 +3434,22 @@ Unit test suite: make a number of bad programs for each stage demonstrating
 each error construct, as well as good programs + their intended behavior.
 Ask for pointers on programmatic program generation from QC people once
 compiler runs.
+Q: Given properties such as "the compiler should complain iff the DTs have
+cycles", how to ensure the tests are << less complex than the compiler itself? That problem in particular isn't too hard (just generate DAGs or
+cycles), but there might be other less compressible ones.
+Specs have a certain minimum complexity, but the fact that properties can be
+declared in parallel using && whereas the compiler must handle all moving
+parts at once should advantage the spec.
+
+Bug: somewhere I wrote W 1 t...
+(w1,w2) becomes 
+anon8 = w1 << 0xf8 --248, or 31B
+anon10 = w2 >> 8 --1B
+anon8 | anon10
+Struct (b1,b2) works fine.
+TODO copy over the result of constructs to the correct type.
+Idea: a TUI to let me browse and scroll through the Structured output.
+Start with an overview: function sigs, sizeof... 
 
 Bug: "import Prelude; main _ := A; data D a = {A;B (D (a,a))}" complains of
 an unbound kind var in main.

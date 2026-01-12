@@ -292,7 +292,7 @@ equals as bs
     ++ show (as,bs)
   | let = zipWithM (op2 "eq") as bs >>=
           conjunction >>=
-          copy (W 1 $ TyCon "Bool")
+          copy (W (TyCon "Bool") 1)
           
 --Always returns a W (UInt 32) 1, i.e. a Word.
 --Truncated to 32B.
