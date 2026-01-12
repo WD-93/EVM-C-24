@@ -103,7 +103,7 @@ exploreF f ts =
                Right tpsset ->
                  let tpss = S.toList tpsset
                  in instClass f ts ft tpss
-  unsafePrint $ "Monomorphic definition: " ++ show monoDef
+  --unsafePrint $ "Monomorphic definition: " ++ show monoDef
   --Generate the Structured definition
   convertF f ts ft monoDef
     where
@@ -301,6 +301,9 @@ evaluatePat = go
               --indexPath-using helper in convertE later.
               Deref (Just ts) ptr -> do
                 (ptr',ptrT) <- computeAddressOf ptr indexPath
+                unsafePrint $ "root: " ++ show (ts,ptr)
+                unsafePrint $ "(ptr',ptrT): " ++ show (ptr',ptrT)
+                unsafePrint $ "indexPath: " ++ show indexPath
                 let Ptr r a = ptrT
                 return $ Just $ EPDeref r a ptr'
               --Precondition: wild, array, con have been excluded
@@ -360,7 +363,7 @@ computeAddressOf ptrE indexPath = do
                   product <- op2 "mul" sz ixW
                   p' <- op2 "add" product p
                   return (p',ref)
-           ) (ptr,ptrT) indexPath
+           ) (ptr,referent) indexPath --Bug: I was passing Ptr r referent...
   return (ptr', Ptr r ref')
                     
 --A smart constructor for Maybe EPCon
@@ -386,7 +389,9 @@ assignEP ep vs =
       | not $ r `elem` ["Memory", "Storage", "TStorage"] ->
         --TODO add more context
         throwError $ AssignmentToImmutableRegion r
-      | let -> assignPtr r a ptr vs
+      | let -> do
+          unsafePrint $ "assignEP EPDeref " ++ show (r,a,ptr)
+          assignPtr r a ptr vs
     -- Array (p1,p2,...) = vs
     EPArray len a ixPs -> error "todo"
     -- Con@ts {field: p, ...} = vs
@@ -441,6 +446,7 @@ require cond = do
   --code inspired by convertE A.Ifte; TODO make shared helper?
   scope <- getScope
   --Can I safely use block here or do I need a callCFun helper?
+  unsafePrint $ "Reached require " ++ show cond
   els <- block scope $ SE $
     TyApp "revertValue" [Unit] :$
     ConRecord "Unit" (Just []) []

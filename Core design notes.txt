@@ -3429,6 +3429,15 @@ name, is there scope management code I can remove?
 Also: add a type annot param to Module and SEP to fix whether the AST has tysigs or not; () for no type annot, T for annot? g,f have either () or [T]... perhaps use a tyfam.
 
 Bug in True = False: *** Exception: Fused.hs:593:18-27: Non-exhaustive patterns in v : vs'
+Bug traced to assignEP EPDeref -> assignPtr r a ptr vs.
+ptr has the correct type: MPtr (), presumably from returnValue()
+vs is empty, as expected.
+a is unexpectedly also MPtr (), suggesting the EPDeref was given the wrong a
+when created by evaluatePat.
+When evaluating (*p).foo.bar.(...) to *p',
+computeAddressOf ptr indexPath returns a MPtr (MPtr ())
+indexPath is [] as expected. Fixed that bug, I was passing the wrong type to
+the foldlM in addressOf.
 
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
 not optimized away, the code size limit should catch them...
@@ -3439,7 +3448,8 @@ I can't just adapt manual tests without specifying how to "look at the
 output". That could be done hackily by using recognizable var names
 and checkpoints, e.g. e; endTestCode() => capture n output vars before the
 call.
-That cases that shouldn't fail still do is easy to test.
+That cases that shouldn't fail still do is easy to test. Collecting failing
+inputs and retrying them on code reload could be automated.
 Ask for pointers on programmatic program generation from QC people once
 compiler runs.
 Q: Given properties such as "the compiler should complain iff the DTs have
