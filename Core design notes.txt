@@ -3455,6 +3455,12 @@ I missed that in all the cruft... need to simplify.
 That was a bug, but didn't fix the problem in declares... fixed, it was the
 same bug in two places due to code near-duplication (as an opt).
 
+Next: fix buggy compilaion of dot (fetching top word of two-word struct
+instead gives top << 31B | bot >> 8. That's right-offset 1 rather than 31...
+{a:Bool,b:Bool}.a is also incorrect, but .b is not.
+I'm passing the wrong relVs... I'd swapped take and drop when computing it.
+I'd also given the struct size instead of the field size.
+
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
 not optimized away, the code size limit should catch them...
 TODO update null()'s definition to {}; it doesn't need to be return coerce().

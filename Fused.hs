@@ -501,13 +501,16 @@ getIndex ws = \case
 --in the Vars may be misleading), we instead infer it from the field.
 getDot :: [Var] -> Name -> [T] -> FFM ([Var],T)
 getDot vs field ts = do
+  --comment $ "getDot " ++ show (vs,field,ts)
   --Infer struct type from field
   tycon <- do mod <- liftFused ask
               let Just fi = M.lookup field $ fieldInfo $ dtsInfo mod
               return $ fiParentTyCon fi
   let tycon_ts = unrollTyApps (TyCon tycon) ts
+  comment $ "Struct type: " ++ show tycon_ts
   --mono dt
   szStruct <- liftFused $ sizeof tycon_ts
+  comment $ "Size: " ++ show szStruct
   --the field has a type t and size sz
   (off,szField,t) <- liftFused $ getFieldInfo field ts
   if szField == 0
@@ -520,16 +523,22 @@ getDot vs field ts = do
     let leftPad = (szStruct `roundedUpMod` 32) - szStruct
         stackOff = leftPad + off
         startIx = stackOff `div` 32
-        endIx = (stackOff + szStruct - 1) `div` 32
-        relVs = drop (fromInteger startIx) $
-                take (fromInteger $ endIx-startIx+1) vs
+        --Bugfix: replaced szStruct with szField
+        endIx = (stackOff + szField - 1) `div` 32
+        relVs = take (fromInteger $ endIx-startIx+1) $
+                drop (fromInteger startIx) vs
         --right-offset mod 32
-        rightOff = (szStruct - off - szField + 1) `mod` 32
+        rightOff = (szStruct - off - szField) `mod` 32
         --Output words = disjunction (input << +-k)
         wshifts = dot (fromIntegral rightOff)
                   (fromIntegral szField) relVs
         --The leftmost input word containing the field may also have
         --garbage to the left of it; mask it out.
+    comment $ "stackOff: " ++ show stackOff
+    comment $ "startIx: " ++ show startIx
+    comment $ "endIx: " ++ show endIx
+    comment $ "dot " ++ show (rightOff,szField,relVs)
+    comment $ "wshifts: " ++ show wshifts
     let whd:wtl = wshifts
         (top,sh):wrest = whd
         garb = stackOff `mod` 32
