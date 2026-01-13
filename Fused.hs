@@ -542,15 +542,19 @@ getDot vs field ts = do
     let whd:wtl = wshifts
         (top,sh):wrest = whd
         garb = stackOff `mod` 32
+    comment $ "top word processing:"
+    comment $ "garb: " ++ show garb
+    comment $ "sh: " ++ show sh
     vtop <-
       if garb == 0
       then top <<< sh --no need to shift out garbage
-      else if sh > 0
+      else if sh < 0
            then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
                 --shift out garbage, then shift back
            else maskBytes (32-garb) top
                 --can't use shift trick, must use code-intensive
                 --and 0xff... instead.
+    comment "wrest processing:"
     vrest <- forM wrest (\(v,sh) -> v <<< sh)
     vhd <- disjunction $ vtop:vrest
     vtl <- (forM wtl (\wshs ->
