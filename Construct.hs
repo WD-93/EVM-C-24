@@ -1,9 +1,12 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, TypeFamilies,
+GeneralizedNewtypeDeriving#-} --for monadic mocking
 module Construct where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.State
+--For monadic mocking:
+import Control.Monad.Writer
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 
@@ -92,3 +95,52 @@ dot off len ws =
 
 --TODO quickcheck that construct places fields at the right offsets and that
 --dot fetches the relevant field.
+
+-------------------------------------------------------------------------------
+--New idea: a Construct class that can be overloaded to support both FFM
+--and testing with a mock monad.
+--It could be generalized to include control flow (calls, ifte...) in future.
+--Vars in Fused need a type; Construct will be limited to allocating its own
+--for each op. It can only handle Structured ops with no assignment and no
+--side effects (since such ops take and return a list of state vars in
+--addition to stack vars).
+--Since EVM instructions only return 0 or 1 words, we restrict Construct to
+--return 1 word. Why not 0 as well? Because those ops are side-effecting.
+--The exception is pop, but it's not relevant to Core, in which the stack is
+--abstract and doesn't need manipulation.
+--This is a very simple monad; the only thing separating it from a monoid is
+--sharing of vars.
+class Monad m => Construct m where
+  type Var m
+  op :: String -> --op (fixed type for now)
+        [Var m] -> --args
+        m (Var m)
+  --Do I need to separate into allocVar and emitOp?
+  
+
+--Separating interpretations lets you simplify the respective monads.
+--Interpretation 1: emit instructions, allocate new vars.
+--Free monads could be used here.
+--Problem: I pass in vars from the outside. How to represent them?
+type V v = Either Int v
+newtype Emit v a = Emit {unEmit :: StateT Int (Writer [(V v,String,[V v])]) a}
+  deriving (Functor, Applicative, Monad)
+runEmit :: Emit v a -> Int -> (a,[(V v,String,[V v])],Int)
+runEmit (Emit sra) n =
+  let ((a,s),w) = runWriter $ runStateT sra n
+  in (a,w,s)
+instance Construct (Emit v) where
+  type Var (Emit v) = V v
+  op str vs = Emit $ do
+    n <- get
+    put (n+1)
+    let v = Left n
+    tell [(v, str, vs)]
+    return v
+
+emitM1 :: Emit String (V String)
+emitM1 = do
+  let [a,b,c] = map Right $ words "a b c"
+  x <- op "+" [a,b]
+  y <- op "+" [x,c]
+  return y

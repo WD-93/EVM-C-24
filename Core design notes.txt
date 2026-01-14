@@ -3455,11 +3455,59 @@ I missed that in all the cruft... need to simplify.
 That was a bug, but didn't fix the problem in declares... fixed, it was the
 same bug in two places due to code near-duplication (as an opt).
 
-Next: fix buggy compilaion of dot (fetching top word of two-word struct
+Next: fix buggy compilation of dot (fetching top word of two-word struct
 instead gives top << 31B | bot >> 8. That's right-offset 1 rather than 31...
 {a:Bool,b:Bool}.a is also incorrect, but .b is not.
 I'm passing the wrong relVs... I'd swapped take and drop when computing it.
 I'd also given the struct size instead of the field size.
+
+Hard think about vtop calculation:
+If garb == 0, it's correct.
+Is the shift value always <=0 for the top word?
+No, consider {...,1B},{31B,...}: the top word must be left-shifted 31B.
+That applies generally to {...,xB},{yB,...}.
+Perhaps I should move BYTE, AND, OR operations into Construct so I can
+symbolically test the entire dot operation (and later construct) properly.
+Property: forall n, N, m, let struct = n*garbage,x1..xN,m*garbage
+Split struct into words; apply the dot operation (left-offset n, field len N)
+to it, getting N rounded up mod 32 div 32 words.
+They should be equal to x1..xN split into words; note 0x00 needs to be
+represented.
+Move relevant word selection in as well.
+Construct property: forall lens, let fields = f_i1..f_ilens[i] for i in lens.
+Word-split each field, then apply the construct operation.
+The result should be their concatenation word-split.
+
+Opts:
+1) Use BYTE for all one-byte slices except noops (where shift=0 and the rest
+is left-padding).
+2) Make use of padding. In the test, that corresponds to using a symbolic repr that includes zeroes. In dot/construct, it means: a) zero-valued
+subfields can be replaced with constants or omitted in a disjunction, b) a zero-padded subfield can either have a smaller mask or no left-shift.
+Idea: parameterize Construct by monad. The implementation monad is FFM
+(with an instance in Fused); the mock monad both emits instructions and
+performs symbolic eval. Rerunning the emitted instructions should lead to the
+same result.
+Simpler: just mapM_ interpret the instructions, which is what dot/construct
+returns. Symbolic eval is an interpretation.
+Problem: what about use of internal refs and sharing?
+ref = opE => bind result var in FFM to ref in map when interpreting.
+Goal: test a relatively simple function by running it in isolation, with
+minimal state. That avoids running the rest of the program, saving compute,
+preventing it from confounding tests and simplifying the generation of
+inputs and verification of outputs.
+Approach: replace the top-level language with a simpler language, then
+interpret that language. It's an instance of the more general FP technique of
+using minimal capabilities at any given point.
+
+Generalization: overload the v <- op_n_m nm vs functions, test using a
+symbolic evaluator monad. Parameterize by var type (for the sym eval it can
+be a value if you ignore sharing, but allocating new vars is more practical).
+
+Code golfing: if I use a mask such as [n*00, m*ff, 00...], include ops for
+constructing it code-efficiently and then CE when the reduced gas cost is
+worth the code size increase (if any)? That preserves structure from the
+compiler (which would perform those operations anyway when computing the
+constant), avoiding the need to reconstruct it.
 
 TODO add an arbitrary limit for monomorphic functions to generate? If they're
 not optimized away, the code size limit should catch them...
