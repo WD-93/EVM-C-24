@@ -3481,10 +3481,13 @@ The result should be their concatenation word-split.
 Opts:
 1) Use BYTE for all one-byte slices except noops (where shift=0 and the rest
 is left-padding).
-2) Make use of padding. In the test, that corresponds to using a symbolic repr that includes zeroes. In dot/construct, it means: a) zero-valued
-subfields can be replaced with constants or omitted in a disjunction, b) a zero-padded subfield can either have a smaller mask or no left-shift.
+2) Make use of padding. In the test, that corresponds to using a symbolic repr 
+that includes zeroes. In dot/construct, it means: 
+a) zero-valued subfields can be replaced with constants or omitted in a
+disjunction, 
+b) a zero-padded subfield can either have a smaller mask or no left-shift.
 Idea: parameterize Construct by monad. The implementation monad is FFM
-(with an instance in Fused); the mock monad both emits instructions and
+(with an instance in Fused.Monad); the mock monad both emits instructions and
 performs symbolic eval. Rerunning the emitted instructions should lead to the
 same result.
 Simpler: just mapM_ interpret the instructions, which is what dot/construct

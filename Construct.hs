@@ -7,6 +7,9 @@ import qualified Data.Map as M
 import Control.Monad.State
 --For monadic mocking:
 import Control.Monad.Writer
+import Control.Monad (zipWithM)
+import Data.Bits ((.&.),(.|.)) --for symbolic eval
+
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 
@@ -110,13 +113,19 @@ dot off len ws =
 --abstract and doesn't need manipulation.
 --This is a very simple monad; the only thing separating it from a monoid is
 --sharing of vars.
+--In practice ops also need to check whether the number of arguments is
+--correct, but I won't track that here.
 class Monad m => Construct m where
   type Var m
-  op :: String -> --op (fixed type for now)
+  type Op m
+  op :: Op m ->
         [Var m] -> --args
         m (Var m)
-  --Do I need to separate into allocVar and emitOp?
-  
+  --Need to add constant to support shr. That strongly restricts vars to
+  --representing integer-like things.
+  --Alt: make shr, shl k ops.
+  constant :: Integer -> m (Var m)
+  --Perhaps enhance with debug comments
 
 --Separating interpretations lets you simplify the respective monads.
 --Interpretation 1: emit instructions, allocate new vars.
@@ -131,12 +140,14 @@ runEmit (Emit sra) n =
   in (a,w,s)
 instance Construct (Emit v) where
   type Var (Emit v) = V v
+  type Op (Emit v) = String
   op str vs = Emit $ do
     n <- get
     put (n+1)
     let v = Left n
     tell [(v, str, vs)]
     return v
+  constant n = error "Not defined"
 
 emitM1 :: Emit String (V String)
 emitM1 = do
@@ -144,3 +155,96 @@ emitM1 = do
   x <- op "+" [a,b]
   y <- op "+" [x,c]
   return y
+
+--Symbolic eval interpretation; this is the one used for tests.
+--It doesn't need any alloc machinery since "vars" are simply symbolic values.
+newtype SymWord = SymWord [SymByte] --length = 32
+  deriving (Eq,Show)
+data SymByte = K Int --0..255
+             | X (String,Int) --(id,n); n <- 0..31
+  deriving (Eq,Show)
+--The ops relevant to struct construction and access.
+--I don't need push since I'm evaluating rather than generating
+--instructions; the constant in the instance can handle that.
+data SymOp = SHL
+           | SHR
+           | AND
+           | OR
+  deriving (Eq,Ord,Read,Show)
+wordK :: Integer -> SymWord
+wordK n
+  | n < 0 = wordK $
+    let modulus = 2 ^ 256
+    in (n `mod` modulus) + modulus
+  | let = SymWord $ map (K . fromInteger) $ pad $ reverse $ take 32 $ go n
+  where
+    go :: Integer -> [Integer]
+    go 0 = []
+    go n = mod n 256 : go (n `div` 256)
+    pad bs = replicate (32 - length bs) 0 ++ bs
+newtype SymM a = SymM (Either SymError a)
+  deriving (Functor, Applicative, Monad)
+data SymError = NotAByteConst SymWord
+              | NotMul8 SymOp SymWord
+              | BadArity SymOp [SymWord]
+              | Can'tSimpBB SymOp SymByte SymByte
+              | Can'tSimpNB SymOp Int SymByte
+  deriving (Eq,Show)
+instance Construct SymM where
+  type Var SymM = SymWord
+  type Op SymM = SymOp
+  constant n = SymM $ return $ wordK n
+  op o [a,b] = SymM $
+    if o `elem` [SHR,SHL]
+    then do
+      shBits <- parseByte a
+      if (shBits `mod` 8) /= 0
+        then Left $ NotMul8 o a
+        else return ()
+      let shBytes = shBits `div` 8
+          zeroes = replicate shBytes $ K 0
+          SymWord bs = b
+      return $ SymWord $
+        case o of
+          SHR -> take 32 $ zeroes ++ bs
+          SHL -> reverse $ take 32 $ zeroes ++ reverse bs
+      --While partial-byte shift is possible in the EVM, I don't use
+      --it; just error if a % 8 /= 0.
+      --If any byte above the lowest isn't K 0, error.
+      --Otherwise shift by a/8 bytes.
+      else do
+      let SymWord as = a
+          SymWord bs = b
+      SymWord <$> zipWithM (apply o) as bs
+  op o ws = SymM $ Left $ BadArity o ws
+apply :: SymOp -> SymByte -> SymByte -> Either SymError SymByte
+apply o (K a) (K b) =
+  return $ K $ appK o a b
+apply AND (K n) x = simpAnd n x
+apply AND x (K n) = simpAnd n x
+apply OR (K n) x = simpOr n x
+apply OR x (K n) = simpOr n x
+apply o a b
+  | a == b = return a
+  | let = Left $ Can'tSimpBB o a b
+simpAnd n x =
+  case n of
+    0 -> return $ K 0
+    255 -> return x
+    _ -> Left $ Can'tSimpNB AND n x
+simpOr n x =
+  case n of
+    0 -> return x
+    255 -> return $ K 255
+    _ -> Left $ Can'tSimpNB OR n x
+appK o a b =
+  case o of
+    AND -> a .&. b
+    OR -> a .|. b
+  
+--Errors if not byte constant.
+parseByte :: SymWord -> Either SymError Int
+parseByte w@(SymWord (b:bs)) = go b bs
+  where go (K n) [] = return n
+        go (K 0) (b:bs) = go b bs
+        go _ _ = Left $ NotAByteConst w
