@@ -49,6 +49,7 @@ library
                      , process
                      , directory
                      -- , filepath
+                     , QuickCheck
   build-tool-depends: alex:alex >= 3.2
                     , happy:happy >= 1.19
                     , BNFC:bnfc >= 2.9

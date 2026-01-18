@@ -3505,6 +3505,36 @@ using minimal capabilities at any given point.
 Generalization: overload the v <- op_n_m nm vs functions, test using a
 symbolic evaluator monad. Parameterize by var type (for the sym eval it can
 be a value if you ignore sharing, but allocating new vars is more practical).
+TODO incrementally expand the overloaded part of the compiler. Crucial step:
+overload control flow.
+In con/dot, track zeroness mask alongside vars.
+Con and dot output words are the disjunction of slices.
+mkSlice zeroMask oldOff len shift var :: m var.
+If optimizing across multiple dot-like ops (including << k), you might have
+multiple slices from the same word with shift 0; then you can get them all
+with a mask.
+How to incrementally add more zeroness information? Start with no opts in
+Structured codegen?
+Add an explicit slice op to Structured? That would make it explicit, but
+require later compilation of slicing to shr,shl,and,or.
+If a word has zero bytes, then it's the disjunction of shifted slices.
+Representing slices as vars isn't practical, since vars are either state or
+words..? I'd need to extend the lhs type.
+FW... for now emit unoptimized instrs.
+
+FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
+ordering) is also ez.
+FW opt: if you know part of a value is zero, you may be able to avoid doing
+unclobbering when writing to memory.
+Writes to scratch should be dropped from the model... but then you need to
+explicitly allocate a scratch pointer and track its lifetime.
+
+What's the most contiguous padding a struct can have? It's unbounded.
+How?
+t 1 = byte
+t n = {byte, WordPad t(n)}
+That always results in a type which is one byte off a whole number of words,
+so you can keep adding 31 bytes of padding at a time.
 
 Code golfing: if I use a mask such as [n*00, m*ff, 00...], include ops for
 constructing it code-efficiently and then CE when the reduced gas cost is

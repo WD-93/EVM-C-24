@@ -1,15 +1,17 @@
 {-# LANGUAGE LambdaCase, TypeFamilies,
-GeneralizedNewtypeDeriving#-} --for monadic mocking
+GeneralizedNewtypeDeriving, TypeOperators #-} --for monadic mocking
 module Construct where
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.State
---For monadic mocking:
+--For monadic implementation:
 import Control.Monad.Writer
-import Control.Monad (zipWithM)
+import Control.Monad (zipWithM, forM)
 import Data.Bits ((.&.),(.|.)) --for symbolic eval
-
+import AST.DTs (roundedUpMod)
+--Testing:
+import Test.QuickCheck hiding ((.&.),(.|.),output)
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 
@@ -161,16 +163,13 @@ emitM1 = do
 newtype SymWord = SymWord [SymByte] --length = 32
   deriving (Eq,Show)
 data SymByte = K Int --0..255
-             | X (String,Int) --(id,n); n <- 0..31
+             | X (String,Int) --(id,n)
   deriving (Eq,Show)
 --The ops relevant to struct construction and access.
 --I don't need push since I'm evaluating rather than generating
 --instructions; the constant in the instance can handle that.
-data SymOp = SHL
-           | SHR
-           | AND
-           | OR
-  deriving (Eq,Ord,Read,Show)
+--Needs to be String for compatibility with FFM...
+type SymOp = String
 wordK :: Integer -> SymWord
 wordK n
   | n < 0 = wordK $
@@ -182,7 +181,7 @@ wordK n
     go 0 = []
     go n = mod n 256 : go (n `div` 256)
     pad bs = replicate (32 - length bs) 0 ++ bs
-newtype SymM a = SymM (Either SymError a)
+newtype SymM a = SymM {runSymM :: Either SymError a}
   deriving (Functor, Applicative, Monad)
 data SymError = NotAByteConst SymWord
               | NotMul8 SymOp SymWord
@@ -195,7 +194,7 @@ instance Construct SymM where
   type Op SymM = SymOp
   constant n = SymM $ return $ wordK n
   op o [a,b] = SymM $
-    if o `elem` [SHR,SHL]
+    if o `elem` ["shr","shl"]
     then do
       shBits <- parseByte a
       if (shBits `mod` 8) /= 0
@@ -206,8 +205,8 @@ instance Construct SymM where
           SymWord bs = b
       return $ SymWord $
         case o of
-          SHR -> take 32 $ zeroes ++ bs
-          SHL -> reverse $ take 32 $ zeroes ++ reverse bs
+          "shr" -> take 32 $ zeroes ++ bs
+          "shl" -> reverse $ take 32 $ zeroes ++ reverse bs
       --While partial-byte shift is possible in the EVM, I don't use
       --it; just error if a % 8 /= 0.
       --If any byte above the lowest isn't K 0, error.
@@ -220,10 +219,10 @@ instance Construct SymM where
 apply :: SymOp -> SymByte -> SymByte -> Either SymError SymByte
 apply o (K a) (K b) =
   return $ K $ appK o a b
-apply AND (K n) x = simpAnd n x
-apply AND x (K n) = simpAnd n x
-apply OR (K n) x = simpOr n x
-apply OR x (K n) = simpOr n x
+apply "and" (K n) x = simpAnd n x
+apply "and" x (K n) = simpAnd n x
+apply "or" (K n) x = simpOr n x
+apply "or" x (K n) = simpOr n x
 apply o a b
   | a == b = return a
   | let = Left $ Can'tSimpBB o a b
@@ -231,16 +230,16 @@ simpAnd n x =
   case n of
     0 -> return $ K 0
     255 -> return x
-    _ -> Left $ Can'tSimpNB AND n x
+    _ -> Left $ Can'tSimpNB "and" n x
 simpOr n x =
   case n of
     0 -> return x
     255 -> return $ K 255
-    _ -> Left $ Can'tSimpNB OR n x
+    _ -> Left $ Can'tSimpNB "or" n x
 appK o a b =
   case o of
-    AND -> a .&. b
-    OR -> a .|. b
+    "and" -> a .&. b
+    "or" -> a .|. b
   
 --Errors if not byte constant.
 parseByte :: SymWord -> Either SymError Int
@@ -248,3 +247,143 @@ parseByte w@(SymWord (b:bs)) = go b bs
   where go (K n) [] = return n
         go (K 0) (b:bs) = go b bs
         go _ _ = Left $ NotAByteConst w
+
+--------------------------Monadic dot------------------------------------------
+--What info does dot need for efficiency?
+--Dot and construct both have the property that input bytes don't interact,
+--they're rearranged. That could be called dot-like.
+--Laws: adjacent slices concatenated together => one larger slice.
+--Optimizing repeated dot and construct operations is promising...
+--Repeated dot-like operations result in words of form [0x00 | input byte].
+--An input word may have zero-padding both to the left and right of the
+--relevant slice.
+--Full info: which bytes are guaranteed to be zero in a type.
+--For now emit unoptimized instrs, using only struct byte size (which we need
+--to compute the offset into the stack words).
+--Copying implem from Fused.getDot, using dot for now; refine later.
+mdot :: (Construct m, Op m ~ String) =>
+  Integer -> --struct sizeof, precondition: 0 <= it <= |vs|*32
+  Integer -> --field byte offset from the left, 0 <= it <= sizeof
+  Integer -> --field byte length
+  [Var m] -> --struct words
+  m [Var m]
+mdot _ _ 0 _ = return []
+mdot szStruct off szField vs = do
+  let leftPad = (szStruct `roundedUpMod` 32) - szStruct
+      stackOff = leftPad + off
+      startIx = stackOff `div` 32
+      endIx = (stackOff + szField - 1) `div` 32
+      relVs = take (fromInteger $ endIx-startIx+1) $
+              drop (fromInteger startIx) vs
+      --right-offset mod 32
+      rightOff = (szStruct - off - szField) `mod` 32
+      --Output words = disjunction (input << +-k)
+      wshifts = dot (fromIntegral rightOff)
+                (fromIntegral szField) relVs
+  let whd:wtl = wshifts
+      (top,sh):wrest = whd
+      garb = stackOff `mod` 32
+  vtop <-
+    if garb == 0
+    then top <<< sh --no need to shift out garbage
+    else if sh < 0
+         then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
+              --shift out garbage, then shift back
+         else maskBytes (32-garb) top
+              --can't use shift trick, must use code-intensive
+              --and 0xff... instead.
+  vrest <- forM wrest (\(v,sh) -> v <<< sh)
+  vhd <- disjunction $ vtop:vrest
+  vtl <- (forM wtl (\wshs ->
+                      forM wshs (\(w,sh) -> w <<< sh)))
+         >>= mapM disjunction
+  return $ vhd : vtl
+
+(<<<) :: (Construct m, Op m ~ String, Integral k) =>
+  Var m -> k -> m (Var m)
+v <<< k
+  | k < -31 = constant 0
+  | k < 0 = do
+      kv <- constant $ negate $ fromIntegral k * 8
+      op "shr" [kv,v]
+  | k == 0 = return v
+  | k < 32 = do
+      kv <- constant $ fromIntegral k * 8
+      op "shl" [kv,v]
+  | let = constant 0
+            
+maskBytes :: (Construct m, Op m ~ String) => Integer -> Var m -> m (Var m)
+maskBytes k v
+  | k < 0 = constant 0
+  | k >= 32 = return v
+  | let = do
+          vk <- constant (256^k-1)
+          op2 "and" vk v
+
+--Ors the given vars together
+disjunction :: (Construct m, Op m ~ String) => [Var m] -> m (Var m)
+disjunction = foldlOp "or" (constant 0)
+--Where do I use conjunction? That determines whether the identity should be
+--1 or ~0.
+conjunction :: (Construct m, Op m ~ String) => [Var m] -> m (Var m)
+conjunction = foldlOp "and" (constant 1)
+--Combines the given words with a primop; returns a default expr if the list
+--is empty.
+--Can be used for conjunction, disjunction, sum...
+foldlOp :: Construct m => Op m -> m (Var m) -> [Var m] -> m (Var m)
+foldlOp op dflt = \case
+  [] -> dflt
+  v:vs -> go v vs
+    where go v = \case
+            [] -> return v
+            v':vs -> do
+              w <- go v' vs
+              op2 op v w
+
+op2 :: Construct m => Op m -> Var m -> Var m -> m (Var m)
+op2 o a b = op o [a,b]
+
+--Correctness property: given a struct
+--{garbLeft: a bytes, field: b bytes, garbRight: c bytes},
+--dot returns the field.
+prop_mdot_correct :: NonNegative Int ->
+                     NonNegative Int ->
+                     NonNegative Int ->
+                     Bool
+prop_mdot_correct (NonNegative a) (NonNegative b) (NonNegative c) =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      aBs = toBs "a" a
+      fieldBs = toBs "field" b
+      bBs = toBs "b" c
+      struct = aBs ++ fieldBs ++ bBs
+      structWs = wordSplit struct
+  in case runSymM (mdot (fromIntegral $ a+b+c)
+                   (fromIntegral a)
+                   (fromIntegral b)
+                   structWs) of
+       Right fld ->
+         let fieldBs' = unWordSplit fld
+         in if fieldBs' /= fieldBs
+            then error $ "Mismatch: " ++ show fieldBs' ++ " " ++ show fieldBs
+            else True
+       Left err -> error $ "Sym eval error: " ++ show err
+
+--Converts byte-level to word-level on-stack repr.
+--Left-pad with zeroes, then split into groups of 32 bytes.
+wordSplit :: [SymByte] -> [SymWord]
+wordSplit bs =
+  let len = length bs
+      stackLen = len `roundedUpMod` 32
+      paddedBs = replicate (stackLen - len) (K 0) ++ bs
+  in map SymWord $ group32 paddedBs
+  where group32 = \case
+          [] -> return []
+          bs -> take 32 bs : group32 (drop 32 bs)
+--Converts back to the byte-level repr. Concatenate bytes, then drop leading
+--zeroes.
+unWordSplit :: [SymWord] -> [SymByte]
+unWordSplit ws = dropZeroes $ ws >>= (\(SymWord bs) -> bs)
+  where dropZeroes = \case
+          [] -> []
+          K 0 : bs -> dropZeroes bs
+          bs -> bs
