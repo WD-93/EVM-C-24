@@ -390,7 +390,7 @@ wordSplit bs =
       paddedBs = replicate (stackLen - len) (K 0) ++ bs
   in map SymWord $ group32 paddedBs
   where group32 = \case
-          [] -> return []
+          [] -> []
           bs -> take 32 bs : group32 (drop 32 bs)
 --Converts back to the byte-level repr. Concatenate bytes, then drop leading
 --zeroes.
@@ -400,3 +400,44 @@ unWordSplit ws = dropZeroes $ ws >>= (\(SymWord bs) -> bs)
           [] -> []
           K 0 : bs -> dropZeroes bs
           bs -> bs
+
+mconstruct :: (Construct m, Op m ~ String) => 
+              Int -> --Output size
+              --Fields:
+              [(Int,     --offset from the right
+                Int,     --byte length
+                [Var m]) --input words
+              ] ->
+              m [Var m]
+mconstruct szStruct fields = do
+  let vshss = construct szStruct fields
+  forM vshss (\vshs -> do
+                 vs <- mapM (uncurry (<<<)) vshs
+                 disjunction vs)
+
+--For ns, let field_i = f<i> 1..ns_i
+--Offsets = sum of previous sizes (counted from right)
+--Byte length = ns_i
+--Input words = word-split field_i
+prop_construct_correct :: [NonNegative Int] -> Bool
+prop_construct_correct nonNegNs =
+  let ns = map (\(NonNegative n) -> n) nonNegNs
+      fs = reverse $ go 0 1 ns
+      wfs = map (\(off,len,bs) -> (off,len,wordSplit bs)) fs
+      --The byte repr of the value that should result:
+      target = fs >>= (\(_,_,bs) -> bs)
+  in case runSymM $ mconstruct (sum ns) wfs of
+       Right ws ->
+         let actual = unWordSplit ws
+         in if actual == target
+            then True
+            else error $ unlines [
+           "Mismatch: " ++ show actual ++ " " ++ show target,
+           "fs: " ++ show fs,
+           "wfs: " ++ show wfs
+           ]
+       Left err -> error $ "Error: " ++ show err
+  where go off i = \case
+          [] -> []
+          n:ns -> (off, n, toBs ("f"++show i) n) : go (off+n) (i+1) ns
+        toBs nm len = [X (nm,n) | n <- [1..len]]
