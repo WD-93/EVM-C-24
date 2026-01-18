@@ -127,16 +127,22 @@ class Monad m => Construct m where
   --representing integer-like things.
   --Alt: make shr, shl k ops.
   constant :: Integer -> m (Var m)
-  --Perhaps enhance with debug comments
+  --Debug comments:
+  comment :: String  -> m ()
 
 --Separating interpretations lets you simplify the respective monads.
 --Interpretation 1: emit instructions, allocate new vars.
 --Free monads could be used here.
 --Problem: I pass in vars from the outside. How to represent them?
 type V v = Either Int v
-newtype Emit v a = Emit {unEmit :: StateT Int (Writer [(V v,String,[V v])]) a}
+newtype Emit v a = Emit {unEmit :: StateT Int
+                                   (Writer [EmitOp v]) a}
   deriving (Functor, Applicative, Monad)
-runEmit :: Emit v a -> Int -> (a,[(V v,String,[V v])],Int)
+data EmitOp v = V v := (String,[V v])
+            | Push (V v) Integer
+            | Comment String
+  deriving (Eq,Ord,Read,Show)
+runEmit :: Emit v a -> Int -> (a,[EmitOp v],Int)
 runEmit (Emit sra) n =
   let ((a,s),w) = runWriter $ runStateT sra n
   in (a,w,s)
@@ -147,9 +153,15 @@ instance Construct (Emit v) where
     n <- get
     put (n+1)
     let v = Left n
-    tell [(v, str, vs)]
+    tell [v := (str,vs)]
     return v
-  constant n = error "Not defined"
+  constant k = Emit $ do
+    n <- get
+    put (n+1)
+    let v = Left n
+    tell [Push v k]
+    return v
+  comment str = Emit $ tell [Comment str]
 
 emitM1 :: Emit String (V String)
 emitM1 = do
@@ -216,6 +228,7 @@ instance Construct SymM where
           SymWord bs = b
       SymWord <$> zipWithM (apply o) as bs
   op o ws = SymM $ Left $ BadArity o ws
+  comment _ = return ()
 apply :: SymOp -> SymByte -> SymByte -> Either SymError SymByte
 apply o (K a) (K b) =
   return $ K $ appK o a b
@@ -286,7 +299,7 @@ mdot szStruct off szField vs = do
   vtop <-
     if garb == 0
     then top <<< sh --no need to shift out garbage
-    else if sh < 0
+    else if sh /= 0
          then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
               --shift out garbage, then shift back
          else maskBytes (32-garb) top
