@@ -1,4 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase,
+TypeFamilies #-} --for Construct
 module Fused.Monad where
 
 --The monads used for implementing the fused phase
@@ -13,6 +14,9 @@ import qualified Structured.DTs as IR
 import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..))
+--The Construct monad, allowing overloaded straight-line code defs:
+import Construct (Construct(op,constant,Op))
+import qualified Construct as CM
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -352,3 +356,13 @@ newVar :: T -> FusedFunM Var
 newVar t = do
   n <- liftFused alloc
   return $ Mono ("$anon"++show n) t
+
+instance Construct FusedFunM where
+  type Var FFM = Var
+  type Op FFM = String
+  op primop vs = do
+    v <- newVar (W (UInt 32) 1)
+    emitPrim ([v],[]) primop (vs,[])
+    return v
+  constant = pushK
+  comment = comment

@@ -3522,6 +3522,28 @@ Representing slices as vars isn't practical, since vars are either state or
 words..? I'd need to extend the lhs type.
 FW... for now emit unoptimized instrs.
 
+Extending SymM to support regions: need to add them to state.
+SymByte would need to be extended with LoadMem Int SymWord, the nth byte of
+an mload. The symbolic mem could be a map; empty keys => LoadMem.
+Problem: pointers overlap, so LoadMem's argument needs to be e + k. Note e+k
+may affect any bytes in the word, so I need a SymE, not just a list of
+symbolic bytes...
+Might need nondeterminism for that: cases for overlap and nonoverlap.
+Sto and tsto have that problem, but only if two symbolic pointers are equal
+(which p, p+k>0 are not).
+FW idea: verified symbolic evaluation via proof rules.
+mload, mstore etc could return var, () in the monad... with the FFM
+Construct instance handling special-casing of them.
+
+TODO *_, *_=
+TODO define .field= in Construct as well.
+Procedure: shift field rightOff%32 bytes left, mask out old field from
+relevant words of struct, or shifted field with result.
+Produce masks code-inefficiently, golf later.
+Need to special-case .unWordPad, .unWordPad= for now, since mdot doesn't
+take into account padding.
+Add BYTE opt for one-byte fields in dot and array index.
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing

@@ -11,7 +11,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
-import Construct (construct,dot)
+import Construct (mconstruct,mdot)
 --For debugging:
 import Util (unsafePrint)
 
@@ -499,7 +499,11 @@ getIndex ws = \case
 --share the definition in a helper.
 --Since we no longer get the type of the struct from convertE (and the type
 --in the Vars may be misleading), we instead infer it from the field.
+--Need to special-case unWordPad since mdot doesn't consider padding.
 getDot :: [Var] -> Name -> [T] -> FFM ([Var],T)
+getDot vs "unWordPad" [a] = do
+  vs' <- coerceVars a vs
+  return (vs',a)
 getDot vs field ts = do
   --comment $ "getDot " ++ show (vs,field,ts)
   --Infer struct type from field
@@ -517,6 +521,10 @@ getDot vs field ts = do
     --The field is zero-sized; dot is trivial
     then return ([],t)
     else do
+    vs' <- mdot szStruct off szField vs
+    vs'' <- coerceVars t vs'
+    return (vs'',t)
+    {-
     --Select the words containing the field
     --Note off is the offset of the field from the left in memory;
     --on the stack there may be additional left-padding.
@@ -563,6 +571,7 @@ getDot vs field ts = do
     --Bugfix: the result vars of s.field will now have the correct type.
     ws <- coerceVars t $ vhd:vtl
     return (ws, t)
+-}
         
 getBang :: [Var] -> T -> T -> Var -> FFM [Var]
 getBang = error "todo"
@@ -765,6 +774,16 @@ exploreD monoTs monoTset mt@(tycon,ts)
                                           fsOffsets fs,
                               fsSizeof = M.insert ("WordPad",ts) sz $
                                          fsSizeof fs
+                             })
+            --Array needs special-casing as well!
+            "Array" -> do
+              let [TyNat len, a] = ts
+              sza <- sizeof' (mt:monoTs) (S.insert mt monoTset) a
+              modify (\fs->fs{fsTagSchemes = M.insert ("Array",ts)
+                                             ([],Nil) $
+                                             fsTagSchemes fs,
+                               fsSizeof = M.insert ("Array",ts) (len*sza) $
+                                          fsSizeof fs
                              })
             _ -> 
               do mod <- ask
@@ -1157,8 +1176,9 @@ constructCon con ts tag tagSz field2vst resT = do
                                       fromInteger len,vs)
                           )) :: FFM [(Int,Int,[Var])]
   --For each output word, a list (input,sh) to or together
-  let wshss = construct (fromIntegral sz) offLenVs
-  res <- mapM (\wshs -> (mapM (uncurry (<<<)) wshs) >>= disjunction) wshss
+  --let wshss = construct (fromIntegral sz) offLenVs
+  --res <- mapM (\wshs -> (mapM (uncurry (<<<)) wshs) >>= disjunction) wshss
+  res <- mconstruct (fromIntegral sz) offLenVs
   coerceVars resT res
 --Problem: we have n bytestrings represented as words on the stack.
 --Each bytestring has a length and is right-aligned in the words.
