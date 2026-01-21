@@ -146,6 +146,22 @@ runEmit :: Emit v a -> Int -> (a,[EmitOp v],Int)
 runEmit (Emit sra) n =
   let ((a,s),w) = runWriter $ runStateT sra n
   in (a,w,s)
+--For debugging:
+printEmit :: Emit String [V String] -> IO ()
+printEmit emit = do
+  let (vs, ops, _) = runEmit emit 1
+  mapM_ (putStrLn . showOp) ops
+  printResult vs
+    where showOp = \case
+            v := (op, vs) ->
+              unwords $ [showV v,"=",op] ++ map showV vs
+            Push v n -> showV v ++ " = " ++ show n
+            Comment str -> ";;" ++ str
+          printResult vs = putStrLn $ unwords $ "Result:" : map showV vs
+          showV = \case
+            --Ambigous if you use v<n>...
+            Left n -> "v"++show n
+            Right str -> str
 instance Construct (Emit v) where
   type Var (Emit v) = V v
   type Op (Emit v) = String
@@ -501,11 +517,13 @@ msetDot :: (Construct m, Op m ~ String) =>
 msetDot szStruct off szField struct field
   | szField == 0 = return struct
   | let = do
-          let rightOff = szStruct - off - 1
+          --Ex: szStruct = 3, off = 0, szField = 1: 2
+          let rightOff = szStruct - off - szField
               sh = rightOff `mod` 32
           --Does mconstruct handle sh == 0 gracefully? Might as well skip
           --anyway.
           --Note the zero should be optimized away here.
+          comment "Shifting the field:"
           field' <- if sh == 0
                     then return field
                     else do
@@ -516,6 +534,7 @@ msetDot szStruct off szField struct field
                         field),
                        (0, fromInteger sh, [z])
                       ]
+          comment "Merging with old struct:"
           let stackOff = (szStruct `roundedUpMod` 32) - szStruct + off
               masks = [mkDotMask stackOff szField (fromIntegral i)
                       | i <- [0..length struct]]
@@ -534,7 +553,7 @@ msetDot szStruct off szField struct field
 data SetDotMask = Oxff --no overlap with field
                 | Ox00 --full overlap with field
                 | Oxff00 Integer --field in the n lowest bytes
-                | Ox00ff Integer --field in the n highest bytes
+                | Ox00ff Integer --field in the 32-n highest bytes
                 | Oxff00ff Integer Integer --field in middle (right-off, len)
   deriving (Eq,Ord,Read,Show)
 --How does the field overlap with the word?
@@ -550,10 +569,15 @@ mkDotMask off szF i =
          | startF > startW, startF <= endW, endF >= endW  ->
            Oxff00 $ 32 - (startF - startW)
          | startF <= startW, endF >= startW, endF < endW ->
-           Ox00ff $ endF - startW + 1
-         | let -> Oxff00ff (endW - endF) (startF - endF + 1)
+           Ox00ff $ 32 - (endF - startW + 1)
+         | let -> Oxff00ff (endW - endF) (endF - startF + 1)
 --Given overlap info, combine the shifted field word with the original struct
 --word.
+--TODO opt: make use of padding bytes in struct. If the result of byte i of
+--old & mask is guaranteed to be 0, byte i of mask can be 0.
+--For {a:Bool,b:Bool}.a=vs, the mask can be 0xff rather than ff00ff. and 0xff
+--can in turn be replaced with byte 31 (which may be more code-efficient if
+--you have multiple uses of 31).
 applyDotMask :: (Construct m, Op m ~ String) =>
   Var m -> Var m -> SetDotMask -> m (Var m)
 applyDotMask sW fW = \case
@@ -563,10 +587,16 @@ applyDotMask sW fW = \case
   sdm -> do
     m <- case sdm of
            Oxff00 n -> do
+             comment "Mask: Oxff00"
              m' <- constant $ 256 ^ n - 1
              op "not" [m']
-           Ox00ff n -> constant $ 256 ^ n - 1
+           Ox00ff n -> do
+             comment "Mask: Ox00ff"
+             comment $ "Bytes: " ++ show n
+             constant $ 256 ^ n - 1
            Oxff00ff rightOff len -> do
+             comment "Mask: Oxff00ff"
+             comment $ "Field len: " ++ show len
              ox00ff <- constant $ 256 ^ len - 1
              sh <- constant $ rightOff * 8
              ox00ff00 <- op "shl" [sh,ox00ff]
