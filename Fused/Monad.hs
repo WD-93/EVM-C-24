@@ -121,7 +121,9 @@ data FusedError = GenericFE String
                 --Ran getFieldInfo before exploreD:
                 | CompilerErrorFieldInfoBeforeExploreD Name [T]
                 | AssignmentToImmutableRegion T
-                
+                | NotAssignableLHS String
+                --I can't use EvaluatedPat here atm... need to move it lower in
+                --dependency hierarchy.
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

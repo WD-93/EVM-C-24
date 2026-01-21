@@ -8,7 +8,7 @@ import Control.Monad.State
 --For monadic implementation:
 import Control.Monad.Writer
 import Control.Monad (zipWithM, forM)
-import Data.Bits ((.&.),(.|.)) --for symbolic eval
+import Data.Bits ((.&.),(.|.),complement) --for symbolic eval
 import AST.DTs (roundedUpMod)
 --Testing:
 import Test.QuickCheck hiding ((.&.),(.|.),output)
@@ -200,35 +200,52 @@ data SymError = NotAByteConst SymWord
               | BadArity SymOp [SymWord]
               | Can'tSimpBB SymOp SymByte SymByte
               | Can'tSimpNB SymOp Int SymByte
+              | Can'tNOT SymByte
   deriving (Eq,Show)
 instance Construct SymM where
   type Var SymM = SymWord
   type Op SymM = SymOp
   constant n = SymM $ return $ wordK n
   op o [a,b] = SymM $
-    if o `elem` ["shr","shl"]
-    then do
-      shBits <- parseByte a
-      if (shBits `mod` 8) /= 0
-        then Left $ NotMul8 o a
-        else return ()
-      let shBytes = shBits `div` 8
-          zeroes = replicate shBytes $ K 0
-          SymWord bs = b
-      return $ SymWord $
-        case o of
-          "shr" -> take 32 $ zeroes ++ bs
-          "shl" -> reverse $ take 32 $ zeroes ++ reverse bs
-      --While partial-byte shift is possible in the EVM, I don't use
-      --it; just error if a % 8 /= 0.
-      --If any byte above the lowest isn't K 0, error.
-      --Otherwise shift by a/8 bytes.
-      else do
-      let SymWord as = a
-          SymWord bs = b
-      SymWord <$> zipWithM (apply o) as bs
+    case o of
+      "byte" ->
+        --If ix > 31, return 0
+        case parseByte a of
+          Right ix | ix < 32 ->
+                     let SymWord bs = b
+                     in return $ SymWord $ replicate 31 (K 0) ++ [bs !! ix]
+      _ | o `elem` ["shr","shl"] -> do
+            shBits <- parseByte a
+            if (shBits `mod` 8) /= 0
+              then Left $ NotMul8 o a
+              else return ()
+            let shBytes = shBits `div` 8
+                zeroes = replicate shBytes $ K 0
+                SymWord bs = b
+            return $ SymWord $
+              case o of
+                "shr" -> take 32 $ zeroes ++ bs
+                "shl" -> reverse $ take 32 $ zeroes ++ reverse bs
+          --While partial-byte shift is possible in the EVM, I don't use
+          --it; just error if a % 8 /= 0.
+          --If any byte above the lowest isn't K 0, error.
+          --Otherwise shift by a/8 bytes.
+        --Bitwise ops
+        | let -> do
+            let SymWord as = a
+                SymWord bs = b
+            SymWord <$> zipWithM (apply o) as bs
+  op "not" [SymWord bs] = SymM $ SymWord <$> mapM symNot bs
   op o ws = SymM $ Left $ BadArity o ws
   comment _ = return ()
+
+--I just need to test bitwise not on constants for now, no need to extend
+--the symbolic byte repr.
+symNot :: SymByte -> Either SymError SymByte
+symNot = \case
+  K n -> return $ K $ complement n .&. 0xff
+  b -> Left $ Can'tNOT b
+  
 apply :: SymOp -> SymByte -> SymByte -> Either SymError SymByte
 apply o (K a) (K b) =
   return $ K $ appK o a b
@@ -290,27 +307,36 @@ mdot szStruct off szField vs = do
               drop (fromInteger startIx) vs
       --right-offset mod 32
       rightOff = (szStruct - off - szField) `mod` 32
-      --Output words = disjunction (input << +-k)
-      wshifts = dot (fromIntegral rightOff)
-                (fromIntegral szField) relVs
-  let whd:wtl = wshifts
-      (top,sh):wrest = whd
-      garb = stackOff `mod` 32
-  vtop <-
-    if garb == 0
-    then top <<< sh --no need to shift out garbage
-    else if sh /= 0
-         then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
-              --shift out garbage, then shift back
-         else maskBytes (32-garb) top
-              --can't use shift trick, must use code-intensive
-              --and 0xff... instead.
-  vrest <- forM wrest (\(v,sh) -> v <<< sh)
-  vhd <- disjunction $ vtop:vrest
-  vtl <- (forM wtl (\wshs ->
-                      forM wshs (\(w,sh) -> w <<< sh)))
-         >>= mapM disjunction
-  return $ vhd : vtl
+  --If the field size is 1, we use BYTE instead.
+  --Index 0 => the MSB.
+  if szField == 1
+    then do
+    let [relV] = relVs
+    ix <- constant (31-rightOff)
+    fld <- op "byte" [ix,relV]
+    return [fld]
+    else do
+    --Output words = disjunction (input << +-k)
+    let wshifts = dot (fromIntegral rightOff)
+                  (fromIntegral szField) relVs
+    let whd:wtl = wshifts
+        (top,sh):wrest = whd
+        garb = stackOff `mod` 32
+    vtop <-
+      if garb == 0
+      then top <<< sh --no need to shift out garbage
+      else if sh /= 0
+           then (top <<< garb) >>= (<<< (fromIntegral sh - garb))
+                --shift out garbage, then shift back
+           else maskBytes (32-garb) top
+                --can't use shift trick, must use code-intensive
+                --and 0xff... instead.
+    vrest <- forM wrest (\(v,sh) -> v <<< sh)
+    vhd <- disjunction $ vtop:vrest
+    vtl <- (forM wtl (\wshs ->
+                        forM wshs (\(w,sh) -> w <<< sh)))
+           >>= mapM disjunction
+    return $ vhd : vtl
 
 (<<<) :: (Construct m, Op m ~ String, Integral k) =>
   Var m -> k -> m (Var m)
@@ -441,3 +467,139 @@ prop_construct_correct nonNegNs =
           [] -> []
           n:ns -> (off, n, toBs ("f"++show i) n) : go (off+n) (i+1) ns
         toBs nm len = [X (nm,n) | n <- [1..len]]
+
+--Next: array get, field and array set on stack variables.
+--TODO replace fields and indices in EvaluatedPat with offsets?
+--Then .a.b could be merged.(Arr m (Arr n t))!a!b ~ !((a*k)+b) on an
+--Arr (m*n) t.
+--For now, support only array get and set for >2-word arrays.
+--Indexing out of range is UB.
+
+--struct' = struct{field=v}
+--Algo:
+--Select the words that overlap with the field:
+--(unchangedLeft,overlapping,ucRight) = struct
+--Zero the field bytes in overlapping:
+--overlapping' = overlapping & 0x...
+--Use construct to left-shift v by right-offset % 32:
+--v' = v << roff % 32
+--overlapping'' = overlapping' | v'
+--return (unchangedLeft,overlapping'',ucRight)
+
+--Note when masking, the field words to mask consist of either:
+--One word: ff00ff
+--Multiple words: [ff00], 00*, [00ff]. The 00 patterns are words where the whole
+--word is taken up by the field, so instead of masking and or'ing you can
+--simply replace the old word with v's word.
+msetDot :: (Construct m, Op m ~ String) =>
+           Integer -> --struct sizeof
+           Integer -> --field byte offset from the left
+           Integer -> --field byte length
+           [Var m] -> --old struct words
+           [Var m] -> --new field words
+           m [Var m]  --new struct words
+msetDot szStruct off szField struct field
+  | szField == 0 = return struct
+  | let = do
+          let rightOff = szStruct - off - 1
+              sh = rightOff `mod` 32
+          --Does mconstruct handle sh == 0 gracefully? Might as well skip
+          --anyway.
+          --Note the zero should be optimized away here.
+          field' <- if sh == 0
+                    then return field
+                    else do
+            z <- constant 0
+            mconstruct (fromInteger $ szField+sh)
+                      [(fromInteger sh,
+                        fromInteger szField,
+                        field),
+                       (0, fromInteger sh, [z])
+                      ]
+          let stackOff = (szStruct `roundedUpMod` 32) - szStruct + off
+              masks = [mkDotMask stackOff szField (fromIntegral i)
+                      | i <- [0..length struct]]
+          go struct masks field'
+            where
+              --All done:
+              go ss _ [] = return ss
+              --Haven't reached field yet:
+              go (s:ss) (Oxff:ms) fs = (s:) <$> go ss ms fs
+              --Combining:
+              go (s:ss) (m:ms) (f:fs) = do
+                s' <- applyDotMask s f m
+                (s':) <$> go ss ms fs
+
+--Indicates how the struct word is to be combined with the shifted field word.
+data SetDotMask = Oxff --no overlap with field
+                | Ox00 --full overlap with field
+                | Oxff00 Integer --field in the n lowest bytes
+                | Ox00ff Integer --field in the n highest bytes
+                | Oxff00ff Integer Integer --field in middle (right-off, len)
+  deriving (Eq,Ord,Read,Show)
+--How does the field overlap with the word?
+--Precondition: szF > 0
+mkDotMask :: Integer -> Integer -> Integer -> SetDotMask
+mkDotMask off szF i =
+  let wOff = 32*i
+      (startF,endF) = (off,off+szF-1)
+      (startW,endW) = (wOff,wOff+31)
+  in case () of
+       _ | startW > endF || endW < startF -> Oxff
+         | startF <= startW, endW <= endF -> Ox00
+         | startF > startW, startF <= endW, endF >= endW  ->
+           Oxff00 $ 32 - (startF - startW)
+         | startF <= startW, endF >= startW, endF < endW ->
+           Ox00ff $ endF - startW + 1
+         | let -> Oxff00ff (endW - endF) (startF - endF + 1)
+--Given overlap info, combine the shifted field word with the original struct
+--word.
+applyDotMask :: (Construct m, Op m ~ String) =>
+  Var m -> Var m -> SetDotMask -> m (Var m)
+applyDotMask sW fW = \case
+  Oxff -> error "!?" --return sW
+  Ox00 -> return fW
+  --We do a little golfing... todo do more or constant expand in opt phase
+  sdm -> do
+    m <- case sdm of
+           Oxff00 n -> do
+             m' <- constant $ 256 ^ n - 1
+             op "not" [m']
+           Ox00ff n -> constant $ 256 ^ n - 1
+           Oxff00ff rightOff len -> do
+             ox00ff <- constant $ 256 ^ len - 1
+             sh <- constant $ rightOff * 8
+             ox00ff00 <- op "shl" [sh,ox00ff]
+             op "not" [ox00ff00]     
+    sW' <- op "and" [m,sW]
+    op "or" [sW',fW]
+
+--Correctness property: given a struct
+--{garbLeft: a bytes, field: b bytes, garbRight: c bytes} and new
+--field value: b bytes, msetDot returns
+--{garbLeft, new field value, garbRight}
+prop_msetDot_correct :: NonNegative Int ->
+                        NonNegative Int ->
+                        NonNegative Int ->
+                        Bool
+prop_msetDot_correct (NonNegative a) (NonNegative b) (NonNegative c) =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      aBs = toBs "a" a
+      fieldBs = toBs "field" b
+      bBs = toBs "b" c
+      oldStruct = aBs ++ fieldBs ++ bBs
+      oldStructWs = wordSplit oldStruct
+      newFieldBs = toBs "new" b
+      newFieldWs = wordSplit newFieldBs
+      newStruct = aBs ++ newFieldBs ++ bBs
+      newStructWs = wordSplit newStruct
+  in case runSymM (msetDot (fromIntegral $ a+b+c)
+                   (fromIntegral a)
+                   (fromIntegral b)
+                   oldStructWs newFieldWs) of
+       Right struct' ->
+         let struct'Bs = unWordSplit struct'
+         in if struct'Bs /= newStruct
+            then error $ "Mismatch: " ++ show struct'Bs ++ " " ++ show newStruct
+            else True
+       Left err -> error $ "Sym eval error: " ++ show err

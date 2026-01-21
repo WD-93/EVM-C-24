@@ -3536,9 +3536,12 @@ mload, mstore etc could return var, () in the monad... with the FFM
 Construct instance handling special-casing of them.
 
 TODO *_, *_=
+ That requires extending SymM to test it... put on back burner.
 TODO define .field= in Construct as well.
 Procedure: shift field rightOff%32 bytes left, mask out old field from
 relevant words of struct, or shifted field with result.
+That's not best expressed in terms of dot and construct because that would
+shift the old fields right and then back for no good reason.
 Produce masks code-inefficiently, golf later.
 Need to special-case .unWordPad, .unWordPad= for now, since mdot doesn't
 take into account padding.

@@ -11,7 +11,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
-import Construct (mconstruct,mdot)
+import Construct (mconstruct,mdot,msetDot)
 --For debugging:
 import Util (unsafePrint)
 
@@ -306,6 +306,7 @@ evaluatePat = go
                 unsafePrint $ "indexPath: " ++ show indexPath
                 let Ptr r a = ptrT
                 return $ Just $ EPDeref r a ptr'
+              _ -> throwError $ NotAssignableLHS $ show root
               --Precondition: wild, array, con have been excluded
               where rollPat :: Pat -> (Pat, [EIndex])
                     rollPat = go []
@@ -507,9 +508,7 @@ getDot vs "unWordPad" [a] = do
 getDot vs field ts = do
   --comment $ "getDot " ++ show (vs,field,ts)
   --Infer struct type from field
-  tycon <- do mod <- liftFused ask
-              let Just fi = M.lookup field $ fieldInfo $ dtsInfo mod
-              return $ fiParentTyCon fi
+  tycon <- liftFused $ getFieldParent field
   let tycon_ts = unrollTyApps (TyCon tycon) ts
   comment $ "Struct type: " ++ show tycon_ts
   --mono dt
@@ -582,7 +581,18 @@ setIndex ws fld = \case
   IDot field ts -> setDot ws field ts fld
   IBang len a ix -> setBang ws len a ix fld
 setDot :: [Var] -> Name -> [T] -> [Var] -> FFM [Var]
-setDot = error "todo"
+setDot struct field ts vs = do
+  --First, look up parent tycon
+  tycon <- liftFused $ getFieldParent field
+  let tycon_ts = unrollTyApps (TyCon tycon) ts
+  --exploreD (tycon,ts) --not needed
+  szStruct <- liftFused $ sizeof tycon_ts
+  --Copied from getDot; todo deduplicate
+  (off,szField,t) <- liftFused $ getFieldInfo field ts
+  struct' <- if field == "unWordPad"
+             then return vs
+             else msetDot szStruct off szField struct vs
+  coerceVars tycon_ts struct'
 setBang :: [Var] -> T -> T -> Var -> [Var] -> FFM [Var]
 setBang = error "todo"
 
@@ -1137,6 +1147,14 @@ getModConInfo caller con = do
       "Compiler error: no con info for " ++ con ++
       " (requested by " ++ caller ++ ")"
     Just ci -> return ci
+--Gets the parent tycon of a given field
+--Precondition: field exists...
+--TODO deduplicate
+getFieldParent :: Name -> FusedM Name
+getFieldParent field = do
+  mod <- ask
+  let Just fi = M.lookup field $ fieldInfo $ dtsInfo mod
+  return $ fiParentTyCon fi
 
 --Concat tag and fields in canonical order;
 --same procedure as for array construction.
