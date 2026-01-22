@@ -11,7 +11,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
-import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang)
+import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray)
 --For debugging:
 import Util (unsafePrint)
 
@@ -393,8 +393,17 @@ assignEP ep vs =
       | let -> do
           unsafePrint $ "assignEP EPDeref " ++ show (r,a,ptr)
           assignPtr r a ptr vs
-    -- Array (p1,p2,...) = vs
-    EPArray len a ixPs -> error "todo"
+    -- Array (p1,p2,...) = vs =>
+    --p1 = vs[0]; p2 = vs[1]; ...
+    EPArray len a ixPs ->
+      forM_ ixPs (\(ix,p) -> do
+                     --ix is a Short; if it's > 2^16-1 it should be masked.
+                     (ixws,_) <- convertE $
+                                TyApp "fromWord" ["Unsigned", TyNat 2] :$
+                                EInteger (fromIntegral ix)
+                     let [ixw] = ixws
+                     elem <- getBang vs (TyNat len) a ixw
+                     assignEP p elem)
     -- Con@ts {field: p, ...} = vs
     EPCon con ts checkTag fieldPs -> do
       --TODO support boxed cons; error with a todo for now
@@ -1047,7 +1056,16 @@ convertE e = pushScope $ go e
           --Eval es in textual order, reverse and concat
           --Need to optimize to avoid dups and swaps out of range... eagerly
           --shift and or, CE.
-          EArray (Just t) es -> error "todo"
+          EArray (Just a) es -> do
+            let arrlen = fromIntegral $ length es
+                arrT = Array (TyNat arrlen) a
+            --Explore arrT for safety's sake:
+            liftFused $ sizeof arrT
+            vss <- map fst <$> mapM convertE es
+            sza <- liftFused $ sizeof a
+            arr_ <- marray sza vss
+            arr <- coerceVars arrT arr_
+            return (arr,arrT)
           --Either g or f; either way push a 2B label.
           --Storing only typarams and not the type in TyApp was a mistake...
           --To get type: fetch scheme from tysigs, instantiate.

@@ -471,6 +471,7 @@ unWordSplit ws = dropZeroes $ ws >>= (\(SymWord bs) -> bs)
 mconstruct :: (Construct m, Op m ~ String) => 
               Int -> --Output size
               --Fields:
+              --Note: they should be passed in descending order of right-offset
               [(Int,     --offset from the right
                 Int,     --byte length
                 [Var m]) --input words
@@ -797,3 +798,18 @@ test_msetBang_correct =
                                       show arrW']
                   --Left $ "Mismatch: " ++ show args ++ " " ++
                     -- show (elemBs,expected)
+
+--Constructs an array by concatenating the given elements; can be implemented
+--using mconstruct.
+marray :: (Construct m, Op m ~ String) =>
+  Integer ->   --the byte length of each element
+  [[Var m]] -> --the elements
+  m [Var m]    --the resulting array
+marray sza es = do
+  let arrlen = fromIntegral $ length es
+      fields = [(fromInteger $ (arrlen-i)*sza,
+                 fromInteger sza,
+                 e)
+               | (i,e) <- zip [1..] es
+               ]
+  mconstruct (fromInteger $ arrlen*sza) fields
