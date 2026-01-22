@@ -236,6 +236,7 @@ instance Construct SymM where
       --For now support only for concrete values.
       "add" -> concreteWordOp2 "add" (+) a b
       "mul" -> concreteWordOp2 "mul" (*) a b
+      "sub" -> concreteWordOp2 "sub" (-) a b
       _ | o `elem` ["shr","shl"] -> do
             shBits <- parseByte a
             if (shBits `mod` 8) /= 0
@@ -695,6 +696,38 @@ mgetBang arrlen sza arr ix
           rsh <- constant $ 256 - sza * 8
           op "shr" [rsh,arr']
 
+{-Algo(arr,ix,elem):
+sh = right-offset of arr[ix]: sza*8*(arrlen-1) - sza*8*ix
+m = ~(mask sza << sh)
+return arr & m | elem << sh
+-}
+msetBang :: (Construct m, Op m ~ String) =>
+  Integer -> --the array len (needed for right-shift, > 0)
+  Integer -> --the byte size of array elems (> 0)
+  Var m ->   --the array
+  Var m ->   --the index : Short
+  Var m ->   --the element to assign to the index
+  m (Var m)  --the updated array (always one word)
+msetBang arrlen sza arr ix elem = do
+  sh <- opE2 "sub" (constant $ sza*8*(arrlen-1)) $
+        opE2 "mul" (constant $ sza*8) (return ix)
+  m <- opE1 "not" $ opE2 "shl" (return sh) $ constant $ 256 ^ sza - 1
+  opE2 "or" (opE2 "shl" (return sh) (return elem)) $
+    opE2 "and" (return m) (return arr)
+--Finally defining combinators for defining ops in an expr-like manner, a la
+--Ecomp
+opE1 :: Construct m => Op m -> m (Var m) -> m (Var m)
+opE1 o e = do
+  v <- e
+  op o [v]
+--Subexpr eval in textual order; treegraph stack scheduling should optimize
+--that for pure ops.
+opE2 :: Construct m => Op m -> m (Var m) -> m (Var m) -> m (Var m)
+opE2 o e1 e2 = do
+  a <- e1
+  b <- e2
+  op o [a,b]
+
 --mgetBang's correctness can actually be exhaustively checked since array
 --size is bounded.
 test_mgetBang_correct :: Either String ()
@@ -725,5 +758,42 @@ test_mgetBang_correct =
                                       show arrW,
                                       show ixW,
                                       show elemW]
+                  --Left $ "Mismatch: " ++ show args ++ " " ++
+                    -- show (elemBs,expected)
+
+test_msetBang_correct :: Either String ()
+test_msetBang_correct =
+  mapM_ test [(arrlen,sza,ix)
+             | sza <- [1..32],
+               arrlen <- [1..32 `div` sza],
+               ix <- [0..arrlen-1]
+             ]
+  where
+    test :: (Integer, Integer, Integer) -> Either String ()
+    test args@(arrlen,sza,ix) =
+      let toBs nm len = [X (nm, fromInteger n) | n <- [1..len]]
+          arrBs = concat [toBs ("ix"++show i) sza
+                         | i <- [0..arrlen-1]
+                         ]
+          [arrW] = wordSplit arrBs --just zero-pads
+          ixW = wordK ix
+          elemBs = toBs "elem" sza
+          [elemW] = wordSplit elemBs
+      in case runSymM $ msetBang arrlen sza arrW ixW elemW of
+           Left err -> Left $ "Sym error: " ++ show args ++ " " ++ show err
+           Right arrW' ->
+             let arrW'Bs = unWordSplit [arrW']
+                 expected = concat [if i == ix
+                                     then elemBs
+                                     else toBs ("ix"++show i) sza
+                                   | i <- [0..arrlen-1]
+                                   ]
+             in if arrW'Bs == expected
+                then return ()
+                else error $ unlines [show arrlen,
+                                      show sza,
+                                      show arrW,
+                                      show ixW,
+                                      show arrW']
                   --Left $ "Mismatch: " ++ show args ++ " " ++
                     -- show (elemBs,expected)
