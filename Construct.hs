@@ -217,6 +217,7 @@ data SymError = NotAByteConst SymWord
               | Can'tSimpBB SymOp SymByte SymByte
               | Can'tSimpNB SymOp Int SymByte
               | Can'tNOT SymByte
+              | Can'tHandleSym String SymByte
   deriving (Eq,Show)
 instance Construct SymM where
   type Var SymM = SymWord
@@ -230,6 +231,11 @@ instance Construct SymM where
           Right ix | ix < 32 ->
                      let SymWord bs = b
                      in return $ SymWord $ replicate 31 (K 0) ++ [bs !! ix]
+      --I'm starting to stretch the limits of what is convenient with this
+      --simple monad...
+      --For now support only for concrete values.
+      "add" -> concreteWordOp2 "add" (+) a b
+      "mul" -> concreteWordOp2 "mul" (*) a b
       _ | o `elem` ["shr","shl"] -> do
             shBits <- parseByte a
             if (shBits `mod` 8) /= 0
@@ -255,6 +261,23 @@ instance Construct SymM where
   op o ws = SymM $ Left $ BadArity o ws
   comment _ = return ()
 
+--Inefficient... if I want fast symbolic eval in future need to make byte-level
+--symbolic repr optional.
+concreteWordOp2 :: String ->
+                   (Integer -> Integer -> Integer) ->
+                   SymWord -> SymWord -> Either SymError SymWord
+concreteWordOp2 op f (SymWord as) (SymWord bs) = do
+  a <- parse as
+  b <- parse bs
+  return $ wordK $ f a b `mod` (2 ^ 256)
+  where parse symBs = do
+          bs <- forM symBs (\case K n -> return n
+                                  sym -> Left $ Can'tHandleSym op sym)
+          return $ go 1 $ reverse bs
+        go mul = \case
+          [] -> 0
+          b:bs -> (mul * fromIntegral b) + go (mul*256) bs
+          
 --I just need to test bitwise not on constants for now, no need to extend
 --the symbolic byte repr.
 symNot :: SymByte -> Either SymError SymByte
@@ -286,6 +309,7 @@ appK o a b =
   case o of
     "and" -> a .&. b
     "or" -> a .|. b
+    _ -> error $ "Unexpected op in appK: " ++ o
   
 --Errors if not byte constant.
 parseByte :: SymWord -> Either SymError Int
@@ -633,3 +657,73 @@ prop_msetDot_correct (NonNegative a) (NonNegative b) (NonNegative c) =
             then error $ "Mismatch: " ++ show struct'Bs ++ " " ++ show newStruct
             else True
        Left err -> error $ "Sym eval error: " ++ show err
+
+--Get and set an element of a one-word array on stack.
+--Supporting multi-word array index on stack would require a jump table.
+--Edge case: what if you index a 0-length array? Just return null; that's
+--handled in Fused. Note it should be UB; returning null is just a convenient
+--default.
+mgetBang :: (Construct m, Op m ~ String) =>
+  Integer -> --the array len (needed for right-shift, > 0)
+  Integer -> --the byte size of array elems (> 0)
+  Var m ->   --the array
+  Var m ->   --the index : Short
+  m (Var m)  --the result (always one word)
+mgetBang arrlen sza arr ix
+  | sza == 1 =
+    if arrlen == 32
+    then op "byte" [ix,arr]
+    else do
+      --The first byte is at offset 32-arrlen
+      k <- constant $ 32 - arrlen
+      ix' <- op "add" [k,ix]
+      op "byte" [ix',arr]
+  | let = do
+          --Shift and mask; the lowest index is leftmost
+          --We shl the requested element as far left as possible,
+          --then back to offset 0
+          k <- constant $ sza * 8
+          sh <- do
+            let garb = 32 - arrlen * sza
+            if garb == 0
+              then op "mul" [k,ix]
+              else do
+              sh' <- op "mul" [k,ix]
+              p <- constant $ garb * 8
+              op "add" [p,sh']
+          arr' <- op "shl" [sh,arr]
+          rsh <- constant $ 256 - sza * 8
+          op "shr" [rsh,arr']
+
+--mgetBang's correctness can actually be exhaustively checked since array
+--size is bounded.
+test_mgetBang_correct :: Either String ()
+test_mgetBang_correct =
+  mapM_ test [(arrlen,sza,ix)
+             | sza <- [1..32],
+               arrlen <- [1..32 `div` sza],
+               ix <- [0..arrlen-1]
+             ]
+  where
+    test :: (Integer, Integer, Integer) -> Either String ()
+    test args@(arrlen,sza,ix) =
+      let toBs nm len = [X (nm, fromInteger n) | n <- [1..len]]
+          arrBs = concat [toBs ("ix"++show i) sza
+                         | i <- [0..arrlen-1]
+                         ]
+          [arrW] = wordSplit arrBs --just zero-pads
+          ixW = wordK ix
+      in case runSymM (mgetBang arrlen sza arrW ixW) of
+           Left err -> Left $ "Sym error: " ++ show args ++ " " ++ show err
+           Right elemW ->
+             let elemBs = unWordSplit [elemW]
+                 expected = toBs ("ix"++show ix) sza
+             in if elemBs == expected
+                then return ()
+                else error $ unlines [show arrlen,
+                                      show sza,
+                                      show arrW,
+                                      show ixW,
+                                      show elemW]
+                  --Left $ "Mismatch: " ++ show args ++ " " ++
+                    -- show (elemBs,expected)

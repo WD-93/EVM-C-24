@@ -3547,6 +3547,9 @@ Need to special-case .unWordPad, .unWordPad= for now, since mdot doesn't
 take into account padding.
 Add BYTE opt for one-byte fields in dot and array index.
 
+Performance footgun: on-stack arrays of size < 32 have additional perf
+overhead since the first index is at a nonzero offset.
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing
