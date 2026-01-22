@@ -124,6 +124,8 @@ data FusedError = GenericFE String
                 | NotAssignableLHS String
                 --I can't use EvaluatedPat here atm... need to move it lower in
                 --dependency hierarchy.
+                | MultiwordStackArrayAssign Integer T
+                | MultiwordStackArrayIndex Integer T
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

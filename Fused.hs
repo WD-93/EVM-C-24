@@ -11,7 +11,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
-import Construct (mconstruct,mdot,msetDot)
+import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang)
 --For debugging:
 import Util (unsafePrint)
 
@@ -573,7 +573,19 @@ getDot vs field ts = do
 -}
         
 getBang :: [Var] -> T -> T -> Var -> FFM [Var]
-getBang = error "todo"
+getBang arr (TyNat arrlen) a ix = do
+  sza <- liftFused $ sizeof a
+  let szarr = arrlen * sza
+  case () of
+    --The elem is zero bytes:
+    _ | sza == 0 -> return []
+      --UB:
+      | arrlen == 0 -> cNull a
+      | szarr > 32 -> throwError $ MultiwordStackArrayIndex arrlen a
+      | let -> do
+          let [arrW] = arr
+          elem <- mgetBang arrlen sza arrW ix
+          coerceVars a [elem]
 --Note it returns a new value rather than updating the old vars; the only
 --update is the copyTo at the end of updateLocal
 setIndex :: [Var] -> [Var] -> Index -> FFM [Var]
@@ -593,9 +605,24 @@ setDot struct field ts vs = do
              then return vs
              else msetDot szStruct off szField struct vs
   coerceVars tycon_ts struct'
-setBang :: [Var] -> T -> T -> Var -> [Var] -> FFM [Var]
-setBang = error "todo"
 
+setBang :: [Var] -> T -> T -> Var -> [Var] -> FFM [Var]
+setBang arr (TyNat arrlen) a ix elem = do
+  sza <- liftFused $ sizeof a
+  let szarr = arrlen*sza
+  case () of
+    --If the elems are of size 0, updating the array is trivial
+    _ | sza == 0 -> return []
+      --UB:
+      | arrlen == 0 -> return []
+      --Multi-word array index assignment on stack would require a jump table;
+      --we therefore only support it for arrays of size <= 32B.
+      | szarr > 32 -> throwError $ MultiwordStackArrayAssign arrlen a
+      | let -> do
+          let [elemW] = elem
+              [arrW] = arr
+          arr' <- msetBang arrlen sza arrW ix elemW
+          coerceVars (Array (TyNat arrlen) a) [arr']
 {-
 There are three mutable regions: Memory, Storage and TStorage.
 Memory is the simplest to write to, since it's byte-addressed.

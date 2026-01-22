@@ -6,6 +6,11 @@
 Int : Signedness -> Nat -> Type;
 data Int s l = {};
 
+//Array len a is represented as the concatenation of len a's; its structure
+//also can't be defined in the language.
+Array : Nat -> Type -> Type;
+data Array len a = {};
+
 //While the structure of Ptr and Fun can be defined in the language, the
 //compiler treats them specially.
 Ptr : Region -> Type -> Type;
