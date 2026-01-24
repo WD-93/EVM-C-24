@@ -1,10 +1,13 @@
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PatternSynonyms, LambdaCase #-}
 module Core.Convert where
 
 import AST.DTs (T(..),Name(..),tupleT)
 import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
+import Core.PrimTypes (pattern W)
+import Const.Const (Serialized(..)) --I need to push function labels...
+--TODO encapsulate Serialized, exposing its structure is asking for trouble.
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -22,13 +25,13 @@ structured2core smod = do
   --Convert each Structured function to a BB map, then union them
   let defs = M.toList $ sdefuns smod
   bbmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
-  return Core {coreDefuns = M.unions bbmaps,
-               coreGlobals = sglobals smod,
-               coreStatic = sstatic smod
+  return Core {coreDefuns = M.unions bbmaps
+               --coreGlobals = sglobals smod,
+              ,coreStatic = M.empty --TODO
               }
 
 --No need for break/continue outside loop, it's caught in Structured.
-data CoreError = CEPlaceholder
+data CoreError = TriedToExitLoopOutsideLoop String
   deriving (Eq,Ord,Read,Show)
 {-
 State:
@@ -37,15 +40,15 @@ ops accumulated so far
 current Core function being accumulated
 -}
 type Cont = (FunVar,Scope)
-type Scope = [Var]
 data CoreS = CoreS {
   csAllocCtr :: Int, --for allocating new function names
+  --[(break,continue)]
   csLoopStack :: [(Cont,Cont)],
-  csCurrentFun :: (FunVar,Pattern),
-  csOps :: [(Value,OpE)], --accumulated ops in reverse order
+  --csCurrentFun :: (FunVar,BranchValue),
+  --csOps :: [(Value,OpE)], --accumulated ops in reverse order
   --The BB map; on a branch the current fun and its ops are flushed to the
   --map.
-  csDefuns :: Map FunVar (Pattern,[(Value,OpE)],Branch)
+  csDefuns :: Map FunVar (BranchValue,FunRHS)
   }
   deriving (Eq,Ord,Read,Show)
 --The monad for accumulating the CFG of a single Structured function.
@@ -53,36 +56,223 @@ type CoreM = ReaderT FunVar --parent fun; is source module needed?
              (StateT CoreS (Except CoreError))
 
 --Converts a single Structured function to a map of BBs
---Function blocks have an implicit return null() next.
 --It's safe for it to just have $ret in its scope.
 --It's fine to reset the alloc counter for each coreF; each anon BB's name will
 --also be pased on the parent function.
-coreF :: FunVar -> Pattern -> [Stmt] ->
-  Either CoreError (Map FunVar (Pattern,[(Value,OpE)],Branch))
-coreF fv p body =
+--Example LHS for f x := x, f@[Bool]:
+--f[Bool] (
+-- $arg.1:W# (Bool) (1) *
+-- $ret:Cont# (SPair# (W# (Bool) (1)) (stk))
+--                   (SPair# (MemSlice#)
+--                   (SPair# (CalldataState#)
+--                   (SUnit#))) *
+-- $stk:stk,
+-- $mem:MemSlice# * $cd:CalldataState# * ()) := ...
+--The use of SPair# in the stack arg of Cont# is a bug, TODO fix.
+--Nevertheless, I can extract the scope I need from the BranchValue.
+coreF :: FunVar -> BranchValue -> [Stmt] ->
+  Either CoreError (Map FunVar (BranchValue,FunRHS))
+coreF fv bv@(scope,_,_) body =
   fmap csDefuns $ runExcept $ flip execStateT initSt $
   flip runReaderT fv $ do
-  (rn,rnp) <- newFunLHS' "returnNull" [Mono "$ret" $ error "todo"]
-  error "todo"
+  --The Structured fun starts with $arg.1..n,$ret on the stack, not the argument
+  --locals (which are extracted from arg via pattern-matching).
+  fun <- coreBlock scope (error "The block always returns!") body
+  --fv just jumps to fun:
+  rhs <- normal [] fun
+  modify (\cs->cs{csDefuns = M.insert fv (bv,rhs) $
+                             csDefuns cs})
   where initSt = CoreS {
           csAllocCtr = 1,
           csLoopStack = [],
-          csCurrentFun = (fv,p),
-          csOps = [],
+          --csCurrentFun = (fv,p),
+          --csOps = [],
           csDefuns = M.empty
           }
 
-coreBlock :: [Stmt] -> --remaining stmts
+--Given its continuation, compiles a block of stmts to a function.
+coreBlock :: Scope -> --lhs = (scope,Just stk,envV)
              Cont -> --next cont
-             CoreM ()
-coreBlock = error "todo"
+             [Stmt] -> --remaining stmts
+             CoreM Cont
+coreBlock lhs cont stmts = do
+  f <- newFunName
+  --There should be no need to handle comments in coreBlock' or '':
+  rhs <- coreBlock' cont $ filter (\case Comment _ -> False
+                                         _ -> True) stmts
+  modify (\cs->cs{csDefuns = M.insert f (scope2BV lhs,rhs) $
+                             csDefuns cs})
+  return (f,lhs)
+  
+coreBlock' :: Cont -> [Stmt] -> CoreM FunRHS
+coreBlock' cont = go
+  where go = \case
+          --Simply continue to the cont:
+          --let xf = push f in jump xf(scope)
+          [] -> normal [] cont
+          --A series of ops followed by zero or more other stmts:
+          --If there are no ops, the normal will be inlined away.
+          stmts -> do
+            let (ops,rest) = collectOps stmts
+            --rest should provide the scope info here
+            next <- coreBlock'' cont rest
+            normal ops next
+--Compiling a [Stmt] starting with a Stmt that provides its own scope info,
+--or [] (in which case the cont provides scope info)
+coreBlock'' :: Cont -> [Stmt] -> CoreM Cont
+coreBlock'' cont stmts =
+  case stmts of
+    [] -> return cont
+    stmt:stmts ->
+      case stmt of
+        --f(args) in C becomes let ret = push next in jump f, args, ret, scope
+        --next expects lhs++scope 
+        Call scope lhs f args -> expects scope $ do
+          next <- coreBlock (lhs ++ scope) cont stmts
+          --The body has only a single op: pushing next
+          (ret,o) <- opPushF next
+          return ([o], jump f $ args ++ ret : scope)
+        --We assemble the control flow graph backward:
+        --cond -> decision -> (th | el) -> next
+        --decision (condvar:scope) =
+        -- let xthen = thcont
+        -- in jumpi (xthen,condvar,scope) else
+        --  normal [] elcont
+        --If ifte always continues to the same scope, I need to account for
+        --that in &&, ||.
+        Ifte scope cond condvar th el -> expects scope $ do
+          next <- coreBlock scope cont stmts
+          thcont <- coreBlock scope next th
+          --Should usually be inlined into the fallthrough FunRHS in the jumpi.
+          elcont <- coreBlock scope next el
+          --The then function pointer must be bound to a name in the decision
+          --basic block:
+          (xthen,othen) <- opPushF thcont
+          decision <- expects (condvar:scope) $ do
+            jump2el <- normal [] elcont
+            return ([othen],
+                    Jumpi jump2el $
+                    scope2BV $ xthen : condvar : scope)
+          condcont <- coreBlock scope decision cond
+          normal [] condcont
+        --cond:
+        -- ...cond
+        --jumpi body
+        --jump end
+        --body:
+        -- ...body
+        --jump cond
+        --end:
+        --The many extraneous jumps should be optimized away; if the expected
+        --iteration count is high then loop start should jump to cond and
+        --body should fall through to it.
+        --Note I need to push to the loop stack as well.
+        While scope cond condvar body -> do
+          --Need to alloc a cont name without binding it to tie the knot:
+          continue <- do fnm <- newFunName' "whileStart"
+                         return (fnm,scope)
+          break <- coreBlock scope cont stmts
+        --body needs (break,continue) pushed 
+          bodycont <- withLoop (break,continue) $
+                      coreBlock scope continue body
+          decision <- expects (condvar:scope) $ do
+            (xbody,obody) <- opPushF bodycont
+            jump2brk <- normal [] break
+            return ([obody],
+                    Jumpi jump2brk $ scope2BV $ xbody : condvar : scope)
+          condcont <- coreBlock scope decision cond
+          --continues' rhs; it just jumps to condcont:
+          rhs <- normal [] condcont
+          modify (\cs->cs{csDefuns = M.insert (fst continue)
+                           (scope2BV scope,rhs) $
+                           csDefuns cs})
+          return continue
+        Break scope -> do
+          (break,_) <- headLoopStack "break"
+          expects scope $ normal [] break
+        Continue scope -> do
+          (_,continue) <- headLoopStack "continue"
+          expects scope $ normal [] continue
+        --Assuming $ret is already on the stack:
+        Structured.DTs.Return scope vs ->
+          expects scope $ return ([], Jump $ scope2BV vs)
+        other -> error $ "Compiler error in coreBlock'': " ++ show other
+--Pushes and then pops break and continue
+--Reader would be appropriate here since this is the only way we modify
+--the loop stack...
+withLoop :: (Cont,Cont) -> CoreM a -> CoreM a
+withLoop bc m = do
+  ls <- gets csLoopStack
+  modify (\cs->cs{csLoopStack=bc:ls})
+  a <- m
+  modify (\cs->cs{csLoopStack=ls})
+  return a
+--Gets the top (break,continue) if there is one; errors otherwise
+headLoopStack :: String -> CoreM (Cont,Cont)
+headLoopStack str = do
+  ls <- gets csLoopStack
+  case ls of
+    [] -> throwError $ TriedToExitLoopOutsideLoop str
 
---Flushes the 
-branch :: Branch -> CoreM ()
-branch b = error "todo"
+--Binds a new function name f: f lhs = rhs and returns the cont.
+--Logic copied from coreBlock; TODO deduplicate.
+expects :: Scope -> CoreM FunRHS -> CoreM Cont
+expects lhs mrhs = do
+  f <- newFunName
+  rhs <- mrhs
+  modify (\cs->cs{csDefuns = M.insert f (scope2BV lhs,rhs) $
+                             csDefuns cs})
+  return (f,lhs)
 
-setCurrentFun :: (FunVar,Pattern) -> CoreM ()
-setCurrentFun fvp = modify (\s->s{csCurrentFun=fvp})
+--This corresponds to pushLabel2 in Fused.Monad; TODO share code
+opPushF :: Cont -> CoreM (Var,(Value,OpE))
+opPushF (f,scope) = do
+  --From serLabel2 with the ts parameter baked in
+  let ser = Serialized {serLength = 2,
+                        serSizeof = 2,
+                        serContent = [Right (0,2,f)]
+                       }
+  --Giving it a placeholder type for now
+  v <- newVar $ W (TyVar "?") 1
+  return $ (,) v $ (,) ([v],[]) $ (Push ser, ([],[]))
+
+jump :: Var -> Scope -> Branch
+jump fvar scope = Jump $ scope2BV $ fvar:scope
+
+--The normal Core body: perform some straight-line ops, then perform a static
+--jump.
+--let ops; xf = push f in jump xf(scope)
+--TODO give a better name
+normal :: [(Value,OpE)] -> Cont -> CoreM FunRHS
+normal ops cont@(_,scope) = do
+  --To give the var the right type, you need to know its type.
+  --However, that's implicit in scope (since scope also contains $ret)
+  (xf,o) <- opPushF cont
+  return $ (ops ++ [o], jump xf scope)
+
+--Duplicated from Fused.Monad; TODO share interface
+newVar :: T -> CoreM Var
+newVar t = do
+  n <- alloc
+  return $ Mono ("$coreAnon"++show n) t
+--I have so many counters... TODO make a single class for them
+alloc :: CoreM Int
+alloc = do
+  cs <- get
+  let n = csAllocCtr cs
+  put cs{csAllocCtr = n+1}
+  return n
+    
+--Collect the prefix of straight-line ops
+collectOps :: [Stmt] -> ([(Value,OpE)],[Stmt])
+collectOps = go []
+  where go rops = \case
+          val := opE : rest -> go ((val,opE):rops) rest
+          rest -> (reverse rops, rest)
+
+--Refining the CoreM monad: it consumes stmts, emits Core ops and ultimately
+--returns a Branch.
+--coreBranch must be monadic because it must allocate new vars...
 
 --Allocates a new function Name, as distinct from a FunVar (which contains
 --type info).
@@ -95,21 +285,20 @@ newFunName' expl = do
   s <- get
   let n = csAllocCtr s
   put s{csAllocCtr = n + 1}
-  let FPoly f ts _ = fv
-  return $ concat [f,show ts,show n,expl]
-
---TODO do something prettier
-mangleFunVar :: FunVar -> String
-mangleFunVar (FPoly f ts _) = f ++ show ts
+  return $ concat [fv,show n,expl]
 
 --scope (including $ret and $stk but not env) = vs => lhs = (v1*v2*...vN,env)
 --Type: forall stk . lhs -> End
 --The type is put in the FunVar.
-scope2LHS :: Scope -> (Pattern,T)
-scope2LHS scope = (P $ tupleV [foldr1 Pair $ map Var scope],
+scope2BV :: Scope -> BranchValue
+scope2BV scope = (scope,Just $ Mono "$stk" (TyVar "stk"), envV) {-
+  (P $ tupleV [foldr1 Pair $ map Var scope],
                    TyForall "stk" $ tupleT [foldr1 T.Pair $ map typeOfVar scope,
                                             envT])
-
+-}
+--We don't do any typechecking yet, so this'll do for now.
+scope2Type :: Scope -> T
+scope2Type _ = TyVar "TODO" 
 {-
 
 Approach:

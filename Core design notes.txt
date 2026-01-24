@@ -3554,6 +3554,24 @@ There's enough working Structured codegen that it's worth completing the
 pipeline for better debugging, and if necessary redesign of Structured.
 Remaining todos in Fused: case, evalEP, code globals, custom tags.
 TODO special-case ! on one-elem arrays to just be id?
+Recall: non-code global pointers must be placed before Core compilation.
+That applies to Serialized in defuns, tag schemes and static values.
+
+Compiling Structured to Core:
+Special-case primfuns: stop et al can't be implemented directly.
+Structured has an explicit return null... might as well pass undefined as
+the initial cont.
+coreBlock : Scope -> [Stmt] -> Cont -> m Cont
+Cases: [], ops ++ rest, stmt:stmts
+
+TODO:
+N5, Bool tag schemes
+Serialization with allocValue (ser of its arg must be deferred)
+JTs in Core
+Opt: the "ignore rest of stack" opt is obscure, but Just v:stk vs Nothing can be propagated based on v's liveness across functions.
+Can I use the Construct monad to generate code in Core.Convert?
+Need to overload pushLabel2. TODO add accurate type info to function pushes
+so I can eventually typecheck the Core.
 
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.

@@ -35,6 +35,9 @@ import Typecheck.TC (typecheck, TCError(..))
 import Structured.DTs (Structured(..))
 import Fused.Monad (FusedError(..))
 import Fused (compileStructured)
+--Structured IR => Core
+import Core.RestrictedCore (Core(..))
+import Core.Convert (structured2core, CoreError(..))
 
 --Poor man's pretty-printing for debugging
 import Pretty
@@ -45,6 +48,7 @@ data CompilerError = ParserError String
                    | DesugarError DError
                    | TypeCheckError TCError
                    | FusedError FusedError
+                   | CoreError CoreError
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -167,6 +171,11 @@ pipeline2structured :: String -> Either CompilerError Structured
 pipeline2structured str = do
   m <- pipeline2typechecked str
   compileStructured m ? FusedError
+--TODO place non-code globals first
+pipeline2core :: String -> Either CompilerError Core
+pipeline2core str = do
+  s <- pipeline2structured str
+  structured2core s ? CoreError
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str

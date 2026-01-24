@@ -48,6 +48,7 @@ data Core = Core {
   coreStatic :: Map Name Const
   --TODO add JTs for N1 here
   }
+  deriving (Eq,Ord,Read,Show)
 --Rewrites: letrec merge, let merge, inline
 
 type FunRHS = ([(Value,OpE)] --let ops
