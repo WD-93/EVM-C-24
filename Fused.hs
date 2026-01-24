@@ -1317,7 +1317,7 @@ collect scope ffm = do
     putScope cache
     return ((a,stmts), const []) --intercept them
 
---Cyclical datatype (where a tycon indirectly contains itself,
+--Cyclical datatypes (where a tycon indirectly contains itself,
 --potentially resulting in an infinite sizeof) are detected by tracking a
 --stack of tycons. The datatypes, functions and globals relevant to codegen
 --are identified by recursive traversal.
@@ -1341,6 +1341,91 @@ scheduler = do
       scheduler
     _ -> return ()
 
+----------------------------Expr serialization---------------------------------
+
+--Code globals must have initializer exprs; they are serialized to Serialized
+--values and stored in bytecode. Custom tags must also be serialized; they
+--are pushed in the Structured code for case.
+--Serializable expressions must be of a restricted form: general symbolic
+--evaluation is not done, and side effects other than Code allocation are
+--disallowed. NB: Code allocation at runtime results in an error.
+--constExpr ::=
+--Integer literals ([negate@[s,l]] (fromWord@[s,l] (EInteger n))
+--Unboxed constructor exprs Con {field: e}
+--allocValue@[Code,a] (constExpr)
+--Functions and global pointers f, &g.
+--Array (constExpr*)
+--Serialization of a constructor, function, or global pointer triggers
+--exploration; serialization must therefore be in Fused.
+--To avoid infinite loops, the serialization of e in allocValue e is deferred.
+--NB: all serialized exprs are monomorphic.
+--TODO deduplicate with symbolic eval/opt logic?
+
+--A custom tag scheme may mention its own datatype, triggering a loop:
+--data D = {}; tag D = D where {}.
+--Serialization must therefore check for monotype loops a la exploreD.
+--exploreG always begins with an empty monotype stack, so we provide the
+--serialize variant for it.
+serialize :: E -> FusedM Serialized
+serialize = serialize' [] S.empty
+serialize' :: [MonoT] -> Set MonoT -> E -> FusedM Serialized
+serialize' mts mtset = go
+  where go = \case
+          EArray (Just t) es -> do
+            let len = length es
+            exploreD mts mtset ("Array", [TyNat $ fromIntegral len, t])
+            ss <- mapM go es
+            return $ concatSers ss
+          --Constructors; need to special-case WordPad.
+          ConRecord "WordPad" (Just [a]) fields ->
+            leftPadSer <$> serField mts mtset "unWordPad" a (M.fromList fields)
+          --Look up con; compiler error if it's boxed.
+          --Explore tycon ts
+          ConRecord con (Just ts) fields -> do
+            --Compiler error if con is boxed
+            --Also looks up tycon and fields of con
+            mod <- ask
+            let Just Con{conParent = tycon,
+                         conBoxed = boxed,
+                         conFields = fs_ts} =
+                  M.lookup con $ conInfo $ dtsInfo mod
+                fs = map fst fs_ts
+            if boxed
+              then error $ "Compiler error: boxed con " ++ con ++
+                   " in serialize'"
+              else return ()
+            --Associate fs with their monotypes; this also explores tycon ts
+            fts <- forM fs (\field -> do
+                               (_off,_len,t) <- getFieldInfo field ts
+                               return (field,t))
+            --Serialize each field; note duplicate fields should have
+            --triggered an earlier desugaring error.
+            let field2e = M.fromList fields
+            serfields <- forM fts (\(field,t) ->
+                                     serField mts mtset field t field2e)
+            --Get the constructor tag
+            (serTag,_tagT) <- getTag con ts
+            --Concatenate the tag and fields
+            return $ concatSers $ serTag:serfields
+
+--The serialization of a field in a constructor record;
+--unspecified fields default to null.
+serField ::
+  [MonoT] -> Set MonoT -> --for cycle detection
+  Name ->          --the desired field
+  T ->             --its type
+  Map Name E ->    --the record
+  FusedM Serialized --its serialization
+serField mt mtset field t field2e =
+  case M.lookup field field2e of
+    Nothing -> do
+      sz <- sizeof' mt mtset t
+      return Serialized{serLength=sz,
+                        serSizeof=sz,
+                        serContent=[Left $ replicate (fromInteger sz) 0]
+                       }
+    Just e -> serialize' mt mtset e
+            
 -------------------------------------------------------------------------------
 --Typechecked module =>
 --f@ts => structured IR
