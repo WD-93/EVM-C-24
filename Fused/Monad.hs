@@ -89,11 +89,15 @@ data FusedS = FS {
 --TODO: cache defs in task constructor
 data AsyncTask = ExploreGlobal Name
                | ExploreFunction (Name,[T])
+               | SerializeAllocValue (Name,T,E)
   deriving (Eq,Ord,Read,Show)
 spawnExploreG :: Name -> FusedM ()
 spawnExploreG = spawn . ExploreGlobal
 spawnExploreF :: (Name,[T]) -> FusedM ()
 spawnExploreF = spawn . ExploreFunction
+--Serializes a constExpr, binding it to the given name in fsGlobals
+spawnSerializeAllocValue :: (Name,T,E) -> FusedM ()
+spawnSerializeAllocValue = spawn . SerializeAllocValue
 --Note we don't need a fair scheduler, exploration should be order-independent.
 spawn :: AsyncTask -> FusedM ()
 spawn task = do
@@ -126,6 +130,8 @@ data FusedError = GenericFE String
                 --dependency hierarchy.
                 | MultiwordStackArrayAssign Integer T
                 | MultiwordStackArrayIndex Integer T
+                | NotSerializableExpr E
+                | NonCodeAllocInSerialize T E
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

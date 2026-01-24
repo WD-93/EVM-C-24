@@ -12,8 +12,9 @@ import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray)
---For debugging:
-import Util (unsafePrint)
+import Util (unsafePrint, --for debugging
+             complainIf
+            )
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -26,6 +27,7 @@ import Control.Monad.Except
 import Control.Monad
 import Data.List (elemIndex)
 import Data.Foldable (foldlM)
+import Control.Arrow ((***))
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do
@@ -1338,7 +1340,11 @@ scheduler = do
       case task of
         ExploreGlobal g -> exploreG g
         ExploreFunction (f,ts) -> exploreF f ts
-      scheduler
+        SerializeAllocValue (nm,t,e) -> do
+          ser <- serialize e
+          modify (\fs->fs{fsGlobals= M.insert nm (Co,t,Just ser) $
+                           fsGlobals fs
+                         })
     _ -> return ()
 
 ----------------------------Expr serialization---------------------------------
@@ -1371,6 +1377,7 @@ serialize = serialize' [] S.empty
 serialize' :: [MonoT] -> Set MonoT -> E -> FusedM Serialized
 serialize' mts mtset = go
   where go = \case
+          --Arrays
           EArray (Just t) es -> do
             let len = length es
             exploreD mts mtset ("Array", [TyNat $ fromIntegral len, t])
@@ -1407,6 +1414,41 @@ serialize' mts mtset = go
             (serTag,_tagT) <- getTag con ts
             --Concatenate the tag and fields
             return $ concatSers $ serTag:serfields
+          --f or &g; easy, it's just a 2-byte label
+          TyApp nm ts -> do
+            exploreTyApp nm ts
+            return $ serLabel2 nm ts
+          --allocValue@[Code,a] constExpr
+          --Allocate the new static data name; serialization of the
+          --constExpr needs to be deferred (allowing a datatype to have a
+          --code pointer to itself, for example).
+          TyApp "allocValue" [r,a] :$ e -> do
+            complainIf (r /= "Code")
+              $ NonCodeAllocInSerialize r e
+            n <- alloc
+            let nm = "$static"++show n
+            spawnSerializeAllocValue (nm,a,e)
+            --Decision: don't call it $static[] like globals
+            return Serialized{serLength=2,serSizeof=2,
+                              serContent=[Right (0,2,nm)]
+                             }
+          --An integer literal; signedness doesn't affect representation.
+          --serInt truncates n.
+          e | Just (len,n) <- parseConstInteger e ->
+              return Serialized{serLength=len,
+                                serSizeof=len,
+                                serContent=[Left (serInt len n)]
+                               }
+            | let -> throwError $ NotSerializableExpr e
+--Integer literals ::= ([negate@[s,l]] (fromWord@[s,l] (EInteger n))
+--For simplicity I'll permit repeated negation.
+parseConstInteger :: E -> Maybe (Integer, Integer)
+parseConstInteger = go
+  where go = \case
+          TyApp "negate" _ :$ e -> (id *** negate) <$> go e
+          TyApp "fromWord" [_s, TyNat len] :$ EInteger n ->
+            Just (len,n)
+          _ -> Nothing
 
 --The serialization of a field in a constructor record;
 --unspecified fields default to null.
