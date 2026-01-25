@@ -3573,6 +3573,9 @@ Can I use the Construct monad to generate code in Core.Convert?
 Need to overload pushLabel2. TODO add accurate type info to function pushes
 so I can eventually typecheck the Core.
 
+pipeline2core"import Prelude;main():=myCG;myCG:List Code Bool;code myCG = Cons True Nil" --now compiles, but its show is >180,000 characters long -
+what's up with that? Most of it is the 111 basic blocks.
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing

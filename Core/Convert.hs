@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms, LambdaCase #-}
 module Core.Convert where
 
-import AST.DTs (T(..),Name(..),tupleT)
+import AST.DTs (T(..),Name(..),tupleT,Region(Co))
 import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
@@ -27,7 +27,9 @@ structured2core smod = do
   bbmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
   return Core {coreDefuns = M.unions bbmaps
                --coreGlobals = sglobals smod,
-              ,coreStatic = M.empty --TODO
+              ,coreStatic = M.mapMaybe (\case (_,_,Just ser) ->
+                                                Just ser
+                                              _ -> Nothing) $ sglobals smod
               }
 
 --No need for break/continue outside loop, it's caught in Structured.

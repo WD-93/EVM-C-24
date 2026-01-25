@@ -764,10 +764,12 @@ exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
   mod <- ask
   let Just (r,me) = M.lookup g $ globals mod
       Just ([],t) = M.lookup g $ tysigs mod
-  if r == Co
-    then error "todo support code globals"
-    else modify (\fs->
-                   fs{fsGlobals = M.insert g (r,t,Nothing) $ fsGlobals fs})
+  mser <- if r == Co
+          then let Just e = me
+               in Just <$> serialize e
+          else return Nothing
+  modify (\fs->
+             fs{fsGlobals = M.insert g (r,t,mser) $ fsGlobals fs})
 
 --Map monomorphic fields to offsets; that info is not required after
 --Structured. Is sizeof used in post-Structured case compilation? Add it later
@@ -856,7 +858,22 @@ exploreD monoTs monoTset mt@(tycon,ts)
                                        fromIntegral len,
                                        Just $ UInt $ fromIntegral len)
                      N16 -> return (N16, 1, Just $ UInt 1)
-                     Custom t con2tag -> error "todo"
+                     Custom t con2tag -> do
+                       --Share mt insertions
+                       let mts = mt:monoTs
+                           mtset = S.insert mt monoTset
+                       --First, instantiate the t and con2tag
+                       let Right monoT = instT v2t t
+                           Right monoCon2tag = instT v2t con2tag
+                       --For each (con,e) in monoCon2tag, serialize the e
+                       serCon2tag <- M.fromList <$>
+                                     mapM (\(con,e) -> do
+                                              ser <- serialize' mts mtset e
+                                              return (con,(e,ser)))
+                                     (M.toList monoCon2tag)
+                       --TODO share the mt insertions
+                       sz <- sizeof' mts mtset monoT
+                       return (Custom monoT serCon2tag, sz, Just monoT)
                  --Store the monomorphized tag scheme
                  modify (\fs->fs{fsTagSchemes = M.insert (tycon,ts)
                                                 (cons,monoTagScheme) $
@@ -1153,7 +1170,10 @@ getTag con ts = do
   let Just conIx = elemIndex con cons
   return $ case tagScheme of
              Nil -> (emptySer, TyCon "Unit")
-             Custom {} -> error "todo custom tag schemes in getTag"
+             Custom tagT con2eser ->
+               case M.lookup con con2eser of
+                 Nothing -> error "Compiler error: !!?"
+                 Just (_e,ser) -> (ser,tagT)
              N1 len ->
                --TODO make a combinator for Serialized from serInt...
                let leni = fromIntegral len
@@ -1341,10 +1361,13 @@ scheduler = do
         ExploreGlobal g -> exploreG g
         ExploreFunction (f,ts) -> exploreF f ts
         SerializeAllocValue (nm,t,e) -> do
+          sizeof t --To ensure t is explored
           ser <- serialize e
+          unsafePrint $ "SerializeAllocValue " ++ nm
           modify (\fs->fs{fsGlobals= M.insert nm (Co,t,Just ser) $
                            fsGlobals fs
                          })
+      scheduler
     _ -> return ()
 
 ----------------------------Expr serialization---------------------------------
@@ -1422,11 +1445,14 @@ serialize' mts mtset = go
           --Allocate the new static data name; serialization of the
           --constExpr needs to be deferred (allowing a datatype to have a
           --code pointer to itself, for example).
-          TyApp "allocValue" [r,a] :$ e -> do
+          --Bug: allocValue : a -> Ptr r a, so its typarams are in the
+          --opposite order of alloc.
+          TyApp "allocValue" [a,r] :$ e -> do
             complainIf (r /= "Code")
               $ NonCodeAllocInSerialize r e
             n <- alloc
             let nm = "$static"++show n
+            unsafePrint $ "Spawning SerializeAllocValue " ++ nm
             spawnSerializeAllocValue (nm,a,e)
             --Decision: don't call it $static[] like globals
             return Serialized{serLength=2,serSizeof=2,
