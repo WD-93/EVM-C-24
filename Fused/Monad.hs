@@ -132,6 +132,7 @@ data FusedError = GenericFE String
                 | MultiwordStackArrayIndex Integer T
                 | NotSerializableExpr E
                 | NonCodeAllocInSerialize T E
+                | GlobalPointerSpaceExhaustedBy Name Integer
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

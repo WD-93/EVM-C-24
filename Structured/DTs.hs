@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-} --for generic global subst
 module Structured.DTs where
 
 --The DTs of the structured IR to which C is converted before Core conversion.
@@ -12,6 +13,7 @@ import Core.RestrictedCore (Var(..),Value(..), OpE(..), Const(..),
 
 import Data.Map (Map(..))
 import Data.Set (Set(..))
+import Data.Data (Data(..)) --for generic global subst
 --A difference from the old structured IR: Structured uses type-tagged vars
 --for everything.
 
@@ -45,7 +47,7 @@ data Structured = Structured {
   --sizeof info
   ssizeof :: Map (Name,[T]) Integer
   }
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Data)
 --ifte : (s => Word:s) (s => s) (s => s) -> (s => s)
 --while : (s => Word:s) (s => s) -> (s => s)
 --case : (s => tag:struct:s) [s => s] -> (s => s)
@@ -66,4 +68,4 @@ data Stmt = Value := OpE --a straight-line primop
           | Return Scope [Var] --v1..vN
           --For debugging purposes; todo replace String with a richer DT
           | Comment String
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read,Show,Data)

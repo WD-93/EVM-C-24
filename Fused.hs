@@ -28,20 +28,23 @@ import Control.Monad
 import Data.List (elemIndex)
 import Data.Foldable (foldlM)
 import Control.Arrow ((***))
+--For global -> offset substitution:
+import Data.Generics (everywhere,mkT)
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do
-  fs <- runExcept $
-        flip execStateT initFusedS $
+  (g2off,fs) <- runExcept $
+        flip runStateT initFusedS $
         flip runReaderT mod $
-        runFusedM $
+        runFusedM $ do
         compileStructuredM
-  return $ fusedS2Structured mod fs
-fusedS2Structured :: Module -> FusedS -> Structured
-fusedS2Structured m fs = Structured {
+        placeGlobals
+  return $ fusedS2Structured g2off mod fs
+fusedS2Structured :: Map Name (Int,Int) -> Module -> FusedS -> Structured
+fusedS2Structured g2off  m fs = substGlobals g2off Structured {
   sdefuns = fsDefuns fs,
   --For code globals: Ptr Code t
-  --For r globbals: Ptr r t
+  --For r globals: Ptr r t
   --The Integer in state is pointless since global placement is
   --done later?
   sglobals = fsGlobals fs,
@@ -49,6 +52,61 @@ fusedS2Structured m fs = Structured {
   sdtsInfo = dtsInfo m,
   ssizeof = fsSizeof fs
   }
+--Serializeds in pushes should be normalized to avoid leading zero bytes,
+--whereas those in tag schemes and globals should not. I therefore can't apply
+--one everywhere to all.
+substGlobals :: Map Name (Int,Int) -> Structured -> Structured
+substGlobals g2off s =
+  let s' = everywhere (mkT substSer) s
+  in s'{sdefuns = everywhere (mkT stripZeroes) $ sdefuns s'}
+  where substSer :: Serialized -> Serialized
+        substSer ser =
+          ser{serContent = normalizeContent $
+               map (\case Right (loff,len,lab)
+                            | Just (offhi,offlo) <- M.lookup lab g2off ->
+                                Left [offhi,offlo]
+                          selem -> selem) $
+               serContent ser
+             }
+--Gives each non-code global a 16b offset; globals are placed byte-packed
+--starting at address 0, in arbitrary order except *Offset is placed last.
+--If we run out of space, compiler error.
+placeGlobals :: FusedM (Map Name (Int,Int))
+placeGlobals = do
+  ncgs <- M.toList <$> M.filter (\(r,_,_) -> r /= Co) <$> gets fsGlobals
+  --Split globals by region:
+  let (memgs,stogs,tstogs) =
+        foldr bucket (M.empty,M.empty,M.empty) ncgs
+  m2off <- process "memOffset" memgs
+  s2off <- process "stoOffset" stogs
+  ts2off <- process "tstoOffset" tstogs
+  --Each g has label g[]; that's what we need to subst
+  return $ M.mapKeys (++"[]") $ M.unions [m2off,s2off,ts2off]
+  where bucket (g,(r,t,_)) (m,s,ts) =
+          let i = M.insert g t
+          in case r of
+               Me -> (i m,s,ts)
+               St -> (m,i s,ts)
+               TS -> (m,s,i ts)
+        process offvar g2t = do
+          g2sz <- mapM (\(Ptr r t) -> sizeof t) g2t
+          --Place offvar last:
+          let offt = case M.lookup offvar g2sz of
+                       Just sz -> [(offvar,sz)]
+                       _ -> []
+              rest = filter ((/=offvar).fst) $ M.toList g2sz
+          --Set offsets at subset sums:
+          --Complain if we run out of space
+          M.fromList <$> go 0 (rest ++ offt)
+        go :: Integer -> [(Name,Integer)] -> FusedM [(Name,(Int,Int))]
+        go off = \case
+          [] -> return []
+          (g,sz):gszs ->
+            if off > 65535
+            then throwError $ GlobalPointerSpaceExhaustedBy g off
+            else ((g,(fromInteger $ off`div`256,
+                      fromInteger $ off`mod`256)) :) <$> go (off+sz) gszs
+
 compileStructuredM :: FusedM ()
 compileStructuredM = do
   --First, find params for main that yield () -> ().

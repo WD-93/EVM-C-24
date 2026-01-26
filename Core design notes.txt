@@ -3572,6 +3572,11 @@ Opt: the "ignore rest of stack" opt is obscure, but Just v:stk vs Nothing can be
 Can I use the Construct monad to generate code in Core.Convert?
 Need to overload pushLabel2. TODO add accurate type info to function pushes
 so I can eventually typecheck the Core.
+Next: place non-code globals, substituting their labels for 16b constants
+in every Serialized. Done. Troubling: stripZeroes preserves serSizeof,
+meaning push &firstGlobal becomes push []:2. In static data, serLength <
+serSizeof indicates right-padding... can I just ignore that for pushes?
+Need to be careful when implementing constant expansion.
 
 pipeline2core"import Prelude;main():=myCG;myCG:List Code Bool;code myCG = Cons True Nil" --now compiles, but its show is >180,000 characters long -
 what's up with that? Most of it is the 111 basic blocks.
