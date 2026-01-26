@@ -3581,6 +3581,19 @@ Need to be careful when implementing constant expansion.
 pipeline2core"import Prelude;main():=myCG;myCG:List Code Bool;code myCG = Cons True Nil" --now compiles, but its show is >180,000 characters long -
 what's up with that? Most of it is the 111 basic blocks.
 
+Next: broaden Fused, Core; opt; stack
+Broadening Fused:
+"TODO support boxed constructors" in evaluatePat:
+BCon {field: p} = xs =>
+ ImplTyCon ptr = xs
+ ImplBCon {implTyCon_field: p} = *ptr
+I need to add a construct to deal with that... UnDeref?
+Future opt: when only some fields of a deref are used, deref those if that's more efficient.
+Next TODO: special-cased *Core* compilation for primitives (stop et al can't
+be expressed in Structured), enabling deref.
+Bug: {var x; Cons x _ = null()} throws
+Left (FusedError (CompilerErrorFieldInfoBeforeExploreD "hd" [Memory,uint32]))
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing

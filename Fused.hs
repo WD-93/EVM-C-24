@@ -334,15 +334,37 @@ evaluatePat = go
             mod <- liftFused ask
             let Just Con{conParent=tycon, conBoxed = boxed} =
                   M.lookup con $ conInfo $ dtsInfo mod
-                Just DTInfo{dtCanonicalCons=cons} =
+                Just DTInfo{dtCanonicalCons=cons,
+                            dtRegion = mr, --Used in boxed case
+                            dtParams = params
+                            } =
                   M.lookup tycon $ datatypes $ dtsInfo mod
                 checkTag = length cons > 1
-            if boxed
-              then error "TODO support boxed constructors"
-              else return ()
             --Explore con's datatype
             liftFused $ exploreD [] S.empty (tycon,ts)
-            return $ epcon con ts checkTag fieldeps
+            if boxed
+              then do
+              --Region: given by dtInfo
+              let Just rvar = mr
+                  --Look up index of region var in DT params
+                  Just ix = elemIndex rvar params
+                  --The ix'th monomorphic param is the region;
+                  --TODO store an index instead...
+                  r = ts !! ix
+                  --Referent: ImplTyCon ts
+                  ubtycon = "Impl"++tycon
+                  referent = unrollTyApps (TyCon ubtycon) ts
+                  --BCon => ImplBCon
+                  ubcon = "Impl"++con
+                  ubfieldeps = map ((("impl"++tycon++"_")++)***id) fieldeps
+                  --Whether to check the tag depends on the number of
+                  --canonical cons in ImplTyCon, not TyCon.
+                  Just DTInfo{dtCanonicalCons=ubcons} =
+                    M.lookup ubtycon $ datatypes $ dtsInfo mod
+                  ubCheckTag = length ubcons > 1
+              return $ EPUnDeref r referent <$>
+                epcon ubcon ts ubCheckTag fieldeps
+              else return $ epcon con ts checkTag fieldeps
           --The remaining patterns are of the form
           --(local | *e)(.field | !e)*.
           p -> do
@@ -500,6 +522,14 @@ assignEP ep vs =
         forM_ fieldPs (\(field,p) -> do
                           fld <- fst <$> getDot vs field ts
                           assignEP p fld)
+    --underef p = v => p = *v
+    --I should use the deref@[r,a] function here so I can choose whether to
+    --inline it. However, unline in require, I must call it directly
+    --rather than use convertE (because that can't capture vs)
+    EPUnDeref r a ep -> do
+      deref <- pushTyApp "deref" [r,a]
+      dvs <- callFun deref vs a
+      assignEP ep dvs
 
 --A helper for reverting if the cond is zero. Structured has no
 --concept of branching or divergence, so we call revertValue() instead.
@@ -784,6 +814,8 @@ data EvaluatedPat = EPLocal T Name [Index]
                   | EPCon Name [T] --monomorphic con
                     Bool --must check tag
                     [(Name,EvaluatedPat)] --non-wild fields
+                  --underef p = ptr => p = *ptr
+                  | EPUnDeref T T EvaluatedPat
   deriving (Eq,Ord,Read,Show)
 --Index ops after evaluation
 data Index = IDot Name [T] --field@ts
@@ -1094,6 +1126,25 @@ collectCond scope e =
   (vs,_t) <- convertE e
   truthy vs
 
+--A helper for pushing a particular f or g without modifying scope;
+--uses convertE.
+--Note for future-proofing: assumes all tyapps are just one word, which might
+--change if I allow imported immutable values a la Solidity.
+pushTyApp :: Name -> [T] -> FFM Var
+pushTyApp nm ts = do
+  scope <- getScope
+  (vs,_) <- convertE (TyApp nm ts)
+  let [v] = vs
+  putScope scope
+  return v
+--A helper for calling a function var given argument vars and return type.
+callFun :: Var -> [Var] -> T -> FFM [Var]
+callFun fv xs b = do
+  scope <- getScope --in convertE, will be xs++fs++original scope
+  res <- newVars b
+  emitStmt $ Call scope res fv xs
+  return res
+
 --Invariants: if it returns (vs,t), length vs is the word length of t and
 --the scope effect is (vs++).
 convertE :: E -> FFM ([Var],T)
@@ -1117,9 +1168,7 @@ convertE e = pushScope $ go e
             let [fv] = fs
                 a :-> b = a2b
             (xs,_) <- convertE x
-            scope <- getScope --will be xs++fs++original scope
-            res <- newVars b
-            emitStmt $ Call scope res fv xs
+            res <- callFun fv xs b
             return (res,b)
           -- ::: eliminated in HM
           p A.:= e -> do
