@@ -7,7 +7,7 @@ import qualified Data.Map as M
 import Control.Monad.State
 --For monadic implementation:
 import Control.Monad.Writer
-import Control.Monad (zipWithM, forM)
+import Control.Monad (zipWithM, forM, forM_)
 import Data.Bits ((.&.),(.|.),complement) --for symbolic eval
 import AST.DTs (roundedUpMod)
 --Testing:
@@ -192,6 +192,7 @@ newtype SymWord = SymWord [SymByte] --length = 32
   deriving (Eq,Show)
 data SymByte = K Int --0..255
              | X (String,Int) --(id,n)
+             | OriginalMemByte Integer --represents memory before any writes
   deriving (Eq,Show)
 --The ops relevant to struct construction and access.
 --I don't need push since I'm evaluating rather than generating
@@ -209,8 +210,30 @@ wordK n
     go 0 = []
     go n = mod n 256 : go (n `div` 256)
     pad bs = replicate (32 - length bs) 0 ++ bs
-newtype SymM a = SymM {runSymM :: Either SymError a}
+newtype SymM a = SymM {unSymM :: StateT Regions (Either SymError) a}
   deriving (Functor, Applicative, Monad)
+runSymM :: SymM a -> Regions -> Either SymError (a, Regions)
+runSymM m r = runStateT (unSymM m) r
+--Note that code, calldata and returndata don't need fields since they're
+--immutable. Caveat: returndata can be modified by making a *CALL, but since
+--I don't model calls that's not a problem.
+--To avoid nondeterminism in the symbolic monad ("does px alias with py?"),
+--I limit the regions to concrete addresses. Supporting symbolic addresses
+--would also require me to make words as a whole symbolic in order to
+--express x+k.
+--The constant address limitation means I must quickcheck region accesses with
+--random constant offsets rather than a single symbolic one in order to
+--prevent coincidentally correct code due to constants.
+--Note: while non-corrupt pointers are 16b, pointer offsetting can overflow
+--that. Regions therefore need to be Word-addressed.
+--A mapping for each byte is inefficient, but simple.
+data Regions = Regions {
+  symMemory :: Map Integer SymByte
+  }
+  deriving (Eq,Show)
+--TODO add runSymM variant that passes nullRs and requires no change to it
+--(for testing pure on-stack ops).
+nullRs = Regions M.empty
 data SymError = NotAByteConst SymWord
               | NotMul8 SymOp SymWord
               | BadArity SymOp [SymWord]
@@ -225,6 +248,20 @@ instance Construct SymM where
   constant n = SymM $ return $ wordK n
   op o [a,b] = SymM $
     case o of
+      --New impure ops
+      --Problem: mstore returns (), not a var!
+      "mstore" -> do
+        off <- parseConst "mstore" a
+        let SymWord bs = b
+        forM_ (zip [off..off+31] bs)
+          (\(ix,b) ->
+              --Subtlety: reading and writing OriginalMemByte ix will
+              --create a mapping despite it logically being a noop.
+              --TODO check and delete if that's done.
+              modify (\rs->rs{symMemory = M.insert ix b $
+                                          symMemory rs}))
+        return $ error "TODO add op0!"
+      --Pure ops:
       "byte" ->
         --If ix > 31, return 0
         case parseByte a of
@@ -238,9 +275,9 @@ instance Construct SymM where
       "mul" -> concreteWordOp2 "mul" (*) a b
       "sub" -> concreteWordOp2 "sub" (-) a b
       _ | o `elem` ["shr","shl"] -> do
-            shBits <- parseByte a
+            shBits <- lift $ parseByte a
             if (shBits `mod` 8) /= 0
-              then Left $ NotMul8 o a
+              then lift $ Left $ NotMul8 o a
               else return ()
             let shBytes = shBits `div` 8
                 zeroes = replicate shBytes $ K 0
@@ -257,27 +294,40 @@ instance Construct SymM where
         | let -> do
             let SymWord as = a
                 SymWord bs = b
-            SymWord <$> zipWithM (apply o) as bs
-  op "not" [SymWord bs] = SymM $ SymWord <$> mapM symNot bs
-  op o ws = SymM $ Left $ BadArity o ws
+            lift $ SymWord <$> zipWithM (apply o) as bs
+  op "mload" [a] = SymM $ do
+    off <- parseConst "mload" a
+    rs <- get
+    let fetch ix =
+          case M.lookup ix $ symMemory rs of
+            Just symB -> symB
+            Nothing -> OriginalMemByte ix
+    return $ SymWord [fetch ix | ix <- [off..off+31]]
+  op "not" [SymWord bs] = SymM $ lift $ SymWord <$> mapM symNot bs
+  op o ws = SymM $ lift $ Left $ BadArity o ws
   comment _ = return ()
 
 --Inefficient... if I want fast symbolic eval in future need to make byte-level
 --symbolic repr optional.
 concreteWordOp2 :: String ->
                    (Integer -> Integer -> Integer) ->
-                   SymWord -> SymWord -> Either SymError SymWord
-concreteWordOp2 op f (SymWord as) (SymWord bs) = do
-  a <- parse as
-  b <- parse bs
-  return $ wordK $ f a b `mod` (2 ^ 256)
-  where parse symBs = do
-          bs <- forM symBs (\case K n -> return n
-                                  sym -> Left $ Can'tHandleSym op sym)
-          return $ go 1 $ reverse bs
-        go mul = \case
-          [] -> 0
-          b:bs -> (mul * fromIntegral b) + go (mul*256) bs
+                   SymWord -> SymWord ->
+                   StateT Regions (Either SymError) SymWord
+concreteWordOp2 op f a b = do
+  an <- parseConst op a
+  bn <- parseConst op b
+  return $ wordK $ f an bn `mod` (2 ^ 256)
+
+--Parses a constant 
+--TODO use constraints on m instead of fixed type...
+parseConst :: String -> SymWord -> StateT Regions (Either SymError) Integer
+parseConst op (SymWord symBs) = do
+  bs <- forM symBs (\case K n -> return n
+                          sym -> lift $ Left $ Can'tHandleSym op sym)
+  return $ go 1 $ reverse bs
+    where go mul = \case
+            [] -> 0
+            b:bs -> (mul * fromIntegral b) + go (mul*256) bs
           
 --I just need to test bitwise not on constants for now, no need to extend
 --the symbolic byte repr.
@@ -440,8 +490,8 @@ prop_mdot_correct (NonNegative a) (NonNegative b) (NonNegative c) =
   in case runSymM (mdot (fromIntegral $ a+b+c)
                    (fromIntegral a)
                    (fromIntegral b)
-                   structWs) of
-       Right fld ->
+                   structWs) nullRs of
+       Right (fld,_) ->
          let fieldBs' = unWordSplit fld
          in if fieldBs' /= fieldBs
             then error $ "Mismatch: " ++ show fieldBs' ++ " " ++ show fieldBs
@@ -494,8 +544,8 @@ prop_construct_correct nonNegNs =
       wfs = map (\(off,len,bs) -> (off,len,wordSplit bs)) fs
       --The byte repr of the value that should result:
       target = fs >>= (\(_,_,bs) -> bs)
-  in case runSymM $ mconstruct (sum ns) wfs of
-       Right ws ->
+  in case runSymM (mconstruct (sum ns) wfs) nullRs of
+       Right (ws,_) ->
          let actual = unWordSplit ws
          in if actual == target
             then True
@@ -652,8 +702,8 @@ prop_msetDot_correct (NonNegative a) (NonNegative b) (NonNegative c) =
   in case runSymM (msetDot (fromIntegral $ a+b+c)
                    (fromIntegral a)
                    (fromIntegral b)
-                   oldStructWs newFieldWs) of
-       Right struct' ->
+                   oldStructWs newFieldWs) nullRs of
+       Right (struct',_) ->
          let struct'Bs = unWordSplit struct'
          in if struct'Bs /= newStruct
             then error $ "Mismatch: " ++ show struct'Bs ++ " " ++ show newStruct
@@ -747,9 +797,9 @@ test_mgetBang_correct =
                          ]
           [arrW] = wordSplit arrBs --just zero-pads
           ixW = wordK ix
-      in case runSymM (mgetBang arrlen sza arrW ixW) of
+      in case runSymM (mgetBang arrlen sza arrW ixW) nullRs of
            Left err -> Left $ "Sym error: " ++ show args ++ " " ++ show err
-           Right elemW ->
+           Right (elemW,_) ->
              let elemBs = unWordSplit [elemW]
                  expected = toBs ("ix"++show ix) sza
              in if elemBs == expected
@@ -780,9 +830,9 @@ test_msetBang_correct =
           ixW = wordK ix
           elemBs = toBs "elem" sza
           [elemW] = wordSplit elemBs
-      in case runSymM $ msetBang arrlen sza arrW ixW elemW of
+      in case runSymM (msetBang arrlen sza arrW ixW elemW) nullRs of
            Left err -> Left $ "Sym error: " ++ show args ++ " " ++ show err
-           Right arrW' ->
+           Right (arrW',_) ->
              let arrW'Bs = unWordSplit [arrW']
                  expected = concat [if i == ix
                                      then elemBs

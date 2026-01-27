@@ -3594,6 +3594,18 @@ be expressed in Structured), enabling deref.
 Bug: {var x; Cons x _ = null()} throws
 Left (FusedError (CompilerErrorFieldInfoBeforeExploreD "hd" [Memory,uint32]))
 
+I can special-case most primitives in Structured and just handle stop et
+al in Core. That lets me straightforwardly reuse Construct for deref and
+writePtr.
+I need to enhance the symbolic eval monad with regions; can I do so by
+adding a transformer that handles mload etc? lift ~ super.method.
+That's an interesting idea... monads as objects, runTransformer as a means
+of adding new methods and modifying the behavior of old ones already
+present.
+lift isn't enough for that... to modify methods in a concrete value, need
+rank 2 types: forall o . Class o => ...
+There's a potential link to AOP, e.g. "add logging to methods".
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing
