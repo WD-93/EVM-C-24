@@ -368,6 +368,8 @@ newVar t = do
   n <- liftFused alloc
   return $ Mono ("$anon"++show n) t
 
+--TODO add $mem to lhs/rhs in mem ops;
+--do the same for other impure ops
 instance Construct FusedFunM where
   type Var FFM = Var
   type Op FFM = String

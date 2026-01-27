@@ -473,6 +473,11 @@ foldlOp op dflt = \case
 op2 :: Construct m => Op m -> Var m -> Var m -> m (Var m)
 op2 o a b = op o [a,b]
 
+addK :: (Construct m, Op m ~ String) => Integer -> Var m -> m (Var m)
+addK k v
+  | k == 0 = return v
+  |let = opE2 "add" (constant k) (return v)
+
 --Correctness property: given a struct
 --{garbLeft: a bytes, field: b bytes, garbRight: c bytes},
 --dot returns the field.
@@ -863,3 +868,32 @@ marray sza es = do
                | (i,e) <- zip [1..] es
                ]
   mconstruct (fromInteger $ arrlen*sza) fields
+
+--Given a pointer to an n-byte value in a byte-addressed region, pushes it
+--to the stack.
+mderefBytePtr :: (Construct m, Op m ~ String) =>
+  String -> --the op: mload or calldataload
+  Integer -> --byte length of referent
+  Var m -> --the ptr
+  m [Var m] --the result
+mderefBytePtr load sz ptr = do
+  --Size of the leading partial word, if any:
+  let m = sz `mod` 32
+      --Number of subsequent whole words
+      wsz = sz `div` 32
+  partial <- if m == 0
+             then return []
+             else (:[]) <$> opE2 "shr" (constant $ (32-m)*8) (op load [ptr])
+  whole <- forM [m,m+32..m+(wsz-1)*32]
+    (\k -> opE1 load $ addK k ptr)
+  return $ partial ++ whole
+
+prop_derefMem :: NonNegative Integer -> NonNegative Integer -> Bool
+prop_derefMem (NonNegative sz) (NonNegative ptr) =
+  let expected = map OriginalMemByte [ptr..ptr+sz-1]
+  in case runSymM (mderefBytePtr "mload" sz (wordK ptr)) nullRs of
+       Right (ws,_) -> let bs = unWordSplit ws
+                       in if bs == expected
+                          then True
+                          else error $ "Mismatch: " ++ show (bs,expected)
+       Left err -> error $ "SymM error: " ++ show err

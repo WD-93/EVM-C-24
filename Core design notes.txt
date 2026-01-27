@@ -3606,6 +3606,11 @@ lift isn't enough for that... to modify methods in a concrete value, need
 rank 2 types: forall o . Class o => ...
 There's a potential link to AOP, e.g. "add logging to methods".
 
+Storage deref requires if-then-else. I can add that to Construct;
+nondeterminism in SymM can be avoided by requiring a concrete cond (which is
+all I need atm). In the FFM instance I need to deal with scope... perhaps
+the Construct ifte needs additional scope params (ignored in SymM).
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing
