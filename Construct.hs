@@ -7,11 +7,12 @@ import qualified Data.Map as M
 import Control.Monad.State
 --For monadic implementation:
 import Control.Monad.Writer
-import Control.Monad (zipWithM, forM, forM_)
+import Control.Monad (zipWithM, zipWithM_, forM, forM_)
 import Data.Bits ((.&.),(.|.),complement) --for symbolic eval
 import AST.DTs (roundedUpMod)
 --Testing:
 import Test.QuickCheck hiding ((.&.),(.|.),output)
+import qualified Data.Set as S
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 
@@ -120,9 +121,12 @@ dot off len ws =
 class Monad m => Construct m where
   type Var m
   type Op m
+  --Ops that return one var
   op :: Op m ->
         [Var m] -> --args
         m (Var m)
+  --Side-effecting ops that return nothing
+  op0 :: Op m -> [Var m] -> m ()
   --Need to add constant to support shr. That strongly restricts vars to
   --representing integer-like things.
   --Alt: make shr, shl k ops.
@@ -171,6 +175,7 @@ instance Construct (Emit v) where
     let v = Left n
     tell [v := (str,vs)]
     return v
+  op0 = error "Not supported! (TODO modify instr type)"
   constant k = Emit $ do
     n <- get
     put (n+1)
@@ -236,11 +241,14 @@ data Regions = Regions {
 nullRs = Regions M.empty
 data SymError = NotAByteConst SymWord
               | NotMul8 SymOp SymWord
-              | BadArity SymOp [SymWord]
+              -- | BadArity SymOp [SymWord]
               | Can'tSimpBB SymOp SymByte SymByte
               | Can'tSimpNB SymOp Int SymByte
               | Can'tNOT SymByte
               | Can'tHandleSym String SymByte
+              --Also thrown on bad arity:
+              | UnrecognizedOp SymOp [SymWord]
+              | UnrecognizedOp0 SymOp [SymWord]
   deriving (Eq,Show)
 instance Construct SymM where
   type Var SymM = SymWord
@@ -248,20 +256,6 @@ instance Construct SymM where
   constant n = SymM $ return $ wordK n
   op o [a,b] = SymM $
     case o of
-      --New impure ops
-      --Problem: mstore returns (), not a var!
-      "mstore" -> do
-        off <- parseConst "mstore" a
-        let SymWord bs = b
-        forM_ (zip [off..off+31] bs)
-          (\(ix,b) ->
-              --Subtlety: reading and writing OriginalMemByte ix will
-              --create a mapping despite it logically being a noop.
-              --TODO check and delete if that's done.
-              modify (\rs->rs{symMemory = M.insert ix b $
-                                          symMemory rs}))
-        return $ error "TODO add op0!"
-      --Pure ops:
       "byte" ->
         --If ix > 31, return 0
         case parseByte a of
@@ -304,9 +298,40 @@ instance Construct SymM where
             Nothing -> OriginalMemByte ix
     return $ SymWord [fetch ix | ix <- [off..off+31]]
   op "not" [SymWord bs] = SymM $ lift $ SymWord <$> mapM symNot bs
-  op o ws = SymM $ lift $ Left $ BadArity o ws
+  op o ws = SymM $ lift $ Left $ UnrecognizedOp o ws
+  op0 "mstore" [a,b] = SymM $ do
+        off <- parseConst "mstore" a
+        let SymWord bs = b
+        zipWithM_ writeMemByte [off..] bs
+  op0 "mstore8" [a, SymWord bs] = SymM $ do
+    off <- parseConst "mstore8" a
+    writeMemByte off $ last bs
+  op0 "mcopy" [vto,vfrom,vlen] = SymM $ do
+    ws <- mapM (parseConst "mcopy") [vto,vfrom,vlen]
+    let [to,from,len] = ws
+    bs <- mapM loadMemByte [from..from+len-1]
+    zipWithM_ writeMemByte [to..] bs
+  op0 o ws = SymM $ lift $ Left $ UnrecognizedOp0 o ws
   comment _ = return ()
 
+--Writes a symbolic byte to the given offset in memory.
+--The default value at offset off is OriginalMemByte off; if that is written
+--delete the mapping instead.
+writeMemByte :: Integer -> SymByte -> StateT Regions (Either SymError) ()
+writeMemByte off b =
+  modify (\rs->rs{symMemory = (if b == OriginalMemByte off
+                                then M.delete off
+                                else M.insert off b) $
+                              symMemory rs
+                 }
+         )
+--TODO standardize names to get and set?
+loadMemByte :: Integer -> StateT Regions (Either SymError) SymByte
+loadMemByte ix = gets fetch
+  where fetch rs =
+          case M.lookup ix $ symMemory rs of
+            Just symB -> symB
+            Nothing -> OriginalMemByte ix
 --Inefficient... if I want fast symbolic eval in future need to make byte-level
 --symbolic repr optional.
 concreteWordOp2 :: String ->
@@ -897,3 +922,70 @@ prop_derefMem (NonNegative sz) (NonNegative ptr) =
                           then True
                           else error $ "Mismatch: " ++ show (bs,expected)
        Left err -> error $ "SymM error: " ++ show err
+
+--Oh no, need to mstore to scratch and mcopy as well.
+--Need to ensure ptr and scratch don't overlap when testing.
+--Pass scratch as a var; when writing in Fused, explore scratch and call this
+--iff sz % 32 /= 0. If sz is 1, use mstore8 instead.
+--No need to pass a store parameter, since memory is the only byte-addressed
+--mutable region.
+mwritePtrMemPartial :: (Construct m, Op m ~ String) =>
+  Integer -> --sz <- [2..31]
+  Var m ->   --scratch pointer
+  Var m ->   --pointer
+  Var m ->   --sz-byte value to write
+  m ()
+mwritePtrMemPartial sz scratch ptr v = do
+  op0 "mstore" [scratch,v]
+  --mcopy from the first byte of the value:
+  --scratch' should optimize to a constant
+  scratch' <- addK (32-sz) scratch
+  szv <- constant sz
+  op0 "mcopy" [ptr,scratch',szv]
+
+--We don't bound the pointers, but that's fine; indeed, &(p->field) may exceed
+--16b.
+prop_mwritePtrMemPartial_correct ::
+  NonNegative Integer -> --sz
+  NonNegative Integer -> --ptr; we arbitrarily choose scratch to be ptr+32
+  Bool
+prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
+  let sz = 2 + n `mod` 30 --a lot of wasted entropy there...
+      bs = [X ("x", fromInteger n) | n <- [1..sz]]
+      w = SymWord $ replicate (32 - fromInteger sz) (K 0) ++ bs
+      scratch = ptr + 2 ^ 16 --that should be far enough away...
+  in case flip runSymM nullRs (do
+    mwritePtrMemPartial sz (wordK scratch) (wordK ptr) w
+    written <- mapM (SymM . loadMemByte) [ptr..ptr+sz-1]
+    written2scratch <- op "mload" [wordK scratch]
+    return (written,written2scratch))
+     of
+       Right ((bs',w'),rs)
+         | bs' /= bs ->
+           error $ "Mismatch in written: " ++ show rs--(bs',bs)
+         | w' /= w ->
+           error $ "Scratch word mismatch: " ++ show (w',w)
+         --Check only *ptr and *scratch were modified
+         | let ->
+           let written = M.keysSet $ symMemory rs
+               toWrite = S.fromList $ [ptr..ptr+sz-1]++[scratch..scratch+31]
+               diff = S.difference written toWrite
+           in if not $ S.null diff
+              then error $ "Wrong bytes written: " ++ show (diff, symMemory rs)
+              else True
+       Left err -> error $ "SymM error: " ++ show err
+
+--Storage pointer write algo:
+--To maintain the fiction of byte-addressed pointers, we must pay an
+--additional runtime cost.
+--startOff = ptr >> 5 --byte index => word slot
+--modulus = ptr & 31  --other bytes to the left of the value
+--If sz = 0, noop.
+--If sz = 1, the value can only overlap with one slot:
+-- s = load startOff, s' = (s[modulus] = v), store startOff s'
+--Otherwise, the value can overlap with ceil(sz/32) + 0 | 1 words, depending
+--on the modulus. An ifte at runtime is required.
+--Left-shift the value by 32-modulus, sload and combine with the partially
+--written words (using shr,shl to mask them), then store back to the
+--affected indices.
+--The ifte can be avoided for constant pointers using DCE.
