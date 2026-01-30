@@ -219,27 +219,73 @@ compileF f ts a b p s = do
   scope <- getScope
   let arg = init scope
       ret = last scope -- $ret
-  --Mistake: freeVarsPatList returns [Name] rather than [(Name,Maybe T)]
-  --I'll have to make a variant.
-  let vts = freeTypedVarsPatList p
-  --Each local is declared as null()
-  comment "setting locals to null:"
-  z <- pushK 0
-  localVars <- concat <$> mapM (\(nm,t) -> localToVars t nm) vts
-  copyTo localVars $ replicate (length localVars) z
-  comment "end setting locals"
-  --We need the vars on the stack now for pattern eval to work...
-  --this will need to be optimized away.
-  putScope $ localVars ++ scope
-  --Eval the pattern p's exprs and assign the preexisting arg to it
-  assignValue p arg
-  --Generate the function body
-  --Found the missing $ret bug! Ofc, localVars isn't enough
-  putScope $ localVars ++ [ret]
-  unsafePrint $ "ConvertS: " ++ show s
-  convertS s
-  unsafePrint $ "Returning null :: " ++ show b
-  returnNull b
+  case checkIsStructuredPrim f (a :-> b) p s of
+    --f is a non-divergent primitive:
+    --Need safeguards to ensure prims aren't given bad defs;
+    --they must be of form f : t; f _ := {}, where t is the expected polytype
+    --up to isomorphism (i.e. for a -> a, b -> b should also be accepted, but
+    --a -> b should not).
+    --If a prim recognized by the compiler is given a different definition,
+    --it becomes a user function instead.
+    --I could re-infer arg and ret, but that would duplicate work.
+    Just compScheme -> compScheme arg ret
+    --f is a user function
+    Nothing -> do
+      --Mistake: freeVarsPatList returns [Name] rather than [(Name,Maybe T)]
+      --I'll have to make a variant.
+      let vts = freeTypedVarsPatList p
+      --Each local is declared as null()
+      comment "setting locals to null:"
+      z <- pushK 0
+      localVars <- concat <$> mapM (\(nm,t) -> localToVars t nm) vts
+      copyTo localVars $ replicate (length localVars) z
+      comment "end setting locals"
+      --We need the vars on the stack now for pattern eval to work...
+      --this will need to be optimized away.
+      putScope $ localVars ++ scope
+      --Eval the pattern p's exprs and assign the preexisting arg to it
+      assignValue p arg
+      --Generate the function body
+      --Found the missing $ret bug! Ofc, localVars isn't enough
+      putScope $ localVars ++ [ret]
+      unsafePrint $ "ConvertS: " ++ show s
+      convertS s
+      unsafePrint $ "Returning null :: " ++ show b
+      returnNull b
+
+type CompScheme = [Var] -> Var -> FFM ()
+--First check p == _, s == {} - if not, it cannot be a primitive.
+--Then look up the expected type pattern and ts -> comp scheme.
+--Check the tysig is isomorphic to the type pattern.
+--That means I should preserve the tysig after I monomorphize it...
+checkIsStructuredPrim :: Name -> T -> Pat -> S -> Maybe CompScheme
+checkIsStructuredPrim f a2b p s
+  | PWild _ <- p, s == Block [] =
+      case M.lookup f structuredPrims of
+        Just (pt,scheme)
+          | Just ts <- matchPolytype pt a2b ->
+              Just $ scheme ts
+        _ -> Nothing
+--TODO replace with TH that parses EVMC syntax
+data Polytype = PT (T -> Maybe [T]) ([T] -> Maybe T)
+matchPolytype :: Polytype -> T -> Maybe [T]
+matchPolytype (PT from to) t
+  | Just ts <- from t,
+    Just t == to ts = Just ts
+  | let = Nothing
+--TODO store arg and ret arity of EVM ops centrally, use to autogen polytypes
+--and comp schemes (with state read/write info).
+--I need that in Stack for opcode lookup and state var consumption info as
+--well... I could also use it in Fused.Monad's Construct instance.
+--Minimum gas cost would also make sense... then extend with expression.
+--I could autogen the C stubs (less return) from it as well.
+--Best to use Haskell directly, then I get error checking and avoid adding
+--another file dependency.
+structuredPrims :: Map Name (Polytype, [T] -> CompScheme)
+structuredPrims = M.fromList [
+  --EVM ops
+  --stop
+                             ]
 
 {-
 Updated pattern-matching rules:

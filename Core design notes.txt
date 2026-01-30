@@ -3611,6 +3611,54 @@ nondeterminism in SymM can be avoided by requiring a concrete cond (which is
 all I need atm). In the FFM instance I need to deal with scope... perhaps
 the Construct ifte needs additional scope params (ignored in SymM).
 
+Next step for supporting deref: special-case nondivergent primitives in
+Structured. The Structured body depends only on f and ts.
+But where to put it? If I put it deep in the logic (convertDef), I reuse
+existing stuff such as the modify but unnecessarily monomorphize the body
+and compute ft. I'll add it at the lowest level for now. Though that leads
+to unnecessary work, it shares code and ensures e.g. the lhs is computed
+consistently.
+Primitives should be defined as f _ := {} for the primitive rule to apply;
+that means I need to edit them...
+Accidental feature: since I do that check after instantiation, one can
+partially override a primitive by turning it into a class function, where
+the primitive instance is given def _ := {}.
+Another feature I could add: require only that the monotype matches, not the type signature.
+That would allow the primitive to be overloaded if given a more general type (including one with a different number of typarams).
+Q: should Structured.Return take $ret as its first argument? That would make
+it simple to compile to a jump and eliminate the need to know which argument
+is $ret. A: Convention: no, $ret is the last var in scope.
+The scope in Return implicitly includes $stk.
+Special-case revert, stop and evm_return in Core.
+TODO test opcodes corresponds with Opcodes.mnemonics.
+SELFDESTRUCT is a branching instruction, as it halts the contract execution.
+It discards memory, calldata and returndata. 
+Since it only destroys fresh contracts,
+it can't be guaranteed to discard Storage or TStorage.
+SELFDESTRUCT allows silent incrementing of balances, doesn't it? That would
+prevent cute use of lower bits of the balance as state.
+
+For writeup: one reason ADTs are preferable to structs alone are that they
+don't require you to always add fields which are nonsensical for some
+constructors, e.g. tl in Nil. That means the type can encode more of the
+structure info, rather than requiring the programmer to remember invariants.
+
+FW: breakable pointers into returndata, tagged with an ID that's consumed
+on the next CALL.
+The same trick could be used to borrow or irreversibly create const
+pointers.
+
+TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
+mstore, mload.
+To split across BBs, need a stack of state vars.
+Stack scheduling: ops return 0 or 1 var and may depend on or consume state
+vars. That introduces ordering relations between vars...
+Each state var has at most one consumer.
+An op is dead iff all of its output vars are dead; if so DCE it.
+a depends on b => a after b, consumer b after a.
+Recall treegraph: split ops into trees where all ops but the root have only
+one consumer. Repeated mload and mstore of a ptr could fit in a tree...
+
 FW: how to express UB properties in a proof-based optimizer? An implication in the correct compilation property. Underspecification (e.g. free global
 ordering) is also ez.
 FW opt: if you know part of a value is zero, you may be able to avoid doing

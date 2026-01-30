@@ -133,6 +133,7 @@ data FusedError = GenericFE String
                 | NotSerializableExpr E
                 | NonCodeAllocInSerialize T E
                 | GlobalPointerSpaceExhaustedBy Name Integer
+                | BadOpArity String [Var] Int
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -373,9 +374,22 @@ newVar t = do
 instance Construct FusedFunM where
   type Var FFM = Var
   type Op FFM = String
+  --ops which read state must take state vars as params
+  op "mload" vs = do
+    reqArity "mload" vs 1
+    let mem = Mono "$mem" MemSlice
+    v <- newVar (W (UInt 32) 1)
+    emitPrim ([v],[mem]) "mload" (vs,[mem])
+    return v
   op primop vs = do
     v <- newVar (W (UInt 32) 1)
     emitPrim ([v],[]) primop (vs,[])
     return v
+  op0 primop vs = error "todo"
   constant = pushK
   comment = comment
+
+reqArity :: String -> [Var] -> Int -> FFM ()
+reqArity op vs ar
+  | ar /= length vs = throwError $ BadOpArity op vs ar
+  | let = return ()
