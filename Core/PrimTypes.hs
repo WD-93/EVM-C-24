@@ -47,19 +47,30 @@ pattern SUnit = TyCon "SUnit#"
 --Arg lets you combine Type and State; SPair and SUnit let you combine
 --multiple SElems. The SElems to be combined are listed below.
 
---MemSlice is the type of slices of memory; in future alloc will consume
---a splittable AllocPtr SElem and produce a new MemSlice.
+--New convention: each State type is <X>State, where <X> is a constructor
+--in OpcodeInfo.State.
+
+--MemoryState is the type of slices of memory; in future alloc will consume
+--a splittable AllocPtr SElem and produce a new MemoryState.
 --For now effects are limited to expressing whether an entire region was
 --read/modified.
 --Tracking effects is necessary for safely reordering or pruning ops; I aim to
 --enable more flexible reordering with richer effects in future.
---Note MemSlice is distinct from Memory :: Region, a C-level parameter used to
+--Note MemoryState is distinct from Memory :: Region,
+--a C-level parameter used to
 --indicate pointer region without giving any clues as to *where* into memory
 --it points.
-pattern MemSlice = TyCon "MemSlice#"
+pattern MemoryState = TyCon "MemoryState#"
+pattern StorageState = TyCon "StorageState#"
+pattern TStorageState = TyCon "TStorageState#"
 --Calldata is immutable, so there's no reason to slice it.
 --It can't just be called Calldata because the name's taken by the Region.
 pattern CalldataState = TyCon "CalldataState#"
+pattern ReturndataState = TyCon "ReturndataState#"
+--TODO rename...
+pattern ExtStateState = TyCon "ExtStateState#"
+--TODO refine and separate: gas, selfbalance, blockhash etc
+pattern OtherState = TyCon "OtherState#"
 
 --SElem /= Type, so you need separate tuple constructors
 sTupleT :: [T] -> T

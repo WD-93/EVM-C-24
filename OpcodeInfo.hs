@@ -116,10 +116,10 @@ data OpcodeBehavior =
   Normal {obReturns :: Bool, --0 or 1 words
           obEffect :: Effect
          }
-  | Push Int --has n bytes of imm arg, always returns 1 word
-  | Dup Int --1..16, doesn't fit in Core's model
-  | Swap Int --1..16, doesn't fit in Core's model
-  | Pop --pointless in Core since it has no outputs and Stack inserts pops
+  | Pushes Int --has n bytes of imm arg, always returns 1 word
+  | Dups Int   --1..16, doesn't fit in Core's model
+  | Swaps Int  --1..16, doesn't fit in Core's model
+  | Pops  --pointless in Core since it has no outputs and Stack inserts pops
   --Branching ops consume all their state since control is transferred.
   | Branching {obEffect :: Effect}
   deriving (Eq,Ord,Read,Show)
@@ -254,7 +254,7 @@ opcodes = M.fromList $
   [("pop",OI{oiOpcode = 0x50,
              oiMinGas = 2,
              oiArgArity = 0,
-             oiBehavior = Pop
+             oiBehavior = Pops
             })] ++
   [impureOp (reads Memory) "mload" 0x51 1 True 3] ++
   [impureOp (modifies Memory) "mstore" 0x52 2 False 3] ++
@@ -280,7 +280,7 @@ opcodes = M.fromList $
     OI {oiOpcode = op,
         oiMinGas = 2,
         oiArgArity = 0,
-        oiBehavior = Push n
+        oiBehavior = Pushes n
        })
   | (op,n) <- zip [0x60..] [1..32]] ++
   --Code smell: copy-pasting... but this file will rarely need to be updated.
@@ -289,14 +289,14 @@ opcodes = M.fromList $
     OI {oiOpcode = op,
         oiMinGas = 3,
         oiArgArity = 0,
-        oiBehavior = Dup n
+        oiBehavior = Dups n
        })
   | (op,n) <- zip [0x80..] [1..16]] ++
   [("swap" ++ show n,
     OI {oiOpcode = op,
         oiMinGas = 3,
         oiArgArity = 0,
-        oiBehavior = Swap n
+        oiBehavior = Swaps n
        })
   | (op,n) <- zip [0x90..] [1..16]] ++
   [impureOp (modifies Other) ("log"++show n) op (2+n) False (375*(n+1))

@@ -191,10 +191,24 @@ newtype Const = MkConst [(Int, --byte length
 --it contains only a bytestring.
 
 --Env :: State
-envT = sTupleT [MemSlice, CalldataState]
+envT = sTupleT [MemoryState,
+                StorageState,
+                TStorageState,
+                CalldataState,
+                ReturndataState,
+                ExtStateState,
+                OtherState]
+--New naming convention: each state var is named the lowercase version
+--of its corresponding OpcodeInfo.State constructor
 envV :: [Var]
 envV = [Mono "$mem" MemSlice,
-        Mono "$cd" CalldataState]
+envV = [Mono "$memory" MemoryState,
+        Mono "$storage" StorageState,
+        Mono "$tstorage" TStorageState,
+        Mono "$calldata" CalldataState,
+        Mono "$returndata" ReturndataState,
+        Mono "$extstate" ExtStateState,
+        Mono "$other" OtherState]
 
 --The type of $ret for a C function : a -> b
 --Fused knows the wordsize, so it passes it. 

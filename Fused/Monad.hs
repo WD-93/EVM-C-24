@@ -17,6 +17,13 @@ import Mono.Mono (instT,bindT,BindError(..))
 --The Construct monad, allowing overloaded straight-line code defs:
 import Construct (Construct(op,constant,Op))
 import qualified Construct as CM
+--EVM opcode info lets one automate the Construct instance's behavior for
+--all valid straight-line ops.
+import OpcodeInfo (State(..),
+                   OpcodeInfo(..),
+                   OpcodeBehavior(..),
+                   Effect(..),
+                   opcodes)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -27,6 +34,7 @@ import Control.Monad.Writer
 import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad
+import Data.Char (toLower) --OpcodeInfo.State -> state var naming convention
 
 --The main monad:
 --Monomorphization, structured IR generation, datatype sizeof calculation,
@@ -133,7 +141,12 @@ data FusedError = GenericFE String
                 | NotSerializableExpr E
                 | NonCodeAllocInSerialize T E
                 | GlobalPointerSpaceExhaustedBy Name Integer
+                --Opcode-specific:
+                | UnrecognizedOpcode String [Var]
+                | NotAStraightLineOp String [Var] OpcodeBehavior
                 | BadOpArity String [Var] Int
+                | OpMustReturnAWord String [Var]
+                | Op0MayNotReturnAWord String [Var]
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -286,15 +299,11 @@ addK k v = do
 --In the optimizer, I'll need to mark the ops as consuming rather than simply
 --taking their SElem argument.
 mstore :: Var -> Var -> FFM ()
-mstore off w = memOp "mstore" [off,w]
+mstore off w = CM.op0 "mstore" [off,w]
 mstore8 :: Var -> Var -> FFM ()
-mstore8 off b = memOp "mstore8" [off,b]
+mstore8 off b = CM.op0 "mstore8" [off,b]
 mcopy :: Var -> Var -> Var -> FFM ()
-mcopy dst src len = memOp "mcopy" [dst,src,len]
---A helper for the mem write ops
-memOp opnm vs = do
-  let mem = Mono "$mem" MemSlice
-  emitPrim ([],[mem]) opnm (vs,[mem])
+mcopy dst src len = CM.op0 "mcopy" [dst,src,len]
 
 --The C == operator inlined; returns a Bool
 --TODO Core opts: move branch earlier if a_i /= b_i is likely, speculatively
@@ -371,25 +380,54 @@ newVar t = do
 
 --TODO add $mem to lhs/rhs in mem ops;
 --do the same for other impure ops
+--With OpcodeInfo.opcodes, I can now derive the behavior of each opcode.
+--Only instructions with Normal behavior are acceptable ops.
+--Their arity can be checked, and their state var lhs+rhs auto-generated.
+--An opcode called in 'op' must return a word; one called in 'op0' must not.
+--Convention: state vars are taken and returned in S.fromList order.
 instance Construct FusedFunM where
   type Var FFM = Var
   type Op FFM = String
-  --ops which read state must take state vars as params
-  op "mload" vs = do
-    reqArity "mload" vs 1
-    let mem = Mono "$mem" MemSlice
-    v <- newVar (W (UInt 32) 1)
-    emitPrim ([v],[mem]) "mload" (vs,[mem])
-    return v
   op primop vs = do
-    v <- newVar (W (UInt 32) 1)
-    emitPrim ([v],[]) primop (vs,[])
-    return v
-  op0 primop vs = error "todo"
+    mv <- runOp primop vs
+    case mv of
+      Nothing -> throwError $ OpMustReturnAWord primop vs
+      Just v -> return v
+  op0 primop vs = do
+    mv <- runOp primop vs
+    case mv of
+      Just v -> throwError $ Op0MayNotReturnAWord primop vs
+      Nothing -> return ()
   constant = pushK
   comment = comment
 
-reqArity :: String -> [Var] -> Int -> FFM ()
-reqArity op vs ar
-  | ar /= length vs = throwError $ BadOpArity op vs ar
-  | let = return ()
+runOp :: String -> [Var] -> FFM (Maybe Var)
+runOp primop vs =
+  case M.lookup primop opcodes of
+    Nothing -> throwError $ UnrecognizedOpcode primop vs
+    Just oi -> do
+      do let len = length vs
+             ar = oiArgArity oi
+         if (len /= ar)
+           then throwError $ BadOpArity primop vs ar
+           else return ()
+      case oiBehavior oi of
+        Normal {obReturns = b,
+                obEffect = Effect consumes produces
+               } -> do
+          mv <- if b
+                then Just <$> newVar (W (UInt 32) 1)
+                else return Nothing
+          emitPrim ([v | Just v <- [mv]], stateVars produces)
+            primop
+            --FFM doesn't care whether input state is consumed or borrowed,
+            --that's for Stack scheduling of instructions.
+            (vs, stateVars $ M.keysSet consumes)
+          return mv
+        other -> throwError $ NotAStraightLineOp primop vs other
+stateVars :: Set OpcodeInfo.State -> [Var]
+stateVars ss = map toVar $ S.toList ss
+  where toVar s =
+          let str = show s
+          in Mono ("$"++map toLower str)
+             (TyCon $ str ++ "State")
