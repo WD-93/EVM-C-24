@@ -201,7 +201,6 @@ envT = sTupleT [MemoryState,
 --New naming convention: each state var is named the lowercase version
 --of its corresponding OpcodeInfo.State constructor
 envV :: [Var]
-envV = [Mono "$mem" MemSlice,
 envV = [Mono "$memory" MemoryState,
         Mono "$storage" StorageState,
         Mono "$tstorage" TStorageState,
