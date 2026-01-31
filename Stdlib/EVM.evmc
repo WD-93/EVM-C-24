@@ -20,35 +20,39 @@
 //dup*, swap* are excluded for now; the stack scheduler implicitly
 //generates them.
 
+//Update: for the Structured primitive rule in the compiler to fire, the
+//definition must be _ := {}. Ditto for Core branching primitives.
+//TODO auto-generate this module from OpcodeInfo.opcodes.
+
 //This could be auto-generated from an iset spec: arity, returns, effect
 //0x00-0x0b
 stop : () -> ();
-stop x := ();
+stop _ := {};
 add : (Word,Word) -> Word;
-add x := ();
+add _ := {};
 mul : (Word,Word) -> Word;
-mul x := ();
+mul _ := {};
 //It's unfortunate that sub, div, sdiv, mod, smod don't take the operand as
 //the first argument: x-k, x/k, x%k are more common than the reverse and
 //could generate efficient stack code if they did.
 sub : (Word,Word) -> Word;
-sub x := ();
+sub _ := {};
 div : (Word,Word) -> Word;
-div x := ();
+div _ := {};
 sdiv : (Word,Word) -> Word;
-sdiv x := ();
+sdiv _ := {};
 mod : (Word,Word) -> Word;
-mod x := ();
+mod _ := {};
 smod : (Word,Word) -> Word;
-smod x := ();
+smod _ := {};
 addmod : (Word,Word,Word) -> Word;
-addmod x := ();
+addmod _ := {};
 mulmod : (Word,Word,Word) -> Word;
-mulmod x := ();
+mulmod _ := {};
 exp : (Word,Word) -> Word;
-exp x := ();
+exp _ := {};
 signextend : (Word,Word) -> Word;
-signextend x := ();
+signextend _ := {};
 
 //0x10-0x1d
 //Variants that return a Bool would be useful for the optimizer, but aren't
@@ -56,162 +60,162 @@ signextend x := ();
 //particular type definitions as far as possible, and secondly being able to
 //chain EVM primfun applications without unsafeCoercing to word is ergonomic.
 lt : (Word,Word) -> Word;
-lt x := ();
+lt _ := {};
 gt : (Word,Word) -> Word;
-gt x := ();
+gt _ := {};
 slt : (Word,Word) -> Word;
-slt x := ();
+slt _ := {};
 sgt : (Word,Word) -> Word;
-sgt x := ();
+sgt _ := {};
 eq : (Word,Word) -> Word;
-eq x := ();
+eq _ := {};
 iszero : Word -> Word;
-iszero x := ();
+iszero _ := {};
 and : (Word,Word) -> Word;
-and x := ();
+and _ := {};
 or : (Word,Word) -> Word;
-or x := ();
+or _ := {};
 xor : (Word,Word) -> Word;
-xor x := ();
+xor _ := {};
 not : Word -> Word;
-not x := ();
+not _ := {};
 byte : (Word,Word) -> Word;
-byte x := ();
+byte _ := {};
 shl : (Word,Word) -> Word;
-shl x := ();
+shl _ := {};
 shr : (Word,Word) -> Word;
-shr x := ();
+shr _ := {};
 sar : (Word,Word) -> Word;
-sar x := ();
+sar _ := {};
 
 //0x20
 //sha3 is a synonym of keccak256
 sha3 : (Word,Word) -> Word;
 sha3 (off,len) := return keccak256(off,len);
 keccak256 : (Word,Word) -> Word;
-keccak256 x := ();
+keccak256 _ := {};
 
 //0x30-0x4a
 address : () -> Word;
-address x := ();
+address _ := {};
 balance : () -> Word;
-balance x := ();
+balance _ := {};
 origin : () -> Word;
-origin x := ();
+origin _ := {};
 caller : () -> Word;
-caller x := ();
+caller _ := {};
 callvalue : () -> Word;
-callvalue x := ();
+callvalue _ := {};
 calldataload : Word -> Word;
-calldataload x := ();
+calldataload _ := {};
 calldatasize : () -> Word;
-calldatasize x := ();
+calldatasize _ := {};
 calldatacopy : (Word,Word,Word) -> ();
-calldatacopy x := ();
+calldatacopy _ := {};
 codesize : () -> Word;
-codesize x := ();
+codesize _ := {};
 codecopy : (Word,Word,Word) -> ();
-codecopy x := ();
+codecopy _ := {};
 gasprice : () -> Word;
-gasprice x := ();
+gasprice _ := {};
 extcodesize : Word -> Word;
-extcodesize x := ();
+extcodesize _ := {};
 extcodecopy : (Word,Word,Word,Word) -> ();
-extcodecopy x := ();
+extcodecopy _ := {};
 returndatasize : () -> Word;
-returndatasize x := ();
+returndatasize _ := {};
 returndatacopy : (Word,Word,Word) -> ();
-returndatacopy x := ();
+returndatacopy _ := {};
 extcodehash : Word -> Word;
-extcodehash x := ();
+extcodehash _ := {};
 blockhash : Word -> Word;
-blockhash x := ();
+blockhash _ := {};
 coinbase : () -> Word;
-coinbase x := ();
+coinbase _ := {};
 timestamp : () -> Word;
-timestamp x := ();
+timestamp _ := {};
 number : () -> Word;
-number x := ();
+number _ := {};
 prevrandao : () -> Word;
-prevrandao x := ();
+prevrandao _ := {};
 gaslimit : () -> Word;
-gaslimit x := ();
+gaslimit _ := {};
 chainid : () -> Word;
-chainid x := ();
+chainid _ := {};
 selfbalance : () -> Word;
-selfbalance x := ();
+selfbalance _ := {};
 basefee : () -> Word;
-basefee x := ();
+basefee _ := {};
 blobhash : Word -> Word;
-blobhash x := ();
+blobhash _ := {};
 blobbasefee : () -> Word;
-blobbasefee x := ();
+blobbasefee _ := {};
 
 //0x50-0x5e
 //pop is the odd one out: it can be defined in C.
 pop : Word -> ();
 pop _ := return ();
 mload : (Word,Word) -> Word;
-mload x := ();
+mload _ := {};
 mstore : (Word,Word) -> ();
-mstore x := ();
+mstore _ := {};
 mstore8 : (Word,Word) -> ();
-mstore8 x := ();
+mstore8 _ := {};
 sload : Word -> Word;
-sload x := ();
+sload _ := {};
 sstore : (Word,Word) -> ();
-sstore x := ();
+sstore _ := {};
 //jump, jumpi excluded
 pc : () -> Word;
-pc x := ();
+pc _ := {};
 msize : () -> Word;
-msize x := ();
+msize _ := {};
 gas : () -> Word;
-gas x := ();
+gas _ := {};
 //jumpdest excluded
 tload : Word -> Word;
-tload x := ();
+tload _ := {};
 tstore : (Word,Word) -> ();
-tstore x := ();
+tstore _ := {};
 mcopy : (Word,Word,Word) -> ();
-mcopy x := ();
+mcopy _ := {};
 
 //push*, dup*, swap* excluded
 
 //0xa0-0xa4
 log0 : (Word,Word) -> ();
-log0 x := ();
+log0 _ := {};
 log1 : (Word,Word,Word) -> ();
-log1 x := ();
+log1 _ := {};
 log2 : (Word,Word,Word,Word) -> ();
-log2 x := ();
+log2 _ := {};
 log3 : (Word,Word,Word,Word,Word) -> ();
-log3 x := ();
+log3 _ := {};
 log4 : (Word,Word,Word,Word,Word) -> ();
-log4 x := ();
+log4 _ := {};
 
 //0xf0-0xf5
 create : (Word,Word,Word) -> Word;
-create x := ();
+create _ := {};
 call : (Word,Word,Word,Word,Word,Word,Word) -> Word;
-call x := ();
+call _ := {};
 callcode : (Word,Word,Word,Word,Word,Word,Word) -> Word;
-callcode x := ();
+callcode _ := {};
 //return must be called evm_return because return is a keyword in C
 evm_return : (Word,Word) -> ();
-evm_return x := ();
+evm_return _ := {};
 delegatecall : (Word,Word,Word,Word,Word) -> Word;
-delegatecall x := ();
+delegatecall _ := {};
 create2 : (Word,Word,Word,Word) -> Word;
-create2 x := ();
+create2 _ := {};
 
 //0xfa
 staticcall : (Word,Word,Word,Word,Word,Word) -> Word;
-staticcall x := ();
+staticcall _ := {};
 
 //0xfd-0xff
 revert : (Word,Word) -> ();
-revert x := ();
+revert _ := {};
 //invalid excluded
 selfdestruct : Word -> ();
-selfdestruct x := ();
+selfdestruct _ := {};

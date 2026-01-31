@@ -3661,6 +3661,25 @@ bound costs by distributing "rations" across an inductive DT;
 running map or w/e on a list would transform it from a rationed to an
 unrationed list.
 
+What defines an EVM BB? It's a contiguous region of instructions
+bb = (jumpdest, straightLine*, branch) s.t. the effect of executing it is
+independent of any other code.
+Q: should it be independent of its own location? The Core correctness
+property should be indifferent to the value of PC.
+IOW, an EVM BB implements a Core BB iff it has the same symbolic result
+(assuming equivalence of callees) given an arbitrary env with PC <- 0-23,999.
+"Arbitrary env" can be weakened to "any env the Core program would pass to
+it".
+How to prove equivalence of SCCs of source and target BBs?
+Core state = (state vars, stk, pc = f)
+EVM state is isomorphic
+smallStep : (state vars, stk) -> f -> CallResult | (state vars, stk, f')
+S1 -f-> S2 --derive big-step from small-step
+A SCC will either loop forever (UB) or exit to a non-SCC state.
+Both the Core and EVM SCCs will implement a recursive metatheory function;
+if those are equivalent then the EVM SCC is compliant.
+
+
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
 To split across BBs, need a stack of state vars.
