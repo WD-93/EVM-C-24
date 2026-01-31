@@ -7,6 +7,80 @@ import qualified Data.Map as M
 import Data.Set (Set(..))
 import qualified Data.Set as S
 
+--Idea: enhance the opcodes map with an overloaded spec of the instructions
+--behavior, s.t. a symbolic and concrete implementation can be extracted from
+--it. That would allow the information I added manually to be inferred -
+--though min gas used would be tricky.
+--Represent instrs as a function on the call given the EVM state.
+--ispec : EVMState -> CallResult
+--Ordinary instructions modify the EVM state and then dispatch; the
+--interpreter loop fetches an instr from the code and interprets it.
+--Jumps are ordinary in that context, except they set rather than increment
+--the PC.
+--Terminating instructions (stop,return,revert,invalid) return a
+--data CallResult = Return {...} | Revert {...} where the return case
+--includes more state (updated storage etc); the call ispec should take a
+--CallResult from recursively interpreting and update its own state.
+--The symbolic spec needs to be ~an AST: every little op overloaded (e.g. &),
+--overloaded ops such as ifte for control flow.
+--Alt: use an explicit AST a la K framework, though that would turn it into
+--yet another compiler project rather than a functional pearl.
+--Because of add, whole words must be symbolic. The knowledge that AND et al
+--are bitwise (or bytewise) can be encoded in an overloaded combinator, in
+--this case zipBytesWith.
+--How to automatically detect whether an instruction gives a Core let op or
+--a branch? All ordinary ops add k to the PC, enabling straight-line code...
+--but so does push ret, <args>, push f, jump.
+{-
+Core compilation abstraction: there is an arbitrary mapping from 16b values
+(well, 0-23999); jumps to unmapped values have arbitrary behavior.
+Each basic block performs a transformation on the stack and jumps, or it
+returns a value ~ a CallResult (possibly with add'l type info).
+There's an embedding of Core values (stored in vars) to bytestrings.
+Not every Core program is compilable, but of those that are it should be
+possible to prove the generated EVM bytecode is compliant.
+For simplicity, we assume a compiler which generates an EVM BB for each Core
+function. Provably safely merging equivalent (or equivalent given knowledge of
+the EVM state) BBs is FW.
+Proof sketch: starting in reverse topological order, prove each EVM BB
+(jumpdest, ordinary*, branching) is equivalent to the given Core BB.
+Base case: terminating BBs.
+IH: the EVM BB's jumped to are compliant.
+C functions which return to a dynamic addr and loops must be dealt with...
+TODO look at CakeML.
+Q: which technique is better for safely optimizing a compiler, starting with
+a trivial-to-prove-compliant target code and then applying machine-specific
+opts to it, or refining the proof of compliance?
+Note the "machine-specific" opts need only prove Core is indifferent to the
+effect, not equivalence from the machine's perspective less the code.
+For writeup: the goal of a compiler is to produce a program which has certain
+properties, ideally creating an abstraction that's easier for the programmer
+to work with than the target language. A lax property which ignores details
+irrelevant to the abstraction is a feature: it enables the compiler to
+perform optimizations. The abstraction and correctness property are
+intimately tied: if the property is lax and the optimizer decent, the
+programmer can ignore low-level details and is freed to dedicate their effort
+to the more abstract task at hand.
+FW: EVMC aims to provide a cleaner interface to the EVM's capabilities than
+Solidity (with its costly abstractions), but 1) it's still quite low-level,
+2) it still has some costly abstractions, in particular storage pointers,
+3) it locks the user in to some choices, e.g. struct repr or 16b pointers.
+The latter could be solved with compiler support for longer pointers, but
+could a higher-level language build on the clean interface while allowing
+more abstract coding *and better performance*?
+Potential inspirations: Rust, single-assignment C, Futhark.
+
+Minor note: while the starting address of a JT is arbitrary, its elements are
+evenly spaced, i.e. jt+k is guaranteed to map to them. Since Core operates at
+the byte level, it must be aware of that.
+
+Symbolic exec creates a bunch of iftes which are nontrivial to resolve...
+that can be turned into a tree of possible states, each with a trace of
+symbolic conditions.
+Jumping can be handled analogously: if there are N possible non-UB jump targets,
+there will be at most N cases.
+-}
+
 --All the information about opcodes relevant to compilation.
 --EVMC.evmc could be generated from it.
 --I could also generate a datatype for opcodes.

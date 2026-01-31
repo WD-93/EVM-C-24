@@ -3644,9 +3644,22 @@ constructors, e.g. tl in Nil. That means the type can encode more of the
 structure info, rather than requiring the programmer to remember invariants.
 
 FW: breakable pointers into returndata, tagged with an ID that's consumed
-on the next CALL.
+on the next CALL. Their type must be parameterized by the ID's type
+(a la the ST monad), but the pointer itself doesn't hold the resource -
+hence its breakability.
 The same trick could be used to borrow or irreversibly create const
 pointers.
+Linear resources in types require a concept of copy (not possible for all
+types), move and automatic free (which happens when it leaves scope).
+Custom automatic free would let you return some resources and permanently
+destroy others.
+Session types would be useful for multi-contract interaction.
+Unique (&mut) pointers would make it easy to track mutation for opt 
+purposes... EMVRust?
+Recall liquid Haskell enhanced with linearity: linear types could be used to
+bound costs by distributing "rations" across an inductive DT;
+running map or w/e on a list would transform it from a rationed to an
+unrationed list.
 
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
