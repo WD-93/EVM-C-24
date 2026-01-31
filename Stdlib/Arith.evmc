@@ -219,14 +219,14 @@ derefByCopy p := {
 //These two are simple: a partial word gets shr'd, the rest get loaded using
 //either mload or calldataload.
 derefMem : MPtr a -> a;
-derefMem _ := ();
+derefMem _ := {};
 derefCD : Ptr Calldata a -> a;
-derefCD _ := ();
+derefCD _ := {};
 //These are complex, since storage and tstorage are word-addressed. That makes
 //byte-addressed pointers a costly abstraction. An n-byte value results in
 //n rounded up by 32 `div` 32 loads, so it must start with a branch on the
 //byte offset.
 derefSto : SPtr a -> a;
-derefSto _ := ();
+derefSto _ := {};
 derefTSto : TSPtr a -> a;
-derefTSto _ := ();
+derefTSto _ := {};

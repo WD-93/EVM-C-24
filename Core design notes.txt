@@ -3679,6 +3679,8 @@ A SCC will either loop forever (UB) or exit to a non-SCC state.
 Both the Core and EVM SCCs will implement a recursive metatheory function;
 if those are equivalent then the EVM SCC is compliant.
 
+Some of deref's instances are implemented in C (code and returndata).
+I'll keep the multiple derefMem etc prims for now.
 
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.

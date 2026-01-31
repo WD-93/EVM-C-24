@@ -11,10 +11,12 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
-import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray)
+import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
+                  op, op0)
 import Util (unsafePrint, --for debugging
              complainIf
             )
+import OpcodeInfo hiding (op2, State(..)) --for autogen of EVM primfuns
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -266,12 +268,13 @@ checkIsStructuredPrim f a2b p s
           | Just ts <- matchPolytype pt a2b ->
               Just $ scheme ts
         _ -> Nothing
+  | let = Nothing
 --TODO replace with TH that parses EVMC syntax
-data Polytype = PT (T -> Maybe [T]) ([T] -> Maybe T)
+--Invariant: the second [T] is produced from the first function.
+data Polytype = PT (T -> Maybe [T]) --([T] -> T)
 matchPolytype :: Polytype -> T -> Maybe [T]
-matchPolytype (PT from to) t
-  | Just ts <- from t,
-    Just t == to ts = Just ts
+matchPolytype (PT from) t
+  | Just ts <- from t = Just ts
   | let = Nothing
 --TODO store arg and ret arity of EVM ops centrally, use to autogen polytypes
 --and comp schemes (with state read/write info).
@@ -283,9 +286,45 @@ matchPolytype (PT from to) t
 --another file dependency.
 structuredPrims :: Map Name (Polytype, [T] -> CompScheme)
 structuredPrims = M.fromList [
-  --EVM ops
-  --stop
+  ("derefMem",
+   (PT (\case Ptr Memory a :-> a'
+                | a == a' -> Just [a]
+              _ -> Nothing),
+             \[a] [ptr] ret -> do
+               error "todo mderef"
+            ))
                              ]
+                  `M.union` evmPrims
+--The non-branching EVM instructions, auto-generated from OpcodeInfo.opcodes.
+--PUSH*, DUP*, SWAP* are excluded.
+evmPrims =
+  M.mapMaybeWithKey (\primop oi ->
+                 case oiBehavior oi of
+                   --op/op0 will look up and handle the effect.
+                   Normal {obReturns = b} ->
+                     let ar = oiArgArity oi
+                     in Just (exactPolyType $ primType ar b,
+                              \_ args ret ->
+                                if b
+                                then do
+                                  --Q: is scope set here?
+                                  v <- op primop args
+                                  emitStmt $ IR.Return [v,ret] [v]
+                                else do
+                                  op0 primop args
+                                  emitStmt $ IR.Return [ret] []
+                             )
+                   _ -> Nothing
+             )
+           opcodes
+  where primType ar b =
+          (if ar == 1
+           then UInt 32
+           else tupleT $ replicate ar $ UInt 32)
+          :-> (if b then UInt 32 else Unit)
+exactPolyType :: T -> Polytype
+exactPolyType t =
+  PT (\t' -> if t' == t then Just [] else Nothing)
 
 {-
 Updated pattern-matching rules:
