@@ -12,7 +12,7 @@ import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
-                  op, op0,
+                  op, op0, constant,
                   mderefBytePtr)
 import Util (unsafePrint, --for debugging
              complainIf
@@ -290,7 +290,27 @@ structuredPrims :: Map Name (Polytype, [T] -> CompScheme)
 structuredPrims = M.fromList [
   bytePtrPrim "derefMem" Memory "mload",
   bytePtrPrim "derefCD" Calldata "calldataload",
-  awooga
+  --TODO move disjunction to Construct lib...
+  ("truthy", (PT $ \case _ :-> UInt 32 -> Just [],
+              \_ -> mkPrim $ ((:[])<$>) . disjunction)),
+  --TODO coerce
+  --TODO unsafeCoerce
+  ("sizeof", (PT $ \case (TyCon "P" :$$ a) :-> UInt 2 -> Just [a]
+                         _ -> Nothing,
+              \[a] -> mkPrim $ const $ do
+                sz <- liftFused $ sizeof a
+                (:[]) <$> constant sz)),
+  --TODO define in Construct?
+  --FW opt: don't bother comparing words that should be constant.
+  --Compare words most likely to be unequal first, branch on them.
+  ("eq_", (PT $ \case Tu2 a a' :-> TyCon "Bool" | a == a' -> Just [a]
+                      _ -> Nothing,
+           const $ mkPrim $ \asbs -> do
+             let alen = length asbs `div` 2
+                 as = take alen asbs
+                 bs = drop alen asbs
+             (:[]) <$> equals as bs
+          ))
                              ]
                   `M.union` evmPrims
   where bytePtrPrim fnm r load =

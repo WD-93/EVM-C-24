@@ -70,43 +70,43 @@ scOr (a,b) := return truthy (a,b) > 0;
 //Because they may be applied to values with an unknown size, they must be
 //primitive.
 truthy : a -> Word;
-truthy _ := ();
+truthy _ := {};
 lNot : a -> Bool;
-lNot _ := ();
+lNot _ := {};
 bwAnd : (a,a) -> a;
-bwAnd _ := ();
+bwAnd _ := {};
 bwOr : (a,a) -> a;
-bwOr _ := ();
+bwOr _ := {};
 bwXor : (a,a) -> a;
-bwXor _ := ();
+bwXor _ := {};
 bwNot : a -> a;
-bwNot _ := ();
+bwNot _ := {};
 
 //Comparison ops
 //Because block exprs have been removed, > can't be implemented as sugar for
 // < with reverse argument eval order.
 lt_ : (a,a) -> Bool;
-lt_ _ := ();
+lt_ _ := {};
 lte_ : (a,a) -> Bool;
-lte_ _ := ();
+lte_ _ := {};
 gt_ : (a,a) -> Bool;
-gt_ _ := ();
+gt_ _ := {};
 gte_ : (a,a) -> Bool;
-gte_ _ := ();
+gte_ _ := {};
 eq_ : (a,a) -> Bool;
-eq_ _ := ();
+eq_ _ := {};
 neq_ : (a,a) -> Bool;
-neq_ _ := ();
+neq_ _ := {};
 
 //Coercion
 //coerce may result in an invalid bitpattern, but it at least masks the
 //result to the correct byte length.
 //TODO ensure it also masks internal padding?
 coerce : a -> b;
-coerce _ := ();
+coerce _ := {};
 //unsafeCoerce does not, which makes it cheaper but more dangerous.
 unsafeCoerce : a -> b;
-unsafeCoerce _ := ();
+unsafeCoerce _ := {};
 //coerce does not signextend, it simply masks. To coerce -1 :: SInt 1 to
 //-1 :: SInt 32, use coerceInt.
 coerceInt : Int s1 n1 -> Int s2 n2;
@@ -115,11 +115,11 @@ instance coerceInt : UInt n1 -> Int s2 n2 where
 instance coerceInt : SInt n1 -> Int s2 n2 where
  a:= return coerce (extendToWord a);
 //signextend an n-bit signed integer
-//Opt: signextend(x,31) is an identity op
+//Opt: signextend(31,x) is an identity op
 extendToWord : SInt n -> Word;
 extendToWord a := {
  var sz = sizeofValue a;
- return signextend(coerce a, (coerce sz) - 1)
+ return signextend((coerce sz) - 1, coerce a)
 };
 
 //Utility functions

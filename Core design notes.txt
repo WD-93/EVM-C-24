@@ -3692,7 +3692,7 @@ Other prims:
  coerce, 
  unsafeCoerce, 
  sizeof, 
- equals.
+ eq_.
  addressOf(e) should have non-compositional behavior; standalone addressOf
   is UB - just return null. TODO add that to convertE
  Arith.evmc, line 72 onward
