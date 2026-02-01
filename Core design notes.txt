@@ -3700,6 +3700,10 @@ Other prims:
 lt_ etc: should I restrict them to ints? That would simplify matters.
  Yes... in fact, now I no longer need them to be primitives.
 Remaining: derefSto, derefTSto.
+Other than that all primitives have been implemented... but not debugged.
+Updated returnValue to use WordPad... looks like there's a bug when writing
+a WordPad Bool: it's left-shifted 256 bits! Fixed, writePtrPartialWord was
+always behaving as if the type wasn't a whole number of words.
 
 TODO test I got all prims... compare M.keysSet structuredPrims to the 
 Prelude functions that have _ := {} defs.

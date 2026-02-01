@@ -994,8 +994,12 @@ assignPtr r a ptr vs = do
     then return ()
     else case r of
            "Memory" -> do
-             let v:vs' = vs
-             writePtrPartialWord ptr v m (wholeWs > 0)
+             vs' <- if m == 0
+                    then return vs
+                    else do
+               let v:vs' = vs
+               writePtrPartialWord ptr v m (wholeWs > 0)
+               return vs'
              --Write the remaining whole words
              forM_ (zip [m,m+32..] vs')
                  (\(off,v) -> do

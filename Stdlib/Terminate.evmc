@@ -9,10 +9,12 @@
 returnValue : a -> ();
 returnValue a := {
  var p = coerce 0; //Opt: the mask on 0 should be elided.
- *p = a; //Inefficiency: a partial word will be shl'd.
+ *p = WordPad a;
+ returnPtr (&(p->unWordPad))
+ //*p = a; //Inefficiency: a partial word will be shl'd.
  //Really I should wordpad, then figure out the (constant) offset a will
  //start at. Need a primitive WordPad type with a field for the payload?
- returnPtr p
+ //returnPtr p
  //Opt: after inlining, the default return block should be pruned.
  };
 
