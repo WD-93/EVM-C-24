@@ -12,7 +12,7 @@ import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
-                  op, op0, constant,
+                  op, op0, constant, opE1, opE2,
                   mderefBytePtr)
 import Util (unsafePrint, --for debugging
              complainIf
@@ -294,24 +294,105 @@ structuredPrims = M.fromList [
   ("truthy", (PT $ \case _ :-> UInt 32 -> Just [],
               \_ -> mkPrim $ ((:[])<$>) . disjunction)),
   --TODO coerce
-  --TODO unsafeCoerce
+  --Behavior: identical to unsafeCoerce unless the result has fewer bytes,
+  --in which case the partial result word (if any) is masked.
+  ("coerce", (PT $ \(a :-> b) -> Just [a,b],
+              \[a,b] -> mkPrim $ \args -> do
+                sza <- liftFused $ sizeof a
+                let wlena = (sza `roundedUpMod` 32) `div` 32
+                szb <- liftFused $ sizeof b
+                let wlenb = (sza `roundedUpMod` 32) `div` 32
+                    b_is_whole = (sza `mod` 32) == 32
+                    m = sza `mod` 32
+                --Avoiding pointer overflow vuln:
+                --TODO ensure they're all eliminated by bounding max type size
+                --by Haskell's maxBound :: Int.
+                if wlenb > 1000
+                  then throwError $ GenericFE "No monkey business!"
+                  else return ()
+                case () of
+                  _ | szb == 0 -> return []
+                    --Might have to mask:
+                    | szb < sza -> do
+                        --Select words before masking:
+                        let w:ws = reverse $ take (fromInteger wlenb) $
+                                   reverse args
+                        if b_is_whole
+                          then return $ w:ws
+                          else do
+                          --mask w: w' = w & ((1 << m*8)-1)
+                          --The mask expr should usually be CE'd
+                          w' <- opE2 "and" (return w)
+                                (opE2 "sub"
+                                 (opE2 "shl"
+                                   (constant $ m*8)
+                                   (constant 1))          
+                                 (constant 1))
+                          return $ w':ws
+                      --Might have to left-pad:
+                    | szb >= sza ->
+                      leftPad wlenb args)),
+  --unsafeCoerce
+  --Behavior: if the result has fewer words, drop; otherwise left-pad
+  ("unsafeCoerce", (PT $ \(_ :-> b) -> Just [b],
+                    \[b] -> mkPrim $ \args -> do
+                      --Potential vuln: if wlen is so large it overflows Int,
+                      --replicate could give a bad result. I'll prevent that
+                      --with an error.
+                      wlen <- liftFused $ numWords b
+                      leftPad wlen args)),
+  --Note: if the user redefines proxy (P), the prim def will become
+  --nonsensical.
   ("sizeof", (PT $ \case (TyCon "P" :$$ a) :-> UInt 2 -> Just [a]
                          _ -> Nothing,
               \[a] -> mkPrim $ const $ do
                 sz <- liftFused $ sizeof a
                 (:[]) <$> constant sz)),
-  --TODO define in Construct?
+  --If the user redefines PN's kind, this will panic; it must be mandatory.
+  ("knownNatWord", (PT $ \case (TyCon "PN" :$$ n) :-> UInt 32 -> Just [n]
+                               _ -> Nothing,
+                    \[TyNat n] -> mkPrim $ const $ (:[]) <$> constant n)),
+  --(==)
   --FW opt: don't bother comparing words that should be constant.
   --Compare words most likely to be unequal first, branch on them.
-  ("eq_", (PT $ \case Tu2 a a' :-> TyCon "Bool" | a == a' -> Just [a]
+  ("eq_", (PT $ \case Tu2 a a' :-> TyCon "Bool" | a == a' -> Just []
                       _ -> Nothing,
-           const $ mkPrim $ \asbs -> do
-             let alen = length asbs `div` 2
-                 as = take alen asbs
-                 bs = drop alen asbs
-             (:[]) <$> equals as bs
-          ))
-                             ]
+           const $ mkPrim $ binary $
+            \as bs -> (:[]) <$> equals as bs
+          )),
+  -- [a] != [b] => iszero $ eq a b
+  -- as != bs => iszero $ iszero $ disjunction (zipWith xor as bs)
+  --Converting from Word to Bool costs 12 gas...
+  --Opt: when branching on it you only care whether a value is zero... might
+  --as well drop the (iszero . iszero).
+  ("neq_", (PT $ \case Tu2 a a' :-> "Bool" | a == a' -> Just []
+                       _ -> Nothing,
+            const $ mkPrim $ binary $ \as bs ->
+               case (as,bs) of
+                 ([a],[b]) ->
+                   (:[]) <$> (opE1 "iszero" $ op "eq" [a,b])
+                 _ -> do
+                   w <- zipWithM (\a b -> op "xor" [a,b]) as bs >>= disjunction
+                   (:[]) <$> (opE1 "iszero" $ op "iszero" [w]))),
+  -- !_
+  -- !x is equivalent to coerce (iszero(truthy x))
+  --On making use of constant values in types: better to do that by replacing
+  --W t n with a constant, then CE'ing; that would apply generically to all
+  --ops.
+  ("lNot", (PT $ \case a :-> "Bool" -> Just []
+                       _ -> Nothing,
+            const $ mkPrim $ \as -> do
+               w <- disjunction as
+               (:[]) <$> op "iszero" [w])),
+             bitwise "bwAnd" "and",
+  bitwise "bwOr" "or",
+  bitwise "bwXor" "xor",
+  --NOT is bitwise, but not binary...
+  ("bwNot", (PT $ \case a :-> a' | a == a' -> Just []
+                        _ -> Nothing,
+             const $ mkPrim $ mapM (op "not" . (:[]))
+            ))
+  ]
                   `M.union` evmPrims
   where bytePtrPrim fnm r load =
           (fnm,
@@ -326,7 +407,38 @@ structuredPrims = M.fromList [
                mderefBytePtr "mload" sz ptr
            )
           )
-          
+        bitwise fnm instr =
+          ("bwAnd",
+           (PT $ \case Tu2 a a' :-> a'' | all (==a) [a',a''] -> Just []
+                       _ -> Nothing,
+             const $ mkPrim $ binary $ \as bs -> do
+               zipWithM (\a b -> op instr [a,b]) as bs
+           ))
+        binary f asbs = let Just (as,bs) = splitInHalf asbs in f as bs
+        --The implementation of unsafeCoerce:
+        leftPad :: Integer -> [Var] -> FFM [Var]
+        leftPad wlen args = do
+          if wlen > 1000
+            then throwError $ GenericFE "No monkey business!"
+            else return ()
+          let len = fromIntegral $ length args
+          if wlen > len
+            then do
+            z <- constant 0
+            return $ replicate (fromInteger $ wlen-len) z ++
+              args
+            else return $ reverse $ take (fromInteger wlen) $
+                 reverse args
+
+--splitInHalf (xs ++ ys) s.t. length xs == length ys = Just (xs,ys)
+--Returns nothing if the length of its argument is not even.
+splitInHalf :: [a] -> Maybe ([a],[a])
+splitInHalf asbs =
+  let len2 = length asbs
+      len = len2 `div` 2
+  in if (len2 `mod` 2) /= 0
+     then Nothing
+     else Just (take len asbs, drop len asbs)
 
 --The non-branching EVM instructions, auto-generated from OpcodeInfo.opcodes.
 --PUSH*, DUP*, SWAP* are excluded.

@@ -7,10 +7,6 @@
 null : () -> a;
 null _ := {};
 
-//Given a type a (passed via proxy), returns its size % 2^256.
-//Must be primitive.
-//sizeofWord : P a -> Word;
-//sizeofWord _ := {};
 //Problem: types may be larger than 65kB, but pointers are 16b.
 //TODO overload deref and writePtr, support full-sized pointers?
 //SizeT is Short, so I don't need sizeofWord.
@@ -26,7 +22,7 @@ sizeofValue a := {
 //Given a Nat proxy, returns the nat's value % 2^256
 //PRIMITIVE
 knownNatWord : PN n -> Word;
-knownNatWord _ := ();
+knownNatWord _ := {};
 knownNat : PN n -> Int s l; 
 knownNat pn := return coerce (knownNatWord pn);
 
@@ -85,14 +81,26 @@ bwNot _ := {};
 //Comparison ops
 //Because block exprs have been removed, > can't be implemented as sugar for
 // < with reverse argument eval order.
-lt_ : (a,a) -> Bool;
-lt_ _ := {};
-lte_ : (a,a) -> Bool;
-lte_ _ := {};
-gt_ : (a,a) -> Bool;
-gt_ _ := {};
-gte_ : (a,a) -> Bool;
-gte_ _ := {};
+//While bytestrings of any length could in principle be compared, I restrict
+// <, <=, >=, > to comparing Int s l for simplicity.
+//Want to compare Bools anyway? Coerce them to Words.
+// == and != can compare any type.
+lt_ : (Int s l, Int s l) -> Bool;
+instance lt_ : (UInt l, UInt l) -> Bool where
+ (a,b) := return coerce (lt(coerce a, coerce b));
+instance lt_ : (SInt l, SInt l) -> Bool where
+ (a,b) := return coerce (slt(coerce a, coerce b));
+// <= >= don't need instances because their underlying ops have already
+//been overloaded.
+lte_ : (Int s l, Int s l) -> Bool;
+lte_ (a,b) := return (a < b) | (a == b);
+gt_ : (Int s l, Int s l) -> Bool;
+instance gt_ : (UInt l, UInt l) -> Bool where
+ (a,b) := return coerce (gt(coerce a, coerce b));
+instance gt_ : (SInt l, SInt l) -> Bool where
+ (a,b) := return coerce (sgt(coerce a, coerce b));
+gte_ : (Int s l, Int s l) -> Bool;
+gte_ (a,b) := return (a > b) | (a == b);
 eq_ : (a,a) -> Bool;
 eq_ _ := {};
 neq_ : (a,a) -> Bool;

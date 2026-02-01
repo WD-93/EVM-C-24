@@ -3694,9 +3694,15 @@ Other prims:
  sizeof, 
  eq_.
  addressOf(e) should have non-compositional behavior; standalone addressOf
-  is UB - just return null. TODO add that to convertE
+  is UB - just return null. TODO add that to convertE; structuredPrims need
+  not handle addressOf.
  Arith.evmc, line 72 onward
 lt_ etc: should I restrict them to ints? That would simplify matters.
+ Yes... in fact, now I no longer need them to be primitives.
+Remaining: derefSto, derefTSto.
+
+TODO test I got all prims... compare M.keysSet structuredPrims to the 
+Prelude functions that have _ := {} defs.
 
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
