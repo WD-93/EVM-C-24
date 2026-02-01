@@ -12,7 +12,8 @@ import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
-                  op, op0)
+                  op, op0,
+                  mderefBytePtr)
 import Util (unsafePrint, --for debugging
              complainIf
             )
@@ -271,6 +272,7 @@ checkIsStructuredPrim f a2b p s
   | let = Nothing
 --TODO replace with TH that parses EVMC syntax
 --Invariant: the second [T] is produced from the first function.
+--TODO integrate the polytype with the compScheme?
 data Polytype = PT (T -> Maybe [T]) --([T] -> T)
 matchPolytype :: Polytype -> T -> Maybe [T]
 matchPolytype (PT from) t
@@ -286,15 +288,26 @@ matchPolytype (PT from) t
 --another file dependency.
 structuredPrims :: Map Name (Polytype, [T] -> CompScheme)
 structuredPrims = M.fromList [
-  ("derefMem",
-   (PT (\case Ptr Memory a :-> a'
-                | a == a' -> Just [a]
-              _ -> Nothing),
-             \[a] [ptr] ret -> do
-               error "todo mderef"
-            ))
+  bytePtrPrim "derefMem" Memory "mload",
+  bytePtrPrim "derefCD" Calldata "calldataload",
+  awooga
                              ]
                   `M.union` evmPrims
+  where bytePtrPrim fnm r load =
+          (fnm,
+           (PT (\case Ptr r' a :-> a'
+                        | r == r', a == a' -> Just [a]
+                      _ -> Nothing),
+             \[a] -> mkPrim $ \[ptr] -> do
+               --Do I need to explore MPtr a as well?
+               sz <- liftFused $ sizeof a
+               --We don't care the returned words are the wrong Var type
+               --for now.
+               mderefBytePtr "mload" sz ptr
+           )
+          )
+          
+
 --The non-branching EVM instructions, auto-generated from OpcodeInfo.opcodes.
 --PUSH*, DUP*, SWAP* are excluded.
 evmPrims =
@@ -304,15 +317,15 @@ evmPrims =
                    Normal {obReturns = b} ->
                      let ar = oiArgArity oi
                      in Just (exactPolyType $ primType ar b,
-                              \_ args ret ->
-                                if b
-                                then do
+                              const $ mkPrim $ \args ->
+                                 if b
+                                 then do
                                   --Q: is scope set here?
                                   v <- op primop args
-                                  emitStmt $ IR.Return [v,ret] [v]
+                                  return [v]
                                 else do
                                   op0 primop args
-                                  emitStmt $ IR.Return [ret] []
+                                  return []
                              )
                    _ -> Nothing
              )
@@ -325,6 +338,14 @@ evmPrims =
 exactPolyType :: T -> Polytype
 exactPolyType t =
   PT (\t' -> if t' == t then Just [] else Nothing)
+--Captures the pattern for simple primfuns, avoiding manual ret handling:
+mkPrim :: ([Var] -> FFM [Var]) -> --behavior
+          [Var] -> --args
+          Var -> --ret
+          FFM ()
+mkPrim body args ret = do
+  vs <- body args
+  emitStmt $ IR.Return (vs++[ret]) vs
 
 {-
 Updated pattern-matching rules:
@@ -1247,6 +1268,7 @@ convertE e = pushScope $ go e
             xs <- localToVars t x
             ys <- copyVars xs
             return (ys,t)
+          --TODO add handling of &_, &&, || (addressOf, scAnd, scOr) here
           --Push f, push x, call f x
           f :$ x -> do
             (fs,a2b) <- convertE f

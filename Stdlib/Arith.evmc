@@ -1,18 +1,22 @@
 //The arithmetic functions; C operators desugar to these.
 //Functions which don't fit in Alloc or Terminate also go here for now.
 
-//A function that returns a zero bytestring; analogous to undefined in Haskell
+//A function that returns a zero bytestring; analogous to undefined in Haskell.
+//Its definition is _ := {}, but it's not a primitive; a zero bytestring is
+//the default return.
 null : () -> a;
-null _ := return coerce ();
+null _ := {};
 
 //Given a type a (passed via proxy), returns its size % 2^256.
 //Must be primitive.
-sizeofWord : P a -> Word;
-sizeofWord _ := ();
+//sizeofWord : P a -> Word;
+//sizeofWord _ := {};
 //Problem: types may be larger than 65kB, but pointers are 16b.
 //TODO overload deref and writePtr, support full-sized pointers?
+//SizeT is Short, so I don't need sizeofWord.
+//sizeof is PRIMITIVE
 sizeof : P a -> Short;
-sizeof p := return coerce (sizeofWord p);
+sizeof _ := {};
 //Convenience function; it should be optimized to a constant.
 sizeofValue : a -> Short;
 sizeofValue a := {
@@ -20,6 +24,7 @@ sizeofValue a := {
  return sizeof (P :: P a)
 };
 //Given a Nat proxy, returns the nat's value % 2^256
+//PRIMITIVE
 knownNatWord : PN n -> Word;
 knownNatWord _ := ();
 knownNat : PN n -> Int s l; 
@@ -39,18 +44,17 @@ sizeofPtrLen (p,n) := {
 //If its argument is >= 256, it returns ~0.
 //It's useful for implementing mathops in C and should be optimized to a
 //constant.
+//Change to Byte?
 mask : Short -> Word;
-mask n := if n > 255
-       	  then return ~0
-	  else return (1 << n) - 1
-	  end;
+mask n := return (1 << n) - 1;
 
 //The other primitives are black magic but this one is blacker due to its
 //non-compositional semantics.
 // &e = p if e can be inferred to be *p
 //Applicable arguments: *p (.field | !ix)*
+//If not called explicitly, it's UB - simply return null.
 addressOf : a -> Ptr r a;
-addressOf _ := ();
+addressOf _ := {};
 
 //Short-circuited ops; if called on a non-explicit tuple the short-circuiting
 //doesn't occur and their ordinary definition is used instead.

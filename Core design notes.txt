@@ -3681,6 +3681,22 @@ if those are equivalent then the EVM SCC is compliant.
 
 Some of deref's instances are implemented in C (code and returndata).
 I'll keep the multiple derefMem etc prims for now.
+derefMem and CD can share a combinator, as can derefSto and TSto.
+FW: all deref<r> instances depend only on size... modulo constant words.
+I could make a derefBytes<r> which I instantiate, which each deref<r>
+calls and can be inlined to.
+Post-mono, I can do richer type transformations. However, doing it in HM
+would be more powerful.
+Other prims: 
+ truthy, 
+ coerce, 
+ unsafeCoerce, 
+ sizeof, 
+ equals.
+ addressOf(e) should have non-compositional behavior; standalone addressOf
+  is UB - just return null. TODO add that to convertE
+ Arith.evmc, line 72 onward
+lt_ etc: should I restrict them to ints? That would simplify matters.
 
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
