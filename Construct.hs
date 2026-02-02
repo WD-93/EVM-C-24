@@ -10,6 +10,7 @@ import Control.Monad.Writer
 import Control.Monad (zipWithM, zipWithM_, forM, forM_)
 import Data.Bits ((.&.),(.|.),complement) --for symbolic eval
 import AST.DTs (roundedUpMod)
+import Control.Monad.Except
 --Testing:
 import Test.QuickCheck hiding ((.&.),(.|.),output)
 import qualified Data.Set as S
@@ -133,6 +134,10 @@ class Monad m => Construct m where
   constant :: Integer -> m (Var m)
   --Debug comments:
   comment :: String  -> m ()
+  --Branch on a var, performing either the th or el action based on whether
+  --the var is zero. Both branches must return the same number of vars
+  --(given by the Int parameter), otherwise an error should be thrown.
+  ifte :: Int -> Var m -> m [Var m] -> m [Var m] -> m [Var m]
 
 --Separating interpretations lets you simplify the respective monads.
 --Interpretation 1: emit instructions, allocate new vars.
@@ -183,6 +188,7 @@ instance Construct (Emit v) where
     tell [Push v k]
     return v
   comment str = Emit $ tell [Comment str]
+  ifte = error "Not supported (TODO modify Write type)"
 
 emitM1 :: Emit String (V String)
 emitM1 = do
@@ -215,10 +221,11 @@ wordK n
     go 0 = []
     go n = mod n 256 : go (n `div` 256)
     pad bs = replicate (32 - length bs) 0 ++ bs
-newtype SymM a = SymM {unSymM :: StateT Regions (Either SymError) a}
-  deriving (Functor, Applicative, Monad)
+newtype SymM a = SymM {unSymM :: StateT Regions (Except SymError) a}
+  deriving (Functor, Applicative, Monad,
+            MonadState Regions, MonadError SymError)
 runSymM :: SymM a -> Regions -> Either SymError (a, Regions)
-runSymM m r = runStateT (unSymM m) r
+runSymM m r = runExcept $ runStateT (unSymM m) r
 --Note that code, calldata and returndata don't need fields since they're
 --immutable. Caveat: returndata can be modified by making a *CALL, but since
 --I don't model calls that's not a problem.
@@ -249,19 +256,24 @@ data SymError = NotAByteConst SymWord
               --Also thrown on bad arity:
               | UnrecognizedOp SymOp [SymWord]
               | UnrecognizedOp0 SymOp [SymWord]
+              --ifte errors
+              | InSpeculativeRun Bool SymError
+              | BadNumVarsReturnedInBranch Bool Int [SymWord]
   deriving (Eq,Show)
 instance Construct SymM where
   type Var SymM = SymWord
   type Op SymM = SymOp
-  constant n = SymM $ return $ wordK n
-  op o [a,b] = SymM $
+  constant n = return $ wordK n
+  op o [a,b] =
     case o of
-      "byte" ->
+      "byte" -> do
         --If ix > 31, return 0
-        case parseByte a of
-          Right ix | ix < 32 ->
-                     let SymWord bs = b
-                     in return $ SymWord $ replicate 31 (K 0) ++ [bs !! ix]
+        ix <- parseConst "byte" a
+        if ix < 32
+          then let SymWord bs = b
+               in return $ SymWord $ replicate 31 (K 0) ++
+                  [bs !! fromInteger ix]
+          else constant 0
       --I'm starting to stretch the limits of what is convenient with this
       --simple monad...
       --For now support only for concrete values.
@@ -269,17 +281,24 @@ instance Construct SymM where
       "mul" -> concreteWordOp2 "mul" (*) a b
       "sub" -> concreteWordOp2 "sub" (-) a b
       _ | o `elem` ["shr","shl"] -> do
-            shBits <- lift $ parseByte a
-            if (shBits `mod` 8) /= 0
-              then lift $ Left $ NotMul8 o a
-              else return ()
-            let shBytes = shBits `div` 8
-                zeroes = replicate shBytes $ K 0
-                SymWord bs = b
-            return $ SymWord $
-              case o of
-                "shr" -> take 32 $ zeroes ++ bs
-                "shl" -> reverse $ take 32 $ zeroes ++ reverse bs
+            shBits <- parseConst (o++" first arg") a
+            case () of
+              _ | shBits >= 256 -> constant 0
+                | (shBits `mod` 8) /= 0 -> do
+                  --A non-byte shift can work on concrete values:
+                  let n = 2 ^ shBits
+                  bn <- parseConst (o++" second arg") b
+                  constant $ case o of
+                               "shr" -> bn `div` n
+                               "shl" -> bn * n
+                | let -> do
+                    let shBytes = fromInteger $ shBits `div` 8
+                        zeroes = replicate shBytes $ K 0
+                        SymWord bs = b
+                    return $ SymWord $
+                      case o of
+                        "shr" -> take 32 $ zeroes ++ bs
+                        "shl" -> reverse $ take 32 $ zeroes ++ reverse bs
           --While partial-byte shift is possible in the EVM, I don't use
           --it; just error if a % 8 /= 0.
           --If any byte above the lowest isn't K 0, error.
@@ -288,8 +307,8 @@ instance Construct SymM where
         | let -> do
             let SymWord as = a
                 SymWord bs = b
-            lift $ SymWord <$> zipWithM (apply o) as bs
-  op "mload" [a] = SymM $ do
+            SymWord <$> zipWithM (apply o) as bs
+  op "mload" [a] = do
     off <- parseConst "mload" a
     rs <- get
     let fetch ix =
@@ -297,27 +316,53 @@ instance Construct SymM where
             Just symB -> symB
             Nothing -> OriginalMemByte ix
     return $ SymWord [fetch ix | ix <- [off..off+31]]
-  op "not" [SymWord bs] = SymM $ lift $ SymWord <$> mapM symNot bs
-  op o ws = SymM $ lift $ Left $ UnrecognizedOp o ws
-  op0 "mstore" [a,b] = SymM $ do
+  op "not" [SymWord bs] = SymWord <$> mapM symNot bs
+  op o ws = throwError $ UnrecognizedOp o ws
+  op0 "mstore" [a,b] = do
         off <- parseConst "mstore" a
         let SymWord bs = b
         zipWithM_ writeMemByte [off..] bs
-  op0 "mstore8" [a, SymWord bs] = SymM $ do
+  op0 "mstore8" [a, SymWord bs] = do
     off <- parseConst "mstore8" a
     writeMemByte off $ last bs
-  op0 "mcopy" [vto,vfrom,vlen] = SymM $ do
+  op0 "mcopy" [vto,vfrom,vlen] = do
     ws <- mapM (parseConst "mcopy") [vto,vfrom,vlen]
     let [to,from,len] = ws
     bs <- mapM loadMemByte [from..from+len-1]
     zipWithM_ writeMemByte [to..] bs
-  op0 o ws = SymM $ lift $ Left $ UnrecognizedOp0 o ws
+  op0 o ws = throwError $ UnrecognizedOp0 o ws
   comment _ = return ()
-
+  ifte n cond th el = do
+    --For now we only allow branching on concrete values; doing so on
+    --symbolic values would require adding [(CondTrace,_)] to the transformer
+    --stack.
+    k <- parseConst "ifte" cond
+    --Need to test both branches return n words, even though one is discarded.
+    (vsth,sth) <- speculativeRun True n th
+    (vsel,sel) <- speculativeRun False n el
+    if k == 0
+      then put sel >> return vsel
+      else put sth >> return vsth
+--Used to test both branches of ifte in SymM
+--Errors if the speculative action errors, or if it returns the wrong number
+--of words.
+speculativeRun ::
+  Bool -> --true or false branch for error reporting
+  Int -> --expected num vars returned
+  SymM [SymWord] ->  --action
+  SymM ([SymWord],Regions)
+speculativeRun b n symm = do
+  s <- get
+  case runSymM symm s of
+    Left err -> throwError $ InSpeculativeRun b err
+    Right (vs,s')
+      | length vs == n -> return (vs,s')
+      | let -> throwError $ BadNumVarsReturnedInBranch b n vs
+      
 --Writes a symbolic byte to the given offset in memory.
 --The default value at offset off is OriginalMemByte off; if that is written
 --delete the mapping instead.
-writeMemByte :: Integer -> SymByte -> StateT Regions (Either SymError) ()
+writeMemByte :: Integer -> SymByte -> SymM ()
 writeMemByte off b =
   modify (\rs->rs{symMemory = (if b == OriginalMemByte off
                                 then M.delete off
@@ -326,7 +371,7 @@ writeMemByte off b =
                  }
          )
 --TODO standardize names to get and set?
-loadMemByte :: Integer -> StateT Regions (Either SymError) SymByte
+loadMemByte :: Integer -> SymM SymByte
 loadMemByte ix = gets fetch
   where fetch rs =
           case M.lookup ix $ symMemory rs of
@@ -337,7 +382,7 @@ loadMemByte ix = gets fetch
 concreteWordOp2 :: String ->
                    (Integer -> Integer -> Integer) ->
                    SymWord -> SymWord ->
-                   StateT Regions (Either SymError) SymWord
+                   SymM SymWord
 concreteWordOp2 op f a b = do
   an <- parseConst op a
   bn <- parseConst op b
@@ -345,10 +390,10 @@ concreteWordOp2 op f a b = do
 
 --Parses a constant 
 --TODO use constraints on m instead of fixed type...
-parseConst :: String -> SymWord -> StateT Regions (Either SymError) Integer
+parseConst :: String -> SymWord -> SymM Integer
 parseConst op (SymWord symBs) = do
   bs <- forM symBs (\case K n -> return n
-                          sym -> lift $ Left $ Can'tHandleSym op sym)
+                          sym -> throwError $ Can'tHandleSym op sym)
   return $ go 1 $ reverse bs
     where go mul = \case
             [] -> 0
@@ -356,12 +401,12 @@ parseConst op (SymWord symBs) = do
           
 --I just need to test bitwise not on constants for now, no need to extend
 --the symbolic byte repr.
-symNot :: SymByte -> Either SymError SymByte
+symNot :: SymByte -> SymM SymByte
 symNot = \case
   K n -> return $ K $ complement n .&. 0xff
-  b -> Left $ Can'tNOT b
+  b -> throwError $ Can'tNOT b
   
-apply :: SymOp -> SymByte -> SymByte -> Either SymError SymByte
+apply :: SymOp -> SymByte -> SymByte -> SymM SymByte
 apply o (K a) (K b) =
   return $ K $ appK o a b
 apply "and" (K n) x = simpAnd n x
@@ -370,17 +415,20 @@ apply "or" (K n) x = simpOr n x
 apply "or" x (K n) = simpOr n x
 apply o a b
   | a == b = return a
-  | let = Left $ Can'tSimpBB o a b
+  | let = throwError $ Can'tSimpBB o a b
+simpAnd :: Int -> SymByte -> SymM SymByte
 simpAnd n x =
   case n of
     0 -> return $ K 0
     255 -> return x
-    _ -> Left $ Can'tSimpNB "and" n x
+    _ -> throwError $ Can'tSimpNB "and" n x
+simpOr :: Int -> SymByte -> SymM SymByte
 simpOr n x =
   case n of
     0 -> return x
     255 -> return $ K 255
-    _ -> Left $ Can'tSimpNB "or" n x
+    _ -> throwError $ Can'tSimpNB "or" n x
+appK :: String -> Int -> Int -> Int
 appK o a b =
   case o of
     "and" -> a .&. b
@@ -388,11 +436,11 @@ appK o a b =
     _ -> error $ "Unexpected op in appK: " ++ o
   
 --Errors if not byte constant.
-parseByte :: SymWord -> Either SymError Int
+parseByte :: SymWord -> SymM Int
 parseByte w@(SymWord (b:bs)) = go b bs
   where go (K n) [] = return n
         go (K 0) (b:bs) = go b bs
-        go _ _ = Left $ NotAByteConst w
+        go _ _ = throwError $ NotAByteConst w
 
 --------------------------Monadic dot------------------------------------------
 --What info does dot need for efficiency?
@@ -956,7 +1004,7 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
       scratch = ptr + 2 ^ 16 --that should be far enough away...
   in case flip runSymM nullRs (do
     mwritePtrMemPartial sz (wordK scratch) (wordK ptr) w
-    written <- mapM (SymM . loadMemByte) [ptr..ptr+sz-1]
+    written <- mapM loadMemByte [ptr..ptr+sz-1]
     written2scratch <- op "mload" [wordK scratch]
     return (written,written2scratch))
      of
@@ -989,3 +1037,143 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
 --written words (using shr,shl to mask them), then store back to the
 --affected indices.
 --The ifte can be avoided for constant pointers using DCE.
+
+--The written value overlaps with n+1 slots (and must be left-shifted into
+--n+1 slots) if ptr%32 > constant (32-sz)%32
+--If ptr%32 == (32-sz)%32, the value needs to be left-shifted 0 bytes.
+--The lower ptr%32, the higher the left-shift.
+--left-shift = (32-sz%32-ptr)%32
+--(k-ptr)&31 is 15 gas... no savings from addmod, I'd need to negate the ptr
+--and add, and are cheaper. Not surprising, addmod is for arbitrary moduli.
+
+--Cases when combining old and new bytes:
+--[{old,new}]whole*[{new,old}] |
+--{old,new,old} |
+--{old,new} |
+--{new,old}
+--Case 2 can only occur if the value is <=30 bytes and the value remains in
+--one word.
+--If the value is a single byte, there's no need to check whether it spills
+--over into 2 words.
+
+--Note I pass the actual load operation rather than just a name. That means
+--that this can be reused for any API implementing a mutable word=>word map,
+--e.g. storage arrays, hashmaps...
+mwritePtrSto :: (Construct m, Op m ~ String) =>
+  Integer -> --sizeof value to write
+  (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
+  (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
+  Var m ->     --the ptr
+  [Var m] ->   --the value to write
+  m ()
+mwritePtrSto sz load store ptr vs
+  | sz == 0 = return ()
+  | let = do
+          m <- opE2 "and" (constant 31) (return ptr)
+          --TODO enhance SymM so it can handle non-byte shifting of constants.
+          d <- opE2 "shr" (constant 5) (return ptr)
+          case () of
+            _ | sz == 1 -> do
+                  let [b] = vs
+                  --m = 31 => left-shift = 0, it increases with lower m
+                  --left-shift in bytes: 31-m
+                  --Instead of *8, I can use shl 3, saving 2 gas
+                  lsh <- opE2 "shl" (constant 3) $
+                    opE2 "sub" (constant 31) $
+                    return m
+                  --Shift b into place
+                  b' <- op "shl" [lsh,b]
+                  --Store:
+                  mask <- opE1 "not" $
+                          opE2 "shl" (return lsh) $
+                          constant 255
+                  storeWithMask load store mask d b'
+              --The value is a whole number of words
+              | sz `mod` 32 == 0 ->
+                const () <$> ifte 0 m
+                --The value must be left-shifted; the first and last words
+                --must be partially written.
+                --Since the minimum number of words resulting is two, there's
+                --guaranteed to be a distinct first and last word.
+                (do lsh <- opE2 "shl" (constant 3) $
+                           opE2 "sub" (constant 32) $
+                           return m
+                    vs' <- mdynLeftShiftNPlus1 vs lsh
+                    let fi = head vs'
+                        mid = init $ tail vs'
+                        la = last vs'
+                    --Store first word:
+                    --A mask with 256-lsh 1-bits to the left:
+                    --Is sharing the mask computation worth it?
+                    mask <- opE2 "shl" (return lsh) $
+                            opE1 "not" $ constant 0
+                    storeWithMask load store mask d fi
+                    --Store the middle words:
+                    --If there are none, the add will be optimized away
+                    do d_plus_1 <- addK 1 d
+                       writeSlots store d_plus_1 mid
+                    --Store the last word:
+                    slot <- addK (fromIntegral $ length $ fi:mid) d
+                    flippedMask <- op "not" [mask]
+                    storeWithMask load store flippedMask slot la
+                    return []
+                )
+                --the value can be written as-is:
+                (writeSlots store d vs >> return [])
+
+--Write words to slot, slot+1..
+writeSlots :: (Construct m, Op m ~ String) =>
+  (Var m -> Var m -> m ()) ->
+  Var m -> [Var m] -> m ()
+writeSlots store slot vs =
+  zipWithM_ (\off v -> do
+                slot' <- addK off slot
+                store slot' v) [0..] vs
+--Load old value, mask it, or it with value to write, write back
+storeWithMask :: (Construct m, Op m ~ String) =>
+  (Var m -> m (Var m)) ->     --load operation
+  (Var m -> Var m -> m ()) -> --store operation
+  Var m -> --mask
+  Var m -> --slot
+  Var m -> --value
+  m ()
+storeWithMask load store mask slot value = do
+  old <- load slot
+  new <- opE2 "or" (op "and" [mask,old]) $ return value
+  store slot new
+
+--Shift a value stored across multiple words left by sh <- [0..31] bytes,
+--with the constraint that the result is still equally many words.
+--Algo: the words = init++[last].
+--Each word should be left-shifted by sh, then or'd with the spillover from the
+--word to the right of it (right-shifted by 32B-sh).
+--The last word has no word to the right of it, so it's just left-shifted.
+mdynLeftShiftN :: (Construct m, Op m ~ String) =>
+  [Var m] -> --the value to left-shift
+  Var m -> --the left-shift, a dynamic value
+  m [Var m] --the result
+mdynLeftShiftN ws sh =
+  case ws of
+    [] -> return []
+    _ -> do
+      shld <- mapM (\w -> op "shl" [sh,w]) ws
+      rsh <- opE2 "sub" (constant 256) (return sh)
+      spillover <- mapM (\w -> op "shr" [rsh,w]) $ tail ws
+      go shld spillover
+  where go shld [] = return shld --one elem
+        go (w:ws) (r:rs) = do
+          u <- op "or" [w,r]
+          us <- go ws rs
+          return $ u:us
+--Constraint: the result is n+1 words, where n is the original word length.
+--Precondition: ws is nonempty.
+mdynLeftShiftNPlus1 :: (Construct m, Op m ~ String) =>
+  [Var m] ->
+  Var m   ->
+  m [Var m]
+mdynLeftShiftNPlus1 ws sh = do
+  --This duplicate expression should be optimized away...
+  rsh <- opE2 "sub" (constant 256) (return sh)
+  tl <- mdynLeftShiftN ws sh
+  hd <- op "shr" [rsh, head ws]
+  return $ hd:tl

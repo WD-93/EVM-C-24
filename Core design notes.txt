@@ -3706,7 +3706,27 @@ a WordPad Bool: it's left-shifted 256 bits! Fixed, writePtrPartialWord was
 always behaving as if the type wasn't a whole number of words.
 
 TODO test I got all prims... compare M.keysSet structuredPrims to the 
-Prelude functions that have _ := {} defs.
+Prelude functions that have _ := {} defs. Got everything but sto, tsto.
+Once I have deref and assignPtr of those, I've got everything but case.
+mwritePtrSto requires adding an ifte to Construct... it doesn't require
+passing an initial scope since the FFM instance can fill that in.
+However, both sides must return the same scope!
+In the SymM monad that requires adding branching and running both branches
+to ensure scope is respected. Add an Int param indicating how many words
+should be returned in each branch... then I can allocate vars to bind each
+branch's results to in the FFM instance.
+FFM implem: 
+ifte numret cond th el = do
+ scope <- get scope
+ vs <- declare numret Word vars, bind to 0 --analogous to locals!
+ sth <- block $ collect $ th >>= check result is length numret, bind to vs
+ sel <- ditto for el
+ emitStmt $ Ifte (vs++scope) [] cond sth sel
+ return vs
+&&, || required the same trick; fortunately the unused declaration can be
+optimized away. The issue arises because I wrongly require all iftes to
+end with the same scope as they began.
+ifte : (a => b) -> (a => b) -> (w:a) => b
 
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.

@@ -251,7 +251,7 @@ compileF f ts a b p s = do
       --Generate the function body
       --Found the missing $ret bug! Ofc, localVars isn't enough
       putScope $ localVars ++ [ret]
-      unsafePrint $ "ConvertS: " ++ show s
+      --unsafePrint $ "ConvertS: " ++ show s
       convertS s
       unsafePrint $ "Returning null :: " ++ show b
       returnNull b
@@ -706,12 +706,9 @@ assignEP ep vs =
     -- x(.field@ts | !@[len,a] ix)* = vs
     EPLocal t x ixs -> updateLocal t x ixs vs
     -- *(ptr :: Ptr r a) = vs
-    EPDeref r a ptr
-      | not $ r `elem` ["Memory", "Storage", "TStorage"] ->
-        --TODO add more context
-        throwError $ AssignmentToImmutableRegion r
-      | let -> do
+    EPDeref r a ptr -> do
           unsafePrint $ "assignEP EPDeref " ++ show (r,a,ptr)
+          --assignPtr checks if r is mutable
           assignPtr r a ptr vs
     -- Array (p1,p2,...) = vs =>
     --p1 = vs[0]; p2 = vs[1]; ...
@@ -1005,6 +1002,9 @@ assignPtr r a ptr vs = do
                  (\(off,v) -> do
                      ptr' <- addK off ptr
                      mstore ptr' v)
+           "Storage" -> error "todo assignPtr storage"
+           "TStorage" -> error "todo assignPtr tstorage"
+           _ -> throwError $ AssignmentToImmutableRegion r
 writePtrPartialWord :: Var -> Var -> Integer -> Bool -> FFM ()
 writePtrPartialWord ptr v len mayClobber
   | len == 1 = mstore8 ptr v
