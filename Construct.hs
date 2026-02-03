@@ -204,6 +204,7 @@ newtype SymWord = SymWord [SymByte] --length = 32
 data SymByte = K Int --0..255
              | X (String,Int) --(id,n)
              | OriginalMemByte Integer --represents memory before any writes
+             | OriginalStoByte Integer --n = byte offset (32*slot+byte_index)
   deriving (Eq,Show)
 --The ops relevant to struct construction and access.
 --I don't need push since I'm evaluating rather than generating
@@ -240,12 +241,13 @@ runSymM m r = runExcept $ runStateT (unSymM m) r
 --that. Regions therefore need to be Word-addressed.
 --A mapping for each byte is inefficient, but simple.
 data Regions = Regions {
-  symMemory :: Map Integer SymByte
+  symMemory :: Map Integer SymByte,
+  symStorage :: Map Integer SymWord
   }
   deriving (Eq,Show)
 --TODO add runSymM variant that passes nullRs and requires no change to it
 --(for testing pure on-stack ops).
-nullRs = Regions M.empty
+nullRs = Regions M.empty M.empty
 data SymError = NotAByteConst SymWord
               | NotMul8 SymOp SymWord
               -- | BadArity SymOp [SymWord]
@@ -280,6 +282,7 @@ instance Construct SymM where
       "add" -> concreteWordOp2 "add" (+) a b
       "mul" -> concreteWordOp2 "mul" (*) a b
       "sub" -> concreteWordOp2 "sub" (-) a b
+      "gt" -> concreteWordOp2 "gt" (\a b -> if a > b then 1 else 0) a b
       _ | o `elem` ["shr","shl"] -> do
             shBits <- parseConst (o++" first arg") a
             case () of
@@ -316,6 +319,13 @@ instance Construct SymM where
             Just symB -> symB
             Nothing -> OriginalMemByte ix
     return $ SymWord [fetch ix | ix <- [off..off+31]]
+  op "sload" [a] = do
+    off <- parseConst "sload" a
+    rs <- get
+    return $ case M.lookup off $ symStorage rs of
+               Just symW -> symW
+               Nothing -> SymWord [OriginalStoByte ix
+                                  | ix <- [32*off..32*off+31]]
   op "not" [SymWord bs] = SymWord <$> mapM symNot bs
   op o ws = throwError $ UnrecognizedOp o ws
   op0 "mstore" [a,b] = do
@@ -325,6 +335,10 @@ instance Construct SymM where
   op0 "mstore8" [a, SymWord bs] = do
     off <- parseConst "mstore8" a
     writeMemByte off $ last bs
+  op0 "sstore" [a,b] = do
+    off <- parseConst "sstore" a
+    rs <- get
+    put rs{symStorage = M.insert off b $ symStorage rs}
   op0 "mcopy" [vto,vfrom,vlen] = do
     ws <- mapM (parseConst "mcopy") [vto,vfrom,vlen]
     let [to,from,len] = ws
@@ -1056,6 +1070,21 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
 --If the value is a single byte, there's no need to check whether it spills
 --over into 2 words.
 
+--For sz%32 == 0, the condition for n+1 slots becomes ptr%32 > 0; instead of
+--branching on x > 0, one can branch on x.
+--However, that's best applied in the opt stage; the more opts I have the
+--simpler codegen I can write and still get performant code.
+--Symbolic opts to use:
+-- Replace div and mul (2^n) with shr, shl.
+-- Replace mod (2^n) with and (2^n-1)
+-- x%n is < n, <= x
+-- x&n is <= x, n
+-- x>0 is truthy iff x is, so if you branch on x>0 replace with x.
+-- x>=0 is 1
+-- x > ~0 is 0
+--FW: propagate constraints from C type info to words.
+--A value : T has zero bytes in its padding (<= 2^(8*sizeof T)-1).
+
 --Note I pass the actual load operation rather than just a name. That means
 --that this can be reused for any API implementing a mutable word=>word map,
 --e.g. storage arrays, hashmaps...
@@ -1073,21 +1102,51 @@ mwritePtrSto sz load store ptr vs
           --TODO enhance SymM so it can handle non-byte shifting of constants.
           d <- opE2 "shr" (constant 5) (return ptr)
           case () of
-            _ | sz == 1 -> do
-                  let [b] = vs
+            --The value is small enough it fits in one word.
+            --That means the mask may of form 00..ff..00
+            --The 0xff... part of the mask should optimize to a push for
+            --small sz.
+            --For sz == 1, the check whether the value should be split over
+            --2 words should always return false; it should be DCE'd away.
+            _ | sz <= 31 -> do
+                  let [w] = vs
+                  --For sz = 1:
                   --m = 31 => left-shift = 0, it increases with lower m
                   --left-shift in bytes: 31-m
                   --Instead of *8, I can use shl 3, saving 2 gas
+                  --General leftshift:
+                  --8*(32-sz-m)%32
                   lsh <- opE2 "shl" (constant 3) $
-                    opE2 "sub" (constant 31) $
-                    return m
-                  --Shift b into place
-                  b' <- op "shl" [lsh,b]
-                  --Store:
-                  mask <- opE1 "not" $
-                          opE2 "shl" (return lsh) $
-                          constant 255
-                  storeWithMask load store mask d b'
+                         opE2 "and" (constant 31) $
+                         opE2 "sub" (constant $ 32-sz) $
+                         return m
+                  --If m > 32-sz, the value must be split into two words
+                  --Note if sz == 1, that's impossible since m = _ % 32.
+                  cond <- opE2 "gt" (return m) $ constant $ 32 - sz
+                  ifte 0 cond
+                  --w must be split across two words:
+                    (do rsh <- opE2 "sub" (constant 256) (return lsh)
+                        --Low and high here refers to LSB and MSB respectively;
+                        --MSB is at the lowest address.
+                        lo <- op "shl" [lsh,w]
+                        hi <- op "shr" [rsh,w]
+                        ff <- opE1 "not" $ constant 0
+                        maskLo <- op "shr" [rsh,ff]
+                        maskHi <- op "shl" [lsh,ff]
+                        storeWithMask load store maskHi d hi
+                        d_plus_1 <- addK 1 d
+                        storeWithMask load store maskLo d_plus_1 lo
+                        return []
+                    )
+                    --w is still one word:
+                    (do w' <- op "shl" [lsh,w]
+                        wbits <- opE2 "sub" (opE2 "shl" (constant $ sz*8)
+                                             (constant 1)) (constant 1)
+                        mask <- opE1 "not" $ op "shl" [lsh,wbits]
+                        storeWithMask load store mask d w'
+                        return []
+                    )
+                  return ()
               --The value is a whole number of words
               | sz `mod` 32 == 0 ->
                 const () <$> ifte 0 m
@@ -1120,7 +1179,70 @@ mwritePtrSto sz load store ptr vs
                 )
                 --the value can be written as-is:
                 (writeSlots store d vs >> return [])
-
+              | let -> do
+                  --Mostly copied from sz<=31 case; TODO merge...
+                  let [w] = vs
+                  --For sz = 1:
+                  --m = 31 => left-shift = 0, it increases with lower m
+                  --left-shift in bytes: 31-m
+                  --Instead of *8, I can use shl 3, saving 2 gas
+                  --General leftshift:
+                  --8*(32-sz-m)%32
+                  lsh <- opE2 "shl" (constant 3) $
+                         opE2 "and" (constant 31) $
+                         opE2 "sub" (constant $ 32-sz) $
+                         return m
+                  --If m > 32-sz, the value must be split into n+1 words
+                  --Note if sz == 1, that's impossible since m = _ % 32.
+                  cond <- opE2 "gt" (return m) $ constant $ 32 - sz
+                  ifte 0 cond
+                    --the value must be split into n+1 words
+                    (do vs' <- mdynLeftShiftNPlus1 vs lsh
+                        let fi = head vs'
+                            mid = init $ tail vs'
+                            la = last vs'
+                        --Writing the first word:
+                        --the number of value bits in the first word:
+                        --Because it's overflowed, we must also %32
+                        fibits <-
+                          opE2 "and" (constant 31) $
+                          opE2 "add" (constant $ 8*(sz`mod`32))
+                          (return lsh)
+                        fimask <- opE2 "shl" (return fibits) $
+                                  opE1 "not" (constant 0)
+                        storeWithMask load store fimask d fi
+                        --Store the middle words:
+                        do d_plus_1 <- addK 1 d
+                           writeSlots store d_plus_1 mid
+                        --Store the last word:
+                        --The lower shl bits should not be overwritten
+                        mask <- bitmask lsh
+                        slot <- addK (fromIntegral $ length $ fi:mid) d
+                        storeWithMask load store mask slot la
+                        return []
+                    )
+                    --The value remains n>=2 words
+                    (do vs' <- mdynLeftShiftN vs lsh
+                        let fi = head vs'
+                            mid = init $ tail vs'
+                            la = last vs'
+                        --Writing first word:
+                        --No need to %32 since there was no overflow
+                        fibits <- opE2 "add" (constant $ 8*(sz`mod`32))
+                                  (return lsh)
+                        fimask <- opE2 "shl" (return fibits) $
+                                  opE1 "not" (constant 0)
+                        storeWithMask load store fimask d fi
+                        --Store the middle words:
+                        do d_plus_1 <- addK 1 d
+                           writeSlots store d_plus_1 mid
+                        --Store the last word:
+                        mask <- bitmask lsh
+                        slot <- addK (fromIntegral $ length $ fi:mid) d
+                        storeWithMask load store mask slot la
+                        return []
+                    )
+                  return ()
 --Write words to slot, slot+1..
 writeSlots :: (Construct m, Op m ~ String) =>
   (Var m -> Var m -> m ()) ->
@@ -1128,7 +1250,7 @@ writeSlots :: (Construct m, Op m ~ String) =>
 writeSlots store slot vs =
   zipWithM_ (\off v -> do
                 slot' <- addK off slot
-                store slot' v) [0..] vs
+                store slot' v) [0..] vs  
 --Load old value, mask it, or it with value to write, write back
 storeWithMask :: (Construct m, Op m ~ String) =>
   (Var m -> m (Var m)) ->     --load operation
@@ -1141,6 +1263,17 @@ storeWithMask load store mask slot value = do
   old <- load slot
   new <- opE2 "or" (op "and" [mask,old]) $ return value
   store slot new
+
+--Given a number of bits n, create a mask with min(n,256) 1-bits, right-aligned.
+bitmask :: (Construct m, Op m ~ String) => Var m -> m (Var m)
+bitmask n = opE2 "sub" (opE2 "shl" (return n) (constant 1)) (constant 1)
+{-
+--storeWithMask, with mask = shl lower bits (and shl is dynamic)
+storeInUpperBits load store shl slot value = do
+  mask <- opE2 "sub" (opE2 "shl" (return shl) (constant 1)) $ constant 1
+  storeWithMask load store mask slot value
+storeInLowerBits load store shl
+-}
 
 --Shift a value stored across multiple words left by sh <- [0..31] bytes,
 --with the constraint that the result is still equally many words.
@@ -1177,3 +1310,63 @@ mdynLeftShiftNPlus1 ws sh = do
   tl <- mdynLeftShiftN ws sh
   hd <- op "shr" [rsh, head ws]
   return $ hd:tl
+
+--Storage and tstorage have equivalent behavior (for the duration of
+--mwritePtrSto), so I only need to test for storage.
+--Correctness property: when writing a sz-byte value bs to byte offset
+-- >= 0 (but not >= 2^256, which QuickCheck thankfully doesn't gen),
+--the resulting storage has bs at the given offset and everything else
+--untouched.
+prop_mwritePtrSto_correct ::
+  Positive Integer -> --sizeof value to write
+  NonNegative Integer -> --ptr
+  Bool
+prop_mwritePtrSto_correct (Positive sz) (NonNegative ptr)  =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      vBs = toBs "v" $ fromInteger sz
+      vWs = wordSplit vBs
+      load w = op "sload" [w]
+      store off w = op0 "sstore" [off,w]
+      d = ptr `div` 32
+      m = ptr `mod` 32
+      --The byte offsets of the value should be ptr..ptr+sz-1
+      lastOff = (ptr+sz-1) `div` 32
+      touched = [d..lastOff]
+  in case flip runSymM nullRs $ do
+    mwritePtrSto sz load store (wordK ptr) vWs
+    mapM (\slot -> constant slot >>= load) touched
+     of
+       Right (shiftedVs,rs) ->
+         --Concatenate all symbytes:
+         let bs = shiftedVs >>= \(SymWord bs) -> bs
+             --It should consist of m original bytes, sz value bytes,
+             --and the rest original.
+             [mn,szn] = map fromInteger [m,sz]
+             untouchedLeft = take mn bs
+             rest = drop mn bs
+             writtenValue = take szn rest
+             untouchedRight = drop szn rest
+             --Expected values:
+             originalBytes = map OriginalStoByte [fromInteger d..]
+             expectedLeft = take mn originalBytes
+             expectedWritten = vBs
+             expectedRight = drop (mn+szn) $ take (32*length shiftedVs)
+                             originalBytes
+             actual = (untouchedLeft,writtenValue,untouchedRight)
+             expected = (expectedLeft,expectedWritten,expectedRight)
+         in case () of
+              _ | actual /= expected ->
+                  error $ unlines ["Mismatch:",
+                                   "L: " ++ show (untouchedLeft,
+                                                  expectedLeft),
+                                   "W: " ++ show (writtenValue,
+                                                  expectedWritten),
+                                   "RA: " ++ show untouchedRight,
+                                   "RE: " ++ show expectedRight
+                                  ]
+                | let sto = symStorage rs
+                      ks = M.keysSet sto ->
+                  if ks /= S.fromList touched
+                  then error $ "Wrong slots touched: " ++ show (ks,touched)
+                  else True
+       Left err -> error $ "Sym eval error: " ++ show err
