@@ -1407,6 +1407,21 @@ convertE e = pushScope $ go e
             ys <- copyVars xs
             return (ys,t)
           --TODO add handling of &_, &&, || (addressOf, scAnd, scOr) here
+          -- &e; valid e := *ptr(.ubfield | !ix)*
+          --Boxed fields have already been desugared away
+          TyApp "addressOf" [a,r] :$ e ->
+            case rollAddressOfE e of
+              Just (ptr,indexPath) -> do
+                (ptrw,t) <- computeAddressOf ptr indexPath
+                return ([ptrw],t)
+              Nothing -> throwError $ AddressOfCan'tHandle e
+            --Wrong, unTupleE operates on pre-TC, pre-desugar tuples
+            {-
+          TypedVar "scAnd" [a,b] :$ ab
+            | Just [a,b] <- unTupleTE ab -> error "&&"
+          TypedVar "scOr" [a,b] :$ ab
+            | Just [a,b] <- unTupleTE ab -> error "||"
+-}
           --Push f, push x, call f x
           f :$ x -> do
             (fs,a2b) <- convertE f
@@ -1491,6 +1506,33 @@ convertE e = pushScope $ go e
           (vs,t) <- m
           putScope $ vs ++ scope
           return (vs,t)
+
+--Attempts to parse an e of form *ptr(.field | !ix)*
+rollAddressOfE :: E -> Maybe (E,[EIndex])
+rollAddressOfE = go []
+  where go ixs = \case
+          -- *ptr
+          TyApp "deref" _ :$ ptr -> Just (ptr,ixs)
+          --e.field
+          Dot e (Just ts) field ->
+            go (EDot field ts : ixs) e
+          --e!ix
+          TyApp "indexArray" [len,a] :$ e
+            | Just [arr,ix] <- unTupleTE e ->
+                go (EBang len a ix : ixs) arr
+          _ -> Nothing
+--unTupleE but for post-TC, post-desugar E's.
+--Only accepts Append {first: a, second: b} if the fields are in that order.
+unTupleTE :: E -> Maybe [E]
+unTupleTE = go
+  where go = \case
+          ConRecord "Unit" _ [] ->
+            Just []
+          ConRecord "Append" _ [("first", ConRecord "WordPad" _
+                                  [("unWordPad",a)]),
+                                 ("second",tup)] ->
+            (a:) <$> go tup
+          _ -> Nothing
 
 --Get off, sz, t of .field@ts; errors if the datatype has not been explored.
 getFieldInfo :: Name -> [T] -> FusedM (Integer, Integer, T)

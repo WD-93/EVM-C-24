@@ -3728,6 +3728,14 @@ optimized away. The issue arises because I wrongly require all iftes to
 end with the same scope as they began.
 ifte : (a => b) -> (a => b) -> (w:a) => b
 
+Supporting addressOf: xs.hd should already have been desugared to a deref.
+Valid form: *ptrE (.ubfield | !ix)*
+Eval ptrE first, then each ix. Fortunately computeAddressOf already does
+that in the correct order; EIndex contains E indices.
+Oops, indexArray doesn't seem to be in Arith.evmc. pipeline2typechecked
+shows it's not defined anywhere!
+Nor was indexPtr; fixed.
+
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
 To split across BBs, need a stack of state vars.

@@ -1,6 +1,22 @@
 //The arithmetic functions; C operators desugar to these.
 //Functions which don't fit in Alloc or Terminate also go here for now.
 
+//arr!ix desugars to this; only arrays with sizeof <= 32 are supported.
+//No bounds check is done; indexing out of bounds is UB.
+//PRIMITIVE
+indexArray : (Array len a, Short) -> a;
+indexArray _ := {};
+//ptr[ix] desugars to *(indexPtr(ptr,ix)); ix is restricted to short because
+//that's the size_t.
+//Will silently overflow.
+//The repeated mask 0xffff (multiply, then plus) should be optimized away.
+indexPtr : (Ptr r a, Short) -> Ptr r a;
+indexPtr (ptr,ix) := {
+	 ptr :: Ptr r a;
+	 var sz = sizeof (P :: P a);
+	 return coerce (coerce ptr + (sz*ix))
+};
+
 //A function that returns a zero bytestring; analogous to undefined in Haskell.
 //Its definition is _ := {}, but it's not a primitive; a zero bytestring is
 //the default return.

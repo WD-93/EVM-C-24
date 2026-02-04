@@ -600,10 +600,15 @@ typeOfAmpersand e =
     Just ptr -> do
       (e',a) <- typeOf e
       (_,ptrt) <- typeOf ptr
-      let Ptr r _ = ptrt --This can't fail after typeOf e passes... right?
-      a' <- zonk a
-      r' <- zonk r
-      return (TyApp "addressOf" [a',r'] :$ e', Ptr r' a')
+      --let Ptr r _ = ptrt --This can't fail after typeOf e passes... right?
+      --It failed...
+      ptrt' <- zonk ptrt
+      case ptrt' of
+        Ptr r _ -> do
+          a' <- zonk a
+          r' <- zonk r
+          return (TyApp "addressOf" [a',r'] :$ e', Ptr r' a')
+        _ -> error $ "typeOfAmpersand: " ++ show (e,ptrt')
 --Gets the pointer in the expr if it's a valid ampersand expr (pre-HM)
 disassembleAmpersandExpr :: E -> Maybe E
 disassembleAmpersandExpr = go

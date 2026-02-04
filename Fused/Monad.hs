@@ -147,6 +147,8 @@ data FusedError = GenericFE String
                 | BadOpArity String [Var] Int
                 | OpMustReturnAWord String [Var]
                 | Op0MayNotReturnAWord String [Var]
+                --addressOf-specific (&e):
+                | AddressOfCan'tHandle E
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
