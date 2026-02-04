@@ -346,17 +346,19 @@ instance Construct SymM where
     zipWithM_ writeMemByte [to..] bs
   op0 o ws = throwError $ UnrecognizedOp0 o ws
   comment _ = return ()
+  --IC the bug... I can't afford to check whether the unexecuted branch
+  --returns the right number of words because it may throw a symbolic error.
+  --That's because executing the wrong branch in storage ptr write causes
+  --a value to be or'd with old storage, which can't be represented in
+  --SymByte (yet).
   ifte n cond th el = do
     --For now we only allow branching on concrete values; doing so on
     --symbolic values would require adding [(CondTrace,_)] to the transformer
     --stack.
     k <- parseConst "ifte" cond
-    --Need to test both branches return n words, even though one is discarded.
-    (vsth,sth) <- speculativeRun True n th
-    (vsel,sel) <- speculativeRun False n el
     if k == 0
-      then put sel >> return vsel
-      else put sth >> return vsth
+      then el
+      else th
 --Used to test both branches of ifte in SymM
 --Errors if the speculative action errors, or if it returns the wrong number
 --of words.
@@ -1088,7 +1090,7 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
 --Note I pass the actual load operation rather than just a name. That means
 --that this can be reused for any API implementing a mutable word=>word map,
 --e.g. storage arrays, hashmaps...
-mwritePtrSto :: (Construct m, Op m ~ String) =>
+mwritePtrSto :: (Construct m, Op m ~ String, Show (Var m)) =>
   Integer -> --sizeof value to write
   (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
   (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
@@ -1130,9 +1132,11 @@ mwritePtrSto sz load store ptr vs
                         --MSB is at the lowest address.
                         lo <- op "shl" [lsh,w]
                         hi <- op "shr" [rsh,w]
-                        ff <- opE1 "not" $ constant 0
-                        maskLo <- op "shr" [rsh,ff]
-                        maskHi <- op "shl" [lsh,ff]
+                        --The pre-shift mask should ofc have the same
+                        --sz as the value...
+                        ff <- (constant $ 8*sz) >>= bitmask
+                        maskHi <- op "shr" [rsh,ff]
+                        maskLo <- op "shl" [lsh,ff]
                         storeWithMask load store maskHi d hi
                         d_plus_1 <- addK 1 d
                         storeWithMask load store maskLo d_plus_1 lo
@@ -1140,8 +1144,7 @@ mwritePtrSto sz load store ptr vs
                     )
                     --w is still one word:
                     (do w' <- op "shl" [lsh,w]
-                        wbits <- opE2 "sub" (opE2 "shl" (constant $ sz*8)
-                                             (constant 1)) (constant 1)
+                        wbits <- (constant $ 8*sz) >>= bitmask
                         mask <- opE1 "not" $ op "shl" [lsh,wbits]
                         storeWithMask load store mask d w'
                         return []
