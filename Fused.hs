@@ -13,7 +13,7 @@ import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
-                  mderefBytePtr)
+                  mderefBytePtr,mwritePtrSto)
 import Util (unsafePrint, --for debugging
              complainIf
             )
@@ -1002,8 +1002,10 @@ assignPtr r a ptr vs = do
                  (\(off,v) -> do
                      ptr' <- addK off ptr
                      mstore ptr' v)
-           "Storage" -> error "todo assignPtr storage"
-           "TStorage" -> error "todo assignPtr tstorage"
+           "Storage" -> mwritePtrSto sz (\v -> op "sload" [v])
+                        (\slot v -> op0 "sstore" [slot,v]) ptr vs
+           "TStorage" -> mwritePtrSto sz (\v -> op "tload" [v])
+                         (\slot v -> op0 "tstore" [slot,v]) ptr vs
            _ -> throwError $ AssignmentToImmutableRegion r
 writePtrPartialWord :: Var -> Var -> Integer -> Bool -> FFM ()
 writePtrPartialWord ptr v len mayClobber
@@ -1679,15 +1681,6 @@ truthy ws = go ws
 --scope.
 block :: Scope -> S -> FFM [Stmt]
 block scope s = snd <$> collect scope (convertS s)
---Ditto but more general.
-collect :: Scope -> FFM a -> FFM (a,[Stmt])
-collect scope ffm = do
-  cache <- getScope
-  pass $ do
-    putScope scope
-    (a,stmts) <- listen ffm --collect the emitted stmts
-    putScope cache
-    return ((a,stmts), const []) --intercept them
 
 --Cyclical datatypes (where a tycon indirectly contains itself,
 --potentially resulting in an infinite sizeof) are detected by tracking a

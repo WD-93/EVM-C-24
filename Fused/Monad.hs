@@ -398,8 +398,38 @@ instance Construct FusedFunM where
     case mv of
       Just v -> throwError $ Op0MayNotReturnAWord primop vs
       Nothing -> return ()
+  --TODO move collect to Fused.Monad...
+  ifte nret cond th el = do
+    --The name of the value returned; both branches will assign their value
+    --to vs, a parallel of SSA phi var assignment.
+    --A default value need not be passed.
+    xs <- sequence $ replicate nret $ newVar $ UInt 32
+    scope <- getScope
+    let coll b m =
+          snd <$> collect scope (do ys <- m
+                                    if length ys /= length xs
+                                      then throwError $ GenericFE $
+                                           "Length mismatch in ifte " ++
+                                           show b ++ ": " ++ show (nret,ys)
+                                      else return ()
+                                    copyTo xs ys)
+    ths <- coll True th
+    els <- coll False el
+    emitStmt $ IR.Ifte scope [] cond ths els
+    putScope $ xs ++ scope
+    return xs
   constant = pushK
   comment = comment
+
+--Isolate stmt emission and scope effect; used for compiling iftes.
+collect :: Scope -> FFM a -> FFM (a,[Stmt])
+collect scope ffm = do
+  cache <- getScope
+  pass $ do
+    putScope scope
+    (a,stmts) <- listen ffm --collect the emitted stmts
+    putScope cache
+    return ((a,stmts), const []) --intercept them
 
 runOp :: String -> [Var] -> FFM (Maybe Var)
 runOp primop vs =

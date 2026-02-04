@@ -1100,7 +1100,9 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
 --Note I pass the actual load operation rather than just a name. That means
 --that this can be reused for any API implementing a mutable word=>word map,
 --e.g. storage arrays, hashmaps...
-mwritePtrSto :: (Construct m, Op m ~ String, Show (Var m)) =>
+mwritePtrSto :: (Construct m, Op m ~ String,
+                 Show (Var m) --just used for debugging
+                ) =>
   Integer -> --sizeof value to write
   (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
   (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
