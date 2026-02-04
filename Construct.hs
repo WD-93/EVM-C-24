@@ -14,6 +14,8 @@ import Control.Monad.Except
 --Testing:
 import Test.QuickCheck hiding ((.&.),(.|.),output)
 import qualified Data.Set as S
+import Data.Char (intToDigit) --for Show sym byte and word instance
+import Util (unsafePrint)
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 
@@ -200,12 +202,20 @@ emitM1 = do
 --Symbolic eval interpretation; this is the one used for tests.
 --It doesn't need any alloc machinery since "vars" are simply symbolic values.
 newtype SymWord = SymWord [SymByte] --length = 32
-  deriving (Eq,Show)
+  deriving Eq
 data SymByte = K Int --0..255
              | X (String,Int) --(id,n)
              | OriginalMemByte Integer --represents memory before any writes
              | OriginalStoByte Integer --n = byte offset (32*slot+byte_index)
-  deriving (Eq,Show)
+  deriving Eq
+instance Show SymByte where
+  show = \case
+    K n -> map intToDigit [n `div` 16, n `mod` 16]
+    X (str,n) -> str ++ "(" ++ show n ++ ")"
+    OriginalMemByte n -> "m["++show n++"]"
+    OriginalStoByte n -> "s["++show n++"]"
+instance Show SymWord where
+  show (SymWord bs) = "0x" ++ (bs >>= show)
 --The ops relevant to struct construction and access.
 --I don't need push since I'm evaluating rather than generating
 --instructions; the constant in the instance can handle that.
@@ -356,9 +366,9 @@ instance Construct SymM where
     --symbolic values would require adding [(CondTrace,_)] to the transformer
     --stack.
     k <- parseConst "ifte" cond
-    if k == 0
-      then el
-      else th
+    if k > 0
+      then th
+      else el
 --Used to test both branches of ifte in SymM
 --Errors if the speculative action errors, or if it returns the wrong number
 --of words.
@@ -1111,6 +1121,7 @@ mwritePtrSto sz load store ptr vs
             --For sz == 1, the check whether the value should be split over
             --2 words should always return false; it should be DCE'd away.
             _ | sz <= 31 -> do
+                  --unsafePrint "sz <= 31"
                   let [w] = vs
                   --For sz = 1:
                   --m = 31 => left-shift = 0, it increases with lower m
@@ -1135,8 +1146,16 @@ mwritePtrSto sz load store ptr vs
                         --The pre-shift mask should ofc have the same
                         --sz as the value...
                         ff <- (constant $ 8*sz) >>= bitmask
-                        maskHi <- op "shr" [rsh,ff]
-                        maskLo <- op "shl" [lsh,ff]
+                        maskLo <- opE1 "not" $ op "shl" [lsh,ff]
+                        maskHi <- opE1 "not" $ op "shr" [rsh,ff]
+                        --maskHi <- op "shr" [lsh,ff]
+                        --maskLo <- op "shl" [rsh,ff]
+                        {-
+                        error $ unlines ["True branch",
+                                         "hi " ++ show hi,
+                                         "maskHi: " ++ show maskHi
+                                        ]
+-}
                         storeWithMask load store maskHi d hi
                         d_plus_1 <- addK 1 d
                         storeWithMask load store maskLo d_plus_1 lo
@@ -1146,6 +1165,12 @@ mwritePtrSto sz load store ptr vs
                     (do w' <- op "shl" [lsh,w]
                         wbits <- (constant $ 8*sz) >>= bitmask
                         mask <- opE1 "not" $ op "shl" [lsh,wbits]
+                        {-
+                        error $ unlines ["False branch",
+                                         "w': " ++ show w',
+                                         "mask: " ++ show mask,
+                                         "lsh: " ++ show lsh
+                                        ]-}
                         storeWithMask load store mask d w'
                         return []
                     )
@@ -1183,8 +1208,8 @@ mwritePtrSto sz load store ptr vs
                 --the value can be written as-is:
                 (writeSlots store d vs >> return [])
               | let -> do
+                  --unsafePrint "sz > 32, sz % 32 != 0"
                   --Mostly copied from sz<=31 case; TODO merge...
-                  let [w] = vs
                   --For sz = 1:
                   --m = 31 => left-shift = 0, it increases with lower m
                   --left-shift in bytes: 31-m
@@ -1193,26 +1218,29 @@ mwritePtrSto sz load store ptr vs
                   --8*(32-sz-m)%32
                   lsh <- opE2 "shl" (constant 3) $
                          opE2 "and" (constant 31) $
-                         opE2 "sub" (constant $ 32-sz) $
+                         opE2 "sub" (constant $ 32-(sz`mod`32)) $
                          return m
                   --If m > 32-sz, the value must be split into n+1 words
                   --Note if sz == 1, that's impossible since m = _ % 32.
-                  cond <- opE2 "gt" (return m) $ constant $ 32 - sz
+                  cond <- opE2 "gt" (return m) $ constant $ 32 - (sz`mod`32)
                   ifte 0 cond
                     --the value must be split into n+1 words
                     (do vs' <- mdynLeftShiftNPlus1 vs lsh
+                        --unsafePrint $ "T: " ++ show vs'
                         let fi = head vs'
                             mid = init $ tail vs'
                             la = last vs'
                         --Writing the first word:
                         --the number of value bits in the first word:
-                        --Because it's overflowed, we must also %32
+                        --Because it's overflowed, we must also %32B
                         fibits <-
-                          opE2 "and" (constant 31) $
+                          opE2 "and" (constant 255) $
                           opE2 "add" (constant $ 8*(sz`mod`32))
                           (return lsh)
+                        --unsafePrint $ "fibits: " ++ show fibits
                         fimask <- opE2 "shl" (return fibits) $
                                   opE1 "not" (constant 0)
+                        --unsafePrint $ "fimask: " ++ show fimask
                         storeWithMask load store fimask d fi
                         --Store the middle words:
                         do d_plus_1 <- addK 1 d
@@ -1226,6 +1254,7 @@ mwritePtrSto sz load store ptr vs
                     )
                     --The value remains n>=2 words
                     (do vs' <- mdynLeftShiftN vs lsh
+                        --unsafePrint $ "F: " ++ show vs'
                         let fi = head vs'
                             mid = init $ tail vs'
                             la = last vs'
@@ -1301,6 +1330,29 @@ mdynLeftShiftN ws sh =
           u <- op "or" [w,r]
           us <- go ws rs
           return $ u:us
+
+--The left-padding is (32-sz%32)%32 bytes... left-shift must be <= that.
+prop_mdynLeftShiftN_correct ::
+  Positive Integer -> --sz
+  NonNegative Int -> --lsh in bytes before modulus
+  Bool
+prop_mdynLeftShiftN_correct (Positive sz) (NonNegative lsh_pre_mod) =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      vBs = toBs "v" $ fromInteger sz
+      vWs = wordSplit vBs
+      leftPadding = (32 - sz `mod` 32) `mod` 32
+      lsh = 8 * (fromIntegral lsh_pre_mod `mod` (leftPadding + 1))
+  in case runSymM (mdynLeftShiftN vWs (wordK lsh)) nullRs of
+       Right (actualWs,_) ->
+         let actualBs = actualWs >>= \(SymWord bs) -> bs
+             expectedBs = replicate (fromInteger $ leftPadding - lsh`div`8)
+                          (K 0) ++
+                          vBs ++
+                          replicate (fromInteger (lsh`div`8)) (K 0)
+         in if actualBs /= expectedBs
+            then error $ "Mismatch: " ++ show (actualBs,expectedBs)
+            else True
+       Left err -> error $ "SymM error: " ++ show err
 --Constraint: the result is n+1 words, where n is the original word length.
 --Precondition: ws is nonempty.
 mdynLeftShiftNPlus1 :: (Construct m, Op m ~ String) =>
@@ -1313,6 +1365,26 @@ mdynLeftShiftNPlus1 ws sh = do
   tl <- mdynLeftShiftN ws sh
   hd <- op "shr" [rsh, head ws]
   return $ hd:tl
+--Left-padding: (32-sz%32)%32
+--In this case lsh is between that and 31
+prop_mdynLeftShiftNPlus1_correct (Positive sz) (NonNegative lsh_pre_mod) =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      vBs = toBs "v" $ fromInteger sz
+      vWs = wordSplit vBs
+      leftPadding = (32 - sz `mod` 32) `mod` 32
+      lsh = 8 * (leftPadding +
+                 fromIntegral lsh_pre_mod `mod` (32-leftPadding))
+  in case runSymM (mdynLeftShiftNPlus1 vWs (wordK lsh)) nullRs of
+       Right (actualWs,_) ->
+         let actualBs = actualWs >>= \(SymWord bs) -> bs
+             expectedBs = replicate (fromInteger $ 32 + leftPadding - lsh`div`8)
+                          (K 0) ++
+                          vBs ++
+                          replicate (fromInteger (lsh`div`8)) (K 0)
+         in if actualBs /= expectedBs
+            then error $ "Mismatch: " ++ show (actualBs,expectedBs)
+            else True
+       Left err -> error $ "SymM error: " ++ show err
 
 --Storage and tstorage have equivalent behavior (for the duration of
 --mwritePtrSto), so I only need to test for storage.
@@ -1350,7 +1422,7 @@ prop_mwritePtrSto_correct (Positive sz) (NonNegative ptr)  =
              writtenValue = take szn rest
              untouchedRight = drop szn rest
              --Expected values:
-             originalBytes = map OriginalStoByte [fromInteger d..]
+             originalBytes = map OriginalStoByte [fromInteger (d*32)..]
              expectedLeft = take mn originalBytes
              expectedWritten = vBs
              expectedRight = drop (mn+szn) $ take (32*length shiftedVs)
