@@ -13,7 +13,7 @@ import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
-                  mderefBytePtr,mwritePtrSto)
+                  mderefBytePtr,mwritePtrSto,ifte)
 import Util (unsafePrint, --for debugging
              complainIf
             )
@@ -1415,13 +1415,33 @@ convertE e = pushScope $ go e
                 (ptrw,t) <- computeAddressOf ptr indexPath
                 return ([ptrw],t)
               Nothing -> throwError $ AddressOfCan'tHandle e
-            --Wrong, unTupleE operates on pre-TC, pre-desugar tuples
-            {-
-          TypedVar "scAnd" [a,b] :$ ab
-            | Just [a,b] <- unTupleTE ab -> error "&&"
-          TypedVar "scOr" [a,b] :$ ab
-            | Just [a,b] <- unTupleTE ab -> error "||"
--}
+            --unTupleE operates on pre-TC, pre-desugar tuples;
+            --unTupleTE is the correct function for this stage.
+          TyApp "scAnd" [_a,_b] :$ ab
+            | Just [ea,eb] <- unTupleTE ab -> do
+                scope <- getScope
+                (vsa,_ta) <- convertE ea
+                --Note: truthy is a redundant redef of this
+                w <- disjunction vsa
+                putScope $ w:scope
+                b <- ifte 1 w
+                  (do (vsb,_tb) <- convertE eb
+                      w <- opE1 "iszero" $ opE1 "iszero" $ disjunction vsb
+                      return [w])
+                  ((:[]) <$> constant 0)
+                return (b, TyCon "Bool")
+          TyApp "scOr" [_a,_b] :$ ab
+            | Just [ea,eb] <- unTupleTE ab -> do
+                scope <- getScope
+                (vsa,_ta) <- convertE ea
+                w <- disjunction vsa
+                putScope $ w:scope
+                b <- ifte 1 w
+                  ((:[]) <$> constant 1)
+                  (do (vsb,_tb) <- convertE eb
+                      w <- opE1 "iszero" $ opE1 "iszero" $ disjunction vsb
+                      return [w])
+                return (b, TyCon "Bool")
           --Push f, push x, call f x
           f :$ x -> do
             (fs,a2b) <- convertE f
@@ -1523,6 +1543,8 @@ rollAddressOfE = go []
           _ -> Nothing
 --unTupleE but for post-TC, post-desugar E's.
 --Only accepts Append {first: a, second: b} if the fields are in that order.
+--TODO use foldr Append Unit . map WordPad to create tuples instead of foldr
+--pair? That's simpler, but there's no runtime overhead either way.
 unTupleTE :: E -> Maybe [E]
 unTupleTE = go
   where go = \case
@@ -1530,7 +1552,8 @@ unTupleTE = go
             Just []
           ConRecord "Append" _ [("first", ConRecord "WordPad" _
                                   [("unWordPad",a)]),
-                                 ("second",tup)] ->
+                                 ("second", ConRecord "WordPad" _
+                                   [("unWordPad",tup)] )] ->
             (a:) <$> go tup
           _ -> Nothing
 
