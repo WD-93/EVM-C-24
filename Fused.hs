@@ -391,7 +391,21 @@ structuredPrims = M.fromList [
   ("bwNot", (PT $ \case a :-> a' | a == a' -> Just []
                         _ -> Nothing,
              const $ mkPrim $ mapM (op "not" . (:[]))
-            ))
+            )),
+  --The forgotten primitive: indexArray (arr!ix)
+  ("indexArray", (PT $ \case Tu2 (Array len a) (UInt 2) :-> a'
+                               | a == a' -> Just [len,a]
+                             _ -> Nothing,
+                  (\[TyNat len,a] -> mkPrim $ \arrix -> do
+                      sza <- liftFused $ sizeof a
+                      let szarr = len*sza
+                      if szarr > 32
+                        then throwError $ GenericFE $
+                        ">32B array in indexArray: " ++ show (len,a,szarr)
+                        else return ()
+                      let [arr,ix] = arrix
+                      (:[]) <$> mgetBang len sza arr ix
+                  )))
   ]
                   `M.union` evmPrims
   where bytePtrPrim fnm r load =
