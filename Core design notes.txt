@@ -3736,6 +3736,76 @@ Oops, indexArray doesn't seem to be in Arith.evmc. pipeline2typechecked
 shows it's not defined anywhere!
 Nor was indexPtr; fixed.
 
+case: where did I put the case compilation comments?
+Tag schemes: (), Bool (N1), N16, N1 (>=17)
+TODO add N5.
+All potentially fallible patterns Con {...} must have the same parent tycon.
+A Con is either boxed or unboxed and has a tag scheme.
+ImplTyCon has tag scheme () and is infallible. Note infallible /= wild!
+Bool: Ifte
+N1, N16: map each case to a con, fill in rest with default.
+Custom: nested iftes ending with default.
+Don't fetch the entire ImplTyCon when casing on a BDT, just the tag.
+Compile all cases, even if they're unreachable? While catching lurking
+Structured errors is desirable, it's not good to liven unused globals, DTs
+or functions... so no for now.
+First step: cases -> (fallible con => case body, maybe defaultCase)
+Postcondition: all the cons in the map will either be boxed if the DT is
+boxed, or unboxed if it is not.
+Cool: with case as a jump (jt+e), dispatch can be automatically inlined in
+while(1)
+ case interpState.pc of
+  Instr1 a b c -> ...
+  ...
+
+&& opt (for the Opt stage): in a && b && c, you needn't bother
+converting truthy(a) to Bool; just branch on it.
+TODO make an Opt monad with a reified API, allowing slotting in of
+user-specified optimizers and logging of which rules were used.
+--Reminiscent of GHC's laws. With QC you can check they're correct...
+--also cf equation discovery, Smallbone's work.
+Elim f/g: require it has no references to it from root; if so, remove.
+Inline f: if its last branch if jump to x <- push g, add the body of g.
+The refcount of g reduces by 1.
+By copying the SCC of g, you can eliminate dependence on g and specialize.
+Once I have pointer-related opts, incremental global placement might be
+worth it.
+Speculative opts and backtracking would be nice... you could even specify
+a benchmark of calls to optimize against. n*gen_call.
+Related to JIT compilers? Actual execution could better find hotspots in
+loops (e.g. inferring a loop always executes N times).
+Tricky problem: generating data that matches real usage. You need to gen
+sequences of calls... a custom state machine per contract?
+One could QuickCheck perf bounds... problem: it needs to be absolute.
+Use properties to guide compilation.
+How to optimize given feedback from multiple IR levels is an interesting
+problem.
+To read: supercombinators, context-free rewrites, abstract interpretation.
+Lattice of value sets, fixpoint iteration. Widening. Cousot 1979
+--Abstract interpretation: a unified lattice model for static analysis of programs by construction or approximation of fixpoints, 1977
+--Systematic design of program analysis frameworks, 1979
+Analysis phase: first construct refcount graph, compute intensity.
+For writeup: ETH's high execution cost may justify search.
+Ideas: peep EVM compilation of BBs. Do so after peephole opt!
+TODO insert more info from analysis into tree?
+
+case xs of
+ Cons {} => {var x = xs.hd; //avoids predeclaring x
+  };
+ Nil => f(xs)
+When g is only called by f and f's cont has variables which are guaranteed to be duplicates or constants, it should be possible to eliminate them even when you can't inline (as in case).
+Note jump (jt+k) should inc the refcount of all fs in jt.
+I should be able to fetch tags and case on them...
+If no matching case were UB, case on 0,1... could be implemented using a JT. 
+It would be nice to have 0..n, 0,16,..16n types.
+
+Case can be divided into two parts which vary based on DT: fetching 
+the tag and branching on cons.
+For N1,5,16, the branch DT should be a Map Name (Pat,S); each con
+with no explicit case is mapped to the default case.
+Each case is compiled to a [Stmt] that evaluates the pat,
+assigns it to vs with tag check disabled, then executes S.
+
 TODO simple mem splitting rule within a BB: p and p+32 don't overlap for
 mstore, mload.
 To split across BBs, need a stack of state vars.
