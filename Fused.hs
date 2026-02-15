@@ -1363,7 +1363,8 @@ convertS s = cleanup $
       scope <- getScope
       --Need to eval e in scope (pushing it to the stack), then push its
       --tag as well.
-      error "todo"
+      (vs,t) <- convertE e
+      compileCase scope t vs cases
     --A stmt with higher scope (suffix) may safely follow one with lower; no
     --special construct is needed for blocks or block end in Structured.
     Block ss -> do
@@ -1376,6 +1377,231 @@ convertS s = cleanup $
           scope <- getScope
           m
           putScope scope
+{-
+Behavior: branch on the top-level constructor; if no case matches revert.
+If cases = {}, simply revertValue().
+If the first case is infallible, assign.
+If cases = {UBCon{...}; ...}, branch on vs.tagTyCon.
+If cases = {BCon{...}; ...}, branch on vs.unImplTyCon->tagImplTyCon.
+
+Behavior per tag scheme:
+N1: jump (jt+tag*5)
+N5 (FW): jump (jt+tag)
+N16: jump ((jt>>tag) & 0xffff)
+Custom: repeated ifte; ordering of distinct top-level constructors matters
+only here.
+Nil is never branched on.
+
+Custom can be handled entirely in FFM; N1, N16 need a new Stmt construct.
+-}
+
+--If it's infallible, we just assign.
+--Otherwise the DT may be boxed and have a given region, and it
+--has a tag scheme and con list.
+--Con {...} is infallible iff the datatype only has infallible cons, or
+--the DT is boxed and Con is ImplDT
+--First pattern info:
+data FPI = Infallible
+         | Fallible (Maybe T) --Just region if boxed
+           [Name] --relevant cons
+           (TagScheme (E,Serialized))
+           --Ex: Bool: Nothing, [False,True], N1
+           --    List r a: Just r, [Nil,Cons], N1
+           --Those will have tag scheme Bool (0 or 1 : Byte) in future
+           
+getFPI :: T -> Pat -> FusedM FPI
+getFPI dt = \case
+  PCon con ts _ -> do
+    let (TyCon tycon, ts) = rollTyApps dt
+    dti <- getModDTInfo tycon
+    --If TyCon is boxed: look up ImplTyCon's tag scheme
+    --else look up TyCon's.
+    let boxed = dtBoxed dti
+        impl nm = (if boxed then "Impl" else "") ++ nm
+        relTyCon = impl tycon
+    (cons,tagScheme) <- getTagScheme relTyCon ts
+    let relCons = map impl cons
+        mr = if boxed
+             then let Just rv = dtRegion dti
+                      Just ix = elemIndex rv (dtParams dti)
+                  in Just $ ts !! ix
+             else Nothing
+        --Remap tags to Nil, Cons rather than ImplNil, ImplCons
+        --if tag scheme is custom and DT is boxed.
+        relTagScheme =
+          case tagScheme of
+            Custom t con2t ->
+              Custom t (if boxed
+                        then M.mapKeys (drop 4) con2t
+                        else con2t)
+            _ -> tagScheme
+    b <- case tagScheme of
+           _ | length cons == 1 -> return True
+             | boxed && con == relTyCon -> return True
+           Nil -> return True
+           Custom tagT con2tag -> do
+             tagSz <- sizeof tagT
+             return $ tagSz == 0
+           _ -> return False
+    return $ if b
+             then Infallible
+             else Fallible mr relCons relTagScheme
+
+--TODO:
+--If t = Int s l or Array len (Int s l), it should be possible to case on
+--constant literal patterns. Array(1,2,3) failing and falling through breaks
+--the "only case on top-level constructor" rule...
+--TODO add support for integer literal patterns.
+compileCase :: Scope -> T -> [Var] -> [(Pat,S)] -> FFM ()
+compileCase scope dt vs cases =
+  case cases of
+    --no cases; simply revert
+    [] -> revertNil
+    --One case; it doesn't matter whether it's fallible.
+    [ps] -> simpleCase ps
+    --Check if first pattern is infallible, boxed or unboxed
+    --TODO special-case {FallibleCon => ...; inf => ...}, where I really
+    --only need to check the tag.
+    cases@((p,s):_) -> do
+        fpi <- liftFused $ getFPI dt p
+        case fpi of
+          Infallible -> simpleCase (p,s)
+          Fallible mr cons tagScheme -> do
+            (tag,tagT) <- getTagOfValue dt mr tagScheme vs
+            --If tag scheme = N1, need to mul tag by 5
+            tag' <- case tagScheme of
+                      N1 _ -> do
+                        let [tagw] = tag
+                        (:[]) <$> opE2 "mul" (constant 5) (return tagw)
+                      _ -> return tag
+            --Branching on the tag...
+            putScope $ tag ++ vs ++ scope
+            let (fals,minf) = collectCases cons cases
+            case tagScheme of
+              Custom _ con2tag ->
+                compileCustomBranch scope tagT con2tag fals minf tag vs
+              --Need to jump into a JT; whether it's pushed onto the stack
+              --or in code, it's sequential in order of cons.
+              _ -> do
+                let [tagw] = tag
+                --Each (p,s) needs to be converted to [Stmt].
+                --First, the default case.
+                --TODO opt: revert(0,0) ignores the scope above it, so I
+                --only need one jumpdest for it.
+                dflt <- snd <$> collect (vs++scope)
+                  (case minf of
+                     Nothing -> revertNil
+                     Just (p,s) -> caseBody scope vs p s
+                  )
+                con2stmts <- forM (M.fromList fals)
+                             (\(p,s) -> snd <$> collect (vs ++ scope)
+                               (caseBody scope vs p s))
+                let jt = map (\con ->
+                                case M.lookup con con2stmts of
+                                  Nothing -> dflt
+                                  Just stmts -> stmts) cons
+                emitStmt $ CaseBranch (tag ++ vs ++ scope)
+                  (tagScheme == N16) tagw jt
+  where simpleCase (p,s) = do
+          assignValue p vs
+          convertS s
+--The code executed in a (p,s) pattern body after a branch; it's the same as
+--simpleCase except the tag check is elided.
+--Precondition: scope is vs++sc before the match
+caseBody :: [Var] -> [Var] -> Pat -> S -> FFM ()
+caseBody sc vs p s = do
+  mep <- evaluatePat p
+  case mep of
+    Nothing -> return ()
+    Just ep -> assignEP (disableTagCheck ep) vs
+  putScope sc
+  convertS s
+disableTagCheck :: EvaluatedPat -> EvaluatedPat
+disableTagCheck = \case
+  EPCon con ts _chkTag fs -> EPCon con ts False fs
+  ep -> ep
+--calls revertValue()
+revertNil :: FFM ()
+revertNil = do
+  convertE $ TyApp "revertValue" [Unit] :$
+               ConRecord "Unit" (Just []) []
+  return ()
+--A series of nested if tag == k then ... else ...
+--Terminated either by p = vs if minf = Just (p,s) or 
+compileCustomBranch :: [Var] -> T ->
+                       Map Name (E,Serialized) ->
+                       [(Name,(Pat,S))] -> Maybe (Pat,S) ->
+                       [Var] -> --tag
+                       [Var] -> --constructor
+                       FFM ()
+compileCustomBranch scope tagT con2tag fals minf tag vs = go fals
+  where go = \case
+          --No more falsifiable cases
+          [] ->
+            case minf of
+              Nothing -> revertNil
+              Just (p,s) -> do
+                --TODO check: should I adjust scope here for correctness or
+                --efficiency?
+                assignValue p vs
+                convertS s
+          (con,(p, s)) : rest ->
+            case M.lookup con con2tag of
+              Nothing -> error "Compiler error: !?"
+              Just (_e,ser) -> do
+                desired <- pushMultiWordSer ser tagT
+                w <- equals desired tag
+                ifte 0 w
+                  (do putScope $ vs ++ scope
+                      caseBody scope vs p s
+                      return []
+                  )
+                  (go rest >> return [])
+                return ()
+--A pattern is fallible iff:
+--It is of form Con{...}, where Con has constructor set of size > 1 and a
+--tag of size 0. The constructor set of a boxed con is the other boxed cons
+--of the same datatype; for an unboxed con it is the canonical constructor set.
+--Cases are dropped due to redunancy if:
+--1)those with the same top-level con as one already in the map, or
+--2)an infallible case has already been encountered, or
+--3)all constructors have already been covered.
+--Postcondition: if the DT is boxed, all cons in the map will be boxed;
+--if it is unboxed they will be unboxed.
+--State machine:
+--No cases: you're done.
+--Infallible pattern: you're done.
+--One fallible UBCon: collect remaining cons from TyCon.
+--One fallible BCon: collect remaining boxed cons (inferred from ImplTyCon).
+--Must return a list of fallible cases because order of constructor cases
+--matters for DTs with custom tags where tag values overlap.
+--Ex: data D = {A;B}; tag D = Word where {A: 1, B: 1}
+--case e of {A => stmtA; B => stmtB} will behave differently from
+--case e of {B => stmtB; A => stmtA}.
+--Patterns: UBCon*,[default] | BCon*,[ImplTyCon | default]
+--If boxed, save "Impl"++tycon in order to check equality? Alt: read conset.
+
+--Prune redundant cases (duplicate cons, any after infallible, any after
+--all cons covered).
+--Order is preserved because it matters to Custom.
+collectCases :: [Name] -> [(Pat,S)] -> ([(Name,(Pat,S))], Maybe (Pat,S))
+collectCases cons =
+  let conset = S.fromList cons
+  in go conset conset
+  where go remaining full = \case
+          --All cases already covered
+          _ | S.null remaining -> ([],Nothing)
+          --No cases left
+          [] -> ([],Nothing)
+          (p@(PCon con _ _), s) : cases
+            | S.member con remaining ->
+              (((con,(p,s)):)***id) $ go (S.delete con remaining) full cases
+            | not $ S.member con full ->
+              ([], Just (p,s)) --it must be ImplTyCon
+            --It's a repeated constructor, ignore
+            | otherwise -> go remaining full cases
+          --It's an infallible pattern
+          (p,s) : cases -> ([], Just (p,s))
 --Evaluates an e in the given scope and applies truthy to it, returning the
 --result and body.
 collectCond :: Scope -> E -> FFM (Var,[Stmt])
@@ -1383,7 +1609,6 @@ collectCond scope e =
   collect scope $ do
   (vs,_t) <- convertE e
   truthy vs
-
 --A helper for pushing a particular f or g without modifying scope;
 --uses convertE.
 --Note for future-proofing: assumes all tyapps are just one word, which might
@@ -1597,7 +1822,7 @@ getTag con ts = do
   --Bug: I was getting the tag scheme of con rather than tycon, which
   --was masked since ImplList is both a con and tycon
   (cons,tagScheme) <- getTagScheme tycon ts
-  --Will fail for a boxed constructor...
+  --Will fail for a boxed constructor... TODO fix
   let Just conIx = elemIndex con cons
   return $ case tagScheme of
              Nil -> (emptySer, TyCon "Unit")
@@ -1622,6 +1847,31 @@ getTag con ts = do
                             [Left $ serInt 1 $ fromIntegral conIx]
                         },
                       UInt 1)
+--This helper computes the tag of a constructor value given type info.
+--For boxed types, it's *vs :: tagType.
+--For unboxed types, it's vs.tagTyCon
+--TODO define and reuse a more generic variant.
+getTagOfValue :: T -> Maybe T -> TagScheme (E,Serialized) -> [Var] ->
+  FFM ([Var],T)
+getTagOfValue dt mr tagScheme vs =
+  case mr of
+    Just r -> do
+      let tagT = typeOfTag tagScheme
+      --Copied from EPUnDeref; TODO clean up code
+      deref <- pushTyApp "deref" [r,tagT]
+      dvs <- callFun deref vs tagT
+      return (dvs,tagT)
+    Nothing -> do
+      --Repeated computation...
+      let (TyCon tycon, ts) = rollTyApps dt
+      getDot vs ("tag"++tycon) ts
+  where
+    --TODO share this function
+    typeOfTag = \case
+      Nil -> TyCon "Unit"
+      N1 len -> UInt (fromIntegral len)
+      N16 -> UInt 1
+      Custom t _ -> t
 --Used in assignEP EPCon as well; TODO move to logical location
 --Gets the monomorphized tag scheme of the given MonoT.
 getTagScheme :: Name -> [T] -> FusedM ([Name], TagScheme (E,Serialized))
@@ -1645,6 +1895,14 @@ getModConInfo caller con = do
       "Compiler error: no con info for " ++ con ++
       " (requested by " ++ caller ++ ")"
     Just ci -> return ci
+--Needed for case
+getModDTInfo :: Name -> FusedM (DTInfo E)
+getModDTInfo tycon = do
+  mdti <- asks (M.lookup tycon . datatypes . dtsInfo)
+  case mdti of
+    Nothing -> throwError $ GenericFE $
+      "Compiler error: no DT info for " ++ tycon
+    Just dti -> return dti
 --Gets the parent tycon of a given field
 --Precondition: field exists...
 --TODO deduplicate

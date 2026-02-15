@@ -12,7 +12,7 @@ import Const.Const (Serialized(..),SerElem(..))
 import Asm hiding (Asm(Opcode,Push),Label())
 import qualified Asm as A
 
-import Data.List (intercalate)
+import Data.List (intercalate,intersperse)
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -90,6 +90,11 @@ prettyStmt = \case
   --I distinguish comments (which have no semantic import)
   --from scope info by using // instead of /#
   Structured.DTs.Comment str -> ["//"++str]
+  CaseBranch scope n16 tag jt ->
+    [showScope scope,
+     "case " ++ (if n16 then "(N16) " else "") ++ showVar tag ++ " of ["] ++
+    (concat $ intersperse [","] $ map indentBlock jt) ++
+    ["]"]
 indentBlock :: [Stmt] -> [String]
 indentBlock stmts = indent (stmts >>= prettyStmt)
     

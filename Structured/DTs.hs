@@ -68,4 +68,9 @@ data Stmt = Value := OpE --a straight-line primop
           | Return Scope [Var] --v1..vN
           --For debugging purposes; todo replace String with a richer DT
           | Comment String
+          --Branch on a one-word tag into a jump table; the Bool indicates
+          --whether the JT is to be pushed onto the stack.
+          --The JT is represented as a list of blocks because Core needn't
+          --care about the Con => case mapping.
+          | CaseBranch Scope Bool Var [[Stmt]]
   deriving (Eq,Ord,Read,Show,Data)
