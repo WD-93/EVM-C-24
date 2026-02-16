@@ -13,7 +13,8 @@ import Mono.Mono (instT,bindT,BindError(..)) --TODO move, Mono is defunct
 import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
-                  mderefBytePtr,mwritePtrSto,ifte)
+                  mderefBytePtr,mwritePtrSto,ifte,
+                  mderefWordPtr)
 import Util (unsafePrint, --for debugging
              complainIf
             )
@@ -290,6 +291,8 @@ structuredPrims :: Map Name (Polytype, [T] -> CompScheme)
 structuredPrims = M.fromList [
   bytePtrPrim "derefMem" Memory "mload",
   bytePtrPrim "derefCD" Calldata "calldataload",
+  wordPtrPrim "derefSto" Storage "sload",
+  wordPtrPrim "derefTSto" TStorage "tload",
   --TODO move disjunction to Construct lib...
   ("truthy", (PT $ \case _ :-> UInt 32 -> Just [],
               \_ -> mkPrim $ ((:[])<$>) . disjunction)),
@@ -408,7 +411,9 @@ structuredPrims = M.fromList [
                   )))
   ]
                   `M.union` evmPrims
-  where bytePtrPrim fnm r load =
+  where bytePtrPrim = ptrPrim mderefBytePtr
+        wordPtrPrim = ptrPrim mderefWordPtr
+        ptrPrim handler fnm r load =
           (fnm,
            (PT (\case Ptr r' a :-> a'
                         | r == r', a == a' -> Just [a]
@@ -418,7 +423,7 @@ structuredPrims = M.fromList [
                sz <- liftFused $ sizeof a
                --We don't care the returned words are the wrong Var type
                --for now.
-               mderefBytePtr "mload" sz ptr
+               handler load sz ptr
            )
           )
         bitwise fnm instr =
@@ -1395,6 +1400,7 @@ Nil is never branched on.
 Custom can be handled entirely in FFM; N1, N16 need a new Stmt construct.
 -}
 
+--Whether to branch hinges on the first pattern in case.
 --If it's infallible, we just assign.
 --Otherwise the DT may be boxed and have a given region, and it
 --has a tag scheme and con list.

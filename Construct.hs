@@ -1115,7 +1115,7 @@ mwritePtrSto sz load store ptr vs
           d <- opE2 "shr" (constant 5) (return ptr)
           case () of
             --The value is small enough it fits in one word.
-            --That means the mask may of form 00..ff..00
+            --That means the mask may be of form 00..ff..00
             --The 0xff... part of the mask should optimize to a push for
             --small sz.
             --For sz == 1, the check whether the value should be split over
@@ -1445,3 +1445,127 @@ prop_mwritePtrSto_correct (Positive sz) (NonNegative ptr)  =
                   then error $ "Wrong slots touched: " ++ show (ks,touched)
                   else True
        Left err -> error $ "Sym eval error: " ++ show err
+
+--Deref a sz-byte value from a word=>word map; used to implement
+--deref for Storage and TStorage.
+--I need to do the inverse of writing: load the same words, but instead
+--right-shift.
+--The same cases are relevant: 0 bytes, 1 byte, larger.
+--Rely on symbolic opt to simply the cond check in sz = 32n.
+--Spillover condition: ceil(sz+m div 32) > ceil(sz div 32)
+--That's equivalent to m > (32-sz%32)%32
+--Might as well quickcheck that!
+prop_cond_simpl_correct ::
+  NonNegative Integer ->
+  NonNegative Integer ->
+  Bool
+prop_cond_simpl_correct (NonNegative sz) (NonNegative m) =
+  (wcnt (sz + m) > wcnt sz) ==
+  (m > (32-sz`mod`32)`mod`32)
+  where wcnt n =
+          (if n `mod` 32 > 0
+           then succ
+           else id) (n `div` 32)
+mderefWordPtr :: (Construct m, Op m ~ String) =>
+ String -> Integer -> Var m -> m [Var m]
+mderefWordPtr load sz ptr
+  | sz == 0 = return []
+  | let = do
+          slot <- opE2 "shr" (constant 5) (return ptr)
+          m <- opE2 "and" (constant 31) (return ptr)
+          --The word count of the deref'd type:
+          let wcnt = (if sz `mod` 32 > 0
+                      then succ
+                       else id) (sz `div` 32)
+          case () of
+            _ | sz == 1 -> (:[]) <$> opE2 "byte" (return m) (op load [slot])
+              | sz `mod` 32 == 0 ->
+                ifte (fromInteger wcnt) m
+                --Special case: no need to mask the top word
+                (do ws <- forM [0..wcnt] (\i -> opE1 load (addK i slot))
+                    rsh <- opE2 "shl" (constant 3) $
+                           opE2 "sub" (constant 32) (return m)
+                    wsr <- mapM (\w -> op "shr" [rsh,w]) $ tail ws
+                    lsh <- opE2 "sub" (constant 256) (return rsh)
+                    wsl <- mapM (\w -> op "shl" [lsh,w]) $ init ws
+                    zipWithM (\a b -> op "or" [a,b]) wsl wsr
+                )
+                --The cheapest case
+                (forM [0..wcnt-1]
+                (\i -> opE1 load (addK i slot)))
+              | let -> do
+                  cond <- opE2 "gt" (return m)
+                          (constant $ (32 - sz`mod`32) `mod` 32)
+                  --The amount to right-shift by:
+                  --TODO opt: % k distributes over summands; & (2^n-1) = % 2^n
+                  --That lets you replace 32 with 0 here.
+                  --Also: if the constant is 31, 0 <= 31-m <= 31
+                  --so % 32 is a noop
+                  rsh <- opE2 "shl" (constant 3) $
+                         opE2 "and" (constant 31) $
+                         opE2 "sub" (constant (32 - sz `mod` 32)) (return m)
+                  --Masking is handled here rather than in ...RightShift...
+                  --the gas cost is the same but the code size will be larger.
+                  --TODO opt (w >> k) & mask to ((w << k1) >> k2)
+                  ifte (fromInteger wcnt) cond
+                  --Overflow into wcnt+1 words:
+                    (do ws <- forM [0..wcnt]
+                          (\i -> opE1 load (addK i slot))
+                        ws' <- mdynRightShiftNPlus1 ws rsh
+                        maskTopWord ws'
+                    )
+                    --No overflow:
+                    (do ws <- forM [0..wcnt-1]
+                          (\i -> opE1 load (addK i slot))
+                        ws' <- mdynRightShiftN ws rsh
+                        maskTopWord ws'
+                    )
+            where maskTopWord :: (Construct m, Op m ~ String) =>
+                                 [Var m] -> m [Var m]
+                  maskTopWord (w:ws) = do
+                    w' <- opE2 "and" (constant $ 256 ^ (sz `mod` 32) - 1)
+                          (return w)
+                    return $ w':ws
+
+
+--rsh = 8n, n <- 1..31
+--Precondition: length ws >= 2.
+--The resulting list is one word shorter: the argument is len n+1, where
+--n is the word count of the deref'd value.
+mdynRightShiftNPlus1 :: (Construct m, Op m ~ String) =>
+  [Var m] -> Var m -> m [Var m]
+mdynRightShiftNPlus1 ws rsh = do
+  wsr <- mapM (\w -> op "shr" [rsh,w]) $ tail ws
+  lsh <- opE2 "sub" (constant 256) (return rsh)
+  wsl <- mapM (\w -> op "shl" [lsh,w]) $ init ws
+  zipWithM (\a b -> op "or" [a,b]) wsl wsr
+
+--Precond: length ws >= 1
+--The resulting list is the same length.
+mdynRightShiftN :: (Construct m, Op m ~ String) =>
+  [Var m] -> Var m -> m [Var m]
+mdynRightShiftN ws rsh = do
+  ws' <- mdynRightShiftNPlus1 ws rsh
+  w' <- op "shr" [rsh, head ws]
+  return $ w':ws'
+
+--Round-trip property: if you first write and then deref a value to a
+--ptr, you get the same value back.
+--It implies the standalone correctness property given the correctness
+--of mwritePtrSto (which is already tested).
+prop_stoPtr_round_trip :: NonNegative Integer -> NonNegative Integer -> Bool
+prop_stoPtr_round_trip (NonNegative ptr) (NonNegative sz) =
+  let toBs nm len = [X (nm,n) | n <- [1..len]]
+      vBs = toBs "v" $ fromInteger sz
+      vWs = wordSplit vBs
+      load a = op "sload" [a]
+      store a b = op0 "sstore" [a,b]
+  in case runSymM (do mwritePtrSto sz load store (wordK ptr) vWs
+                      mderefWordPtr "sload" sz (wordK ptr)
+                  ) nullRs of
+       Right (ws,_) ->
+         let actualBs = unWordSplit ws
+         in if actualBs == vBs
+            then True
+            else error $ "Mismatch: " ++ show (actualBs,vBs)
+       Left err -> error $ "SymM error: " ++ show err
