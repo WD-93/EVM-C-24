@@ -90,8 +90,8 @@ prettyStmt = \case
   --I distinguish comments (which have no semantic import)
   --from scope info by using // instead of /#
   Structured.DTs.Comment str -> ["//"++str]
-  CaseBranch scope n16 tag jt ->
-    [showScope scope,
+  CaseBranch scope n16 vs tag jt ->
+    [showScope $ tag: vs ++ scope,
      "case " ++ (if n16 then "(N16) " else "") ++ showVar tag ++ " of ["] ++
     (concat $ intersperse [","] $ map indentBlock jt) ++
     ["]"]

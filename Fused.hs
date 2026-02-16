@@ -1506,8 +1506,8 @@ compileCase scope dt vs cases =
                                 case M.lookup con con2stmts of
                                   Nothing -> dflt
                                   Just stmts -> stmts) cons
-                emitStmt $ CaseBranch (tag ++ vs ++ scope)
-                  (tagScheme == N16) tagw jt
+                emitStmt $ CaseBranch scope
+                  (tagScheme == N16) vs tagw jt
   where simpleCase (p,s) = do
           assignValue p vs
           convertS s
@@ -1651,7 +1651,6 @@ convertE e = pushScope $ go e
             xs <- localToVars t x
             ys <- copyVars xs
             return (ys,t)
-          --TODO add handling of &_, &&, || (addressOf, scAnd, scOr) here
           -- &e; valid e := *ptr(.ubfield | !ix)*
           --Boxed fields have already been desugared away
           TyApp "addressOf" [a,r] :$ e ->

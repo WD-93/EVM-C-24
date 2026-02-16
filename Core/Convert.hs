@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms, LambdaCase #-}
 module Core.Convert where
 
-import AST.DTs (T(..),Name(..),tupleT,Region(Co))
+import AST.DTs (T(..),Name(..),tupleT,Region(Co), pattern UInt)
 import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
@@ -50,7 +50,9 @@ data CoreS = CoreS {
   --csOps :: [(Value,OpE)], --accumulated ops in reverse order
   --The BB map; on a branch the current fun and its ops are flushed to the
   --map.
-  csDefuns :: Map FunVar (BranchValue,FunRHS)
+  csDefuns :: Map FunVar (BranchValue,FunRHS),
+  --Convention: all JTs are named $jt<n>
+  csJTs :: Map Name [FunVar]
   }
   deriving (Eq,Ord,Read,Show)
 --The monad for accumulating the CFG of a single Structured function.
@@ -89,7 +91,8 @@ coreF fv bv@(scope,_,_) body =
           csLoopStack = [],
           --csCurrentFun = (fv,p),
           --csOps = [],
-          csDefuns = M.empty
+          csDefuns = M.empty,
+          csJTs = M.empty
           }
 
 --Given its continuation, compiles a block of stmts to a function.
@@ -198,7 +201,88 @@ coreBlock'' cont stmts =
         --Assuming $ret is already on the stack:
         Structured.DTs.Return scope vs ->
           expects scope $ return ([], Jump $ scope2BV vs)
+        --If n16:
+        -- tbl <- push conts as one word in reverse order
+        -- jump ((tbl >> tag) & 0xffff) (vs ++ scope)
+        --else:
+        -- jt <- alloc new code JT, push its address
+        -- jump (jt + tag) (vs ++ scope)
+        CaseBranch scope n16 vs tag jt -> expects (tag:(vs++scope)) $ do
+          next <- coreBlock scope cont stmts
+          fs <- map fst <$> mapM (coreBlock (vs++scope) next) jt
+          if n16
+            then do
+            --jump ((tbl >> tag) & 0xffff) (vs ++ scope)
+            --TODO make an op emitter monad?
+            (jt,op_push_jt) <- pushJT fs
+            (shifted,op_shift) <- emitOp (Op "shr") [tag,jt]
+            (oxffff,op_0xffff) <- emitOp (Push Serialized {
+                                             serLength = 2,
+                                             serSizeof = 2,
+                                             serContent = [Left [255,255]]
+                                             }) []
+            (masked,op_mask) <- emitOp (Op "and") [oxffff,shifted]
+            return ([op_push_jt,
+                     op_shift,
+                     op_0xffff,
+                     op_mask],
+                    jump masked $ vs ++ scope
+                   )
+            else do
+            (jt,op_push_jt) <- allocJT fs
+            (sum,op_add) <- emitOp (Op "add") [tag,jt]
+            return ([op_push_jt,
+                     op_add],
+                     jump sum $ vs ++ scope
+                   )
         other -> error $ "Compiler error in coreBlock'': " ++ show other
+
+--An ugly solution for emitting code during Core compilation.
+--That's necessary because Structured has no concept of case JTs or function
+--return addresses.
+--TODO make an op emitter monad, or at least reuse in alloc/pushJT and
+--opPushF.
+emitOp :: PrimOp -> [Var] -> CoreM (Var,(Value,OpE))
+emitOp primop vs = do
+  v <- newVar $ W (UInt 32) 1
+  return $ (,) v $ (,) ([v],[]) $ (primop, (vs,[]))
+
+--Given a list of functions to jump to, allocates a new JT and returns the
+--var v it's to be bound to, and the op v = push $jt<n>.
+--Used in compiling caseBranch when TagScheme /= N16.
+--Code copied from opPushF.
+allocJT :: [FunVar] -> CoreM (Var,(Value,OpE))
+allocJT fs = do
+  n <- alloc
+  let jtnm = "$jt"++show n
+  modify (\s->s{csJTs = M.insert jtnm fs $ csJTs s})
+  let ser = Serialized {serLength = 2,
+                        serSizeof = 2,
+                        serContent = [Right (0,2,jtnm)]
+                       }
+  --Giving it a placeholder type for now
+  v <- newVar $ W (TyVar "?") 1
+  return $ (,) v $ (,) ([v],[]) $ (Push ser, ([],[]))
+--Given a list of functions to jump to, handles pushing the JT containing
+--those functions as a single word.
+--Returns the var v the word is to be bound to and the
+--op v = push {fN,f<N-1>,...,f0}.
+--Used in compiling caseBranch when TagScheme = N16
+--Code copied from opPushF; TODO cleanup
+pushJT :: [FunVar] -> CoreM (Var,(Value,OpE))
+pushJT fs = do
+  let lenn = fromIntegral $ length fs
+  if length fs > 16
+    then error $ "Compiler error: N16 JT doesn't fit in a word! "
+         ++ "\nJT: " ++ show fs
+    else return ()
+  let ser = Serialized {serLength = 2*lenn,
+                        serSizeof = 2*lenn,
+                        serContent = [Right (0,2,f) | f <- fs]
+                       }
+  --Giving it a placeholder type for now
+  v <- newVar $ W (TyVar "?") 1
+  return $ (,) v $ (,) ([v],[]) $ (Push ser, ([],[]))
 --Pushes and then pops break and continue
 --Reader would be appropriate here since this is the only way we modify
 --the loop stack...

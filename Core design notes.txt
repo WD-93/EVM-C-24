@@ -3789,6 +3789,11 @@ For writeup: ETH's high execution cost may justify search.
 Ideas: peep EVM compilation of BBs. Do so after peephole opt!
 TODO insert more info from analysis into tree?
 
+A difference vs EVMC v1 worth noting in writeup: a function is
+allocated for each primfun rather than the primitive always being
+inlined. That can save code size, and is made a lot easier by
+functions being polymorphic.
+
 case xs of
  Cons {} => {var x = xs.hd; //avoids predeclaring x
   };

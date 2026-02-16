@@ -72,5 +72,9 @@ data Stmt = Value := OpE --a straight-line primop
           --whether the JT is to be pushed onto the stack.
           --The JT is represented as a list of blocks because Core needn't
           --care about the Con => case mapping.
-          | CaseBranch Scope Bool Var [[Stmt]]
+          | CaseBranch Scope --scope before case e of ...
+            Bool             --JT pushed on stack vs in code
+            [Var]            --e vars
+            Var              --tag var
+            [[Stmt]]         --JT bodies
   deriving (Eq,Ord,Read,Show,Data)
