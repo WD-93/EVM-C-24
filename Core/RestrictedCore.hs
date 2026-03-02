@@ -36,10 +36,14 @@ import Data.Generics
 --Con: the state exists elsewhere already.
 --Pro: transformations such as tree-shaking globals need a repr (in that case
 --fs + gs + tags) to transform, which should ideally be kept consistent.
-data Core = Core {
+
+--Parameterizing by ops type (list pre-SSA, var => op map after) to allow
+--SSA to return the same datatype:
+type Core = Core_ [(Value,OpE)]
+data Core_ ops = Core {
   --The basic blocks, including $trueMain
   coreDefuns :: Map FunVar (BranchValue, --lhs
-                            FunRHS),
+                            FunRHS_ ops),
   --Core does not need to record the global set; they have already been erased
   --in Structured.
   --Region implicit in type
@@ -51,9 +55,10 @@ data Core = Core {
   deriving (Eq,Ord,Read,Show)
 --Rewrites: letrec merge, let merge, inline
 
-type FunRHS = ([(Value,OpE)] --let ops
-              ,Branch        --in branch
-              )
+type FunRHS = FunRHS_ [(Value,OpE)]
+type FunRHS_ ops = (ops --let ops
+                   ,Branch        --in branch
+                   )
 type Scope = [Var] --Doesn't include the State vars
 
 --Straight-line expressions

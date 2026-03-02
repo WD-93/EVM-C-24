@@ -3794,6 +3794,9 @@ allocated for each primfun rather than the primitive always being
 inlined. That can save code size, and is made a lot easier by
 functions being polymorphic.
 
+The desired case behavior of Ints (and Int Arrays?) is similar to Custom. TODO support deep case inspection if the perf given good
+enough heuristics is acceptable.
+
 case xs of
  Cons {} => {var x = xs.hd; //avoids predeclaring x
   };

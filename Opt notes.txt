@@ -1,0 +1,141 @@
+Abstract interpretation could let me pass symbolic info across
+function boundaries, and run a variety of analyses using the same AI
+combinator.
+For writeup: Optimizing an IR using AI*
+Useful opts: identify constant and identical parameters, remove them.
+That's not necessarily always optimal... need to define when adding/
+removing a parameter is equivalent.
+
+Can AI be run backwards to get liveness? A custom analysis is simple
+enough post-SCC of BBs.
+
+Normalizing symbolic repr: ff(00n) is worth recognizing. Also ff*.
+
+TODO make prettyCore with a verbosity flag for var types to visualize
+opts. It'll still get pretty large... an incremental viewer as well?
+
+Opt search: you can bound the depth on speculative choices
+(e.g. copy SCC for specialization).
+Proposal: refine top-level choices using est. cost using simple opt
+of the result as a heuristic; pursue the most promising ones.
+Need to avoid cycles or convergence: make a choice once.
+The same applies to stack scheduling.
+TODO make use of exec intensity vs code size.
+
+What are the minimal opts I can start with?
+Just SSA.
+First opts: inlining, dead var elimination applied to the whole
+function graph. $ret is dynamic, and may be assumed to consume all of
+its arguments in general.
+If a function is only called statically, its args may be changed; you
+can delete the dead vars. Then the params passed at all call sites
+must be changed.
+If all calls to f have a given property (e.g. param x = param y), you
+can use that while optimizing. Need a disjunction op for facts... is
+it a lattice? param = symE is a fact.
+In jumps which are calls (f,args,retf,args'...), retf,args' should be
+considered a call site. There may be multiple such call frames in
+a jump, cf f(g(h(x))).
+A param at a jumpi call site is dead iff it's dead in both branches.
+However, that doesn't mean the var is dead: a var is dead iff it has
+no live uses. An op is dead iff all of its lhs vars are dead.
+
+What does it mean for a fun to "only be statically called?".
+Branches: terminating, jump, jumpi, JT jump (n1, n16).
+A jump to e should only be considered able to jump to one of the fs
+mentioned by e.
+
+Param Core by ops type: first list, then var=>op map after SSA.
+Opt: cache opt-relevant info, update it alongside Core changes.
+
+First opt: dead var/op elimination applied to the whole function
+graph.
+
+*SSA******************************************************************
+SSA can be done on a per-BB basis.
+Map vars to version numbers (starting with 1). Transform vars without
+changing the type: just concat !<n>. Post-SSA you don't need to care
+about vno, so keeping the same type makes sense.
+Map is slow for strings... a HashMap could make more sense, but that's
+only worth applying once functionality is complete.
+Mapping from Var to (Value,OpE) lets you see in which position the
+var is.
+The source of a var is either the function LHS or an op; if it's not
+in the map then it's in the LHS.
+Copies are eliminated.
+
+When optimizing, I need to introduce new vars... I should really
+pass the counter through the phases.
+
+*Control flow*********************************************************
+
+Inlining, tail call opt, DCE (jumpi and case)
+Rewrites: BB copy, SCC copy
+A straight-line C function can be inlined by inlining the Core
+function, then the jump to the static return.
+
+*Function params******************************************************
+Dead function param elim, identical var elim
+Note constant params can be inlined into blocks, rendering the param
+dead.
+
+*Sym eval*************************************************************
+Constant propagation
+Simplification: x+0,x*1,x-x,x+x...
+Shift/slice interacts with mem ops.
+
+*Memory opt***********************************************************
+Divide pointers into p+k groups, where p is p+0 and k is in group 0.
+Split the mem state when no-aliasing is guaranteed.
+Problem: I can't pass the mem across BB boundaries without a stack of
+states a la the word stack. With AI all the info can be
+in the symbolic value of the single mem param.
+
+Symbolic mem repr: ix:byte, m1 || m2. Recognize the minimum range of
+read/write ops.
+The initial mem is all zeroes... need a repr for slices and to ensure
+repr is normalizing (makes AI easier).
+To recognize non-aliasing ops and move them across BBs, need state
+stack.
+
+Target opts:
+Parallelization
+Read and write aggregation
+ Simple approach: if a slice overlaps an already-loaded word, fetch it
+ from there. Favor loading from p rather than p+k.
+Redundant write elimination
+Adjacent writes => copy
+Remember scratch addr (used for sub-word writes), add 
+*scratch = arbitrary ops to forget it?
+
+Simplest read aggregation opt:
+mload(p+k) byte b => mload p byte b'
+You can also load sufficiently close slices in a single word p'' when
+their original loads p, p' don't overlap.
+Leftmost, rightmost and byte slices are ideal - 6 gas to extract.
+It's also possible different derefs overlap, e.g.
+v1 = *p
+v2 = p->field
+
+Aliasing info should be propagated across BBs via AI. It's
+especially relevant for specialization.
+State isn't just a list of separate symbolic vars, but relations
+between them.
+disjoint(p1,p2) could be stronger than just *p1, *p2 not overlapping:
+any of their children could inherit non-aliasing.
+
+*Stack****************************************************************
+
+In later stack-scheduling phase: recall treegraph scheduling.
+Tree scheduling is trivial, modulo opportunistic use of words ToS.
+ That can be applied greedily; it modifies the remaining trees.
+Trees can be partially executed to expose constants for sharing,
+letting you recover sharing after splitting small constants to
+eliminate false dependencies.
+
+Complication: ops can consume resource vars, meaning any ops that 
+borrow that var must be scheduled before them (if at all).
+Resource splitting also helps eliminate false dependencies there.
+
+*FW*******************************************************************
+Reordering across BBs, e.g. lifting vars out of loops.
