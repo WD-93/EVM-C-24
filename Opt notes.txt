@@ -51,6 +51,45 @@ Opt: cache opt-relevant info, update it alongside Core changes.
 First opt: dead var/op elimination applied to the whole function
 graph.
 
+How can Core be malformed? That should trigger an error.
+Nonexistent instruction (not in opcodes or extended opcodes including
+variadic or, xor etc).
+Nonexistent label or slice out of range.
+Contract size > 24k should fail in Stack/Asm.
+FW: replace N5 with a multiplier based on max BB size:
+jump (jt + k*tag). That would allow direct jumps, saving 12 gas and
+4 code bytes per case.
+You can increase k to get more space between the BBs, hopefully
+increasing utilization of the gaps. If k is 2^n, you can save 2 gas by
+shifting instead of multiplying.
+If a DT has only one case and the target BBs fit within 256B, you
+can use jump (jt + tag) instead, where tag takes Stack-dependent
+values. That would require having tag labels in Structured...
+Another alt is 16b tags, where each tag is a function pointer; then
+it's just jump tag.
+
+*Estimating exec intensity********************************************
+The algo will need to be changed once intensity and branch probability
+annotations are added.
+Problem: C functions are polymorphic, so they don't correspond to a
+single instance. That could be resolved via optional type pattern
+guards on annots, e.g. @intensity k if List a -> ().
+
+Simple to start with: assume all branches have equal probability;
+exec starts at the main entry point.
+Algo: divide BBs into SCCs; for each SCC, compute the intensity effect 
+of entry at each enterable BB in it. Effect: intensity for each BB in
+the SCC + entry intensity for each out-edge to a lower SCC.
+Equation: for each BB b, intensity[b] = sum p[i][b] * intensity[i] for 
+each in-edge i.
+ifte probability 0.5 implies while loop iteration count 1... too low.
+
+Degenerate case: SCCs with no leaf nodes. Those can be replaced with
+revertValue(). Reverting code paths can be assumed to have intensity
+0, leading to an increase in the intensity of their siblings.
+Problem: function calls. A C function either diverges, exits or
+returns, so you can make a leaf vec for it as well.
+
 *SSA******************************************************************
 SSA can be done on a per-BB basis.
 Map vars to version numbers (starting with 1). Transform vars without
