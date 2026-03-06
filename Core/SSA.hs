@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Core.SSA (ssa) where
+module Core.SSA (ssa,SSAError(..),OptCore(..)) where
 
 import Core.RestrictedCore
 import Util ((?))
@@ -46,6 +46,7 @@ data SSAError = MalformedFunLHS BranchValue Var
               | MalformedOpLHS Value Var
               | UnboundVar Var
               | MalformedCopy Value Value
+  deriving (Eq,Ord,Read,Show)
 ssa :: Core -> Either (FunVar,SSAError) OptCore
 ssa core = do
   let fdefs = M.toList $ coreDefuns core

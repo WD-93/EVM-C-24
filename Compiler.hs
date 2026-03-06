@@ -38,6 +38,8 @@ import Fused (compileStructured)
 --Structured IR => Core
 import Core.RestrictedCore (Core(..))
 import Core.Convert (structured2core, CoreError(..))
+--SSA
+import Core.SSA (ssa, SSAError(..),OptCore(..))
 
 --Poor man's pretty-printing for debugging
 import Pretty
@@ -49,6 +51,7 @@ data CompilerError = ParserError String
                    | TypeCheckError TCError
                    | FusedError FusedError
                    | CoreError CoreError
+                   | SSAError (Name,SSAError)
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -176,6 +179,13 @@ pipeline2core :: String -> Either CompilerError Core
 pipeline2core str = do
   s <- pipeline2structured str
   structured2core s ? CoreError
+pipeline2ssa :: String -> Either CompilerError OptCore
+pipeline2ssa str = do
+  c <- pipeline2core str
+  ssa c ? SSAError
+--No opts for now...
+pipeline2opt :: String -> Either CompilerError OptCore
+pipeline2opt = pipeline2ssa
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str

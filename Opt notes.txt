@@ -68,6 +68,11 @@ values. That would require having tag labels in Structured...
 Another alt is 16b tags, where each tag is a function pointer; then
 it's just jump tag.
 
+To fix: Core must contain the N1/N5 JTs map; it might as well also
+contain a counter.
+op=, _++, _-- implem --requires evalEP
+Add divergent primfuns to Core.
+
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability
 annotations are added.
@@ -83,6 +88,39 @@ the SCC + entry intensity for each out-edge to a lower SCC.
 Equation: for each BB b, intensity[b] = sum p[i][b] * intensity[i] for 
 each in-edge i.
 ifte probability 0.5 implies while loop iteration count 1... too low.
+A recursive function could get an infinite intensity, cf
+f() := {
+ if cond1
+ then if cond2
+      then return ()
+      else ()
+      end
+ else ()
+ end;
+ f()
+}
+With 50% branch probability, that gives a 75% probability of
+recursion, i.e. f is expected to call f 4 times.
+That's fine... the real problem is
+f() := if cond then {f();f();f()} else () end
+Quick and dirty solution: compute intensity numerically, iterate over
+each BB at most N times.
+With inlining and TCO, there isn't a clear separation between C
+functions in Core.
+
+Consider HOFs: should I record expected number of calls for each
+parameter, or just ignore params other than $ret?
+
+With mutually recursive functions, an SCC could have back-edges to
+multiple members. If you treat back-edges as out-edges and cap
+intensity to prevent divergence... each entrypoint has a different
+out-edge vector.
+Really simple scheme: if an SCC is nontrivial, treat back-edges as
+exits and just scale intensity by 4.
+Note internal edges are not back-edges: SCCs form a tree with
+out-edges, exits and back-edges as leaves.
+Ex: A -> B or C; B,C -> D; D -> out or A. B and C will have half the
+intensity of A.
 
 Degenerate case: SCCs with no leaf nodes. Those can be replaced with
 revertValue(). Reverting code paths can be assumed to have intensity
@@ -116,7 +154,8 @@ function, then the jump to the static return.
 *Function params******************************************************
 Dead function param elim, identical var elim
 Note constant params can be inlined into blocks, rendering the param
-dead.
+dead. Idential params x, y can have y replaced with x with the same
+effect.
 
 *Sym eval*************************************************************
 Constant propagation
@@ -176,5 +215,247 @@ Complication: ops can consume resource vars, meaning any ops that
 borrow that var must be scheduled before them (if at all).
 Resource splitting also helps eliminate false dependencies there.
 
+All instructions push 0 or 1 words.
+Most take <=2 arguments.
+Min cost = sum of all op gas costs; the goal is then to minimize
+stack shuffling.
+Hack: mcopy(_,_,0) has no effect other than popping its arguments...
+so if you know the third var from the top is zero and you want to pop
+three, you can use mcopy instead of pop.
+
+The simplest halfway decent scheme is the one from the old EVMC:
+treegraph + topological order. It'll still be painfully slow with no
+opts at all (and therefore no inlining of primfuns), but should still
+produce runnable code.
+Compute dependency relations:
+lhs = op rhs depends on all instructions in lhs,
+and if it consumes a var it also depends on all ops that borrow it.
+An op may depend on multiple vars from the same op, e.g.
+sload(call(...)), where call returns both $sto and its pushed word.
+
+TODO apply PBT to bytecode generation, in particular to the stack
+shuffling ops.
+Dups of consumed vars produce garbage words on stack, e.g.
+x-- => push 1, dup x, sub. Backtrack and aggressively GC if you try
+to dup or swap out of range?
+Opportunistically popping is only not worth it if you'll exit or
+never return. However, accepting garbage on the stack requires
+changing the callee or $ret's signature.
+
+An opt choice monad: I want both search and heuristic plug-ins.
+Search: v <- best scoreF vs --apply scoreF to the result, try each of
+vs and pick the best one.
+Need to limit depth as well...
+The problem and choices should be defined separately from the solver.
+v <- query QueryCon...
+The problem of compiling a BB is: you have a given initial state
+and target state (vs, state vars, tree of ops).
+You can emit swaps, dups, pops and ops. You know the symE of each
+var (so you can share constants).
+Hacky opt: mcopy _,_,0 to pop 3.
+The score need not be inherent to the compilation problem (which only
+requires functional correctness).
+
+Dramatic reordering may be optimal before running an op, e.g.
+swaps to bring the stack to a state where you can just run the other
+ops.
+Implementing optimal greedy moves: if two words to be consumed from
+the same commassoc fold op are ToS, apply the op.
+
+Simple scheme:
+First need to identify static jumps; one of each can be
+pseudo-inlined. Since unique jumps to f should already be inlined
+after opt, always place a jumpdest.
+A jump is static if opmap[jumpvar] = (jumpvar, push f).
+Prefer to pseudo-inline BBs where that is the only use of f, so you
+can eliminate the push.
+The initial state is (vars,state); the end state is (vars',state');
+pseudo-inlining means you can't target a branch.
+The actual goal is a symE, so you can share constants...
+Consider () => (1,2,3); that should be compiled to optimal code.
+Subject to treegraph constraints, prefer to push the ToS last?
+
+Silly opt (perhaps Sol uses this?): since SUB takes args in the wrong
+order (x-k being much more common than k-x), it's cheaper to do
+i = 0-iters; while (i++)
+than i = iters; while (i--)
+while (i++) would benefit from deferring the push 1, add until the
+body of the while loop since the result of i++ doesn't rely on it.
+Recall: sharing -1 and adding it has the same effect.
+1+ should be treated like an atomic op and run opportunistically.
+If the effect of partial compilation (e.g. running subtrees) could
+be computed before the subtrees themselves were optimized, you could
+divide and conquer using a heuristic.
+When you consume rather than dup+pop a last use, you save 6 gas.
+Given a stack and tree + naive opportunistic consumption/pop, you can infer the cost...
+Each tree has an optimal stack prefix ds consisting of its 
+dependencies; the rest it pushes itself. If a suffix of ds ds' is ToS and last-use, you save 6*length ds'.
+That does not consider swap+consume... you can push a constant for a
+later tree and swap it with a var to consume for the same cost as a
+dup!
+
+Problem for tree search: different choices may have different numbers
+of choices. Bounds on cost let you prune the search... A*?
+LB >= total op cost, UB = naive compilation.
+It might be worth precomputing and caching optimal solutions for
+scheduling problems of size <= k per "shape" (op graph up to
+isomorphism).
+Isomorphism means: bijection between standalone and fold ops, var
+names + isomorphic graph.
+
+Searching backwards and forwards: if the end result is a single word
+on stack = op(a,b), the state before that must be a,b?
+Peephole opt lets you use higher-level planning to find the
+approximate path, then tighten it...
+A,suffix => B,suffix ~ A => B, where vars in suffix can be treated
+like constants. That means every use should be a dup; ignore dup out
+of bounds for now.
+If memory is constant, mload k can be treated like a constant.
+A tree with no dependencies in either direction and no push
+(e.g. mstore(global,k)) can be run immediately.
+
+I could detect dup/swap out of range and backtrack to GC more
+aggressively.
+Revert/return has a weaker stack constraint: just mem and the top two
+values of the stack.
+
+Enumerating topological sorts: 
+enumerate g = do
+ leaf <- leaves g
+ add trees which only had leaf remaining as deps to leaves
+ enumerate (delete leaf g)
+Need to reread treegraphs paper. Key Q: is it optimal for EVM?
+The EVM has instrs which take > 2 args and push 0 results, as well as
+side effects.
+The key limitation seems to be that I start with vars already on the
+stack, whereas the paper does not. Perhaps also that the target is
+multiple vars.
+
+$trueMain () =
+ let m = push main
+     r = push ret
+ jump m, r
+ret () = stop
+If main is only called from trueMain, main can be inlined; $ret
+becomes a static value and jumps to it can be inlined to stop.
+If main() can be inlined, the statically known stack can be
+propagated through the skeleton with non-recursive control flow.
+What can be done with that? Global lifting, constant sharing...
+$trueMain and ret perhaps need to be added in Core.
+The divergent C primfuns stop, revert, evm_return need to be defined
+in Core. They all have dead $rets.
+stop places no constraint whatsoever on the final stack, only ext,
+sto and tsto need to be in the right state!
+
+if cond then f(e1) else f(e2) end --where f is only called here
+Then f has a static $ret; the else branch should just fall through to
+f, which may fall through to end.
+
+From old Stack.hs:
+"We know nothing of the target layout we're aiming for, so we eval the 
+root vars in arbitrary order."
+That's thankfully no longer true, we can prefer to push the rightmost
+var of the target layout first.
+Op lhses are keys...
+
+Dep graph algo:
+source : Map Var LHS --param
+--LHS can be used as op key
+borrowers = {} : Map Var (Set LHS)
+consumer = {} : Map Var LHS
+depends = {} : Map LHS (Set LHS)
+for (lhs,(op,args)) in ops:
+ for v in args: lhs depends on source of v
+ (_,svars) = args
+ effs <- look up consume/borrow effect per svar arg in args for op 
+ if |svars| /= |effs| the op is malformed
+ for svar in svars:
+  if borrowed: borrowers[svar] += lhs --default borrowers[svar] = {}
+  else consumer[svar] = lhs --fails if two conflicting consumers
+dependencies from borrowing have already been recorded
+for (svar,lhs) in consumer:
+ lhs depends on all lhses in borrowers[svar]
+a depends on b => depends[a] += b
+a depends on all bset => depends[a] union= bset
+Compute dependency count per op at the same time.
+
+Use depends + count to compute the treegraph.
+Inter-tree dependency may be due to state vars rather than word vars.
+State var deps are weak: if A->B->C and A-svar->C, you can prune the
+state var dep. That could give you larger trees...
+Why are they weak? Because they don't push a word to the stack that
+must be saved; they only influence ordering, so indirect deps render
+them redundant.
+Ex:
+c = mstore(k,v)
+b = mload(k+16)
+a = mload b
+TODO check that's correct...
+
+Scheduling trees with choice: in the worst case (all trees 
+independent) there's a factorial number of combinations.
+Simple #alts limiter: instead of depth, keep nchoices and divide it
+by the number of current choices before recursing; if available
+choices > nchoices just pick from the first nchoices.
+Essentially, the number of possible cases explored is evenly divided
+among the subproblems.
+That overestimates alts explored if one has many more alternatives
+than the rest, but avoids interaction between subproblems.
+
+To track leaf trees:
+leaves : set of leaves
+pending : tree => #deps
+rdeps : tree => trees that depend on it
+When a tree is run, decrement #deps for each tree' in rdeps[tree]; if
+it becomes 0, add tree' to the leaves set.
+Trees have a root op, so they can be indexed by LHS.
+FW issue: if I introduce a linear pointer consume, it might have an
+empty LHS...
+I just need a single branch-and-max action taking a list of choices;
+it passes a lhs to each branch rather than an index to keep it O(n).
+Making an action rather than a combinator means the interpreter has
+minimal insight into the structure. The max must therefore run the
+entire continuation, rather than evaluate cost locally. That's fine
+for this problem, where the end state can be inspected to est cost
+(cost = instr length) and there's no opportunity to divide and
+conquer.
+A choice applicative could expose parallel choices.
+If ending up in the same state is common, one could add a memo
+capability...
+Q: Is there any point in exploring the tree of choices evenly? Once
+you've found one solution, that sets an upper bound on min-cost of
+nodes worth exploring.
+My intuition suggests the early choices matter the most, which would
+fit the simple search scheme.
+
+--Functor
+data Choices b = Choose [LHS] (LHS -> b)
+With a GADT it could be [a].
+H said free monads are expensive... but I'm not aiming for speed, and
+they're probably not that expensive in this context.
+
 *FW*******************************************************************
 Reordering across BBs, e.g. lifting vars out of loops.
+
+The function calling convention f,args,$ret,rest is just one
+possibility. One could write lower-level code that dynamically pushed
+and popped to the stack safely without pushing $ret addresses.
+Ex safe repr:
+n, <n words> ++ stk
+That size-tagged array would have an existential Nat param n, like:
+data Arr where Arr :: exists n . N n -> <n words> -> Arr
+Dynamic ops on N provide you with type-level facts, e.g.
+gt : (N a, N b) -> Either (b >= a) (a > b).
+The facts are zero-sized, so the Either would have Bool repr.
+Case on the either should expose the facts.
+jumpi on N n gives you either n ~ Succ n' or n ~ 0.
+Problem: how to express T ++ stk if stk is simply a hetlist?
+
+data Arr stk = Arr (exists n . Cons (N n) (NWords n stk))
+data NWords n stk where
+ Z :: stk -> NWords n stk
+ S :: Cons W (NWords n stk) -> NWords (Succ n) stk
+User-level constructors could have repr = their argument, allowing
+you to express syntaxes of words using them.
+The length n becomes an existentially quantified type; any other
+distinguishable constructors would need a similar explicit tag.
