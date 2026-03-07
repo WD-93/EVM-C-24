@@ -73,6 +73,9 @@ contain a counter.
 op=, _++, _-- implem --requires evalEP
 Add divergent primfuns to Core.
 
+What should evalEP support? Just EPLocal and EPDeref;
+Array (x,y,z) |= e makes sense but isn't worth it.
+
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability
 annotations are added.
@@ -150,6 +153,13 @@ Inlining, tail call opt, DCE (jumpi and case)
 Rewrites: BB copy, SCC copy
 A straight-line C function can be inlined by inlining the Core
 function, then the jump to the static return.
+
+Inlining implem:
+Given f statically calls g:
+for each var bound by g's ops, alloc a new one of the same type.
+Replace g's params with f's jump params (less ToS); also do so in the
+op map. Union the updated op map with f's op map, then replace f's
+branch with g's (with vars updated).
 
 *Function params******************************************************
 Dead function param elim, identical var elim

@@ -715,7 +715,20 @@ epcon con ts checkTag fieldeps
 --Do I also need to return a t?
 --Note: does not modify the scope.
 evalEP :: EvaluatedPat -> FFM [Var]
-evalEP = error "todo"
+evalEP = \case
+  EPLocal t x ixs -> do
+    xws <- localToVars t x
+    go xws ixs
+      where go ws = \case
+              [] -> return ws
+              index:indices -> do
+                fld <- getIndex ws index
+                go fld indices
+  EPDeref r a ptr -> do
+    deref <- pushTyApp "deref" [r,a]
+    callFun deref [ptr] a
+  ep -> throwError $ UnevaluableEP $ show ep
+  
 --No assumption is made about the location of the EP vars or the rhs on the
 --stack; they may be in either order depending on whether you assign via
 --p = e or case e of {p => s}
@@ -778,7 +791,7 @@ assignEP ep vs =
                           assignEP p fld)
     --underef p = v => p = *v
     --I should use the deref@[r,a] function here so I can choose whether to
-    --inline it. However, unline in require, I must call it directly
+    --inline it. However, unlike in require, I must call it directly
     --rather than use convertE (because that can't capture vs)
     EPUnDeref r a ep -> do
       deref <- pushTyApp "deref" [r,a]
@@ -1729,6 +1742,10 @@ convertE e = pushScope $ go e
           --What is the me for again?
           OPAssign me p op e -> error "todo"
           --PPPre et al mostly the same
+          --Problem: need to add typarams
+          PPPre p -> do
+            ep <- evaluatePat p
+            error "todo"
           --Special case: WordPad {unWordPad: e} has zero runtime overhead.
           ConRecord "WordPad" (Just [a]) [("unWordPad",e)] -> do
             (vs,_a) <- convertE e

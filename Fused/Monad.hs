@@ -149,6 +149,8 @@ data FusedError = GenericFE String
                 | Op0MayNotReturnAWord String [Var]
                 --addressOf-specific (&e):
                 | AddressOfCan'tHandle E
+                | UnevaluableEP String --I show it because EP is defined in
+                --Fused.
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

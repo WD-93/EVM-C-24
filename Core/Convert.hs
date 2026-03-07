@@ -24,12 +24,15 @@ structured2core :: Structured -> Either CoreError Core
 structured2core smod = do
   --Convert each Structured function to a BB map, then union them
   let defs = M.toList $ sdefuns smod
+  --TODO ret jts_bbmaps
   bbmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
   return Core {coreDefuns = M.unions bbmaps
+                --TODO union with Core prims: stop, revert, evm_return
                --coreGlobals = sglobals smod,
               ,coreStatic = M.mapMaybe (\case (_,_,Just ser) ->
                                                 Just ser
                                               _ -> Nothing) $ sglobals smod
+              --TODO add unions of JT maps
               }
 
 --No need for break/continue outside loop, it's caught in Structured.
@@ -75,6 +78,7 @@ type CoreM = ReaderT FunVar --parent fun; is source module needed?
 --The use of SPair# in the stack arg of Cont# is a bug, TODO fix.
 --Nevertheless, I can extract the scope I need from the BranchValue.
 coreF :: FunVar -> BranchValue -> [Stmt] ->
+  --TODO return csJTs as well.
   Either CoreError (Map FunVar (BranchValue,FunRHS))
 coreF fv bv@(scope,_,_) body =
   fmap csDefuns $ runExcept $ flip execStateT initSt $
