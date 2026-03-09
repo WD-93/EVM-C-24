@@ -131,8 +131,8 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       --not twice) we can avoid having lets in E.
       --That simplifies initial desugaring, but complicates the type
       --checker slightly.
-      P.PlusPlusPost _loc pp -> PPPost <$> desugarP di pp
-      P.MinusMinusPost _loc pp -> MMPost <$> desugarP di pp
+      P.PlusPlusPost _loc pp -> PPPost Nothing <$> desugarP di pp
+      P.MinusMinusPost _loc pp -> MMPost Nothing <$> desugarP di pp
       --indexPtr must take the ptr as its first argument to preserve eval
       --order.
       P.Index _loc pptr pix -> do
@@ -173,8 +173,8 @@ desugarE di{-@DInfo{diGlobalSet = gs,
           case pf' of
             P.Con loc (UIdent con) -> desugarConAppE di loc con args
             _ -> unrollApps <$> go pf' <*> mapM go args
-      P.PlusPlusPre _loc p -> PPPre <$> desugarP di p
-      P.MinusMinusPre _loc p -> MMPre <$> desugarP di p
+      P.PlusPlusPre _loc p -> PPPre Nothing <$> desugarP di p
+      P.MinusMinusPre _loc p -> MMPre Nothing <$> desugarP di p
       P.Negate _loc a -> op1 "negate" a
       P.Not _loc a -> op1 "lNot" a
       P.BitwiseNot _loc a -> op1 "bwNot" a

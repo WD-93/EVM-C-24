@@ -49,10 +49,10 @@ data E = EInteger Integer
        --The Maybe (E,T) is for holding the parameterized op function after
        --Hindley-Milner and the type of the Pat.
        | OPAssign (Maybe (E,T)) Pat Op E
-       | PPPre Pat
-       | PPPost Pat
-       | MMPre Pat
-       | MMPost Pat
+       | PPPre (Maybe T) Pat
+       | PPPost (Maybe T) Pat
+       | MMPre (Maybe T) Pat
+       | MMPost (Maybe T) Pat
        -- ++ and -- are distinct from += because I will restrict + to
        --(a,a) -> a and use a separate indexPtr function for pointer
        --"addition". ++ and -- use inc/dec instead of +1/-1 to accomodate that.

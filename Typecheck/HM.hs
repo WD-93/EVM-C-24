@@ -517,19 +517,19 @@ typeOf = go
             return (OPAssign (Just (opfun',c')) p' op e', c')
           --p++ uses the inc function which supports both Ptr r a and Int s l.
           --inc : a -> a
-          PPPre p -> do
+          PPPre Nothing p -> do
             (p',a) <- typeOfPat p
-            return (PPPre p',a)
-          PPPost p -> do
+            return (PPPre (Just a) p',a)
+          PPPost Nothing p -> do
             (p',a) <- typeOfPat p
-            return (PPPost p',a)
+            return (PPPost (Just a) p',a)
           -- (--) uses dec : a -> a 
-          MMPre p -> do
+          MMPre Nothing p -> do
             (p',a) <- typeOfPat p
-            return (MMPre p',a)
-          MMPost p -> do
+            return (MMPre (Just a) p',a)
+          MMPost Nothing p -> do
             (p',a) <- typeOfPat p
-            return (MMPost p',a)
+            return (MMPost (Just a) p',a)
           --The same logic as in PCon: quantify con type, extract its field
           --types, unify with field es.
           ConRecord con Nothing fieldes -> do

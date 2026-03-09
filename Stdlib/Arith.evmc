@@ -258,3 +258,23 @@ derefSto : SPtr a -> a;
 derefSto _ := {};
 derefTSto : TSPtr a -> a;
 derefTSto _ := {};
+
+//_++ supports both pointers and integers; to do so it uses the class function
+//inc rather than the more restrictive plus.
+inc : a -> a;
+instance inc : Ptr r a -> Ptr r a where
+ p := return indexPtr (p,1);
+instance inc : Int s l -> Int s l where
+ n := return n+1;
+//dec is the analogous function for _--
+dec : a -> a;
+//Masks the pointer so nullptr-- doesn't produce a corrupt value.
+instance dec : Ptr r a -> Ptr r a where
+ p := {
+  p :: Ptr r a;
+  var sz = sizeof (P :: P a);
+  var shp = coerce p :: Short;
+  return unsafeCoerce (shp - sz)
+  };
+instance dec : Int s l -> Int s l where
+ n := return n-1;

@@ -717,7 +717,7 @@ epcon con ts checkTag fieldeps
 evalEP :: EvaluatedPat -> FFM [Var]
 evalEP = \case
   EPLocal t x ixs -> do
-    xws <- localToVars t x
+    xws <- localToVars t x >>= copyVars
     go xws ixs
       where go ws = \case
               [] -> return ws
@@ -1751,10 +1751,10 @@ convertE e = pushScope $ go e
                 assignEP ep new
                 return (new,pt)
           --PPPre et al mostly the same
-          --Problem: need to add typarams
-          PPPre p -> do
-            ep <- evaluatePat p
-            error "todo"
+          PPPre mt p -> ppmm mt p "inc" True
+          PPPost mt p -> ppmm mt p "inc" False
+          MMPre mt p -> ppmm mt p "dec" True
+          MMPost mt p -> ppmm mt p "dec" False
           --Special case: WordPad {unWordPad: e} has zero runtime overhead.
           ConRecord "WordPad" (Just [a]) [("unWordPad",e)] -> do
             (vs,_a) <- convertE e
@@ -1796,6 +1796,25 @@ convertE e = pushScope $ go e
           (vs,t) <- m
           putScope $ vs ++ scope
           return (vs,t)
+
+--ppmm is a helper for implementing ++_, _++, --_, _--
+ppmm :: Maybe T -> Pat -> Name -> Bool -> FFM ([Var],T)
+ppmm (Just t) p incdec pre = do
+  mep <- evaluatePat p
+  case mep of
+    Nothing -> throwError $ GenericFE $ "Wild pattern in ppmm " ++
+      show (t,p,incdec,pre)
+    Just ep -> do
+      --Subtlety: old refers to mutable variables, so it must be copied to
+      --avoid the post-increment value being returned in x++.
+      --I do that in evalEP.
+      old <- evalEP ep
+      f <- pushTyApp incdec [t]
+      new <- callFun f old t
+      assignEP ep new
+      return $ if pre
+               then (new,t)
+               else (old,t)
 
 --Attempts to parse an e of form *ptr(.field | !ix)*
 rollAddressOfE :: E -> Maybe (E,[EIndex])
