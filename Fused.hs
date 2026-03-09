@@ -1738,9 +1738,18 @@ convertE e = pushScope $ go e
             w <- pushLabel2 nm ts t
             return ([w],t)
           --caseE not supported yet
-          --CaseE e cases -> error "todo"
-          --What is the me for again?
-          OPAssign me p op e -> error "todo"
+          --The return value of x+=k is the new value of x.
+          OPAssign (Just (TyApp fnm ts, pt)) p _op e -> do
+            mep <- evaluatePat p
+            case mep of
+              Nothing -> throwError $ GenericFE "wildcard-like op= e"
+              Just ep -> do
+                old <- evalEP ep
+                (operand,_t) <- convertE e
+                f <- pushTyApp fnm ts
+                new <- callFun f (old ++ operand) pt
+                assignEP ep new
+                return (new,pt)
           --PPPre et al mostly the same
           --Problem: need to add typarams
           PPPre p -> do

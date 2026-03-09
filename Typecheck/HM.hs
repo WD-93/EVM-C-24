@@ -508,13 +508,13 @@ typeOf = go
             (e',te) <- go e
             let opfun = Var $ op2fun op
             (opfun',top) <- typeOf opfun
-            let Pair a b :-> c = top
+            let Tu2 a b :-> c = top
             unify tp a
             unify te b
             unify tp c -- p op= e returns the same type as p...
             c' <- zonk c
             --opfun' will get zonked eventually... 
-            return (OPAssign (Just opfun') p' op e', c')
+            return (OPAssign (Just (opfun',c')) p' op e', c')
           --p++ uses the inc function which supports both Ptr r a and Int s l.
           --inc : a -> a
           PPPre p -> do

@@ -73,6 +73,21 @@ contain a counter.
 op=, _++, _-- implem --requires evalEP
 Add divergent primfuns to Core.
 
+The Maybe E in OPAssign is for the function... that works.
+var x; x += 1 --fails with a type error
+IC, the error is that I assumed the opfun type was Pair a b :-> c, but it's
+actually Tu2 a b :-> c. Fixed.
+
+The code will be extremely slow without inlining, given there are primfuns
+(null, coerce...) everywhere and basic Prelude funs are defined in terms of
+them.
+Small functions should always be inlined... but how small is enough?
+push2 ret, push args, push2 f --is at least 6 bytes
+Simple heuristic: an op's size is n bytes. Inlining improves visibility and
+enables new opts, so it should be favored.
+I also need to prune dead locals between jumps to optimize away the implicit
+null() in local declaration.
+
 What should evalEP support? Just EPLocal and EPDeref;
 Array (x,y,z) |= e makes sense but isn't worth it.
 

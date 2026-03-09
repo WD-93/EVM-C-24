@@ -46,9 +46,9 @@ data E = EInteger Integer
        -- | Let (Pat,E) E
        | CaseE E [(Pat,E)]
        --Making the lhs a Pat allows incremental decomposition of patterns
-       --The Maybe E is for holding the parameterized op function after
-       --Hindley-Milner.
-       | OPAssign (Maybe E) Pat Op E
+       --The Maybe (E,T) is for holding the parameterized op function after
+       --Hindley-Milner and the type of the Pat.
+       | OPAssign (Maybe (E,T)) Pat Op E
        | PPPre Pat
        | PPPost Pat
        | MMPre Pat
