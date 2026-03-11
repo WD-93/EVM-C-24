@@ -87,6 +87,10 @@ Simple heuristic: an op's size is n bytes. Inlining improves visibility and
 enables new opts, so it should be favored.
 I also need to prune dead locals between jumps to optimize away the implicit
 null() in local declaration.
+Dead var elim within BBs is trivial; doing so between functions requires
+changing the lhs.
+That can be done for f(xs) which depends only on x' by redefining it as
+f(xs) = g xs', where g xs' has f's original body.
 
 What should evalEP support? Just EPLocal and EPDeref;
 Array (x,y,z) |= e makes sense but isn't worth it.
@@ -427,6 +431,37 @@ among the subproblems.
 That overestimates alts explored if one has many more alternatives
 than the rest, but avoids interaction between subproblems.
 
+Simple heuristic: ignore unchanged suffix of stack.
+Prefer to eval trees which produce BoS vars first.
+Vars are either args or the result of ops; also either to be returned on the
+stack or not. Those to be returned should always be dup'd.
+You can compare start/current and target stack side-by-side.
+There should be some cost heuristic (swap count?) which tells you when you
+can make a move at zero cost vs optimum.
+Iterate over current v target vars from BoS:
+ while same: skip, inc match len, add var to in-place set
+ if in in-place set: dup, inc match len
+Early permutation: if garbage encountered, eval target and swap it in?
+If top is garbage, pop it.
+Runnable mstore(k1,k2) can be run for free; it can also be run for free if
+it's mstore(k,x) where x is tos and last-use... or not last use.
+General principle: 
+1) runnable, consumes none, returns none => free
+2) runnable, consumes ToS as last argument => free
+Vars which are not last use (in-place or not) can be treated like unshared
+constants when estimating cost of run.
+Useful query: given ToS, which subtrees are free to run?
+That should be useful for
+mstore(p,a); mstore(p+32,b); ... recognizing independence would also be
+valuable there.
+Once a var has one remaining use, it's worth at least 3 gas to consume it.
+If the stack is correct so far but x needs to be pushed where x = a runnable
+tree, you can run it for free. That the stack is a suffix of the target
+implies the tree will consume no vars.
+That's useful for function calls: push $ret early, no need for swapping.
+If the ToS is last-use and a runnable tree has it as its rightmost argument,
+run it.
+
 To track leaf trees:
 leaves : set of leaves
 pending : tree => #deps
@@ -458,6 +493,26 @@ data Choices b = Choose [LHS] (LHS -> b)
 With a GADT it could be [a].
 H said free monads are expensive... but I'm not aiming for speed, and
 they're probably not that expensive in this context.
+
+If partial trees are to be executed out of order, need a DS for deleting one
+op at a time from the relevant tree.
+Tree characteristics: maybe var produced, external vars used.
+
+*Misc*****************************************************************
+LT/GT can be considered commutative: normalize to LT and emit either lt(x,y)
+or gt(y,x) depending on which is cheaper.
+Ditto for SLT/SGT
+If you only care about truthiness, XOR ~ !=.
+0 > _ ~ 0, x > 0 ~ x modulo truthy; x = 0 ~ iszero(x)
+*copy(_,_,0);r ~ r, it does not consume.
+mcopy(p,p,_) is also a noop
+
+TODO systematically identify symmetries, identities and absorbents.
+Perhaps hevm can help...
+
+Rather than introducing a new revert_0_0 branch for revertValue(), one could
+add an mem = emptyMemSlice();() op and pass that as the mem.
+returnValue() can be replaced with stop.
 
 *FW*******************************************************************
 Reordering across BBs, e.g. lifting vars out of loops.

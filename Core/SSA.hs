@@ -56,7 +56,8 @@ ssa core = do
                           ? ((,) f)
                        )
   return Core {coreDefuns = M.fromList fdefs',
-               coreStatic = coreStatic core
+               coreStatic = coreStatic core,
+               coreJTs = coreJTs core
               }
 --Note: the vars in the BranchValue and branch need to be updated as well.
 ssaFun :: (BranchValue,

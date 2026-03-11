@@ -49,8 +49,8 @@ data Core_ ops = Core {
   --Region implicit in type
   --coreGlobals :: Map Name T,
   --Code global => its initializer
-  coreStatic :: Map Name Const
-  --TODO add JTs for N1 here
+  coreStatic :: Map Name Const,
+  coreJTs :: Map Name [FunVar]
   }
   deriving (Eq,Ord,Read,Show)
 --Rewrites: letrec merge, let merge, inline

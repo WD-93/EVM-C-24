@@ -24,15 +24,16 @@ structured2core :: Structured -> Either CoreError Core
 structured2core smod = do
   --Convert each Structured function to a BB map, then union them
   let defs = M.toList $ sdefuns smod
-  --TODO ret jts_bbmaps
-  bbmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
+  bb_jtmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
+  let bbmaps = map fst bb_jtmaps
+      jtmaps = map snd bb_jtmaps
   return Core {coreDefuns = M.unions bbmaps
                 --TODO union with Core prims: stop, revert, evm_return
                --coreGlobals = sglobals smod,
               ,coreStatic = M.mapMaybe (\case (_,_,Just ser) ->
                                                 Just ser
                                               _ -> Nothing) $ sglobals smod
-              --TODO add unions of JT maps
+              ,coreJTs = M.unions jtmaps
               }
 
 --No need for break/continue outside loop, it's caught in Structured.
@@ -79,9 +80,11 @@ type CoreM = ReaderT FunVar --parent fun; is source module needed?
 --Nevertheless, I can extract the scope I need from the BranchValue.
 coreF :: FunVar -> BranchValue -> [Stmt] ->
   --TODO return csJTs as well.
-  Either CoreError (Map FunVar (BranchValue,FunRHS))
+  Either CoreError (Map FunVar (BranchValue,FunRHS), --Basic blocks
+                    Map Name [FunVar]                --Jump tables
+                   )
 coreF fv bv@(scope,_,_) body =
-  fmap csDefuns $ runExcept $ flip execStateT initSt $
+  fmap (\s -> (csDefuns s, csJTs s)) $ runExcept $ flip execStateT initSt $
   flip runReaderT fv $ do
   --The Structured fun starts with $arg.1..n,$ret on the stack, not the argument
   --locals (which are extracted from arg via pattern-matching).
