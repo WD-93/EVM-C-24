@@ -36,7 +36,9 @@ import Structured.DTs (Structured(..))
 import Fused.Monad (FusedError(..))
 import Fused (compileStructured)
 --Structured IR => Core
-import Core.RestrictedCore (Core(..))
+import Core.RestrictedCore (Core(..),
+                            Core_(..) --for debug
+                           )
 import Core.Convert (structured2core, CoreError(..))
 --SSA
 import Core.SSA (ssa, SSAError(..),OptCore(..))

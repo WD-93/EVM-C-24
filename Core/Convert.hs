@@ -5,7 +5,7 @@ import AST.DTs (T(..),Name(..),tupleT,Region(Co), pattern UInt)
 import qualified AST.DTs as T (pattern Pair)
 import Structured.DTs
 import Core.RestrictedCore
-import Core.PrimTypes (pattern W)
+import Core.PrimTypes (pattern W, pattern MemoryState)
 import Const.Const (Serialized(..)) --I need to push function labels...
 --TODO encapsulate Serialized, exposing its structure is asking for trouble.
 
@@ -27,7 +27,7 @@ structured2core smod = do
   bb_jtmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
   let bbmaps = map fst bb_jtmaps
       jtmaps = map snd bb_jtmaps
-  return Core {coreDefuns = M.unions bbmaps
+  return Core {coreDefuns = M.union exitingPrims $ M.unions bbmaps
                 --TODO union with Core prims: stop, revert, evm_return
                --coreGlobals = sglobals smod,
               ,coreStatic = M.mapMaybe (\case (_,_,Just ser) ->
@@ -35,6 +35,33 @@ structured2core smod = do
                                               _ -> Nothing) $ sglobals smod
               ,coreJTs = M.unions jtmaps
               }
+--The exiting Core prims stop[], revert[], evm_return[] cannot be defined
+--in Structured because they have nonstandard branches.
+--Their lhs is also nonstandard, as they ignore the $stk.
+--The [] suffix is because their C definitions are monomorphic.
+--They're always included in the Core, but Opt should be able to prune them
+--if unused.
+--The $ret word is ignored, so its type shouldn't matter... I'll give it
+--type W (UInt 32) 1.
+--The functions will take the full complement of state vars as per usual,
+--but most will be ignored.
+--Q: am I correct in discarding Other state? gas() modifies other, but it's
+--fine if gas ops are discarded...
+exitingPrims :: Map FunVar (BranchValue, FunRHS)
+exitingPrims = M.fromList [
+  ("stop[]",(lhs0,([],Stop ([],stopState)))),
+  ("revert[]", (lhs2, ([],Revert ([a,b],[mem])))),
+  ("evm_return[]", (lhs2,
+                    ([],Core.RestrictedCore.Return ([a,b], mem:stopState))))
+  ]
+  where lhs0 = ([ret],Nothing,envV)
+        lhs2 = ([a,b,ret],Nothing,envV)
+        [a,b,ret] = [Mono nm (W (UInt 32) 1) | nm <- words "a b $ret"]
+        mem = Mono "$memory" MemoryState
+        --The state that persists after a STOP or RETURN:
+        --TODO keep current as state is subdivided
+        stopState = [v | v <- envV, not $ nameOfVar v `elem`
+                      words "$memory $calldata $returndata $other"]
 
 --No need for break/continue outside loop, it's caught in Structured.
 data CoreError = TriedToExitLoopOutsideLoop String

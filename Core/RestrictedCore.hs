@@ -111,7 +111,7 @@ data Branch = Jump BranchValue
             | Return Value --off,len,(mem,ext,sto,tsto)
             --(Bytestring#,Ext,Sto,TSto) -> End
             --Stop deserves to be here as well
-            | Stop Value --(mem,ext,sto,tsto)
+            | Stop Value --(ext,sto,tsto)
   deriving (Eq,Ord,Read,Show,Data)
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.
