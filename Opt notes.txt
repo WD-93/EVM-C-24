@@ -95,6 +95,145 @@ f(xs) = g xs', where g xs' has f's original body.
 What should evalEP support? Just EPLocal and EPDeref;
 Array (x,y,z) |= e makes sense but isn't worth it.
 
+Stack needs a call graph + fallthrough decisions made for it before codegen.
+Opt uses the same graph, so might as well generate it now.
+Hack: every $ret var in a lhs is initially called $ret...
+A problem with using Structured to infer which args are return addresses:
+f : a -> b --can be coerced to (a, b -> c) -> c, (a,b->c,c->d)->d and so on.
+That implies
+f'(a,ret) := {
+ //f's original body that sets b...
+ return ret b
+}
+should be possible to simplify to f, discarding a suffix of the lhs!
+
+Type info in Core is not guaranteed to be complete... so f value and behavior
+must be observed.
+as,ret,stk -eventually-> ret,bs,stk can be observed
+Mode: perhaps or definitely.
+If ret,bs,vs,stk -> ret',bs,vs',stk where ret',vs' don't depend on bs, you
+can TCO: the continuation ret,vs,stk ~ ret',vs',stk.
+The transformation can be more complex than just a rearrangement; TCO is
+basically expedited inlining.
+TCO can be applied to jumpis along as the suffix is a cont in both cases.
+The simplest TCO case is return f(a): 
+call (scope,ret,stk) = jump f(a,fret,scope,ret,stk)
+fret (b,scope,ret,stk) = 
+ jump (ret,b,stk)
+TCO => call (scope,ret,stk) = jump f(a,ret,stk)
+Observation: fret,scope,ret,stk ~ ret,stk
+
+If a param ops(xs) is only demanded in one branch of an ifte, it can be deferred.
+That requires passing xs, which is free when xs = {} or already passed.
+That's particularly useful for function constants, which can then be deferred
+until the BB where they're called.
+Side-effecting exprs may also be split, as long as they're executed before
+any consumers and executed at most once.
+
+Invariant: words below $ret are passed unchanged to the cont.
+That's how you can drop words from the lhs: if you never deconstruct
+v:stk, it might as well be stk.
+
+Multireturn:
+f : a --> {b,c,d}
+a -> b --is a special case: a --> {b}
+Noreturn funs: a --> {}
+f a := {...return1 a...return 2 b...}
+f a {x => ...; y => ...; z => ...}, where the conts have locals in scope.
+Effects can be expressed in terms of inSt -> outSt a la a Core function's
+signature, with linear types.
+Inductive linear types would let you express ownership of inductive
+structures on the heap... but it would be nice to be able to store them on
+the stack as well.
+Keep linear types in state, use values on the stack to determine what's 
+there, a la gt : (a : Word, b : Word) -> Either (b >= a) (a > b)
+A "ptr to unique object" consists of both an on-stack value and state;
+loading the unique object to the stack modifies the state, but not
+necessarily the heap.
+An object's invariants may be temporarily broken, but that requires consuming
+the linear object type - to return it you must reestablish them.
+Linear types for effects, dependent types for invariants...
+to implement need to extend Core and then build on top of it.
+
+The output of a while loop can be represented symbolically using
+f_loop(xs). Estimate dataflow: x = f(vs), y = input y because it's unchanged
+etc.
+
+Simple local estimation of jump dests: push f => {f}, op xs => union, param
+=> any.
+coerce 42 :: a -> b then has fname set = {}... that should not be used to
+conclude false, nor should (f * b) + (42 * iszero b) be assumed to be f when
+inlining... it should just be used to approximate live functions & JTs.
+Local estimation can later be extended to AI.
+To preserve relations between vars, interpretation should transform stacks
+rather than individual vars.
+Oh, nice: if the state becomes bottom (impossible), the branch can be pruned.
+The UB rules better be sound...
+
+jump {jt} (args) has live vars <= union of live vars of each f in JT.
+Rather than an explicit fixpoint, you can recurse:
+setLive v => setLive its dependencies. That works for vars in SCCs as well.
+First construct global CFG from trueMain, then compute.
+CFG arrows are labeled by stack...
+If f is called with S1 and S2, its arg for the purpose of opt is (S1 | S2).
+The return to the cont is f(S1) | f(S2) which is <= f(S1 | S2).
+Opt opportunities for f(S1) inform whether it's worth copying and
+specializing.
+
+Calls can perhaps be identified by lhs shorter than stack.
+Program state: f,stk; state | exiting branch
+stk[i] = k | f | {fs}
+"Eventually jumps to" should be at the limit of what you can track...
+f -> g in f -> g -> h is not interesting.
+Jump arrow mode: perhaps (for dynamic f), definitely (for static).
+A jump to k (labels mentioned: {}) is UB.
+Refcount = number of possible sources; if a f/jt has refcount 0 it can be
+pruned.
+
+In the compilation of f(g()), push f is in a different BB from the call.
+To inline it and avoid the early push, constant info must be propagated and
+dead vars pruned from the stack.
+Building the CFG requires iteration toward a fixpoint:
+f(args) -> [end], end = exit | jump v?
+Specialize with args = union of each possible call site.
+That means if cond then f(1) else f(2) end (only call sites) should
+specialize to jump to end.
+It may be impossible to infer "ultimately exits or returns to ret" due to
+jumps to coerced functions.
+I can use the set of all labels pushed in any function + fs mentioned in
+JTs to make an initial pruning of unreferenced functions.
+*ptr = f --taints memory with f, now any read may contain f.
+
+Is it safe to assume any call to f : A -> B, jump f,args,ret,scope will
+eventually either exit or jump ret,<B>,scope?
+Breaking that could be UB... I could add a hint field to Jump/Jumpi.
+Every Core BB could be given the hint "exits or returns to $ret".
+Nice, that should let me treat calls as temporary diversions in the CFG, with
+each callee treated as a root of a DAG.
+I can also assume vars below ret are unchanged in the continuation.
+
+In while, the while body should fall through to the cond check while the
+while start should jump to the check (or copy it). That can be achieved using
+exec intensity est that gives loops a default exec intensity of k*inbound
+intensity.
+Invariant: excepting calls, outbound intensity should equal total inbound.
+
+CFG and AI are inseparable...
+Plan:
+AI (k|f|{fs}, stack = [that]), build graph
+FW: estimate exec intensity
+Inline, TCO
+CE and symbolic simplification
+DCE: jumpi, jump (jt+k)
+Replace uses of small constant params with constants
+Compute live params, drop rest when possible
+FW: memory opt
+Start with stk = [symE], state = opaque vs
+
+TODO fix: the else branch in Jumpi must ofc be SSA'd! Branch needs an ops
+param then.
+Also adding $trueMain.
+
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability
 annotations are added.
@@ -179,6 +318,15 @@ for each var bound by g's ops, alloc a new one of the same type.
 Replace g's params with f's jump params (less ToS); also do so in the
 op map. Union the updated op map with f's op map, then replace f's
 branch with g's (with vars updated).
+
+The then branch of a JUMPI costs 1 gas more due to the JUMPDEST; that favors
+making the less likely branch the then branch.
+However, if the else branch just falls through to another BB there'll be a
+JUMPDEST either way.
+The JUMPI price is paid whether you jump or not; making a commonly called BB
+the then branch places less pressure on fallthroughs.
+Inverting the cond lets you flip the branches; that can be done cheaply for
+some expressions, e.g. x > k => <k+1> > x.
 
 *Function params******************************************************
 Dead function param elim, identical var elim
@@ -497,6 +645,15 @@ they're probably not that expensive in this context.
 If partial trees are to be executed out of order, need a DS for deleting one
 op at a time from the relevant tree.
 Tree characteristics: maybe var produced, external vars used.
+
+Each BB becomes a list of asm instructions which may jump to another bb.
+For now pick an arbitrary bb to fall through to.
+Whether a BB statically jumps to f can be determined by looking at the
+jump var's op DAG (it should simply be a push).
+Invariant post-Opt: if f jumps to g, there should be >= 2 such fs.
+Knowing and using the target layout complicates things when falling through..
+the first var of the layout must be removed, so the fallthrough decision
+must be made first.
 
 *Misc*****************************************************************
 LT/GT can be considered commutative: normalize to LT and emit either lt(x,y)

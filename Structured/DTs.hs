@@ -45,7 +45,10 @@ data Structured = Structured {
   stagSchemes :: Map (Name, [T]) ([Name], TagScheme (E, Serialized)),
   sdtsInfo :: DTsInfo E,
   --sizeof info
-  ssizeof :: Map (Name,[T]) Integer
+  ssizeof :: Map (Name,[T]) Integer,
+  --Needed because the name of main:()->() in Core will vary based on
+  --main's polymorphic type.
+  smain :: FunVar
   }
   deriving (Eq,Ord,Read,Show,Data)
 --ifte : (s => Word:s) (s => s) (s => s) -> (s => s)

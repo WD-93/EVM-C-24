@@ -27,7 +27,8 @@ structured2core smod = do
   bb_jtmaps <- mapM (\(fv,(p,body)) -> coreF fv p body) defs
   let bbmaps = map fst bb_jtmaps
       jtmaps = map snd bb_jtmaps
-  return Core {coreDefuns = M.union exitingPrims $ M.unions bbmaps
+  return Core {coreDefuns = M.union exitingPrims $ M.unions $
+                            defTrueMain smod : bbmaps
                 --TODO union with Core prims: stop, revert, evm_return
                --coreGlobals = sglobals smod,
               ,coreStatic = M.mapMaybe (\case (_,_,Just ser) ->
@@ -62,6 +63,35 @@ exitingPrims = M.fromList [
         --TODO keep current as state is subdivided
         stopState = [v | v <- envV, not $ nameOfVar v `elem`
                       words "$memory $calldata $returndata $other"]
+--main:()->() is an ordinary function, meaning it has $ret on the stack and
+--will jump to it on return.
+--We therefore need a $trueMain Core function, so named to avoid clashing
+--with any function the user can define.
+-- $trueMain ();envV = let {ret = stop[]; m = main} in jump m,stop; envV
+--Problem: main may be polymorphic, so it doesn't have a fixed Core name -
+--it could be main[], main[(),()] etc. Its name therefore needs to be added
+--to Structured.
+--Useful info during opt: you can assume $mem is 0... etc.
+--Note $trueMain is known to have an empty stk.
+defTrueMain :: Structured -> Map FunVar (BranchValue,FunRHS)
+defTrueMain smod =
+  let mainf = smain smod
+      m = Mono "m" (W (UInt 32) 1)
+      ret = Mono "stop[]" (W (UInt 32) 1) --TODO use correct type... 
+  in M.singleton "$trueMain" (([],Nothing,envV),
+                              --let ...
+                              ([(([ret],[]), fpush "stop[]"),
+                                (([m],[]), fpush mainf)
+                               ],
+                               -- in m (ret); envV
+                               Jump ([m,ret],Nothing,envV)))
+  where fpush fnm = (Push Serialized {
+                        serLength = 2,
+                        serSizeof = 2,
+                        serContent = [Right (0,2,fnm)]
+                        },
+                     ([],[])
+                    )
 
 --No need for break/continue outside loop, it's caught in Structured.
 data CoreError = TriedToExitLoopOutsideLoop String

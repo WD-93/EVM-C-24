@@ -37,15 +37,21 @@ import Data.Generics (everywhere,mkT)
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do
-  (g2off,fs) <- runExcept $
+  ((entrypoint,g2off),fs) <- runExcept $
         flip runStateT initFusedS $
         flip runReaderT mod $
         runFusedM $ do
-        compileStructuredM
-        placeGlobals
-  return $ fusedS2Structured g2off mod fs
-fusedS2Structured :: Map Name (Int,Int) -> Module -> FusedS -> Structured
-fusedS2Structured g2off  m fs = substGlobals g2off Structured {
+    --entrypoint is the name of main:()->() in Structured/Core
+    entrypoint <- compileStructuredM
+    g2off <- placeGlobals
+    return (entrypoint,g2off)
+  return $ fusedS2Structured entrypoint g2off mod fs
+fusedS2Structured :: FunVar ->
+                     Map Name (Int,Int) ->
+                     Module ->
+                     FusedS ->
+                     Structured
+fusedS2Structured entrypoint g2off m fs = substGlobals g2off Structured {
   sdefuns = fsDefuns fs,
   --For code globals: Ptr Code t
   --For r globals: Ptr r t
@@ -54,7 +60,8 @@ fusedS2Structured g2off  m fs = substGlobals g2off Structured {
   sglobals = fsGlobals fs,
   stagSchemes = fsTagSchemes fs,
   sdtsInfo = dtsInfo m,
-  ssizeof = fsSizeof fs
+  ssizeof = fsSizeof fs,
+  smain = entrypoint
   }
 --Serializeds in pushes should be normalized to avoid leading zero bytes,
 --whereas those in tag schemes and globals should not. I therefore can't apply
@@ -111,7 +118,8 @@ placeGlobals = do
             else ((g,(fromInteger $ off`div`256,
                       fromInteger $ off`mod`256)) :) <$> go (off+sz) gszs
 
-compileStructuredM :: FusedM ()
+--Now returns the entrypoint to the program
+compileStructuredM :: FusedM FunVar
 compileStructuredM = do
   --First, find params for main that yield () -> ().
   (tyvars,polyt) <- do msig <- asks (M.lookup "main" . tysigs)
@@ -128,12 +136,15 @@ compileStructuredM = do
                       case M.lookup v v2t of
                         Nothing -> error "Compiler error: bad main sig"
                         Just t -> t) tyvars
+  --Set the entry point to main[params] so $trueMain in Core knows what to
+  --call. It would be better to 
   --Instantiate it with those params.
   --When rewriting to support library mode, will instead need to explore the
   --given exported functions.
   exploreF "main" params
   --Ensure spawned tasks get run:
   scheduler
+  return $ mkLabel "main" params
 
 --Converts the given monomorphic function to a Structured function.
 --Idempotent, is a noop when repeated.
