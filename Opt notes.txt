@@ -295,12 +295,17 @@ receiving functions from outside UB.
 Once I've built a CFG and analyzed the C call graph, higher-fidelity AI
 should hopefully be possible. And if that restricts the CFG, you can update
 it...
+Note I need trivial abstract values for the state vars; just <state> should
+be enough.
 
 Mem,sto,tsto globals have already been converted to offsets.
 However, storage globals could still be pruned.
 Track the storage global set as well... a load off g contains the fs in g's
 static value. Problem: those fs must not be eliminated.
 The JT set could also be tracked; a jump to {jt} ~ a jump to all fs in jt.
+A jump to exactly jt is a jump to its first function.
+A call to a var with fs = {} (e.g. exactly global g or k) is UB; it can be 
+treated as a call to a function with unknown behavior.
 
 Tracking the C-level call graph: f => g => (definitely | perhaps)
 If f definitely calls f, directly or indirectly, replace it with revert.
@@ -325,6 +330,9 @@ TODO fix: the else branch in Jumpi must ofc be SSA'd! Branch needs an ops
 param then.
 Also adding $trueMain. stop[] shouldn't be its ret since stop[] takes a
 $ret param; instead add $stop.
+When SSA'ing the the else branch of a jumpi, need to retain the SSA state
+from the body. Thankfully funVar uses SSAM, so that's simple. Need to reset
+the opmap though.
 
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability

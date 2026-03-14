@@ -56,8 +56,8 @@ data Core_ ops = Core {
 --Rewrites: letrec merge, let merge, inline
 
 type FunRHS = FunRHS_ [(Value,OpE)]
-type FunRHS_ ops = (ops --let ops
-                   ,Branch        --in branch
+type FunRHS_ ops = (ops         --let ops
+                   ,Branch_ ops --in branch
                    )
 type Scope = [Var] --Doesn't include the State vars
 
@@ -77,41 +77,43 @@ data PrimOp = Push Serialized --k, f, g, Con{consts}; takes ()
 --that the optimizer could recognize and deduplicate equivalent logic on
 --different datatypes. Equivalent logic is especially easy to find for boxed
 --datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
-data Branch = Jump BranchValue
-            --The cond and then branch are dynamic and part of the value.
-            --The else branch is static (since JUMPI falls through).
-            --To be able to easily estimate the size of the straight-line
-            --skeleton for inlining + express whether the else cont is
-            --inlined or not, the ops of the else branch are included in the
-            --jumpi. If jumpi's scope is (cond*th*rest), the else branch's
-            --scope is rest.
-            --jumpi el (cond*th*scope,st) =
-            -- if cond > 0
-            -- then th (scope,st)
-            -- else el (scope,st)
-            | Jumpi FunRHS BranchValue
-            --The compilation of case depends on the range of possible values,
-            --which is not determined by the type of the var being inspected
-            --(many DTs have tag :: Byte but fewer than 256 constructors).
-            --The range of possible values must either be inferred from
-            --context or passed as an argument.
-            --TODO change arguments; dropped for now
-            {-
-            | Case Var              --tag inspected
-                   ConstSet         --An upper bound on possible consts
-                   (Map Const FunVar) --cases
-                   FunVar           --default case
-                   BranchValue      --scope
-            -}
-            --Change: revert and return take off, len, state vars
-            --They are equivalent to variants which take a bytestring
-            --and persisted state vars in the case of return
-            | Revert Value --off,len,mem
-            --Bytestring# -> End
-            | Return Value --off,len,(mem,ext,sto,tsto)
-            --(Bytestring#,Ext,Sto,TSto) -> End
-            --Stop deserves to be here as well
-            | Stop Value --(ext,sto,tsto)
+type Branch = Branch_ [(Value,OpE)]
+data Branch_ ops =
+  Jump BranchValue
+  --The cond and then branch are dynamic and part of the value.
+  --The else branch is static (since JUMPI falls through).
+  --To be able to easily estimate the size of the straight-line
+  --skeleton for inlining + express whether the else cont is
+  --inlined or not, the ops of the else branch are included in the
+  --jumpi. If jumpi's scope is (cond*th*rest), the else branch's
+  --scope is rest.
+  --jumpi el (cond*th*scope,st) =
+  -- if cond > 0
+  -- then th (scope,st)
+  -- else el (scope,st)
+  | Jumpi (FunRHS_ ops) BranchValue
+  --The compilation of case depends on the range of possible values,
+  --which is not determined by the type of the var being inspected
+  --(many DTs have tag :: Byte but fewer than 256 constructors).
+  --The range of possible values must either be inferred from
+  --context or passed as an argument.
+  --TODO change arguments; dropped for now
+    {-
+ | Case Var              --tag inspected
+ ConstSet         --An upper bound on possible consts
+ (Map Const FunVar) --cases
+ FunVar           --default case
+ BranchValue      --scope
+    -}
+  --Change: revert and return take off, len, state vars
+  --They are equivalent to variants which take a bytestring
+  --and persisted state vars in the case of return
+  | Revert Value --off,len,mem
+  --Bytestring# -> End
+  | Return Value --off,len,(mem,ext,sto,tsto)
+  --(Bytestring#,Ext,Sto,TSto) -> End
+  --Stop deserves to be here as well
+  | Stop Value --(ext,sto,tsto)
   deriving (Eq,Ord,Read,Show,Data)
 --invalid is strictly worse than revert 0 0 (modulo code size), so it should
 --never be generated.

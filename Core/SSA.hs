@@ -35,7 +35,10 @@ import Control.Monad (forM, forM_)
 --Vars present in the branch but not the map must be in the lhs.
 
 --The program repr Opt works on.
-type OptCore = Core_ (Map Var (Value,OpE))
+type OptCore = Core_ OpMap
+type OptBranch = Branch_ OpMap
+type OptFunRHS = FunRHS_ OpMap
+type OpMap = Map Var (Value,OpE)
 --SSA can only fail if a Core function is malformed due to:
 --1) A var repeated in fun or op lhs
 --2) A var is used without being bound by op or fun lhs.
@@ -60,17 +63,32 @@ ssa core = do
                coreJTs = coreJTs core
               }
 --Note: the vars in the BranchValue and branch need to be updated as well.
-ssaFun :: (BranchValue,
-           FunRHS_ [(Value,OpE)]) ->
+ssaFun :: (BranchValue,FunRHS) ->
           SSAM
-          (BranchValue,
-           FunRHS_ (Map Var (Value,OpE)))
-ssaFun (lhs,(ops,branch)) = do
-  lhs' <- ssaFunLHS lhs
+          (BranchValue,OptFunRHS)
+ssaFun (lhs,rhs) =
+  (,) <$> ssaFunLHS lhs <*> ssaFunRHS rhs
+ssaFunRHS :: FunRHS -> SSAM OptFunRHS
+ssaFunRHS (ops,branch) = do
   mapM_ ssaOp ops
-  branch' <- ssaVars branch
-  opmap <- gets opMap
-  return (lhs',(opmap,branch'))
+  --ssaBranch resets the opmap, so we need to get it first...
+  (,) <$> gets opMap <*> ssaBranch branch
+--Problem: the else branch should only be able to access the vars in the
+--branch value. I don't enforce that here for now, relying on Convert to
+--generate well-scoped code. TODO enforce.
+ssaBranch :: Branch -> SSAM OptBranch
+ssaBranch branch = do
+  modify (\s->s{opMap = M.empty})
+  case branch of
+    Jumpi rhs bv ->
+      flip Jumpi <$> ssaVars bv <*> ssaFunRHS rhs
+    --Because I change the Branch_ param, I can't use ssaVars directly
+    --on the rest.
+    Jump bv -> Jump <$> ssaVars bv
+    Revert v -> Revert <$> ssaVars v
+    Return v -> Return <$> ssaVars v
+    Stop v -> Stop <$> ssaVars v
+  
 --Substitutes all vars in a DS
 ssaVars :: Data a => a -> SSAM a
 ssaVars = everywhereM (mkM ssaVar)
