@@ -59,32 +59,44 @@ exitingPrims = M.fromList [
         lhs2 = ([a,b,ret],Nothing,envV)
         [a,b,ret] = [Mono nm (W (UInt 32) 1) | nm <- words "a b $ret"]
         mem = Mono "$memory" MemoryState
-        --The state that persists after a STOP or RETURN:
-        --TODO keep current as state is subdivided
-        stopState = [v | v <- envV, not $ nameOfVar v `elem`
-                      words "$memory $calldata $returndata $other"]
+--The state that persists after a STOP or RETURN:
+--TODO keep current as state is subdivided
+stopState :: [Var]
+stopState = [v | v <- envV, not $ nameOfVar v `elem`
+              words "$memory $calldata $returndata $other"]
 --main:()->() is an ordinary function, meaning it has $ret on the stack and
 --will jump to it on return.
 --We therefore need a $trueMain Core function, so named to avoid clashing
 --with any function the user can define.
--- $trueMain ();envV = let {ret = stop[]; m = main} in jump m,stop; envV
+-- $trueMain ();envV = let {ret = $stop; m = main} in jump m,ret; envV
 --Problem: main may be polymorphic, so it doesn't have a fixed Core name -
 --it could be main[], main[(),()] etc. Its name therefore needs to be added
 --to Structured.
 --Useful info during opt: you can assume $mem is 0... etc.
 --Note $trueMain is known to have an empty stk.
+-- $trueMain shouldn't use stop[], which takes a $ret parameter; instead it
+-- uses $stop ();envV = let {} in stop ();stopState
 defTrueMain :: Structured -> Map FunVar (BranchValue,FunRHS)
 defTrueMain smod =
   let mainf = smain smod
       m = Mono "m" (W (UInt 32) 1)
-      ret = Mono "stop[]" (W (UInt 32) 1) --TODO use correct type... 
-  in M.singleton "$trueMain" (([],Nothing,envV),
-                              --let ...
-                              ([(([ret],[]), fpush "stop[]"),
-                                (([m],[]), fpush mainf)
-                               ],
-                               -- in m (ret); envV
-                               Jump ([m,ret],Nothing,envV)))
+      ret = Mono "ret" (W (UInt 32) 1) --TODO use correct type... 
+  in M.fromList [("$trueMain", (([],Nothing,envV),
+                                --let ...
+                                ([(([ret],[]), fpush "$stop"),
+                                  (([m],[]), fpush mainf)
+                                 ],
+                                 -- in m (ret); envV
+                                 Jump ([m,ret],Nothing,envV)))
+                 ),
+                 ("$stop", (([],Nothing,envV),
+                             --let {}
+                             ([],
+                              --in stop ();stopState
+                              Stop ([],stopState)
+                             ))
+                 )
+                ]
   where fpush fnm = (Push Serialized {
                         serLength = 2,
                         serSizeof = 2,

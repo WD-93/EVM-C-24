@@ -211,12 +211,103 @@ Every Core BB could be given the hint "exits or returns to $ret".
 Nice, that should let me treat calls as temporary diversions in the CFG, with
 each callee treated as a root of a DAG.
 I can also assume vars below ret are unchanged in the continuation.
+With calls distinguished from intraprocedural jumps, I need to duplicate the
+logic of scaling exec intensity for recursive calls and while loops.
+For loops where the state declines by some natural (N) measure I can infer
+eventual termination... and for simple enough loops, an iteration count.
+Knowing vars below the stack are irrelevant and simply passed through, I can
+avoid considering them in the callee (modulo known-stack opt).
+
+Having ret param info and knowing the calling convention is respected makes
+TCO easy: jump f,args,ret,rest
+where jump ret,retval,rest => jump ret',retval,stk' where ret',stk' don't
+depend on retval lets you replace ret,rest with with ret',stk' in advance.
+Can you generalize to non-jump branches? Only if f does not exit and its
+result (including state) is ignored; then you can simply prune the call!
+What happens once opts start breaking the function abtraction (inlining,
+eliminated ret...)? BBs could be passed between function roots.
+It might help to have another, lower-level CFG after the CC-respecting opt
+phase, but it would run into the same dynamic call problems.
+
+With the Structured separation between functions and intra- vs 
+interprocedural calls reconstructed (but perhaps modified w/ opts), perhaps
+whole-function specialization and estimation of whether that's worth it might
+be easier.
+You can infer effects: may/will RETURN/REVERT, borrows/consumes state var...
+Ops that don't interfere can be commuted; even whole calls can be!
+The same should be possible with the intraprocedural graph (e.g. while 
+loops).
+A function that definitely won't return must exit, if nothing else because
+you replace the loop with revertValue(). Then you can replace the call with
+let mem = newMem();() in revert 0,0;mem --and prune ops. 
+If so you needn't pass ret... observe non-returning calls must be 
+representable in the CFG.
+Guaranteed eventual revert lets you prune storage ops; it would then be
+valuable to lift writes to stack.
+
+A formal definition of "f is only statically called": all potential call
+sites definitely call f. Then you can jointly change the CC, e.g. word order,
+whether there's a ret, storing args in memory...
+That can still be done with dyn calls, but then the jointly changed set
+includes all the functions that share a potential call site + the call sites.
+Need a modifiable repr for the CC, e.g. ret position | constant ret.
+
+An opt that conflicts with pruning dead vars: in the known-stack portion of
+the code (non-recursive control flow off f, tail-recursive funs), you can
+access the stack above the function, e.g. to dup rather than pass vars.
+That works even if f has multiple call sites, as long as they all satisfy
+the right cond.
+Intraprocedural jumps preserve known stack; you can just look at the implied
+C function call graph to determine where the recursive breakpoints (and
+conflicting call site stacks) are.
+Given swap overhead, it might sometimes be efficient to recompute larger
+exprs such as x+y... more stack info would support that.
 
 In while, the while body should fall through to the cond check while the
 while start should jump to the check (or copy it). That can be achieved using
 exec intensity est that gives loops a default exec intensity of k*inbound
 intensity.
 Invariant: excepting calls, outbound intensity should equal total inbound.
+
+AI + CFG inference by exploring from $trueMain:
+Add CC Int | Intraprocedural to jump and jumpi.
+Perhaps also Case...
+Each var in a BB is associated with an abstract value:
+k | f | {fs}. State = BranchValue with Var replaced with Abstract.
+jump f,S results in branch --note f,S is a state.
+If branch = jump v,S', add edges from f to every function g that might be in 
+v.  If the jump is CC (retIx), make f's node a call and add each g as a
+function root. Add a returns-to edge to ret; ret takes (the union of
+possible return values of gs, the scope unchanged).
+So you need to analyze g first... problem: C-level recursion. Need to track
+the C f -> C f call graph at the same time?
+Each f => an argument S. Iteratively union S with S' given new potential 
+calls f S' until a fixpoint is reached.
+With the current abstract state, widening is not required: the top state is
+{all fs}, so AI will terminate in at most |fs| iterations.
+Need to track fs in the regions as well and include that in the fixpoint
+termination condition.
+Calldata is always {} or ext; writing {fs} to memory adds fs, reading takes 
+the current set; ditto for sto and tsto.
+call could add set(memory) to ext and returndata, but treating
+those as always {} is also a valid choice - that would make passing and
+receiving functions from outside UB.
+Once I've built a CFG and analyzed the C call graph, higher-fidelity AI
+should hopefully be possible. And if that restricts the CFG, you can update
+it...
+
+Mem,sto,tsto globals have already been converted to offsets.
+However, storage globals could still be pruned.
+Track the storage global set as well... a load off g contains the fs in g's
+static value. Problem: those fs must not be eliminated.
+The JT set could also be tracked; a jump to {jt} ~ a jump to all fs in jt.
+
+Tracking the C-level call graph: f => g => (definitely | perhaps)
+If f definitely calls f, directly or indirectly, replace it with revert.
+Detect well-behaved call patterns: trees with known recursion depth
+(mutually recursive tail calls with same stack might be OK).
+$trueMain and $stop are not CC-compliant Core functions... they can perhaps
+be put in their own fictional C function.
 
 CFG and AI are inseparable...
 Plan:
@@ -232,7 +323,8 @@ Start with stk = [symE], state = opaque vs
 
 TODO fix: the else branch in Jumpi must ofc be SSA'd! Branch needs an ops
 param then.
-Also adding $trueMain.
+Also adding $trueMain. stop[] shouldn't be its ret since stop[] takes a
+$ret param; instead add $stop.
 
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability
@@ -666,6 +758,13 @@ mcopy(p,p,_) is also a noop
 
 TODO systematically identify symmetries, identities and absorbents.
 Perhaps hevm can help...
+Commutative and associative ops: + * | & ^.
+Assoc => x+k1+k2 = x + <k1+k2>.
+Idempotence: x & x = x
+Slice rules:
+x << a << b = x << a+b (modulo overflow)
+(x << 8n) byte i = x byte (i-n) modulo range.
+Nonoverlapping shifted slices don't interfere under |.
 
 Rather than introducing a new revert_0_0 branch for revertValue(), one could
 add an mem = emptyMemSlice();() op and pass that as the mem.
