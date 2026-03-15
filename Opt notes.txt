@@ -314,6 +314,48 @@ Detect well-behaved call patterns: trees with known recursion depth
 $trueMain and $stop are not CC-compliant Core functions... they can perhaps
 be put in their own fictional C function.
 
+Maintain coreF => f; calls are initially always to a root.
+The effect of a call is the union of all possible callees.
+Must eff iff all must eff; may eff if any may/must eff.
+jump v,arg,ret,scope =>
+ fs = f set of v
+ eff = union of effects of fs
+ --For now I can ignore effects other than exit
+ If not must exit:
+  for each f in fs:
+   jump f,retval,scope
+Issue: how to compute retval given recursive calls?
+Once a cycle of definitely-calls is found, all functions in the cycle should
+be replaced with revert; then restart. Log that!
+Observation: extending S in f S is idempotent.
+If f's return may depend on itself, use bottom as a placeholder and keep
+iterating? Bottom (_|_) means "no possible value observed"... yet!
+That ensures the algo only needs to extend abstract values.
+add(f,_|_) = {f}, not _|_? Not if you view abstract values as sets, since
+that would be inconsistent with add(f,0) = f.
+Then _|_ is contagious... not a solution. You unavoidably have a recursive
+equation. Idea: solve using a fixpoint starting from Top, i.e.
+iteratively refine function summaries. Mutually recursive function SCCs need
+to be refined all at once.
+Refinement: choose a top based on all symbols reachable by the SCC.
+They should be solved in topological order.
+Dealing with coerced functions: if arg/return arity is wrong, just insert
+Top.
+
+Handling jumpi, case: extend abstract value with jt+v; jt+k => jump to a
+specific branch. jumpi k,f need not continue to both branches, but each time
+the args are extended you need to reconsider that.
+f S => [f' S']
+Might also need to record from which jumpi in the f you branch.
+DCE: a jumpi that's always taken can be replaced with a jump; one that's
+never taken can have the else branch inlined.
+
+Need to treat jump ret specially: ret has an abstract value that can be used
+for inlining, but jump ret should end the C function call graph exploration.
+Note inlining may change the call graph.
+The call graph should be able to recognize nested tail calls
+f,args,[frames],ret; it ultimately jumpts to ret.
+
 CFG and AI are inseparable...
 Plan:
 AI (k|f|{fs}, stack = [that]), build graph
@@ -333,6 +375,20 @@ $ret param; instead add $stop.
 When SSA'ing the the else branch of a jumpi, need to retain the SSA state
 from the body. Thankfully funVar uses SSAM, so that's simple. Need to reset
 the opmap though.
+To ensure the else branch is well-scoped, compute its scope (SSA vars read)
+after SSA and compare to vars in bv. 
+scope(opmap) = every var in rhs of op not in the map.
+You can assume nested jumpis are well-scoped by induction.
+Problem: in the bv the same var may be repeated...
+Implement monomorphic AI first, then render parametric in abstract state.
+class Abstract a where? Top depends on fun set... an explicit dict might be
+necessary.
+Prepare for inter-var relations: access vars by index.
+Initial goal: just get C and Core call graph. Construct SCC info at the same
+time..?
+Inlining a BB in f can transfer it to f... if the next BB is in the callee
+g, treat it as a call.
+Next: add mode info to jump/i.
 
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability

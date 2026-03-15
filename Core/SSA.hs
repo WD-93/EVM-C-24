@@ -84,7 +84,7 @@ ssaBranch branch = do
       flip Jumpi <$> ssaVars bv <*> ssaFunRHS rhs
     --Because I change the Branch_ param, I can't use ssaVars directly
     --on the rest.
-    Jump bv -> Jump <$> ssaVars bv
+    Jump mode bv -> Jump mode <$> ssaVars bv
     Revert v -> Revert <$> ssaVars v
     Return v -> Return <$> ssaVars v
     Stop v -> Stop <$> ssaVars v

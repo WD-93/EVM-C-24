@@ -87,7 +87,7 @@ defTrueMain smod =
                                   (([m],[]), fpush mainf)
                                  ],
                                  -- in m (ret); envV
-                                 Jump ([m,ret],Nothing,envV)))
+                                 Jump (Calling 0) ([m,ret],Nothing,envV)))
                  ),
                  ("$stop", (([],Nothing,envV),
                              --let {}
@@ -212,7 +212,7 @@ coreBlock'' cont stmts =
           next <- coreBlock (lhs ++ scope) cont stmts
           --The body has only a single op: pushing next
           (ret,o) <- opPushF next
-          return ([o], jump f $ args ++ ret : scope)
+          return ([o], jump (Calling $ length args) f $ args ++ ret : scope)
         --We assemble the control flow graph backward:
         --cond -> decision -> (th | el) -> next
         --decision (condvar:scope) =
@@ -276,7 +276,7 @@ coreBlock'' cont stmts =
           expects scope $ normal [] continue
         --Assuming $ret is already on the stack:
         Structured.DTs.Return scope vs ->
-          expects scope $ return ([], Jump $ scope2BV vs)
+          expects scope $ return ([], Jump Returning $ scope2BV vs)
         --If n16:
         -- tbl <- push conts as one word in reverse order
         -- jump ((tbl >> tag) & 0xffff) (vs ++ scope)
@@ -302,14 +302,14 @@ coreBlock'' cont stmts =
                      op_shift,
                      op_0xffff,
                      op_mask],
-                    jump masked $ vs ++ scope
+                    jump Intraprocedural masked $ vs ++ scope
                    )
             else do
             (jt,op_push_jt) <- allocJT fs
             (sum,op_add) <- emitOp (Op "add") [tag,jt]
             return ([op_push_jt,
                      op_add],
-                     jump sum $ vs ++ scope
+                     jump Intraprocedural sum $ vs ++ scope
                    )
         other -> error $ "Compiler error in coreBlock'': " ++ show other
 
@@ -398,8 +398,8 @@ opPushF (f,scope) = do
   v <- newVar $ W (TyVar "?") 1
   return $ (,) v $ (,) ([v],[]) $ (Push ser, ([],[]))
 
-jump :: Var -> Scope -> Branch
-jump fvar scope = Jump $ scope2BV $ fvar:scope
+jump :: Mode -> Var -> Scope -> Branch
+jump mode fvar scope = Jump mode $ scope2BV $ fvar:scope
 
 --The normal Core body: perform some straight-line ops, then perform a static
 --jump.
@@ -410,7 +410,7 @@ normal ops cont@(_,scope) = do
   --To give the var the right type, you need to know its type.
   --However, that's implicit in scope (since scope also contains $ret)
   (xf,o) <- opPushF cont
-  return $ (ops ++ [o], jump xf scope)
+  return $ (ops ++ [o], jump Intraprocedural xf scope)
 
 --Duplicated from Fused.Monad; TODO share interface
 newVar :: T -> CoreM Var

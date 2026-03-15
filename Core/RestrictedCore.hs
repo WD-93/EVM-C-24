@@ -78,8 +78,14 @@ data PrimOp = Push Serialized --k, f, g, Con{consts}; takes ()
 --different datatypes. Equivalent logic is especially easy to find for boxed
 --datatypes, since the left-offset of the tag in the ImplDT doesn't matter.
 type Branch = Branch_ [(Value,OpE)]
+--A jump is either a call, return or intraprocedural.
+--For now Jumpi and case jumps are assumed to always be intraprocedural.
+data Mode = Returning
+          | Calling Int --number of argument words
+          | Intraprocedural
+  deriving (Eq,Ord,Read,Show,Data)
 data Branch_ ops =
-  Jump BranchValue
+  Jump Mode BranchValue
   --The cond and then branch are dynamic and part of the value.
   --The else branch is static (since JUMPI falls through).
   --To be able to easily estimate the size of the straight-line
