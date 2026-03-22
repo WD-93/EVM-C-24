@@ -342,6 +342,48 @@ They should be solved in topological order.
 Dealing with coerced functions: if arg/return arity is wrong, just insert
 Top.
 
+Need to iteratively refine the BB and C function call graph alongside
+f arg = ret relations. The call graph is an upper bound on control flow; it
+should support an intersection operation.
+jt + k = {jt} = all fs in jt? No, jump {jt} just equals jump {f1,f2...} in
+behavior.
+jt1 + jt2 = {jt1,jt2} --no need for a jt+v construct, which would not be able
+to decide which jt was dominant.
+If jump {f,g,h} is assumed to jump to one of f,g,h, jump {} => false.
+Solution: a badfun value assumed to maybe return and with args,ret=top,top?
+{fs} and {fs,badfun} could then be distinguished.
+Must jump badfun be UB or *could* it be UB at runtime?
+badfun could be further broken down into "some fun in the live set" or 
+"invalid"; is that sound? The live set should then be refined downward...
+Initial state: all functions?
+
+If I tracked forward dependencies of vars in BBs I could iteratively expand
+with minimal work.
+In jump k, the effect is may return + ret = union of ret of all valid 
+functions of the given arity? Top is simpler... iteratively expand it?
+--Reader: parent f
+callBB f S: --must expand the BB graph of parent[f] and the C call graph.
+ f.arg += S
+ propagate changes
+ case f.branch of
+  return vs -> parent.ret += vs
+  call g vs ret scope ->
+   if g = exactly h:
+    add definitely-calls edge from parent to h
+    h.arg += vs
+    if h may return: 
+     add edge to ret
+     retval = h.spec.ret
+     callBB ret retval scope
+change x newv:
+ if newv /= oldv:
+  add consumers to changed set
+Adding multiple changes and then running the set is cheaper; do that when
+running the set.
+Result of pass: f => BB graph, C call graph, f effects... all_fs for badfun?
+f definitely calls g => there is a call of exactly g in f.
+In future there could be multiple related calls, where at least one is g.
+
 Handling jumpi, case: extend abstract value with jt+v; jt+k => jump to a
 specific branch. jumpi k,f need not continue to both branches, but each time
 the args are extended you need to reconsider that.
@@ -380,6 +422,9 @@ after SSA and compare to vars in bv.
 scope(opmap) = every var in rhs of op not in the map.
 You can assume nested jumpis are well-scoped by induction.
 Problem: in the bv the same var may be repeated...
+TODO give bv new names in else branch and arbitrarily choose the first of
+identical vars as the live one; future equality repr in AI can change which
+one is used (if the equal vars aren't pruned).
 Implement monomorphic AI first, then render parametric in abstract state.
 class Abstract a where? Top depends on fun set... an explicit dict might be
 necessary.
@@ -389,6 +434,136 @@ time..?
 Inlining a BB in f can transfer it to f... if the next BB is in the callee
 g, treat it as a call.
 Next: add mode info to jump/i.
+
+Else branches can have repeated vars in their argument. During codegen,
+repeated vars on the stack are also possible. So it's fine...?
+Refinement of function returns shrinks the state, iteration grows it... will
+it still terminate? It should be two different loops.
+
+Perhaps doing the full AI at once is the right approach; symbolic eval could
+identify Struct (f,g,h) >> 16 is exactly f, for example.
+If f or g are known to be >0, it could also be identified as definitely not
+a valid function - so calling it shouldn't liven f, g, or h.
+Symbolic eval AI could perhaps benefit from preserving sharing (graph
+structure) info, at least within blocks.
+
+Consider a function f(x) which calls itself and depends on the value.
+It's initially called with X.
+Algo f (arg):
+ retval = top
+ algo' f arg retval
+algo' f arg ret =
+ recarg, ret' <- run f arg ret
+ arg' = arg | recarg
+ if ((arg',ret') /= (arg,ret)
+  then algo' f arg' ret'
+  else return (arg,ret)
+Does that converge?
+
+ret being top is incorrect, that wouldn't terminate ... it being bottom will
+also catch definitely nonterminating and never-called functions.
+The call graph will only grow...
+Then there's no need for per-C function subgraphs? You still need to identify
+which BBs belong to which function to correctly attribute returns.
+Distinguish the vars of jumpi with its result; branches that are never taken
+should have vars = bottom. I don't need a top, just LUB/union.
+jump v => any of funs(v); treat non-fun values as returning bottom?
+jumpi cond,v => any of funs(v) if cond >= nonzero & else if cond >= 0.
+Issue: what should jumps to k return? {mayBeK}, may exit or return.
+Calls to coerced functions with the wrong arity could be treated as UB and do
+the same. FW: recognize coercing f : A -> B to (A,B->C,C->D...Y->Z) -> Z as
+valid.
+
+If map(f,xs) is called with only a single function per type it should be
+possible to specialize it.
+
+FW: by tracking abstract state per call site of a function, perhaps it would
+be possible to decide when to specialize.
+Once AI is complete (with abvars for intermediate vars in BBs as well), it 
+can readily be extended to support stronger symbolic eval
+(e.g. jt >> k = f, {f,0} & {0,f} = 0). That could support mem opts!
+Once abstract state has stabilized, search for opts such as x + y => y if
+x = 0. One can get a more precise symbolic description of sections of code
+by adding vars, e.g. [N,N] => [x:N,y:N].
+For now AI should be enough for constant propagation, simple symbolic
+simplification (identities, absorbents...), inlining and TCO.
+
+Now that AI has been clarified, it should be simple to param AI by abstract
+domain (with attendant Abstract class) and interp scheme (ops, branches).
+
+Rather than treat $ret specially, you can jump to the funs of the abstract
+var as normal... modulo the Returning jump only setting the first n words.
+Cache the dest set per branch, adding new edges when it's increased.
+A special badfun(n):m lets you distinguish between "call f or invalid" and
+"definitely calls f". badfun returns {mayBeK} and may return.
+Annotating BBs with maybe return words expected would let me detect and
+ignore bad returns. Treat bad arity as badfun.
+bb: call f,args,ret,scope => a continues-to edge from bb to ret.
+ret (retval,sc) gets sc += scope, but no jump edge
+f gets args += (args,ret)
+If f returns, that leads to a jump edge from its returning BBs to ret.
+Label edges: continues(nret), returns(nret), calls(narg), interprocedural.
+The live BBs are the transitive closure of the non-continue edges; continues
+causes dataflow, not control flow.
+
+Call sites and funs can be grouped into CC zones: jump v,args... =>
+all fs <- v in the same group. For each f args,... all callers are in the
+same group. bb: jump f,args,... => bb is in the same group as f as a caller.
+If args[i] is dead at all call sites, it can be removed from the
+call sites and the fs. That can occur if it's always a small constant, for
+instance.
+No point in shared reordering yet without a measure of cost as a function of
+order. Eliminating duplicate arguments requires stronger abstract state.
+What happens if f may call itself?
+
+jumpi also needs to be annotated with jump type, cf if(cond)f(args).
+How to combine jumpi and TCO?
+Note: f(a,b);g(c,d) should also be TCO-able if f returns ().
+ifte; f x --should be inlinable to jump f... in both branches.
+
+An alternative to failing or defaulting to badfun on functions with
+incorrect arity: record n->m per f in Structured; f,args,ret => ret,f.ret.
+For (coerce (f :: A -> B) :: (A,B->C)->C)(a,b2c):
+f,a,b2c,ret,scope =>
+b2c,f.ret,ret,scope
+Prior to inlining and eta reduction, b2c must be a root fun or a badfun.
+That means you can simplify again: ret,b2c.ret,scope --and so you're in the
+caller's BB with the right stack len.
+Summary: when the stack is too long for the jumpdest's arity, it must be
+f,args,ret,scope. f.args += args, then run ret,f.ret,scope.
+If arity is > stacklen, fail...
+You know the arg and return arity at the call site, so if you see
+f1,a1,...,fN,aN,unknown,garb,ret,scope --you can assume ret is the return
+cont and unknown : fN.ret,garb -> the return arity.
+That may reach ret iff f1..fN may return.
+The rule for a normal call is a special case of that.
+Assume scope is passed to ret unchanged; the fs may not modify or pad it.
+If AI is not repeated during opt, ret is guaranteed to be a constant.
+
+A coerced function can also pass part of the argument to a cont:
+f :: A -> B can safely be coerced to (A,(B,C)->D,C) -> D.
+call vs ret scope ret_arity --calls callF f vs' ret scope ret_arity
+Given f,args,ret => ret,f.ret --you don't need to leave a C f when exploring
+it.
+No need for a continue edge. Set scope iff f may return.
+A C function can interact with other fs only by calling and returning.
+Track each f=>args,ret + a workset of changed fs.
+Consider bb: f,args,g,ret,scope: bb calls both f and g before continuing!
+If a calls b there's bidirectional dataflow... when f.arg is modified, it
+must be rerun; when f.ret is modified, its consumers must be rerun.
+Track calls[f]:gs, returnsTo[f]:gs; they only grow.
+Rerunning the entire f when returns to it change is a blunt solution...
+but the poss of coerced functions makes return points hard to enumerate.
+Funs with the wrong arity combine poorly with AI: consider [f,g] | [h,i]
+where both are valid call frames - [{f,h},{g,i}] need not be!
+Better than throwing an error on bad arity: just treat as a badfun, do not
+add a data or control flow edge from caller to callee.
+Then there's a fixed number of call sites and they can be added to the
+workset individually.
+
+Callee set: fs,mayBeBadFun. Adding new badfuns doesn't change it; all fs
+have correct call and ret arity. Continues-to is a singleton.
+An else branch is never a ret BB.
 
 *Estimating exec intensity********************************************
 The algo will need to be changed once intensity and branch probability
@@ -833,6 +1008,22 @@ Nonoverlapping shifted slices don't interfere under |.
 Rather than introducing a new revert_0_0 branch for revertValue(), one could
 add an mem = emptyMemSlice();() op and pass that as the mem.
 returnValue() can be replaced with stop.
+
+If I had const ptrs I could optimize
+f (BCon a b) --where BCon is immutable
+ | cond = g a b
+ | otherwise = BCon a b
+to use the pointer to the initial BCon.
+
+If types with truly variable-size repr were possible then graphs, instruction
+sequences (terminated by exit instructions) and dyn-sized arrays could be
+proper values.
+Using dependent types with runtime discrimination:
+data DynArr a where
+ DynArr :: exists n . N (n : Nat) -> Array n a -> DynArr a
+Using ops on N at runtime, it should be possible to statically verify
+dynIndex : (MPtr (DynArr a), Short) -> Maybe a --is safe
+alloc() and uninitialized globals would need to be unsafe; see Rust.
 
 *FW*******************************************************************
 Reordering across BBs, e.g. lifting vars out of loops.
