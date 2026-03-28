@@ -100,9 +100,19 @@ data AbVar = Bottom --no possible value
                 mayBeK :: Bool
                }
   deriving (Eq,Ord,Read,Show)
+--Whether an AbVar may be truthy or 0 respectively
+--Hack: all labels are assumed to be truthy.
+--That should work since only $trueMain can be at address 0 in code, and it'll
+--never be used in a jump cond.
+--Functions which aren't called can be arbitrarily given address 1.
+--Mem, sto, tsto labels have already been eliminated.
+--Code globals and JTs are never at address 0 since $trueMain is at least 1
+--byte.
+truthiness :: AbVar 
 --emptyS is an impossible value used as a template
 emptyS :: AbVar
 emptyS = S S.empty S.empty S.empty False
+--This is just Semilattice; TODO import that.
 class Abstract a where
   bottom :: a
   lub :: a -> a -> a
@@ -350,6 +360,10 @@ Jump:
  Intraprocedural (branch dests)
 Exits.
 
+Map SLS to args. f.args = the args of its bb
+Invariant: else branches aren't named, so they can't be jumped to.
+That will change in bytecode gen due to pseudoinlining.
+
 Track:
 f <=> rets of call sites, f.args, f.ret
 In f, sls:
@@ -388,3 +402,21 @@ converging toward final conclusion.
 Var changes trigger op tasks, which update vars. Is it optimal to run (var
 changes, then all triggered op tasks) in a cycle?
 -}
+
+--TODO move abstract, op behavior map to a separate module.
+--Op behavior should include both arg and ret arities; fail if arity is bad
+--when applying op. The functions in the map should assume correct arity.
+--Derive arities from OpcodeInfo!
+
+--Set up equations per BB and fun immediately. TODO add compute bb=>f map in
+--Core to avoid having to reconstruct it.
+--Reachability: $trueMain is reachable; if bb has successor bb' then
+--bb reachable => bb' reachable.
+--bb lhs = ... jump v,... has successors = funs v
+--bb lhs = ... jumpi cond,v,... has
+-- successors = union (funs v if cond may be true)
+--              (else branch if cond may be false)
+--TODO make combinators for union etc.
+--Future opt: eliminate intermediate sets in nested unions.
+--It should be possible to GC and unsubscribe feed consumers.
+--TODO look up spreadsheet DSL related work.

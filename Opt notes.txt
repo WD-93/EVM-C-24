@@ -1050,3 +1050,29 @@ User-level constructors could have repr = their argument, allowing
 you to express syntaxes of words using them.
 The length n becomes an existentially quantified type; any other
 distinguishable constructors would need a similar explicit tag.
+
+****
+TODO write up new CB/AI abstraction: CB allows a number of outchans to be
+defined once and for all in terms of a circuit relating them to read-only
+inchans. Unlike streams defined using Applicative or Arrow, a data structure 
+containing a number of separately firing chans can be returned - e.g.
+a module abstract state record. IOW, you can escape Stream/Behavior/Chan!
+Hiding the mutable inchans in CB eliminates the bug risk from ad hoc wiring
+of always-mutable chans.
+Cyclical circuits can be built using mfix, allowing elegant and readable
+definitions, e.g. preds <- invertGraph successors; ... return
+AbstractModule {predecessors = preds, ...}
+Mutating chans are analogous to evaluating thunks; certain queries of
+running circuits could still be pure.
+TODO harden: CB can access STRefs, which allows carelessly written code to
+break the "pure-ish" property.
+Allowing CB to access CBRef iv s would let you define InChan iv s in terms
+of more general lower-level primitives.
+A nice property of the approach: stuff like predecessors[f] becomes pure
+rather than part of the monad, allowing CB/AI to easily generalize to new
+applications. In contrast to StateT s, ST allows an open-ended universe of
+mutable object types with no need for Dynamic.
+
+TODO define semilattice fold, HasMax version that unsubscribes,
+fold over Chan (Set (Chan a)) (useful for foralls).
+Opt: make a DeltaChan for types such as Set that support it.

@@ -1,4 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, LambdaCase #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, LambdaCase,
+ RankNTypes, DeriveFunctor #-}
 module Opt.Concurrent where
 
 import Data.Set (Set(..))
@@ -6,6 +7,11 @@ import qualified Data.Set as S
 import Control.Monad.State
 import Control.Monad
 import Data.Kind (Type(..))
+import Control.Monad.ST
+import Control.Monad.Fix
+import Data.STRef
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM --used for Consumers
 
 --Experimenting with the AI = increasing vars linked by circuits triggered
 --by updates idea.
@@ -16,15 +22,22 @@ class Monad m => Concurrent m where
   spawn :: m () -> m ()
   scheduler :: m ()
 newtype ConcT m a = ConcT {runConcT :: StateT [ConcT m ()] m a}
-  deriving (Functor,Monad,Applicative)
+  deriving (Functor,Applicative,Monad,MonadFix)
 instance Monad m => Concurrent (ConcT m) where
   spawn m = ConcT $ modify (m:)
   scheduler = go
     where go = ConcT get >>= \case
             [] -> return ()
-            ms -> ConcT (put []) >> sequence_ ms >> go
+            ms -> ConcT (put []) >> sequence_ (reverse ms) >> go
+instance HasRef m => HasRef (ConcT m) where
+  type Ref (ConcT m) = Ref m
+  newRef = lift . newRef
+  readRef = lift . readRef
+  writeRef r = lift . writeRef r
 --Q: Is FIFO more efficient? LIFO would trigger op updates immediately, even
 --when other vars would be updated.
+instance MonadTrans ConcT where
+  lift = ConcT . lift
 
 --Mutable vars that notify consumers on update.
 data MutVar m a = MutVar {mvState :: Ref m a,
@@ -102,3 +115,285 @@ subDelta mv init diff callback = do
                    callback $ diff new old)
 --TODO ensure a is ascending by using Ord? It might be nontrivial to verify,
 --even if the overall program can be proven to increase the mv.
+
+--Consider y = op xs. If any x in xs changes, y should eventually be
+--recalculated. However, that should ideally be done only once if n vars in
+--xs change.
+--Solution: when any x changes, set a flag and spawn a task if it was false.
+--The task fetches all vs <- xs and processes them, then sets the flag back
+--to false.
+--With FIFO ordering, that should be scheduled efficiently.
+--Values (op lhs and rhs) are a tuple rather than a parameterized DT; I'll
+--handle them explicitly for now.
+type Val a = ([a],[a])
+opAssign :: (Concurrent m, HasRef m, Eq a) =>
+  Val (MutVar m a) -> --lhs
+  (Val a -> Val a) -> --op; no error or bad arity handling for now
+  Val (MutVar m a) ->
+  m ()
+opAssign lhs op rhs = do
+  flag <- newRef False
+  let callback _ = do
+        b <- readRef flag
+        if b
+          then return ()
+          else do
+          writeRef flag True
+          spawn $ updateHandler >> writeRef flag False
+  mapVal (flip subMutVar callback) rhs
+  return ()
+  where mapVal f (xs,ys) =
+          (,) <$> mapM f xs <*> mapM f ys
+        updateHandler = do
+          (xs,ys) <- mapVal readMutVar rhs
+          let (as,bs) = lhs
+          zipWithM_ writeMutVar as xs
+          zipWithM_ writeMutVar bs ys
+
+--Eliminating intermediate sets in S = union S1 S2: if S1 and S2 both depend
+--on the same state it's more efficient to have a single callback.
+--Otherwise, they can be represented as streams rather than vars:
+--an action S += current S1, then a callback S1 delta => S += delta.
+--TODO add DeltaMutVars? Perhaps need a Delta typeclass.
+--A stream is implemented as an action applied to a var:
+--S += stream becomes run stream with param S.
+--As long as the input values and funs applied are monotonic, it doesn't matter
+--when the stream is run. Enforcement of that via a typeclass would be nice,
+--but intermediate maps needn't be monotonic...
+--streamMutVar ~ the initial value and subsequent updates.
+--streamDeltas might also be useful.
+--Streams support Functor and Applicative; Monad should be avoided since
+--the circuit structure and MutVars depended on should be ~fixed.
+--Not quite fixed: bb.lhs = union of vars of predecessors bb
+--That formulation (one value = f many values) is more elegant than
+--"When bb adds successor bb', bb'.lhs += ..." despite requiring an additional
+--preds mutvar: the description of bb.lhs is in one place rather than spread
+--out over many side effects in source.
+--That's true even if you need to implement preds via callbacks on succs.
+--reify :: Stream a -> MutVar a would let you ensure the mutvar is defined once
+--How to enforce that?
+--What is the role of MutVars when Streams can implement the same logic?
+--They're like registers in a circuit. Beyond allowing inspection of the
+--result, they serve as checkpoints which prevent wasteful recomputation
+--and enable termination of fixpoints.
+--unreify reify stream can be inserted anywhere in a circuit.
+--forAll ~ a fold op :: Stream (Set a) -> Stream a, given a monotonic op
+--and a growing set of increasing elements.
+--Ex: reachable f = any reachable (preds f)
+--fold :: SemiLattice a => Stream (Set a) -> Stream a?
+
+--f.args = fold args (callsites[f])
+--Could the callsites map itself be constructed as a single stream?
+--Adding new bbs to callsites via a fold might actually be efficient.
+--Implem: subscribe to succs of each SLS with a stateful stream; update it
+--from false to true when f is added to succs, then unsubscribe.
+--That replicates work shared by all preds... it should be possible to use
+--a map of subscribers and notify for a set of new fs in n log n.
+--Exploit the structure in the fs as well!
+--That's reminiscent of the "notify on price >= k" pattern. But how to
+--express indexed subscription elegantly?
+--It requires an additional circuit node with input deltas and state = a map
+--f => stream.
+--Does Map support Map k (a -> b) -> Map k a -> Map k b or do I need a new
+--datatype?
+--On automatic unsubscription: the receiver channel could respond that it's
+--satisfied.
+
+--Circuits are Arrows, having both a source and sink when instantiated.
+--MutVars are also sources and sinks... but so is the last value of a stream.
+--fixpoint :: Circuit a a -> a?
+
+--Assuming an imperative approach is simplest: need efficient unsubscription.
+--That could be achieved with a DLL for O(1) deletion.
+--The consumer node should subscribe rather than producer modify, allowing
+--self-adjusting computations to be defined all at once.
+--self :: M (InChan a)?
+--Delta streams have both a delta and state type
+--Implement succs => preds using a MapStream k v which can be queried for a
+--particular k?
+--Adding finality info: Final a is a maximum for each a, but
+--Final a > NonFinal b iff a > b.
+--(Eq a, Bounded a) => IsMax a where isMax = (== maxBound)
+--If you receive a maximum value from any input, you can unsubscribe from it.
+--It should be possible to copy an incremental computation graph.
+
+--reachable[f] = any preds[f] reachable
+--That needs to subscribe both to function set deltas and bools
+--Forwarding any's subscribers to new elems would avoid the intermediate node,
+--but passing around InChans is risky.
+--A monad with a Finally action could automatically unsubscribe from all inputs,
+--but only inchan => outchans is tracked.
+
+--Need to distinguish between return conts, C function roots and intermediate
+--BBs.
+--fixpoint takes an abstract state map: f=>reachable, args etc; each var
+--must be defined in terms of it. Problem: that must be monadic!
+--First allocate the outchans and initial values, then concurrently run the
+--stream processor initialization.
+--That's ~ a read-only monad with an update/send action.
+{-
+What should the API look like?
+chan <- when var (\a -> ...)?
+For chans to be able to unsub each other, they need to be allocated before
+their final callback is set; they can have a list of callbacks, or just a
+Maybe.
+Only the init monad should have access to the InChan of the stream.
+The Map k (Stream (Set v)) -> M (Map v (Stream (Set k))) needs separate
+treatment, as do other multi-output circuits. Preserve the read-only
+property.
+Unsolved: how to ensure the init monad can't leak its InChans to other nodes
+via subscription? Perhaps a st param for each... for now enforce it manually.
+TODO formalize why delta streams are fine.
+-}
+
+--The abstract interpretation (circuit) monad.
+--Uses ST for mutable state.
+--The s parameter must be exposed for AI to be able to access the mutable
+--references it creates.
+--Alternative approaches: STT, ReaderT RunQueue ST
+{-
+newtype AI s a = AI {runAI :: ConcT (ST s) a}
+  deriving (Functor,Applicative,Monad,MonadFix)
+instance HasRef (AI s) where
+  type Ref (AI s) = STRef
+  newRef a = AI $ lift $ newSTRef a
+  readRef r = AI $ lift $ readSTRef r
+  writeRef r a = AI $ lift $
+-}
+instance HasRef (ST s) where
+  type Ref (ST s) = STRef s
+  newRef = newSTRef
+  readRef = readSTRef
+  writeRef = writeSTRef
+type AI s = ConcT (ST s)
+--Circuit builder; the rigid iv param prevents InChans from escaping.
+newtype CB iv s a = CB {unCB :: AI s a}
+  deriving (Functor,Applicative,Monad)
+--Note: CB should not be Concurrent; it spawns AI actions, not itself.
+spawn_CB :: AI s () -> CB iv s ()
+spawn_CB = CB . spawn
+instance HasRef (CB iv s) where
+  type Ref (CB iv s) = STRef s
+  newRef a = CB $ newRef a
+  readRef r = CB $ readRef r
+  writeRef r a = CB $ writeRef r a
+--outchans <- runCB circuitNode
+runCB :: (forall iv . CB iv s a) -> AI s a
+runCB = unCB
+--The raw writeable end of the chan; musn't be allowed to escape.
+--No delta handling atm; refine from a working implementation.
+data RawChan s a = RawChan {rcState :: STRef s a,
+                            rcConsumers :: Consumers s a
+                           }
+--Consumers should support O(1) subscription and unsubscription; currently
+--it's O(log n) and uses Map for simplicity. Note iteration over all
+--callbacks is still O(1) per element.
+--Each individual subscription must be mutable to be able to refer to and
+--cancel other subs.
+data Consumers s a = Consumers {
+  cSubCtr :: STRef s Int, --It'll never overflow in practice...
+  cSubs :: STRef s (IntMap (a -> AI s ()))
+  }
+--Note the iv parameter in Subscription; you should not be able to leak the
+--unsubscription handle, since that would indirectly give external actions the
+--ability to affect internal vars.
+--The chan rather than Consumers is needed because registered callbacks must
+--be spawned once immediately, otherwise wired circuits would never start
+--propagating.
+data Subscription iv s a = Sub {
+  subID :: Int,
+  subRC :: RawChan s a
+  }
+--Wraps the raw chan with the iv
+newtype InChan iv s a = InChan (RawChan s a)
+--The read-only Chan may escape
+newtype Chan s a = Chan (RawChan s a)
+--CB actions: alloc new mutable chans, wire them together, then return as
+--read-only Chans.
+newChan :: a -> CB iv s (InChan iv s a)
+newChan a = InChan <$> newRawChan a
+--Internal.
+newRawChan :: a -> CB iv s (RawChan s a)
+newRawChan a = RawChan <$> newRef a <*> newConsumers
+newConsumers :: CB iv s (Consumers s a)
+--It doesn't actually matter which Int I pick since Int silently overflows.
+newConsumers = Consumers <$> newRef 0 <*> newRef IM.empty
+--Creates a cancelable subscription handle; starts with no callback.
+subChan :: Chan s a -> CB iv s (Subscription iv s a)
+subChan (Chan rc) = do
+  let cons = rcConsumers rc
+  let ctr = cSubCtr cons
+  n <- readRef ctr
+  writeRef ctr (n+1)
+  return Sub{subID = n, subRC = rc}
+--Sets a callback for a subscription. Can be repeatedly unsub'd and reset,
+--but that's bad practice.
+--Note this is the one way CB actions with privileged access to the circuit's
+--internal chans can escape - they'll later be called from within AI s!
+--That's achieved by extracting the internal AI s of CB iv s.
+whenSub :: Subscription iv s a -> (a -> CB iv s ()) -> CB iv s ()
+whenSub (Sub{subID=id,subRC=rc}) f = do
+  let subs = cSubs $ rcConsumers rc
+  i2f <- readRef subs
+  writeRef subs $ IM.insert id (unCB . f) i2f
+  --The callback must be spawned once immediately!
+  a <- readRef $ rcState rc
+  spawn_CB $ unCB $ f a
+--Deletes the subscription's callback; TODO use helper to share code.
+unSub :: Subscription iv s a -> CB iv s ()
+unSub (Sub{subID=id,subRC=rc}) = do
+  let subs = cSubs $ rcConsumers rc
+  i2f <- readRef subs
+  writeRef subs $ IM.delete id i2f
+
+--Updates an inChan.
+--Needs Eq because subscribers are only notified when the value changes.
+writeInChan :: Eq a => InChan iv s a -> a -> CB iv s ()
+writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
+  a' <- readRef ra
+  if a == a'
+    then return ()
+    else do
+    --Update and notify consumers
+    writeRef ra a
+    let subs = cSubs rcc
+    i2f <- readRef subs
+    forM_ (IM.elems i2f) (spawn_CB . ($ a))
+
+--Converts a mutable InChan to a read-only Chan so it can be returned by the
+--CB monad.
+freezeInChan :: InChan iv s a -> Chan s a
+freezeInChan (InChan raw) = Chan raw
+
+--A Chan has two ends, InChan and (out)Chan. InChans are only used internally
+--by circuit combinators.
+--Perhaps restrict writing to them outside callbacks with a monad subtype later.
+--Combinators: Map k (Chan s (Set k)) -> AI s (Map k (Chan s (Set k)))
+--It can't be Map k (... (Set v)) because the shape of the map must be known
+--at creation time; the keys of the output are the same as the input.
+
+--InChan can be written to
+--subscribe :: Chan s a -> AI s (Subscription s a)
+--when :: Subscription s a -> (a -> AI s ()) -> AI s ()
+--unsubscribe :: Subscription s a -> AI s ()
+
+--Receiving the module abstract state as a pure value via mfix means you
+--can use a pure fun to look up new f in preds => f.passes
+--Chan (Set f) -> (f -> Chan a) -> AI s (Chan a)
+--type CircuitBuilder iv s a
+--runCB :: forall iv . CB iv s a -> AI s a
+--Can spawn Chan s a, InChan iv s a
+--Can register callbacks :: b -> CB iv s (), which are converted to
+--AI s (); that is the only way to convert.
+--Invariant: the value of internal state depends only on inchans.
+--Sufficient for termination:
+--1) Each circuit implements a function f
+--s.t. ins =: x => outs = f x after change propagation settles.
+--2) f is monotonic with the finite ascending chain property.
+--Termination is not necessary for (Haskell's concept of) purity.
+--Note a circuit is self-contained once constructed.
+--If you recorded more dependency info it should be possible for queries on
+--circuits to terminate even when part of the circuit diverges, e.g.
+--"select these outvals" or "outval >= k?".
+--Chan/Var updates are analogous to thunk evaluation; subscribing to a var
+--of a running circuit could be pure.
