@@ -2,8 +2,12 @@
  RankNTypes, DeriveFunctor #-}
 module Opt.Concurrent where
 
+import Opt.Semilattice
+
 import Data.Set (Set(..))
 import qualified Data.Set as S
+import Data.Map (Map(..))
+import qualified Data.Map as M
 import Control.Monad.State
 import Control.Monad
 import Data.Kind (Type(..))
@@ -100,6 +104,7 @@ outv |= (op,inv) = do
 --for all f in funs(v):
 -- f.args |= args
 -- if f may return, ret.scope |= scope
+{-
 forAll :: (Concurrent m, HasRef m, Ord a) =>
   MutVar m (Set a) -> (a -> m ()) -> m ()
 forAll set property = do
@@ -113,6 +118,7 @@ subDelta mv init diff callback = do
                    old <- readRef tracker
                    writeRef tracker new
                    callback $ diff new old)
+-}
 --TODO ensure a is ascending by using Ord? It might be nontrivial to verify,
 --even if the overall program can be proven to increase the mv.
 
@@ -268,15 +274,21 @@ instance HasRef (ST s) where
 type AI s = ConcT (ST s)
 --Circuit builder; the rigid iv param prevents InChans from escaping.
 newtype CB iv s a = CB {unCB :: AI s a}
-  deriving (Functor,Applicative,Monad)
---Note: CB should not be Concurrent; it spawns AI actions, not itself.
-spawn_CB :: AI s () -> CB iv s ()
-spawn_CB = CB . spawn
+  deriving (Functor,Applicative,Monad,Concurrent)
+--CB may only spawn its own actions, preventing it from mutating external
+--state. However, it converts them to AI actions and spawns them to AI's
+--runQueue. TODO verify derived Concurrent does that.
+
+--If CB can mutate external STRefs, that breaks its pure-ish property.
+--It must therefore be limited to its own internal CBRefs.
+--The Chan pattern could be generalized by freezing CBRefs, but for now we
+--only need Chans.
+newtype CBRef iv s a = CBRef (STRef s a)
 instance HasRef (CB iv s) where
-  type Ref (CB iv s) = STRef s
-  newRef a = CB $ newRef a
-  readRef r = CB $ readRef r
-  writeRef r a = CB $ writeRef r a
+  type Ref (CB iv s) = CBRef iv s
+  newRef a = CB $ CBRef <$> newRef a
+  readRef (CBRef r) = CB $ readRef r
+  writeRef (CBRef r) a = CB $ writeRef r a
 --outchans <- runCB circuitNode
 runCB :: (forall iv . CB iv s a) -> AI s a
 runCB = unCB
@@ -310,22 +322,29 @@ newtype InChan iv s a = InChan (RawChan s a)
 newtype Chan s a = Chan (RawChan s a)
 --CB actions: alloc new mutable chans, wire them together, then return as
 --read-only Chans.
-newChan :: a -> CB iv s (InChan iv s a)
-newChan a = InChan <$> newRawChan a
+newInChan :: a -> CB iv s (InChan iv s a)
+newInChan a = InChan <$> newRawChan a
 --Internal.
 newRawChan :: a -> CB iv s (RawChan s a)
-newRawChan a = RawChan <$> newRef a <*> newConsumers
+newRawChan a = RawChan <$> CB (newRef a) <*> newConsumers
 newConsumers :: CB iv s (Consumers s a)
 --It doesn't actually matter which Int I pick since Int silently overflows.
-newConsumers = Consumers <$> newRef 0 <*> newRef IM.empty
+newConsumers = CB $ Consumers <$> newRef 0 <*> newRef IM.empty
 --Creates a cancelable subscription handle; starts with no callback.
 subChan :: Chan s a -> CB iv s (Subscription iv s a)
 subChan (Chan rc) = do
   let cons = rcConsumers rc
-  let ctr = cSubCtr cons
+  let ctr = CBRef $ cSubCtr cons
   n <- readRef ctr
   writeRef ctr (n+1)
   return Sub{subID = n, subRC = rc}
+--A convenience function that creates a subscription and sets the callback at
+--the same time.
+subWhenChan :: (a -> CB iv s ()) -> Chan s a -> CB iv s (Subscription iv s a)
+subWhenChan f ch = do
+  sub <- subChan ch
+  whenSub sub f
+  return sub
 --Sets a callback for a subscription. Can be repeatedly unsub'd and reset,
 --but that's bad practice.
 --Note this is the one way CB actions with privileged access to the circuit's
@@ -333,16 +352,16 @@ subChan (Chan rc) = do
 --That's achieved by extracting the internal AI s of CB iv s.
 whenSub :: Subscription iv s a -> (a -> CB iv s ()) -> CB iv s ()
 whenSub (Sub{subID=id,subRC=rc}) f = do
-  let subs = cSubs $ rcConsumers rc
+  let subs = CBRef $ cSubs $ rcConsumers rc
   i2f <- readRef subs
   writeRef subs $ IM.insert id (unCB . f) i2f
   --The callback must be spawned once immediately!
-  a <- readRef $ rcState rc
-  spawn_CB $ unCB $ f a
+  a <- readRef $ CBRef $ rcState rc
+  spawn $ f a
 --Deletes the subscription's callback; TODO use helper to share code.
 unSub :: Subscription iv s a -> CB iv s ()
 unSub (Sub{subID=id,subRC=rc}) = do
-  let subs = cSubs $ rcConsumers rc
+  let subs = CBRef $ cSubs $ rcConsumers rc
   i2f <- readRef subs
   writeRef subs $ IM.delete id i2f
 
@@ -350,20 +369,169 @@ unSub (Sub{subID=id,subRC=rc}) = do
 --Needs Eq because subscribers are only notified when the value changes.
 writeInChan :: Eq a => InChan iv s a -> a -> CB iv s ()
 writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
-  a' <- readRef ra
+  a' <- readRef (CBRef ra)
   if a == a'
     then return ()
     else do
     --Update and notify consumers
-    writeRef ra a
+    writeRef (CBRef ra) a
     let subs = cSubs rcc
-    i2f <- readRef subs
-    forM_ (IM.elems i2f) (spawn_CB . ($ a))
+    i2f <- readRef (CBRef subs)
+    forM_ (IM.elems i2f) (spawn . CB . ($ a))
+--Used when modifying InChans; TODO add classes to share implem between
+--monads. IsRef r?
+readInChan :: InChan iv s a -> CB iv s a
+readInChan (InChan RawChan{rcState=st}) = CB $ readRef st
+modInChan :: Eq a => (a -> a) -> InChan iv s a -> CB iv s ()
+modInChan f ic = do
+  a <- readInChan ic
+  writeInChan ic $ f a
 
 --Converts a mutable InChan to a read-only Chan so it can be returned by the
 --CB monad.
 freezeInChan :: InChan iv s a -> Chan s a
 freezeInChan (InChan raw) = Chan raw
+
+--Applications:
+--Bounded join-semilattice fold
+--When any input becomes top, unsubscribes all inputs.
+--Precondition: the chans only increase, minBound is semilattice bottom and
+--maxBound semilattice top.
+cbOr :: (Bounded a, JoinSemilattice a, Eq a) => [Chan s a] -> CB iv s (Chan s a)
+cbOr cbs = do
+  ic <- newInChan minBound
+  subs <- mapM subChan cbs
+  forM subs $ flip whenSub $
+    \a -> do
+      modInChan (\/ a) ic
+      new <- readInChan ic
+      if new == maxBound
+        then mapM_ unSub subs
+        else return ()
+  return $ freezeInChan ic
+
+--invertGraph takes a growing directed graph with nodes k and returns the
+--graph with edges reversed. To be used to obtain preds[f] from succs[f].
+--Logic: whenever in[f] += g, out[g] += f
+--Identifying new g's added requires computing the delta of in[f], requiring
+--an additional CBRef per key.
+--invertGraph demonstrates the power of the CB model: you can return a
+--structure containing many independently updating chans, rather than just
+--one.
+--S.difference on the successor sets risks getting expensive... TODO
+--propagate deltas further.
+invertGraph :: Ord k => Map k (Chan s (Set k)) ->
+               CB iv s (Map k (Chan s (Set k)))
+invertGraph k2chks = do
+  --Allocate a map of inchans initialized to be empty
+  k2in <- mapM (\_ -> newInChan S.empty) k2chks
+  --For each (k,ch) in the input map, subscribe to ch's deltas
+  --When k2in[k] grows by ks, add k to k2in[k'] for each k' in ks
+  forM_ (M.toList k2chks)
+    (\(k,ch) ->
+        subSetDelta
+        (\k' -> case M.lookup k' k2in of
+                  Nothing -> error "!!?"
+                  Just inch -> modInChan (S.insert k) inch)
+        ch)
+  --Freeze and return the inchans
+  return $ freeze k2in
+
+--Allocates a delta tracker and registers it to the given chan.
+--Uses a CBRef to track the old value; the initial delta is the current value
+--of the Chan.
+--Requirement: forall x . x-zero = x
+subDelta :: a -> (a -> a -> a) -> (a -> CB iv s ()) ->
+  Chan s a -> CB iv s (Subscription iv s a)
+subDelta zero (-) callback chan = do
+  cbr <- newRef zero
+  subWhenChan (\a -> do
+                  old <- readRef cbr
+                  writeRef cbr a
+                  callback $ a - old) chan
+--As the input set grows, applies a callback to each new element.
+--Q: Is exposing the subscription dangerous?
+subSetDelta :: Ord a =>
+  (a -> CB iv s ()) ->
+  Chan s (Set a) ->
+  CB iv s (Subscription iv s (Set a))
+subSetDelta callback =
+  subDelta S.empty S.difference
+  (\delta -> forM_ (S.toList delta) callback)
+
+--Consider f.lhs = for all callers[f], \/ of args[f].
+--Precondition: f.lhs and args[f] match.
+--callers[f] is a Chan (Set f), from which you must obtain the [Chan AbVar]
+--args[f].
+--The forAll is interesting because it requires linking new inputs (args[f]) as
+--new fs are added.
+--Mapping over the delta set is not desirable, since that would require the
+--work of sorting the [Chan AbVar] lists... and there's no Ord instance for
+--Chan.
+--Solution: S.toList
+--'mapping' the set gives me a stream of elements; it extends, but the prefix
+--never changes. However, later queries may return existing elements in a
+--different order. The operations applied to the stream must therefore be
+--commutative... but not idempotent, consider "sum of f of s".
+--Streams which enforced that via class constraints on consumers might be
+--a good idea.
+--Write a specific version first, then extract combinator.
+collectVars :: (JoinSemilattice b, HasBottom b, Eq b, Ord a) =>
+  Int -> --length of result, >= 0
+  Chan s (Set a) ->
+  (a -> [Chan s b]) -> --vars associated with a
+  CB iv s [Chan s b]
+collectVars len chset f =
+  forAll (sequence $ replicate len (newInChan bottom)) chset $
+  \inchs a -> linkChans (f a) inchs
+  {-
+  do
+  inchs <- sequence $ replicate len (newChan bottom)
+  subSetDelta (\a -> linkChans (f a) inchs) chset
+  return $ map freezeInChan inchs
+-}
+--Using the m () ~ an equation view, but now the mutable state being updated
+--is kept internal.
+forAll :: (Ord a, Freezable state) =>
+  CB iv s state ->
+  Chan s (Set a) ->
+  (state -> a -> CB iv s ()) ->
+  CB iv s (Frozen state)
+forAll mkSt chset f = do
+  st <- mkSt --
+  subSetDelta (f st) chset
+  return $ freeze st
+--Helper function; links a new list of a's to the inchans.
+linkChans :: (JoinSemilattice a, Eq a) =>
+  [Chan s a] -> [InChan iv s a] -> CB iv s ()
+linkChans chans inchans
+  | length chans /= length inchans = error "!!?"
+  | let = zipWithM_ (\inchan ->
+                        subWhenChan (\a -> modInChan (\/ a) inchan))
+          inchans chans
+--reachable[f] = any preds[f] reachable
+--That can be implemented using forAll 1, but it would be better to
+--pass the init action CB iv s st as a param in forAll.
+--TODO a Freezable class and Frozen tyfam, enabling freezing of multi-chan
+--containers with a single function.
+class Freezable a where
+  type Frozen a
+  freeze :: a -> Frozen a
+instance Freezable (InChan iv s a) where
+  type Frozen (InChan iv s a) = Chan s a
+  freeze = freezeInChan
+instance Freezable a => Freezable [a] where
+  type Frozen [a] = [Frozen a]
+  freeze = map freeze
+instance Freezable a => Freezable (Map k a) where
+  type Frozen (Map k a) = Map k (Frozen a)
+  freeze = M.map freeze
+{-
+--The instance I'd like to write
+instance Functor f => Freezable (f a) where
+  type Frozen (f a) = f (Frozen a)
+  freeze = fmap freeze
+-}  
 
 --A Chan has two ends, InChan and (out)Chan. InChans are only used internally
 --by circuit combinators.
