@@ -80,8 +80,9 @@ ssaBranch :: Branch -> SSAM OptBranch
 ssaBranch branch = do
   modify (\s->s{opMap = M.empty})
   case branch of
-    Jumpi rhs bv ->
-      flip Jumpi <$> ssaVars bv <*> ssaFunRHS rhs
+    Jumpi elf {-rhs-} bv ->
+      Jumpi elf <$> ssaVars bv
+      --flip Jumpi <$> ssaVars bv <*> ssaFunRHS rhs
     --Because I change the Branch_ param, I can't use ssaVars directly
     --on the rest.
     Jump mode bv -> Jump mode <$> ssaVars bv
@@ -93,7 +94,8 @@ ssaBranch branch = do
 ssaVars :: Data a => a -> SSAM a
 ssaVars = everywhereM (mkM ssaVar)
 --Converts the vars in the LHS to SSA vars; errors if there are
---duplicate vars.
+--duplicate vars. Structured must ensure no duplication in scope, which it
+--does via copy ops.
 ssaLHS :: Data a => (a -> Var -> SSAError) -> a -> SSAM a
 ssaLHS malformed lhs =
   let vs = listVars lhs

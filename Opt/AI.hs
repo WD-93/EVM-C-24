@@ -50,3 +50,48 @@ data ModState s = MS {
 --Tracking call and ret means I'm stuck with Structured-level information in
 --the Core. The upside is I can share f.ret, needing only to propagate at
 --least the ret update through f's BBs on each new call.
+
+--If an else branch takes multiple copies of the same var, you could in theory
+--choose which one is live to fit other jumpi dests.
+
+{-
+Characterizing BBs:
+lhs[f] = known for $trueMain and $stop,
+ otherwise lub of passed of all preds modulo calls and returns
+passed[f] =
+ case branch f of
+  jumpi cond,g,rest -> rest
+  jump g,rest ->
+   case mode jump of
+    return -> 
+ No entry for exits, they should have succs = {}
+vars[f] : v => abvar
+The op map determines relations between lhs and internal vars;
+bad ops should throw an error.
+dests({jt}) = {all fs in jt}
+
+On TCO: a call is of the form callFrame,[partialCallFrame] where ret,scope
+is a partial call frame.
+If return was treated as a special case of call, fusing call and return
+wouldn't require changing the jump type.
+
+$trueMain starts with no stack param, then main has one... how to represent
+stk? Nothing ~ the empty stack.
+(ws,mstk,...) ~ w1*w2*...toStkVar mstk
+The ret cont receives retval...stk, it just unpacks stk more than the callee
+(which is polymorphic in stk) does.
+For now the stack doesn't need an abstract state except liveness.
+To implement the prettier model I'd need polymorphism support in Core +
+explicit repr of functions as Conts with no return value.
+jump : (Cont stk s * stk, s) -> End
+
+jump f,args,ret,rest => f called with args,ret; ret called with
+retval f ++ rest (with excess suffix dropped). Fail on multiple arities,
+treat badfun as arity = |retval++rest|.
+
+-}
+
+--On lifting exprs out of loops: vars have a last common ancestor which
+--forms a lattice based on the SCC tree of the CFG; later nodes are greater
+--than earlier ones.
+--Per C function or global?

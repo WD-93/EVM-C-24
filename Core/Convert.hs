@@ -230,9 +230,9 @@ coreBlock'' cont stmts =
           --basic block:
           (xthen,othen) <- opPushF thcont
           decision <- expects (condvar:scope) $ do
-            jump2el <- normal [] elcont
+            --jump2el <- normal [] elcont
             return ([othen],
-                    Jumpi jump2el $
+                    Jumpi (fst elcont) {-jump2el-} $
                     scope2BV $ xthen : condvar : scope)
           condcont <- coreBlock scope decision cond
           normal [] condcont
@@ -258,9 +258,10 @@ coreBlock'' cont stmts =
                       coreBlock scope continue body
           decision <- expects (condvar:scope) $ do
             (xbody,obody) <- opPushF bodycont
-            jump2brk <- normal [] break
+            --jump2brk <- normal [] break
             return ([obody],
-                    Jumpi jump2brk $ scope2BV $ xbody : condvar : scope)
+                    Jumpi (fst break) {-jump2brk-} $
+                    scope2BV $ xbody : condvar : scope)
           condcont <- coreBlock scope decision cond
           --continues' rhs; it just jumps to condcont:
           rhs <- normal [] condcont

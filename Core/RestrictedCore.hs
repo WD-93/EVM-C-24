@@ -97,7 +97,17 @@ data Branch_ ops =
   -- if cond > 0
   -- then th (scope,st)
   -- else el (scope,st)
-  | Jumpi (FunRHS_ ops) BranchValue
+
+  --Changed else branch from (FunRHS_ ops) to FunVar, meaning else branches
+  --can now be shared. That reflects real program behavior, e.g.
+  --if cond then {stmt} else {} end, where stmt and the else branch both
+  --continue to end.
+  --That should mean I eliminate a bunch of trivial \scope -> jump f scope
+  --else branches, but now compiling jumpis involves a nontrivial choice of
+  --whether to copy or jump when the else branch is shared... and if you don't
+  --copy, which branch should fall through. Note static jumps can also fall
+  --through.
+  | Jumpi FunVar BranchValue
   --The compilation of case depends on the range of possible values,
   --which is not determined by the type of the var being inspected
   --(many DTs have tag :: Byte but fewer than 256 constructors).

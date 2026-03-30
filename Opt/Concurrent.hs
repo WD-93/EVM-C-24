@@ -533,9 +533,18 @@ instance Functor f => Freezable (f a) where
   freeze = fmap freeze
 -}  
 
+--Chans are useful for incrementalizing computation, but it would still be nice
+--to have streams in order to conveniently apply fmap, (<*>) etc.
+--By stream I mean an event source.
+--Stream a ~ (a -> CB iv s ()) -> CB iv s ()?
+--subChan :: Chan a -> Stream a
+--Streams (or the stream head produced by running it) should also be
+--queryable to enable (<*>) to be implemented. That requires an additional
+--CBRef.
+--To share a stream output, you'd need to add subscription...
+
 --A Chan has two ends, InChan and (out)Chan. InChans are only used internally
 --by circuit combinators.
---Perhaps restrict writing to them outside callbacks with a monad subtype later.
 --Combinators: Map k (Chan s (Set k)) -> AI s (Map k (Chan s (Set k)))
 --It can't be Map k (... (Set v)) because the shape of the map must be known
 --at creation time; the keys of the output are the same as the input.
