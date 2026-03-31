@@ -25,8 +25,13 @@ import qualified Data.IntMap as IM --used for Consumers
 class Monad m => Concurrent m where
   spawn :: m () -> m ()
   scheduler :: m ()
-newtype ConcT m a = ConcT {runConcT :: StateT [ConcT m ()] m a}
+newtype ConcT m a = ConcT {unConcT :: StateT [ConcT m ()] m a}
   deriving (Functor,Applicative,Monad,MonadFix)
+--Handles passing the initial runQueue, but not running the scheduler.
+--That's because I want to read the chans in AI after running the scheduler.
+runConcT :: Monad m => ConcT m a -> m a
+runConcT (ConcT sm) =
+  flip evalStateT [] sm
 instance Monad m => Concurrent (ConcT m) where
   spawn m = ConcT $ modify (m:)
   scheduler = go
@@ -381,7 +386,13 @@ writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
 --Used when modifying InChans; TODO add classes to share implem between
 --monads. IsRef r?
 readInChan :: InChan iv s a -> CB iv s a
-readInChan (InChan RawChan{rcState=st}) = CB $ readRef st
+readInChan (InChan rc) = readRawChan rc
+--TODO overload for AI and CB
+readChan (Chan rc) = readRawChan rc
+readChanAI :: Chan s a -> AI s a
+readChanAI (Chan RawChan{rcState=st}) = readRef st
+readRawChan :: RawChan s a -> CB iv s a
+readRawChan (RawChan{rcState=st}) = CB $ readRef st
 modInChan :: Eq a => (a -> a) -> InChan iv s a -> CB iv s ()
 modInChan f ic = do
   a <- readInChan ic
@@ -397,18 +408,19 @@ freezeInChan (InChan raw) = Chan raw
 --When any input becomes top, unsubscribes all inputs.
 --Precondition: the chans only increase, minBound is semilattice bottom and
 --maxBound semilattice top.
-cbOr :: (Bounded a, JoinSemilattice a, Eq a) => [Chan s a] -> CB iv s (Chan s a)
-cbOr cbs = do
+cbOr :: (Bounded a, JoinSemilattice a, Eq a) => [Chan s a] -> AI s (Chan s a)
+cbOr cbs = runCB $ do
   ic <- newInChan minBound
-  subs <- mapM subChan cbs
-  forM subs $ flip whenSub $
-    \a -> do
-      modInChan (\/ a) ic
-      new <- readInChan ic
-      if new == maxBound
-        then mapM_ unSub subs
-        else return ()
-  return $ freezeInChan ic
+  spawn $ do
+    subs <- mapM subChan cbs
+    forM_ subs $ flip whenSub $
+      \a -> do
+        modInChan (\/ a) ic
+        new <- readInChan ic
+        if new == maxBound
+          then mapM_ unSub subs
+          else return ()
+  return $ freeze ic
 
 --invertGraph takes a growing directed graph with nodes k and returns the
 --graph with edges reversed. To be used to obtain preds[f] from succs[f].
@@ -498,7 +510,7 @@ forAll :: (Ord a, Freezable state) =>
   (state -> a -> CB iv s ()) ->
   CB iv s (Frozen state)
 forAll mkSt chset f = do
-  st <- mkSt --
+  st <- mkSt
   subSetDelta (f st) chset
   return $ freeze st
 --Helper function; links a new list of a's to the inchans.
@@ -531,8 +543,114 @@ instance Freezable a => Freezable (Map k a) where
 instance Functor f => Freezable (f a) where
   type Frozen (f a) = f (Frozen a)
   freeze = fmap freeze
--}  
+-}
 
+--Apply f to a Chan, unsubscribing when f x becomes max.
+--Invariant: f is monotonic.
+--Useful for "jumpi cond may be false/true"
+mapChan :: (Eq b, HasTop b) => (a -> b) -> Chan s a -> CB iv s (Chan s b)
+mapChan f ch = do
+  b <- f <$> readChan ch
+  inch <- newInChan b
+  sub <- subChan ch
+  whenSub sub (\a -> do
+                  let b = f a
+                  if b == top
+                    then unSub sub
+                    else return ()
+                  writeInChan inch b)
+  return $ freeze inch
+
+--State s a ~ s -> (a,s).
+--To prevent an infinite runQueue, the equation needs to start by
+--setting runQueue to []? Apparently not!
+--To prevent deadlock, need to ensure ModState structure depends only on
+--Core and that no Chan is evaluated before completion; all effects other
+--than newInChan and spawn must be deferred?
+--That means mapChan is invalid: inChans must be given an initial value before
+--the Chans they depend on are read.
+--readChan is still needed in CB, since the op circuit (reeval on any arg
+--changed) needs it.
+--Subscription (which forces the chans when it modifies them) must be
+--deferred.
+--TODO make a simple test of mfix and Chan propagation (propagation of or
+--through a Boolean circuit).
+--Simpler: create a Chan, spawn a write to it.
+
+--Nulls the runQueue first.
+--myfix :: (a -> AI s a) -> AI s a
+--myfix f = mfix (\a -> {-ConcT (put []) >> -} f a)
+
+runAI :: (forall s . AI s a) -> a
+runAI ai = runST (runConcT ai)
+test_1 :: Bool
+test_1 = runAI $ do
+  ch <- mfix (\_ -> runCB $ do
+                  inch <- newInChan False
+                  spawn $ writeInChan inch True
+                  spawn $ error "Woo!"
+                  return $ freeze inch
+              )
+  len <- length <$> ConcT get
+  --error $ "runQueue length: " ++ show len
+  scheduler
+  readChanAI ch
+
+--x = x || True
+--cbOr deadlocks... spawning subscription and reading fixed it.
+test_2 = runAI $ do
+  ch <- mfix (\x -> do
+                 true <- runCB $ freeze <$> newInChan True
+                 cbOr [x,true]
+             )
+  scheduler
+  readChanAI ch
+
+--Accessing chans from within a structure
+--Consequence: deadlock.
+test_3 = runAI $ do
+  chs <- mfix (\[x,y,z] -> do
+                  true <- runCB $ freeze <$> newInChan True
+                  --mapM (\v -> cbOr [v,true]) [x,y,z]
+                  x' <- cbOr [x,true]
+                  y' <- cbOr [y,true]
+                  z' <- cbOr [z,true]
+                  return [x',y',z']
+              )
+  --scheduler
+  mapM readChanAI chs
+
+--Solution: don't rely on mfix. Instead alloc knot-tying chans,
+--build the circuit based on them and then wire the output back to them
+--(breaking the abstraction).
+--unsafeWire :: UnsafeWire a => a -> a -> AI s ()
+{-
+class UnsafeWire a where
+  type UWS a :: Type
+  unsafeWire :: a -> a -> AI s ()
+instance UnsafeWire (Chan s a) where
+  type UWS (Chan s a) = s
+-}
+unsafeWire :: Eq a => Chan s a -> Chan s a -> AI s ()
+unsafeWire from (Chan to) = unCB $ do
+  subWhenChan (writeInChan (InChan to)) from
+  return ()
+
+test_4 :: [Bool]
+test_4 = runAI $ do
+  xyz <- runCB $ mapM ((freeze <$>).newInChan) [False,False,False]
+  let [x,y,z] = xyz
+  xyz' <- do
+    true <- runCB $ freeze <$> newInChan True
+    --This will require multiple iterations
+    x' <- cbOr [x,true]
+    y' <- cbOr [y,x]
+    z' <- cbOr [z,y]
+    return [x',y',z']
+  zipWithM_ unsafeWire xyz' xyz
+  scheduler
+  mapM readChanAI xyz
+  
 --Chans are useful for incrementalizing computation, but it would still be nice
 --to have streams in order to conveniently apply fmap, (<*>) etc.
 --By stream I mean an event source.

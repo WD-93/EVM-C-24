@@ -19,18 +19,55 @@ import qualified Data.Map as M
 --The module state in the solver context.
 --I could param by wrapper (Chan s when solving, Id later), but let's not get
 --too fancy.
+
 data ModState s = MS {
-  reachable :: Map FunVar (Chan s Bool)
+  funInfo :: Map FunVar (FunInfo s)
                      }
---Basic blocks consist of a series of nested iftes terminated by a non-ifte.
---It can be divided into SLSes (straight-line sections) consisting of
---ops and a branch.
+data FunInfo s = FI {
+  fiReachable :: Chan s Bool,
+  --We ignore stk for now. mstk will retain its value from the original Core,
+  --meaning revert and RETURN won't be able to drop the stack if inlined into
+  --a BB which has non-Nothing stack.
+  --TODO: non-returning funs should also be able to drop the old stack.
+  --The full complement of state vars is always passed.
+  fiLHS :: ([AVar s],[AVar s]),
+  --Tells me which vars (lhs and internal) are small constants I can replace
+  --with pushes.
+  fiVars :: Map Var (AVar s),
+  --Tells me which ops are live (an op is live iff any of its lhs vars are
+  --live).
+  --Ops are identified by their LHS.
+  fiOpsLive :: Map Value (Chan s Bool),
+  fiPassed :: Maybe ([AVar s],[AVar s]), --Nothing for exits
+  --Need to M.map over funInfo to get the succs map : f => set f.
+  succs :: Chan s (Set FunVar),
+  preds :: Chan s (Set FunVar)
+                    }
+--TODO pick more suitable names for AVar, AbVar.
+data AVar s = AVar {
+  avLive :: Chan s Bool,
+  avVal :: Chan s AbVar
+  }
+--Problem: bad op names or arities may raise an error. Will that interfere
+--with mfix? Whether AI errors is solely dependent on the Core input, so
+--it shouldn't be a problem.
+--The part of the AI that's run synchronously just sets up the circuit.
+--ExceptT inherits MonadFix, so mfix can be run directly in it.
+--Computing the opMap circuits immediately (and reporting any errors then)
+--would let me run the recursive equation in AI.
+type AIM s a = ExceptT AIError (AI s) a
+data AIError = BadMnemonic String
+             | BadArity String (Int,Int) (Int,Int)
+             | OutOfScope Var
+  deriving (Eq,Ord,Read,Show)
+  
+--Jumpi else branches are now divided into separate basic blocks, so they're
+--no longer nested and can all be accessed from coreDefuns.
 --Each SLS has its own LHS and liveness status for vars... a var that's live
 --in the jumpi may become dead in the else branch.
---Perhaps it would be better to represent the static else branch as a FunVar
---rather than a nested FunRHS...
---Then I eliminate the difference between BBs and SLSes.
---However, I introduce the possibility of an else branch having multiple
+--The static else branch is now represented as a FunVar rather than a nested
+--FunRHS...
+--That introduces the possibility of an else branch having multiple
 --callers - only one of which may fall through. The rest must be implemented
 --as jumps, and if there are several then the branch must have a jumpdest.
 --That creates a reason to copy functions, and therefore to re-run AI to get
