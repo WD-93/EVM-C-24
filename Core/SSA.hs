@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Core.SSA (ssa,SSAError(..),OptCore(..)) where
+module Core.SSA {-(ssa,SSAError(..),OptCore(..))-} where
 
 import Core.RestrictedCore
 import Util ((?))

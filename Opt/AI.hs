@@ -4,13 +4,14 @@ import Opt.Concurrent
 import Opt.AbVar
 import Opt.Semilattice
 import Core.RestrictedCore
-import Core.SSA (OptCore)
+import Core.SSA (OptCore,OptFunRHS)
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.Except
+import Control.Monad
 
 --The module that defines the EVMC program abstract state and its recursive
 --equation.
@@ -22,34 +23,46 @@ import Control.Monad.Except
 --I could param by wrapper (Chan s when solving, Id later), but let's not get
 --too fancy.
 
-data ModState s = MS {
-  funInfo :: Map FunVar (FunInfo s)
+--The f param is Chan s while the mod state is mutable, then Id when it's
+--pure.
+newtype Id a = Id a
+  deriving (Eq,Ord,Read,Show)
+type FrozenModState = ModState_ Id
+type ModState s = ModState_ (Chan s)
+data ModState_ f = MS {
+  funInfo :: Map FunVar (FunInfo_ f)
                      }
-data FunInfo s = FI {
-  fiReachable :: Chan s Bool,
+
+type FunInfo s = FunInfo_ (Chan s)
+data FunInfo_ f = FI {
+  fiReachable :: f Bool,
   --We ignore stk for now. mstk will retain its value from the original Core,
   --meaning revert and RETURN won't be able to drop the stack if inlined into
   --a BB which has non-Nothing stack.
   --TODO: non-returning funs should also be able to drop the old stack.
   --The full complement of state vars is always passed.
-  fiLHS :: ([AVar s],[AVar s]),
+  fiLHS :: ([AVar_ f],[AVar_ f]),
   --Tells me which vars (lhs and internal) are small constants I can replace
   --with pushes.
-  fiVars :: Map Var (AVar s),
+  --Combined with the op map from OptCore, it also lets me apply symbolic
+  --simplification such as x + 0 => x.
+  fiVars :: Map Var (AVar_ f),
   --Tells me which ops are live (an op is live iff any of its lhs vars are
   --live).
   --Ops are identified by their LHS.
-  fiOpsLive :: Map Value (Chan s Bool),
-  fiPassed :: Maybe ([AVar s],[AVar s]), --Nothing for exits
+  fiOpsLive :: Map Value (f Bool),
+  fiPassed :: Maybe ([AVar_ f],[AVar_ f]), --Nothing for exits
   --Need to M.map over funInfo to get the succs map : f => set f.
-  succs :: Chan s (Set FunVar),
-  preds :: Chan s (Set FunVar)
+  succs :: f (Set FunVar),
+  preds :: f (Set FunVar)
                     }
 --TODO pick more suitable names for AVar, AbVar.
-data AVar s = AVar {
-  avLive :: Chan s Bool,
-  avVal :: Chan s AbVar
+type AVar s = AVar_ (Chan s)
+data AVar_ f = AVar {
+  avLive :: f Bool,
+  avVal :: f AbVar
   }
+type AValue s = ([AVar s],[AVar s])
 --Problem: bad op names or arities may raise an error. Will that interfere
 --with mfix? Whether AI errors is solely dependent on the Core input, so
 --it shouldn't be a problem.
@@ -57,47 +70,59 @@ data AVar s = AVar {
 --ExceptT inherits MonadFix, so mfix can be run directly in it.
 --Computing the opMap circuits immediately (and reporting any errors then)
 --would let me run the recursive equation in AI.
-type AIM s a = ExceptT AIError (AI s) a
+
+--type AIM s a = AIM {unAIM :: ExceptT AIError (AI s) a}
+--  deriving (Functor,Applicative,Monad,Concurrent)
 data AIError = BadMnemonic String
              | BadArity String (Int,Int) (Int,Int)
              | OutOfScope Var
-             | UndefinedLabel Name --push error
+             | UndefinedLabel String --push error
              --Assumption: no pushes are >32B; that should've already been
              --filtered out.
   deriving (Eq,Ord,Read,Show)
 
 --The mfix problem is solved; next step: define the initial state.
-aiModule :: OptCore -> Either AIError OptCore
+aiModule :: AIC m => OptCore -> ExceptT AIError m FrozenModState
 aiModule = error "todo"
 
---TODO enumerate AI capabs, turn them into a class.
-initialModState :: OptCore -> AIM s (ModState s)
+initialModState :: AIC m => OptCore -> m (ModState (S m))
 initialModState core = do
-  fi <- forM (coreDefuns core) $ \((ws,_,ss),(ops,branch)) -> do
-    --Not reachable by default
-    reachable <- lift $ newChan False
-    --Alloc new bottom chans for ws, ss
-    --wchs <- lift $ sequence [newChan bottom | _ <- ws]
-    --schs <- lift $ sequence [
-    return FI {
-      fiReachable = reachable
-      }
+  fi <- forM (coreDefuns core) initialFunInfo
   return MS{funInfo = fi}
 
+initialFunInfo :: AIC m => (BranchValue,OptFunRHS) -> m (FunInfo (S m))
+initialFunInfo (lhs,(ops,branch)) = do
+  reachable <- newChan False
+  alhs <- initialLHS lhs
+  return FI {
+    fiReachable = reachable,
+    fiLHS = alhs
+    }
+--Alloc new AVars for ws, ss. They are bottom and not live by default.
+initialLHS :: AIC m => BranchValue -> m (AValue (S m))
+initialLHS (ws,_,ss) =
+  (,) <$> mapM new ws <*> mapM new ss
+  where new _ = AVar <$> newChan False <*> newChan bottom
+
 --Backlinking the entire module is overkill and verbose, but simple.
-unsafeWireModState :: ModState s -> ModState s -> AI s ()
-unsafeWireModState ms1 ms2 = error "todo"
+--Assumes ms1 and ms2 have the same shape.
+unsafeWireModState :: AIC m => ModState (S m) -> ModState (S m) -> m ()
+unsafeWireModState ms1 ms2 =
+  zipWithM_ unsafeWireFunInfo
+  (M.elems $ funInfo ms1) (M.elems $ funInfo ms2)
+unsafeWireFunInfo :: AIC m => FunInfo (S m) -> FunInfo (S m) -> m ()
+unsafeWireFunInfo fi1 fi2 = error "todo"
 
 --reachable[f] = any reachable (preds f)
 --Add Reader (ModState s)?
-eqReachable :: ModState s -> FunInfo s -> AI s (Chan s Bool)
-eqReachable ms fi f =
+eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
+eqReachable ms fi =
   let fs = funInfo ms
   in setAny (\g ->
                case M.lookup g fs of
                  Nothing -> error "!?"
-               Just gi -> fiReachable gi)
-  (preds fi)
+                 Just gi -> fiReachable gi)
+     (preds fi)
 --Jumpi else branches are now divided into separate basic blocks, so they're
 --no longer nested and can all be accessed from coreDefuns.
 --Each SLS has its own LHS and liveness status for vars... a var that's live

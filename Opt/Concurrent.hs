@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, LambdaCase,
- RankNTypes, DeriveFunctor #-}
+ RankNTypes, DeriveFunctor, FlexibleInstances #-}
 module Opt.Concurrent where
 
 import Opt.Semilattice
@@ -276,7 +276,37 @@ instance HasRef (ST s) where
   newRef = newSTRef
   readRef = readSTRef
   writeRef = writeSTRef
-type AI s = ConcT (ST s)
+--Abstract interpretation monad; its primitive capabilities are exposed via
+--the class AIC in order to stack transformers on top of it.
+--Since the monads must take an s param it also needs a type family.
+--MonadFix is only derived to ensure the tests which demonstrate MonadFix is
+--impractical due to deadlock still compile.
+newtype AI s a = AI {unAI :: ConcT (ST s) a}
+  deriving (Functor,Applicative,Monad,Concurrent,MonadFix)
+instance HasRef (AI s) where
+  type Ref (AI s) = STRef s
+  newRef a = AI $ newRef a
+  readRef r = AI $ readRef r
+  writeRef r a = AI $ writeRef r a
+class Monad m => AIC m where
+  type S m
+  runCB :: (forall iv . CB iv (S m) a) -> m a
+  readChan :: Chan (S m) a -> m a
+instance AIC (AI s) where
+  type S (AI s) = s
+  runCB = unCB
+  readChan (Chan rc) = readRef $ rcState rc
+--AI is CB with additional internal state; everything AI can do CB iv can as
+--well.
+instance AIC (CB iv s) where
+  type S (CB iv s) = s
+  runCB = id
+  readChan ch = CB $ readChan ch
+--A single instance for transformers.
+instance (MonadTrans t, AIC m) => AIC (t m) where
+  type S (t m) = S m
+  runCB cb = lift $ runCB cb
+  readChan = lift . readChan
 --Circuit builder; the rigid iv param prevents InChans from escaping.
 newtype CB iv s a = CB {unCB :: AI s a}
   deriving (Functor,Applicative,Monad,Concurrent)
@@ -295,8 +325,8 @@ instance HasRef (CB iv s) where
   readRef (CBRef r) = CB $ readRef r
   writeRef (CBRef r) a = CB $ writeRef r a
 --outchans <- runCB circuitNode
-runCB :: (forall iv . CB iv s a) -> AI s a
-runCB = unCB
+--runCB :: (forall iv . CB iv s a) -> AI s a
+--runCB = unCB
 --The raw writeable end of the chan; musn't be allowed to escape.
 --No delta handling atm; refine from a working implementation.
 data RawChan s a = RawChan {rcState :: STRef s a,
@@ -386,13 +416,7 @@ writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
 --Used when modifying InChans; TODO add classes to share implem between
 --monads. IsRef r?
 readInChan :: InChan iv s a -> CB iv s a
-readInChan (InChan rc) = readRawChan rc
---TODO overload for AI and CB
-readChan (Chan rc) = readRawChan rc
-readChanAI :: Chan s a -> AI s a
-readChanAI (Chan RawChan{rcState=st}) = readRef st
-readRawChan :: RawChan s a -> CB iv s a
-readRawChan (RawChan{rcState=st}) = CB $ readRef st
+readInChan (InChan rc) = CB $ readRef $ rcState rc
 modInChan :: Eq a => (a -> a) -> InChan iv s a -> CB iv s ()
 modInChan f ic = do
   a <- readInChan ic
@@ -408,7 +432,8 @@ freezeInChan (InChan raw) = Chan raw
 --When any input becomes top, unsubscribes all inputs.
 --Precondition: the chans only increase, minBound is semilattice bottom and
 --maxBound semilattice top.
-cbOr :: (Bounded a, JoinSemilattice a, Eq a) => [Chan s a] -> AI s (Chan s a)
+cbOr :: (AIC m, Bounded a, JoinSemilattice a, Eq a) =>
+  [Chan (S m) a] -> m (Chan (S m) a)
 cbOr cbs = runCB $ do
   ic <- newInChan minBound
   spawn $ do
@@ -527,16 +552,17 @@ linkChans chans inchans
 --To do so with minimal code reuse would require a concept of streams in order
 --to map convert over the delta stream.
 --foldChanStream :: (a -> b -> b) -> b -> Stream s (Chan s a) -> AI s (Chan s b)
-setFoldr :: (Eq b, Ord c) =>
-  (a -> b -> b) -> b -> (c -> Chan s a) -> Chan s (Set c) ->
-  AI s (Chan s b)
+setFoldr :: (AIC m, Eq b, Ord c) =>
+  (a -> b -> b) -> b -> (c -> Chan (S m) a) -> Chan (S m) (Set c) ->
+  m (Chan (S m) b)
 setFoldr (+) zero convert chset = runCB $
   forAll (newInChan zero) chset
   (\chb c -> do
       subWhenChan (\a -> modInChan (a+) chb) (convert c)
       return ()
   )
-setAny :: Ord a => (a -> Chan s Bool) -> Chan s (Set a) -> AI s (Chan s Bool)
+setAny :: (AIC m, Ord a) =>
+  (a -> Chan (S m) Bool) -> Chan (S m) (Set a) -> m (Chan (S m) Bool)
 setAny = setFoldr (||) False
             
 --reachable[f] = any preds[f] reachable
@@ -600,7 +626,7 @@ mapChan f ch = do
 --myfix f = mfix (\a -> {-ConcT (put []) >> -} f a)
 
 runAI :: (forall s . AI s a) -> a
-runAI ai = runST (runConcT ai)
+runAI ai = runST $ runConcT $ unAI ai
 test_1 :: Bool
 test_1 = runAI $ do
   ch <- mfix (\_ -> runCB $ do
@@ -609,10 +635,10 @@ test_1 = runAI $ do
                   spawn $ error "Woo!"
                   return $ freeze inch
               )
-  len <- length <$> ConcT get
+  len <- length <$> AI (ConcT get)
   --error $ "runQueue length: " ++ show len
   scheduler
-  readChanAI ch
+  readChan ch
 
 --x = x || True
 --cbOr deadlocks... spawning subscription and reading fixed it.
@@ -622,7 +648,7 @@ test_2 = runAI $ do
                  cbOr [x,true]
              )
   scheduler
-  readChanAI ch
+  readChan ch
 
 --Accessing chans from within a structure
 --Consequence: deadlock.
@@ -636,7 +662,7 @@ test_3 = runAI $ do
                   return [x',y',z']
               )
   --scheduler
-  mapM readChanAI chs
+  mapM readChan chs
 
 --Solution: don't rely on mfix. Instead alloc knot-tying chans,
 --build the circuit based on them and then wire the output back to them
@@ -649,8 +675,8 @@ class UnsafeWire a where
 instance UnsafeWire (Chan s a) where
   type UWS (Chan s a) = s
 -}
-unsafeWire :: Eq a => Chan s a -> Chan s a -> AI s ()
-unsafeWire from (Chan to) = unCB $ do
+unsafeWire :: (AIC m, Eq a) => Chan (S m) a -> Chan (S m) a -> m ()
+unsafeWire from (Chan to) = runCB $ do
   subWhenChan (writeInChan (InChan to)) from
   return ()
 
@@ -667,10 +693,10 @@ test_4 = runAI $ do
     return [x',y',z']
   zipWithM_ unsafeWire xyz' xyz
   scheduler
-  mapM readChanAI xyz
+  mapM readChan xyz
 
 --A chan with no subscriptions and a constant value... until you unsafeWire it.
-newChan :: a -> AI s (Chan s a)
+newChan :: AIC m => a -> m (Chan (S m) a)
 newChan a = runCB $ freeze <$> newInChan a
 
 --Unsafely wiring the circuit output to the knot-tying value is the one point
