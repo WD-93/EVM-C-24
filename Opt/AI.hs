@@ -4,11 +4,13 @@ import Opt.Concurrent
 import Opt.AbVar
 import Opt.Semilattice
 import Core.RestrictedCore
+import Core.SSA (OptCore)
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import Control.Monad.Except
 
 --The module that defines the EVMC program abstract state and its recursive
 --equation.
@@ -59,8 +61,43 @@ type AIM s a = ExceptT AIError (AI s) a
 data AIError = BadMnemonic String
              | BadArity String (Int,Int) (Int,Int)
              | OutOfScope Var
+             | UndefinedLabel Name --push error
+             --Assumption: no pushes are >32B; that should've already been
+             --filtered out.
   deriving (Eq,Ord,Read,Show)
-  
+
+--The mfix problem is solved; next step: define the initial state.
+aiModule :: OptCore -> Either AIError OptCore
+aiModule = error "todo"
+
+--TODO enumerate AI capabs, turn them into a class.
+initialModState :: OptCore -> AIM s (ModState s)
+initialModState core = do
+  fi <- forM (coreDefuns core) $ \((ws,_,ss),(ops,branch)) -> do
+    --Not reachable by default
+    reachable <- lift $ newChan False
+    --Alloc new bottom chans for ws, ss
+    --wchs <- lift $ sequence [newChan bottom | _ <- ws]
+    --schs <- lift $ sequence [
+    return FI {
+      fiReachable = reachable
+      }
+  return MS{funInfo = fi}
+
+--Backlinking the entire module is overkill and verbose, but simple.
+unsafeWireModState :: ModState s -> ModState s -> AI s ()
+unsafeWireModState ms1 ms2 = error "todo"
+
+--reachable[f] = any reachable (preds f)
+--Add Reader (ModState s)?
+eqReachable :: ModState s -> FunInfo s -> AI s (Chan s Bool)
+eqReachable ms fi f =
+  let fs = funInfo ms
+  in setAny (\g ->
+               case M.lookup g fs of
+                 Nothing -> error "!?"
+               Just gi -> fiReachable gi)
+  (preds fi)
 --Jumpi else branches are now divided into separate basic blocks, so they're
 --no longer nested and can all be accessed from coreDefuns.
 --Each SLS has its own LHS and liveness status for vars... a var that's live

@@ -521,6 +521,24 @@ linkChans chans inchans
   | let = zipWithM_ (\inchan ->
                         subWhenChan (\a -> modInChan (\/ a) inchan))
           inchans chans
+--A prettier variant of forAll that handles mapping over new set elements
+--and op application; used for reachable[f] = any reachable (preds f).
+--Doesn't unsubscribe.
+--To do so with minimal code reuse would require a concept of streams in order
+--to map convert over the delta stream.
+--foldChanStream :: (a -> b -> b) -> b -> Stream s (Chan s a) -> AI s (Chan s b)
+setFoldr :: (Eq b, Ord c) =>
+  (a -> b -> b) -> b -> (c -> Chan s a) -> Chan s (Set c) ->
+  AI s (Chan s b)
+setFoldr (+) zero convert chset = runCB $
+  forAll (newInChan zero) chset
+  (\chb c -> do
+      subWhenChan (\a -> modInChan (a+) chb) (convert c)
+      return ()
+  )
+setAny :: Ord a => (a -> Chan s Bool) -> Chan s (Set a) -> AI s (Chan s Bool)
+setAny = setFoldr (||) False
+            
 --reachable[f] = any preds[f] reachable
 --That can be implemented using forAll 1, but it would be better to
 --pass the init action CB iv s st as a param in forAll.
@@ -638,10 +656,10 @@ unsafeWire from (Chan to) = unCB $ do
 
 test_4 :: [Bool]
 test_4 = runAI $ do
-  xyz <- runCB $ mapM ((freeze <$>).newInChan) [False,False,False]
+  xyz <- mapM newChan [False,False,False]
   let [x,y,z] = xyz
   xyz' <- do
-    true <- runCB $ freeze <$> newInChan True
+    true <- newChan True
     --This will require multiple iterations
     x' <- cbOr [x,true]
     y' <- cbOr [y,x]
@@ -650,6 +668,27 @@ test_4 = runAI $ do
   zipWithM_ unsafeWire xyz' xyz
   scheduler
   mapM readChanAI xyz
+
+--A chan with no subscriptions and a constant value... until you unsafeWire it.
+newChan :: a -> AI s (Chan s a)
+newChan a = runCB $ freeze <$> newInChan a
+
+--Unsafely wiring the circuit output to the knot-tying value is the one point
+--where the abstraction breaks.
+--How to allow the user to tell fixpoint how to wire an a to an a for new
+--chan-containing types a without letting them do so directly?
+--Ideally breaking the abstraction should not be possible from within Safe
+--Haskell (as long as only a safe API is exported).
+--Idea: let the user specify how to pair the chans in a1 with those in a2
+--(where a1 and a2 have the same shape and may contain multiple chan types)
+--using a class Weldable a where weld :: a -> a -> Fuse s.
+--Fuse is a monoid with a single action
+--fuse :: Chan s a -> Chan s a -> Fuse s
+--that wraps an unsafeWire.
+--fixpoint :: (Weldable a, HasInitialState a) =>
+-- (a -> AI s a) ->
+-- AI s a
+--is then the only function permitted to unwrap Fuse.
   
 --Chans are useful for incrementalizing computation, but it would still be nice
 --to have streams in order to conveniently apply fmap, (<*>) etc.
