@@ -36,7 +36,6 @@ import Control.Monad (forM, forM_)
 
 --The program repr Opt works on.
 type OptCore = Core_ OpMap
-type OptBranch = Branch_ OpMap
 type OptFunRHS = FunRHS_ OpMap
 type OpMap = Map Var (Value,OpE)
 --SSA can only fail if a Core function is malformed due to:
@@ -76,7 +75,7 @@ ssaFunRHS (ops,branch) = do
 --Problem: the else branch should only be able to access the vars in the
 --branch value. I don't enforce that here for now, relying on Convert to
 --generate well-scoped code. TODO enforce.
-ssaBranch :: Branch -> SSAM OptBranch
+ssaBranch :: Branch -> SSAM Branch
 ssaBranch branch = do
   modify (\s->s{opMap = M.empty})
   case branch of
