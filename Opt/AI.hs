@@ -33,6 +33,18 @@ newtype Id a = Id a
   deriving (Eq,Ord,Read,Show)
 type FrozenModState = ModState_ Id
 type ModState s = ModState_ (Chan s)
+--Core has defuns, jts, and codeGs.
+--Unmentioned codeGs can be pruned after AI by scanning all vars.
+--Unmentioned functions can be pruned; mentioned but unreachable functions
+--can be given the value 0x01 (ensuring no labels are falsy, which simplifies
+--AI).
+--JTs have their own reachability status, so succs and preds are not
+--function-specific.
+--A JT's lhs is the lub of the passed of its preds; its passed is the same,
+--and its succs is the list of its funs. (TODO refine succs using dest of its
+--preds.)
+--It therefore makes sense to store functions and JTs in the same map, since
+--they're both executable.
 data ModState_ f = MS {
   funInfo :: Map FunVar (FunInfo_ f)
                      }
@@ -46,20 +58,29 @@ data FunInfo_ f = FI {
   --TODO: non-returning funs should also be able to drop the old stack.
   --The full complement of state vars is always passed.
   fiLHS :: ([AVar_ f],[AVar_ f]),
-  --Tells me which vars (lhs and internal) are small constants I can replace
-  --with pushes.
-  --Combined with the op map from OptCore, it also lets me apply symbolic
-  --simplification such as x + 0 => x.
-  fiVars :: Map Var (AVar_ f),
-  --Tells me which ops are live (an op is live iff any of its lhs vars are
-  --live).
-  --Ops are identified by their LHS.
-  fiOpsLive :: Map Value (f Bool),
+  --Both functions and JTs are part of the control and dataflow graph, but
+  --only functions have ops.
+  fiBodyInfo :: BodyInfo_ f,
   fiPassed :: Maybe ([AVar_ f],[AVar_ f]), --Nothing for exits
   --Need to M.map over funInfo to get the succs map : f => set f.
   succs :: f (Set FunVar),
   preds :: f (Set FunVar)
                     }
+type BodyInfo s = BodyInfo_ (Chan s)
+data BodyInfo_ f = IsJT --no ops
+                 | IsFun {
+                     --Tells me which vars (lhs and internal) are small
+                     --constants I can replace
+                     --with pushes.
+                     --Combined with the op map from OptCore,
+                     --it also lets me apply symbolic
+                     --simplification such as x + 0 => x.
+                     fiVars :: Map Var (AVar_ f),
+                     --Tells me which ops are live (an op is live iff any of
+                     --its lhs vars are live).
+                     --Ops are identified by their LHS.
+                     fiOpsLive :: Map Value (f Bool)
+                     }
 --TODO pick more suitable names for AVar, AbVar.
 type AVar s = AVar_ (Chan s)
 data AVar_ f = AVar {
@@ -75,12 +96,17 @@ class HTraversable t where
     (forall a . g a -> f (h a)) -> t g -> f (t h)
 instance HTraversable AVar_ where
   htraverse f av = AVar <$> f (avLive av) <*> f (avVal av)
+instance HTraversable BodyInfo_ where
+  htraverse f = \case
+    IsJT -> pure IsJT
+    bi -> IsFun <$>
+          (htMap $ htraverse f) (fiVars bi) <*>
+          (htMap f) (fiOpsLive bi)
 instance HTraversable FunInfo_ where
   htraverse f fi = FI <$>
                    f (fiReachable fi) <*>
                    (htPair $ htList $ htraverse f) (fiLHS fi) <*>
-                   (htMap $ htraverse f) (fiVars fi) <*>
-                   (htMap f) (fiOpsLive fi) <*>
+                   htraverse f (fiBodyInfo fi) <*>
                    (htMaybe $ htPair $ htList $ htraverse f) (fiPassed fi) <*>
                    f (succs fi) <*>
                    f (preds fi)
@@ -125,7 +151,7 @@ aiModule :: (AIC m, Concurrent m, MonadError AIError m) =>
 aiModule core = do
   initial <- initialModState core
   --The meat of the logic: the equation defining module state
-  final <- aiEquation initial
+  final <- aiEquation core initial
   --Loop it back to itself to make it recursive
   unsafeWireModState final initial 
   scheduler
@@ -134,39 +160,70 @@ aiModule core = do
 initialModState :: AIC m =>
   OptCore -> m (ModState (S m))
 initialModState core = do
-  fi <- forM (coreDefuns core) initialFunInfo
-  return MS{funInfo = fi}
+  fim <- mapM initialFunInfo $
+        M.union (M.map Left $ coreDefuns core) $
+        M.map Right $ coreJTs core
+  --Set reachable trueMain to True
+  true <- newChan True
+  return MS{funInfo = M.adjust (\fi -> fi{fiReachable=true}) "$trueMain" fim}
 
+--Applies to both Core functions and JTs
 initialFunInfo :: AIC m =>
-  (BranchValue,OptFunRHS) -> m (FunInfo (S m))
-initialFunInfo (lhs,(ops,branch)) = do
+  Either (BranchValue,OptFunRHS) ((Int,Int),[FunVar]) ->
+  m (FunInfo (S m))
+initialFunInfo ei_fun_jt {-(lhs,(ops,branch))-} = do
   reachable <- newChan False
-  alhs <- initialLHS lhs
+  alhs <- initialLHS ei_fun_jt
   --The vars and ops don't need to be wired together here, so init is simple
   --All vars in the opmap are results of ops, so none are shared with the lhs.
   --However, it's helpful to add the lhs vars in order to simplify passed
   --computation and the circuit.
   --Opt when wiring: since the lhs vars are in vars, you don't need to wire
   --the lhses. Ditto for passed.
-  (vars,opsLive) <- initialVarsOps lhs alhs ops
+  bi <- case ei_fun_jt of
+          Left (lhs,(ops,branch)) -> do
+            (vars,opsLive) <- initialVarsOps lhs alhs ops
+            return IsFun {fiVars = vars,
+                          fiOpsLive = opsLive
+                         }
+          Right _ -> return IsJT
   --Opt: the vars in passed can be looked up 
-  let passed = initialPassed vars branch
-  ss <- newChan S.empty
+  let passed = case ei_fun_jt of
+                 Left (lhs,(_,branch)) ->
+                   initialPassed (fiVars bi) branch
+                 Right _ -> Just alhs
+  ss <- case ei_fun_jt of
+          Left _ -> newChan S.empty
+          Right (_,fs) -> newChan $ S.fromList fs
   ps <- newChan S.empty
   return FI {
     fiReachable = reachable,
     fiLHS = alhs,
-    fiVars = vars,
-    fiOpsLive = opsLive,
+    fiBodyInfo = bi,
     fiPassed = passed,
     succs = ss,
     preds = ps
     }
+--JTs have a lhs, so Core must contain a record of its stack and state arity.
+--Obscure opt: BBs which are <= 4 bytes could be inlined directly into the JT,
+--e.g. stop or revert(0,1). Then every JT entry could be an inlined exit,
+--at which point the JT shouldn't have a pass. Not worth implementing, direct
+--jump JTs are a better use of effort (jump eliminated, no BB size constraint
+--but complex placement constraint).
+--TODO implement N5 tag scheme, which saves 8 gas per case for DTs with
+--between 3 and 52 constructors (in practice all DTs with >2 constructors except
+--isets with many instructions).
+    
 --Alloc new AVars for ws, ss. They are bottom and not live by default.
-initialLHS :: AIC m => BranchValue -> m (AValue (S m))
-initialLHS (ws,_,ss) =
-  (,) <$> mapM new ws <*> mapM new ss
-  where new _ = initialAVar
+initialLHS :: AIC m =>
+  Either (BranchValue,OptFunRHS) ((Int,Int),[FunVar]) ->
+  m (AValue (S m))
+initialLHS ei_fun_ss =
+  let (lenw,lens) =
+        case ei_fun_ss of
+          Left ((ws,_,ss),_) -> (length ws, length ss)
+          Right (arity,_) -> arity
+  in (,) <$> replicateM lenw initialAVar <*> replicateM lens initialAVar  
 --Inefficiency: the OpMap should really contain a Var => Value map
 --and a Value => OpE map, since ops are keyed by Value.
 --Now I need to reconstruct those maps when computing opsLive.
@@ -227,15 +284,32 @@ unsafeWireFunInfo :: AIC m => FunInfo (S m) -> FunInfo (S m) -> m ()
 unsafeWireFunInfo fi1 fi2 = do
   unsafeWire (fiReachable fi1) (fiReachable fi2)
   --Wiring lhs and passed is redundant, since the AVars occur in fiVars.
-  zipWithM_ unsafeWireAV (M.elems $ fiVars fi1) (M.elems $ fiVars fi2)
-  --Assumes the maps have the same shape:
-  --Using a mapM with key on the first map and looking up keys in the second
-  --map would add a log(n) complexity factor.
-  zipWithM_ unsafeWire (M.elems $ fiOpsLive fi1) (M.elems $ fiOpsLive fi2)
+  unsafeWireBodyInfo (fiBodyInfo fi1) (fiBodyInfo fi2) fi1 fi2
   unsafeWire (succs fi1) (succs fi2)
   unsafeWire (preds fi1) (preds fi2)
-    where wireVal (ws1,ss1) (ws2,ss2) =
-            zipWithM_ unsafeWireAV (ws1++ss1) (ws2++ss2)
+    
+--If the node is a function then wiring lhs and passed is redundant, since the
+--AVars occur in fiVars. If the node is a JT then lhs and passed are wired
+--instead of vars.
+unsafeWireBodyInfo :: AIC m =>
+  BodyInfo (S m) -> BodyInfo (S m) ->
+  FunInfo (S m) -> FunInfo (S m) ->
+  m ()
+unsafeWireBodyInfo bi1 bi2 fi1 fi2 =
+  case (bi1,bi2) of
+    (IsJT,IsJT) -> do
+      wireVal (fiLHS fi1) (fiLHS fi2)
+      let (Just p1, Just p2) = (fiPassed fi1, fiPassed fi2)
+      wireVal p1 p2
+    (IsFun{},IsFun{}) -> do
+      zipWithM_ unsafeWireAV (M.elems $ fiVars bi1) (M.elems $ fiVars bi2)
+      --Assumes the maps have the same shape:
+      --Using a mapM with key on the first map and looking up keys in the
+      --second map would add a log(n) complexity factor.
+      zipWithM_ unsafeWire (M.elems $ fiOpsLive bi1) (M.elems $ fiOpsLive bi2)
+    _ -> error "Precondition violated: shape mismatch in unsafeWireBodyInfo"
+  where wireVal (ws1,ss1) (ws2,ss2) =
+          zipWithM_ unsafeWireAV (ws1++ss1) (ws2++ss2)
 unsafeWireAV :: AIC m => AVar (S m) -> AVar (S m) -> m ()
 unsafeWireAV av1 av2 = do
   unsafeWire (avLive av1) (avLive av2)
@@ -245,9 +319,12 @@ unsafeWireAV av1 av2 = do
 --run to a fixpoint.
 --Throws an AIError if a malformed Core op is encountered.
 aiEquation :: (AIC m, MonadError AIError m) =>
-  ModState (S m) -> m (ModState (S m))
-aiEquation = error "todo"
+  OptCore -> ModState (S m) -> m (ModState (S m))
+aiEquation core ms = do
+  -- $trueMain is always reachable; 
+  error "todo"
 
+--FunInfo equation:
 --reachable[f] = any reachable (preds f)
 --Add Reader (ModState s)?
 eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
@@ -258,6 +335,70 @@ eqReachable ms fi =
                  Nothing -> error "!?"
                  Just gi -> fiReachable gi)
      (preds fi)
+--lhs = elementwise lub of passed of all preds f
+-- $trueMain has no preds, so its lhs remains constant.
+-- TODO set $trueMain to reachable.
+--What should the initial value of the state vars be? {mayBeK}?
+
+--For each (lhs,opE) in ops:
+-- avs = op rhs
+-- rhs live iff any consumers live
+-- opsLive[lhs] = any avs live
+-- for i in lhs:
+--  vars[lhs[i]] = avs[i]
+--No need to eval ops in topological order, since op can just read from
+--the recursive input.
+--Ah: need to record liveness per index in passed; the var at that position
+--is live if the position is.
+--Note passed doesn't include jumpi cond,dest or jump dest; those vars are
+--always live.
+--The position is live iff any successor has a live var at the corresponding
+--position.
+--Note a var in a live position must be live, but not vice versa, since the
+--var might be used elsewhere even if the position is ignored.
+--lhs position liveness is equal to var liveness, since the lhs contains no
+--duplicate vars and the lhs is their source.
+--Alternative def that doesn't require a new field: if v is in pos ix of
+--passed, include each var at corresponding ix of lhs of callees in consumers.
+--Consumers may be ops or branch slots.
+--Problem: that means the consumer set grows, so a setFoldr that allocates
+--a Set chan would be required. Better to allocate a few Bool chans, isolate
+--the propagation and keep the consumer *list* fixed.
+
+--An op (lhs,(primop,rhs)) is live iff any var in its lhs is live.
+--That livens every var in the rhs.
+--What about y = 0*x? That will liven x in the initial pass, but after
+--symbolic simplification it becomes y = 0, eliminating the false dependency.
+
+--Liveness per branch:
+--jump dest, jumpi cond,dest always live; rest[i] is live iff args[i] is
+--live for any succs.
+--For exits, all params are live.
+
+--succs, preds already defined.
+
+-- ****************************TCO********************************************
+
+--A call is of form jump f,args,[retconts] where retconts is terminated by
+-- $ret or ipc,scope. A retcont that expects n words is of form f,rest; when
+--returned to it becomes f,retval,rest.
+--Requirement: f ignores stack below args until it returns to the first word
+--of [retconts].
+--If f retval,rest = f',retval,rest' then <f,rest> ~ <f',rest'> (with ops
+--lifted to the TCO'd caller).
+--Nested TCO uses the ~ relation on [retconts].
+--Retconts have args and rets arity; [retconts] has a concat operator
+--(++) : (a => b) -> (b => c) -> (a => c) and identity [] : a => a.
+--Rear partial application reduces args arity of a retcont.
+
+--Simple TCO example: return f x.
+--call scope,$ret = jump f,x,[<cont,scope,$ret>]
+--cont retval,scope,$ret = $ret,retval
+-- <cont,scope,$ret> ~ <$ret>
+--return f (g x): here cont,scope,$ret can be replaced with two retconts.
+
+-- ***************************************************************************
+
 --Jumpi else branches are now divided into separate basic blocks, so they're
 --no longer nested and can all be accessed from coreDefuns.
 --Each SLS has its own LHS and liveness status for vars... a var that's live

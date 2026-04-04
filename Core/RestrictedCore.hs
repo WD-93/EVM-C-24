@@ -50,7 +50,14 @@ data Core_ ops = Core {
   --coreGlobals :: Map Name T,
   --Code global => its initializer
   coreStatic :: Map Name Const,
-  coreJTs :: Map Name [FunVar]
+  --JTs are part of the control and dataflow graph during abstract
+  --interpretation, so they need a lhs. That means that at least the arity
+  --of that lhs must be recorded in order to allocate the right number of
+  --abstract vars.
+  coreJTs :: Map Name ((Int,  -- |word args|
+                        Int), -- |state args|
+                        [FunVar]
+                      )
   }
   deriving (Eq,Ord,Read,Show)
 --Rewrites: letrec merge, let merge, inline

@@ -125,7 +125,7 @@ data CoreS = CoreS {
   --map.
   csDefuns :: Map FunVar (BranchValue,FunRHS),
   --Convention: all JTs are named $jt<n>
-  csJTs :: Map Name [FunVar]
+  csJTs :: Map Name ((Int,Int),[FunVar])
   }
   deriving (Eq,Ord,Read,Show)
 --The monad for accumulating the CFG of a single Structured function.
@@ -150,7 +150,7 @@ type CoreM = ReaderT FunVar --parent fun; is source module needed?
 coreF :: FunVar -> BranchValue -> [Stmt] ->
   --TODO return csJTs as well.
   Either CoreError (Map FunVar (BranchValue,FunRHS), --Basic blocks
-                    Map Name [FunVar]                --Jump tables
+                    Map Name ((Int,Int),[FunVar])    --Jump tables
                    )
 coreF fv bv@(scope,_,_) body =
   fmap (\s -> (csDefuns s, csJTs s)) $ runExcept $ flip execStateT initSt $
@@ -306,7 +306,12 @@ coreBlock'' cont stmts =
                     jump Intraprocedural masked $ vs ++ scope
                    )
             else do
-            (jt,op_push_jt) <- allocJT fs
+            --JTs require arity info for abstract interpretation.
+            --length envV is constant.
+            let arity = (length $ vs ++ scope,
+                         length envV
+                        )
+            (jt,op_push_jt) <- allocJT (arity,fs)
             (sum,op_add) <- emitOp (Op "add") [tag,jt]
             return ([op_push_jt,
                      op_add],
@@ -328,11 +333,11 @@ emitOp primop vs = do
 --var v it's to be bound to, and the op v = push $jt<n>.
 --Used in compiling caseBranch when TagScheme /= N16.
 --Code copied from opPushF.
-allocJT :: [FunVar] -> CoreM (Var,(Value,OpE))
-allocJT fs = do
+allocJT :: ((Int,Int),[FunVar]) -> CoreM (Var,(Value,OpE))
+allocJT (arity,fs) = do
   n <- alloc
   let jtnm = "$jt"++show n
-  modify (\s->s{csJTs = M.insert jtnm fs $ csJTs s})
+  modify (\s->s{csJTs = M.insert jtnm (arity,fs) $ csJTs s})
   let ser = Serialized {serLength = 2,
                         serSizeof = 2,
                         serContent = [Right (0,2,jtnm)]
