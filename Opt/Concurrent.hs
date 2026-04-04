@@ -582,6 +582,9 @@ instance Freezable a => Freezable [a] where
 instance Freezable a => Freezable (Map k a) where
   type Frozen (Map k a) = Map k (Frozen a)
   freeze = M.map freeze
+instance (Freezable a, Freezable b) => Freezable (a,b) where
+  type Frozen (a,b) = (Frozen a, Frozen b)
+  freeze (a,b) = (freeze a, freeze b)
 {-
 --The instance I'd like to write
 instance Functor f => Freezable (f a) where

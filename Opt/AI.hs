@@ -61,7 +61,10 @@ data FunInfo_ f = FI {
   --Both functions and JTs are part of the control and dataflow graph, but
   --only functions have ops.
   fiBodyInfo :: BodyInfo_ f,
-  fiPassed :: Maybe ([AVar_ f],[AVar_ f]), --Nothing for exits
+  --The f Bool indicates whether the passed var is used by any successor
+  fiPassed :: Maybe ([(f Bool, AVar_ f)],
+                     [(f Bool, AVar_ f)]
+                    ), --Nothing for exits
   --Need to M.map over funInfo to get the succs map : f => set f.
   succs :: f (Set FunVar),
   preds :: f (Set FunVar)
@@ -87,6 +90,9 @@ data AVar_ f = AVar {
   avLive :: f Bool,
   avVal :: f AbVar
   }
+--Passed also requires info on whether the given position is demanded by
+--any successor.
+type Passed s = ([(Chan s Bool, AVar s)],[(Chan s Bool, AVar s)])
 type AValue s = ([AVar s],[AVar s])
 --Freezable doesn't work for DT (Chan s | Id)
 --Barbies (the package) doesn't seem to fit the datatypes because their
@@ -107,7 +113,7 @@ instance HTraversable FunInfo_ where
                    f (fiReachable fi) <*>
                    (htPair $ htList $ htraverse f) (fiLHS fi) <*>
                    htraverse f (fiBodyInfo fi) <*>
-                   (htMaybe $ htPair $ htList $ htraverse f) (fiPassed fi) <*>
+                   htMaybe (htPassed f) (fiPassed fi) <*>
                    f (succs fi) <*>
                    f (preds fi)
 instance HTraversable ModState_ where
@@ -117,11 +123,15 @@ htMaybe :: Applicative f => (a -> f b) -> Maybe a -> f (Maybe b)
 htMaybe f = \case
   Nothing -> pure Nothing
   Just x -> Just <$> f x
-htPair :: Applicative f => (a -> f b) -> (a,a) -> f (b,b)
+--TODO make prettier
+htPassed :: Applicative f =>
+  (forall a . g a -> f (h a)) ->
+  ([(g Bool, AVar_ g)], [(g Bool, AVar_ g)]) ->
+  f ([(h Bool, AVar_ h)], [(h Bool, AVar_ h)])
+htPassed f (bws,bss) = (,) <$> go bws <*> go bss
+  where go x = traverse (\(ga,tg) -> (,) <$> f ga <*> htraverse f tg) x
 htPair f p = (,) <$> f (fst p) <*> f (snd p)
-htList :: Applicative f => (a -> f b) -> [a] -> f [b]
 htList f = traverse f
-htMap :: Applicative f => (a -> f b) -> Map k a -> f (Map k b)
 htMap f = traverse f
 
 freezeModState :: AIC m => ModState (S m) -> m FrozenModState
@@ -188,10 +198,10 @@ initialFunInfo ei_fun_jt {-(lhs,(ops,branch))-} = do
                          }
           Right _ -> return IsJT
   --Opt: the vars in passed can be looked up 
-  let passed = case ei_fun_jt of
-                 Left (lhs,(_,branch)) ->
-                   initialPassed (fiVars bi) branch
-                 Right _ -> Just alhs
+  passed <- case ei_fun_jt of
+             Left (lhs,(_,branch)) ->
+               initialPassed (fiVars bi) branch
+             Right _ -> Just <$> addBools alhs
   ss <- case ei_fun_jt of
           Left _ -> newChan S.empty
           Right (_,fs) -> newChan $ S.fromList fs
@@ -260,17 +270,32 @@ initialVarsOps (ws,_,ss) (wchs,schs) ops =
 --Precondition: all vars in the branch are in scope (defined by vars).
 --TODO throw an exception if that's not true?
 --Note the passed on calls may exceed call arity and vice versa for returns.
-initialPassed :: Map Var (AVar s) -> Branch -> Maybe (AValue s)
+--Must now be monadic because it may allocate new Bool chans.
+initialPassed :: AIC m =>
+  Map Var (AVar (S m)) -> Branch -> m (Maybe (Passed (S m)))
 initialPassed vars = \case
-  Jump _mode bv -> Just $ (drop 1 *** id) $ bv2aval bv
-  Jumpi fv bv -> Just $ (drop 2 *** id) $ bv2aval bv
-  _ -> Nothing
+  Jump _mode bv -> Just <$> addBools (dropJump $ bv2aval bv)
+  Jumpi fv bv -> Just <$> addBools (dropJumpi $ bv2aval bv)
+  _ -> return Nothing
  where bv2aval (ws,_,ss) = (map lookup ws, map lookup ss)
        lookup v = case M.lookup v vars of
                     Nothing -> error "!!? Precondition violated!"
                     Just av -> av
 initialAVar :: AIC m => m (AVar (S m))
 initialAVar = AVar <$> newChan False <*> newChan bottom
+
+--Drops the first word var (dest) from a value
+dropJump p = (drop 1 *** id) p
+--Drops the first two word vars (cond,dest) from a value
+dropJumpi p = (drop 2 *** id) p
+--Pairs each var of a value with a false Boolean chan
+addBools :: AIC m =>
+  ([a],[b]) -> m ([(Chan (S m) Bool,a)],
+                  [(Chan (S m) Bool,b)])
+addBools (as,bs) = (,) <$> add as <*> add bs
+  where add = mapM (\x -> do
+                       bch <- newChan False
+                       return (bch,x))
 
 --Backlinking the entire module is overkill and verbose, but simple.
 --Assumes ms1 and ms2 have the same shape.
@@ -300,7 +325,9 @@ unsafeWireBodyInfo bi1 bi2 fi1 fi2 =
     (IsJT,IsJT) -> do
       wireVal (fiLHS fi1) (fiLHS fi2)
       let (Just p1, Just p2) = (fiPassed fi1, fiPassed fi2)
-      wireVal p1 p2
+      zipWithM_ unsafeWire (passed2bs p1) (passed2bs p2)
+      --Redundant, since the vars of passed = the lhs:
+      --wireVal (passed2val p1) (passed2val p2)
     (IsFun{},IsFun{}) -> do
       zipWithM_ unsafeWireAV (M.elems $ fiVars bi1) (M.elems $ fiVars bi2)
       --Assumes the maps have the same shape:
@@ -310,6 +337,8 @@ unsafeWireBodyInfo bi1 bi2 fi1 fi2 =
     _ -> error "Precondition violated: shape mismatch in unsafeWireBodyInfo"
   where wireVal (ws1,ss1) (ws2,ss2) =
           zipWithM_ unsafeWireAV (ws1++ss1) (ws2++ss2)
+        passed2bs (bws,bss) = map fst bws ++ map fst bss
+        passed2val = map snd *** map snd
 unsafeWireAV :: AIC m => AVar (S m) -> AVar (S m) -> m ()
 unsafeWireAV av1 av2 = do
   unsafeWire (avLive av1) (avLive av2)
@@ -321,10 +350,36 @@ unsafeWireAV av1 av2 = do
 aiEquation :: (AIC m, MonadError AIError m) =>
   OptCore -> ModState (S m) -> m (ModState (S m))
 aiEquation core ms = do
-  -- $trueMain is always reachable; 
-  error "todo"
+  let fim = funInfo ms
+  --First: define preds in terms of succs
+  let succsMap = M.map succs fim
+  predsMap <- runCB $ invertGraph succsMap
+  --Need to map funInfo with keys to get the key for predsMap
+  let f_fis = M.toList fim
+  fim' <- M.fromList <$>
+          mapM (\(f,fi) -> (,) f <$> fiEquation core ms predsMap (f,fi))
+          f_fis
+  return MS {funInfo = fim'}
 
 --FunInfo equation:
+fiEquation :: (AIC m, MonadError AIError m) =>
+              OptCore -> ModState (S m) ->
+              Map FunVar (Chan (S m) (Set FunVar))  ->
+              (FunVar, FunInfo (S m)) ->
+              m (FunInfo (S m))
+fiEquation core ms predsMap (f,fi) = do
+  reachable <- eqReachable ms fi
+  return FI {
+    fiReachable = reachable,
+    fiLHS = error "todo",
+    fiBodyInfo = error "todo",
+    fiPassed = error "todo",
+    succs = error "todo",
+    preds = case M.lookup f predsMap of
+              Nothing -> error "!!?"
+              Just ps -> ps
+    }
+
 --reachable[f] = any reachable (preds f)
 --Add Reader (ModState s)?
 eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
@@ -335,10 +390,48 @@ eqReachable ms fi =
                  Nothing -> error "!?"
                  Just gi -> fiReachable gi)
      (preds fi)
---lhs = elementwise lub of passed of all preds f
+--lhs abvars = elementwise lub of passed of all preds f
+--The abvars and liveness per var could be computed in two different passes...
+lhsAbVars :: AIC m =>
+  ModState (S m) -> --FunInfo (S m) -> --TODO add to Reader context?
+  BranchValue -> --Core lhs, tells us which Var the AbVars correspond to
+  Chan (S m) (Set FunVar) -> --predecessors
+  m ([Chan (S m) AbVar],[Chan (S m) AbVar])
+lhsAbVars ms (ws,_,ss) predecessors =
+  let (lenw,lens) = (length ws, length ss)
+  in runCB $ forAll ((,) <$> replicateM lenw (newInChan bottom)
+                     <*> replicateM lens (newInChan bottom)) predecessors
+     --For each f, look up (ws,ss) = passed[f] and link them to the inchans
+     --Note the length of ws may differ from that expected due to call
+     --(passes more) or ret (passes less). That's fine, then we simply don't
+     --link the excess vars.
+     (\(wins,sins) f ->
+        case M.lookup f $ funInfo ms of
+          Nothing -> error "!?"
+          Just fi ->
+            case fiPassed fi of
+              Nothing -> error "An exiting BB has a successor!?"
+              Just (bs_ws,bs_ss) -> do
+                let (ws,ss) = (map (avVal.snd) bs_ws, map (avVal.snd) bs_ss)
+                zipWithM_ lubLink ws wins
+                zipWithM_ lubLink ss sins
+     )
+  where
+    lubLink :: (JoinSemilattice a, Eq a) =>
+               Chan s a -> InChan iv s a -> CB iv s ()
+    lubLink from to = do
+      subWhenChan (\a -> modInChan (\/ a) to) from
+      return ()
+
 -- $trueMain has no preds, so its lhs remains constant.
 -- TODO set $trueMain to reachable.
 --What should the initial value of the state vars be? {mayBeK}?
+
+--Each var is live iff
+--1) any op with rhs containing var is live
+--2) any position in passed(branch) which contains var is live
+--Minor opt: the set of vars per rhs could be shared for each var's live
+--definition.
 
 --For each (lhs,opE) in ops:
 -- avs = op rhs
