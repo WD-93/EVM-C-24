@@ -381,6 +381,8 @@ fiEquation core ms predsMap (f,fi) = do
     }
 
 --reachable[f] = any reachable (preds f)
+--Taking continues into account:
+--reachable[f] = any reachable *and not continues* (preds f)
 --Add Reader (ModState s)?
 eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
 eqReachable ms fi =
@@ -390,7 +392,39 @@ eqReachable ms fi =
                  Nothing -> error "!?"
                  Just gi -> fiReachable gi)
      (preds fi)
+--Jump modes (call, return, continue, ipc) are still relevant:
+--call f,args,ret,scope --continues to ret with scope passed if f may return.
+--succs, preds : f => g => mode?
+--Q: can f goto g with multiple modes?
+--f,args [retconts] sets up a number of dataflow rels.
+--Each retcont is of form <f:(A+B)->C,partial:B>:A -> C
+--A nested tail call implies multiple call,continue relations.
+--Must I add a concept of C functions and may return or is reachable enough?
+--Ideally the continue dataflow would only trigger if the callee may return.
+--C function f may return iff any returning BB in f is reachable.
+--Edges between C functions may only go through roots, so calls to a BB
+--within f that may not return is impossible; only root may-return needs to
+--be tracked.
+--If an RC may not return then the stack below it can be discarded and the
+--caller BB may not return.
+--Track must exit?
+--The invertGraph pattern ~ message-passing for recursive equations.
+--No TCO for now. Mode must be recorded in preds and succs; continues edges
+--set scope vars but not reachable. Since jump f,args,ret adds ret to the
+-- $ret of f, ret will be considered reachable if f may return.
+--succs[f] must be {} until f is reachable.
+--succs : f => g => branchType
+--A jump v,args,w with mode calling (args,rets) has a normal successor for each
+--f <- v and a continues(args,rets) successor for each ret <- w.
+     
 --lhs abvars = elementwise lub of passed of all preds f
+--Modification taking continues into account:
+--given f lhs = ...
+--for each pred g,
+-- if branchType is normal then lhs += passed[g] as before
+-- else it's continues(args,rets):
+--  (drop rets *** id) lhs += (drop (args+1) *** id) passed[g]
+--Why args+1? Can't forget the ret param.
 --The abvars and liveness per var could be computed in two different passes...
 lhsAbVars :: AIC m =>
   ModState (S m) -> --FunInfo (S m) -> --TODO add to Reader context?

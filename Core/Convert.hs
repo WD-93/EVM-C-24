@@ -87,7 +87,7 @@ defTrueMain smod =
                                   (([m],[]), fpush mainf)
                                  ],
                                  -- in m (ret); envV
-                                 Jump (Calling 0) ([m,ret],Nothing,envV)))
+                                 Jump (Calling (0,0)) ([m,ret],Nothing,envV)))
                  ),
                  ("$stop", (([],Nothing,envV),
                              --let {}
@@ -212,7 +212,8 @@ coreBlock'' cont stmts =
           next <- coreBlock (lhs ++ scope) cont stmts
           --The body has only a single op: pushing next
           (ret,o) <- opPushF next
-          return ([o], jump (Calling $ length args) f $ args ++ ret : scope)
+          return ([o], jump (Calling (length args, length lhs)) f
+                             $ args ++ ret : scope)
         --We assemble the control flow graph backward:
         --cond -> decision -> (th | el) -> next
         --decision (condvar:scope) =

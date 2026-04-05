@@ -88,7 +88,7 @@ data PrimOp = Push Serialized --k, f, g, Con{consts}; takes ()
 --A jump is either a call, return or intraprocedural.
 --For now Jumpi and case jumps are assumed to always be intraprocedural.
 data Mode = Returning
-          | Calling Int --number of argument words
+          | Calling (Int,Int) --argument words, returned words
           | Intraprocedural
   deriving (Eq,Ord,Read,Show,Data)
 data Branch =
