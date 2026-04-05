@@ -421,6 +421,9 @@ modInChan :: Eq a => (a -> a) -> InChan iv s a -> CB iv s ()
 modInChan f ic = do
   a <- readInChan ic
   writeInChan ic $ f a
+--A helper for using modInChan succinctly in circuit combinators
+modWith :: Eq a => InChan iv s a -> (a -> a -> a) -> a -> CB iv s ()
+modWith ic (+) a = modInChan (+a) ic
 
 --Converts a mutable InChan to a read-only Chan so it can be returned by the
 --CB monad.
@@ -463,7 +466,7 @@ invertGraph k2chks = do
   --Allocate a map of inchans initialized to be empty
   k2in <- mapM (\_ -> newInChan S.empty) k2chks
   --For each (k,ch) in the input map, subscribe to ch's deltas
-  --When k2in[k] grows by ks, add k to k2in[k'] for each k' in ks
+  --When k2chks[k] grows by ks, add k to k2in[k'] for each k' in ks
   forM_ (M.toList k2chks)
     (\(k,ch) ->
         subSetDelta
@@ -473,7 +476,21 @@ invertGraph k2chks = do
         ch)
   --Freeze and return the inchans
   return $ freeze k2in
-
+--f => g => label -> g => f => label
+invertLabeledGraph :: (Ord k, Eq v) =>
+  Map k (Chan s (Map k v)) ->
+  CB iv s (Map k (Chan s (Map k v)))
+invertLabeledGraph k2chm = do
+  k2in <- mapM (\_ -> newInChan M.empty) k2chm
+  --When k
+  forM_ (M.toList k2chm)
+    (\(k,ch) ->
+       subMapDelta
+       (\k' v -> case M.lookup k' k2in of
+                   Nothing -> error "!!?"
+                   Just inch -> modInChan (M.insert k v) inch)
+       ch)
+  return $ freeze k2in
 --Allocates a delta tracker and registers it to the given chan.
 --Uses a CBRef to track the old value; the initial delta is the current value
 --of the Chan.
@@ -495,6 +512,15 @@ subSetDelta :: Ord a =>
 subSetDelta callback =
   subDelta S.empty S.difference
   (\delta -> forM_ (S.toList delta) callback)
+--Ditto extended to Map; applies a callback for each new k-v mapping.
+--Assumption: maps only grow, and their v's never change.
+subMapDelta :: Ord k =>
+  (k -> v -> CB iv s ()) ->
+  Chan s (Map k v) ->
+  CB iv s (Subscription iv s (Map k v))
+subMapDelta callback =
+  subDelta M.empty M.difference
+  (\delta -> forM_ (M.toList delta) $ uncurry callback)
 
 --Consider f.lhs = for all callers[f], \/ of args[f].
 --Precondition: f.lhs and args[f] match.
@@ -538,6 +564,16 @@ forAll mkSt chset f = do
   st <- mkSt
   subSetDelta (f st) chset
   return $ freeze st
+--Generalizing to maps:
+forAllMap :: (Ord k, Freezable state) =>
+  CB iv s state ->
+  Chan s (Map k v) ->
+  (state -> k -> v -> CB iv s ()) ->
+  CB iv s (Frozen state)
+forAllMap mkSt chmap f = do
+  st <- mkSt
+  subMapDelta (f st) chmap
+  return $ freeze st
 --Helper function; links a new list of a's to the inchans.
 linkChans :: (JoinSemilattice a, Eq a) =>
   [Chan s a] -> [InChan iv s a] -> CB iv s ()
@@ -564,7 +600,7 @@ setFoldr (+) zero convert chset = runCB $
 setAny :: (AIC m, Ord a) =>
   (a -> Chan (S m) Bool) -> Chan (S m) (Set a) -> m (Chan (S m) Bool)
 setAny = setFoldr (||) False
-            
+         
 --reachable[f] = any preds[f] reachable
 --That can be implemented using forAll 1, but it would be better to
 --pass the init action CB iv s st as a param in forAll.

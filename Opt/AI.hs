@@ -66,9 +66,13 @@ data FunInfo_ f = FI {
                      [(f Bool, AVar_ f)]
                     ), --Nothing for exits
   --Need to M.map over funInfo to get the succs map : f => set f.
-  succs :: f (Set FunVar),
-  preds :: f (Set FunVar)
+  succs :: f (Map FunVar BranchType),
+  preds :: f (Map FunVar BranchType)
                     }
+data BranchType = Normal --call, return, ipc: a real direct jump
+                --call continues to; establishes dataflow but not reachability
+                | Continues (Int,Int)              
+  deriving (Eq,Ord,Read,Show)
 type BodyInfo s = BodyInfo_ (Chan s)
 data BodyInfo_ f = IsJT --no ops
                  | IsFun {
@@ -203,9 +207,9 @@ initialFunInfo ei_fun_jt {-(lhs,(ops,branch))-} = do
                initialPassed (fiVars bi) branch
              Right _ -> Just <$> addBools alhs
   ss <- case ei_fun_jt of
-          Left _ -> newChan S.empty
-          Right (_,fs) -> newChan $ S.fromList fs
-  ps <- newChan S.empty
+          Left _ -> newChan M.empty
+          Right (_,fs) -> newChan $ M.fromList $ zip fs $ repeat Normal
+  ps <- newChan M.empty
   return FI {
     fiReachable = reachable,
     fiLHS = alhs,
@@ -353,7 +357,7 @@ aiEquation core ms = do
   let fim = funInfo ms
   --First: define preds in terms of succs
   let succsMap = M.map succs fim
-  predsMap <- runCB $ invertGraph succsMap
+  predsMap <- runCB $ invertLabeledGraph succsMap
   --Need to map funInfo with keys to get the key for predsMap
   let f_fis = M.toList fim
   fim' <- M.fromList <$>
@@ -364,7 +368,7 @@ aiEquation core ms = do
 --FunInfo equation:
 fiEquation :: (AIC m, MonadError AIError m) =>
               OptCore -> ModState (S m) ->
-              Map FunVar (Chan (S m) (Set FunVar))  ->
+              Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
               (FunVar, FunInfo (S m)) ->
               m (FunInfo (S m))
 fiEquation core ms predsMap (f,fi) = do
@@ -387,11 +391,24 @@ fiEquation core ms predsMap (f,fi) = do
 eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
 eqReachable ms fi =
   let fs = funInfo ms
-  in setAny (\g ->
+  --Can't use mapAny because I need to filter first... TODO redesign
+  --circuits to be more composable.
+  in runCB $ forAllMap (newInChan False) (preds fi)
+     (\inch g branchType ->
+        case branchType of
+          Normal ->
+            case M.lookup g fs of
+              Nothing -> error "!?"
+              Just gi -> do
+                subWhenChan (inch `modWith` (||)) $
+                  fiReachable gi
+                return ()
+     )
+    {-setAny (\g ->
                case M.lookup g fs of
                  Nothing -> error "!?"
                  Just gi -> fiReachable gi)
-     (preds fi)
+     (preds fi)-}
 --Jump modes (call, return, continue, ipc) are still relevant:
 --call f,args,ret,scope --continues to ret with scope passed if f may return.
 --succs, preds : f => g => mode?
@@ -416,7 +433,12 @@ eqReachable ms fi =
 --succs : f => g => branchType
 --A jump v,args,w with mode calling (args,rets) has a normal successor for each
 --f <- v and a continues(args,rets) successor for each ret <- w.
-     
+--The continues dataflow is an overapproximation since I don't check whether
+--the callee may return.
+--Logic for that: follow intraprocedural jumps (which includes continues),
+--report true if any may return.
+
+
 --lhs abvars = elementwise lub of passed of all preds f
 --Modification taking continues into account:
 --given f lhs = ...
