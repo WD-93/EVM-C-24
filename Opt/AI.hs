@@ -5,6 +5,7 @@ module Opt.AI where
 import Opt.Concurrent
 import Opt.AbVar
 import Opt.Semilattice
+import Opt.AI.EVM (opBehavior)
 --import Opt.ModState
 import Core.RestrictedCore
 import Core.SSA (OptCore,OptFunRHS,OpMap)
@@ -450,27 +451,34 @@ eqReachable ms fi =
 --The abvars and liveness per var could be computed in two different passes...
 lhsAbVars :: AIC m =>
   ModState (S m) -> --FunInfo (S m) -> --TODO add to Reader context?
-  BranchValue -> --Core lhs, tells us which Var the AbVars correspond to
-  Chan (S m) (Set FunVar) -> --predecessors
+  (Int,Int) -> --lhs word and state var arity
+  Chan (S m) (Map FunVar BranchType) -> --predecessors
   m ([Chan (S m) AbVar],[Chan (S m) AbVar])
-lhsAbVars ms (ws,_,ss) predecessors =
-  let (lenw,lens) = (length ws, length ss)
-  in runCB $ forAll ((,) <$> replicateM lenw (newInChan bottom)
-                     <*> replicateM lens (newInChan bottom)) predecessors
+lhsAbVars ms (lenw,lens) predecessors =
+  runCB $ forAllMap
+     ((,) <$> replicateM lenw (newInChan bottom)
+       <*> replicateM lens (newInChan bottom)) predecessors
      --For each f, look up (ws,ss) = passed[f] and link them to the inchans
      --Note the length of ws may differ from that expected due to call
      --(passes more) or ret (passes less). That's fine, then we simply don't
      --link the excess vars.
-     (\(wins,sins) f ->
+     --If branchType is continues (args,rets), link the caller's scope to
+     --this return continuation's scope; state vars are not linked.
+     --That'll change when I change the state tuple to a stack.
+     (\(wins,sins) f branchType ->
         case M.lookup f $ funInfo ms of
           Nothing -> error "!?"
           Just fi ->
             case fiPassed fi of
               Nothing -> error "An exiting BB has a successor!?"
-              Just (bs_ws,bs_ss) -> do
+              Just (bs_ws,bs_ss) ->
                 let (ws,ss) = (map (avVal.snd) bs_ws, map (avVal.snd) bs_ss)
-                zipWithM_ lubLink ws wins
-                zipWithM_ lubLink ss sins
+                in case branchType of
+                     Normal -> do
+                       zipWithM_ lubLink ws wins
+                       zipWithM_ lubLink ss sins
+                     Continues (args,ret) ->
+                       zipWithM_ lubLink (drop (args+1) ws) (drop ret wins)
      )
   where
     lubLink :: (JoinSemilattice a, Eq a) =>

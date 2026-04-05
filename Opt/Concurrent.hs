@@ -600,6 +600,31 @@ setFoldr (+) zero convert chset = runCB $
 setAny :: (AIC m, Ord a) =>
   (a -> Chan (S m) Bool) -> Chan (S m) (Set a) -> m (Chan (S m) Bool)
 setAny = setFoldr (||) False
+
+--The combinator used for EVM op AI
+--Behavior: if any input chan changes, update output chans
+--Assumption: the chans and op are monotonic.
+--A circuit linking many chans with a single function can be generalized using
+--a class with instances for Chan s, Pair, [] etc.
+--However,I don't need that just yet.
+opAI :: (AIC m, Eq a, HasBottom a) =>
+  (Int,Int) -> --The return arity of the op; arg arity is implicit in input
+  (([a],[a]) -> ([a],[a])) -> --The op behavior
+  ([Chan (S m) a],[Chan (S m) a]) -> --The input AbVar chans
+  m ([Chan (S m) a],[Chan (S m) a])
+opAI (wlen,slen) f (wchs,schs) = runCB $ do
+  --Initial state
+  wins <- replicateM wlen $ newInChan bottom
+  sins <- replicateM slen $ newInChan bottom
+  let callback = do
+        --Read every chan, apply f to get output values, write to inchans
+        ws <- mapM readChan wchs
+        ss <- mapM readChan schs
+        let (outws,outss) = f (ws,ss)
+        zipWithM_ writeInChan wins ws
+        zipWithM_ writeInChan sins ss
+  mapM_ (subWhenChan (const callback)) (wchs++schs)
+  return $ freeze (wins,sins)
          
 --reachable[f] = any preds[f] reachable
 --That can be implemented using forAll 1, but it would be better to
