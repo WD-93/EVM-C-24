@@ -15,6 +15,7 @@ import qualified Data.Set as S
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.Except
+import Control.Monad.State
 import Control.Monad
 import Control.Arrow ((***))
 
@@ -153,11 +154,13 @@ freezeModState = htraverse ((Id <$>) . readChan)
 --type AIM s a = AIM {unAIM :: ExceptT AIError (AI s) a}
 --  deriving (Functor,Applicative,Monad,Concurrent)
 data AIError = BadMnemonic String
-             | BadArity String (Int,Int) (Int,Int)
+             | BadArity ArgOrRet String (Int,Int) (Int,Int)
              | OutOfScope Var
              | UndefinedLabel String --push error
              --Assumption: no pushes are >32B; that should've already been
              --filtered out.
+  deriving (Eq,Ord,Read,Show)
+data ArgOrRet = Arg | Ret
   deriving (Eq,Ord,Read,Show)
 
 --The mfix problem is solved; next step: define the initial state.
@@ -207,9 +210,9 @@ initialFunInfo ei_fun_jt {-(lhs,(ops,branch))-} = do
              Left (lhs,(_,branch)) ->
                initialPassed (fiVars bi) branch
              Right _ -> Just <$> addBools alhs
-  ss <- case ei_fun_jt of
-          Left _ -> newChan M.empty
-          Right (_,fs) -> newChan $ M.fromList $ zip fs $ repeat Normal
+  --The constant successors for JTs need not be computed here, since it
+  --must be computed in fiEquation anyway.
+  ss <- newChan M.empty
   ps <- newChan M.empty
   return FI {
     fiReachable = reachable,
@@ -367,6 +370,9 @@ aiEquation core ms = do
   return MS {funInfo = fim'}
 
 --FunInfo equation:
+--Do I really need opsLive? Once Var liveness has been solved I can infer it
+--from that. But AVars are consumed by ops; opsLive prevents the AVar from
+--being notified every time a var in the lhs becomes live.
 fiEquation :: (AIC m, MonadError AIError m) =>
               OptCore -> ModState (S m) ->
               Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
@@ -374,17 +380,125 @@ fiEquation :: (AIC m, MonadError AIError m) =>
               m (FunInfo (S m))
 fiEquation core ms predsMap (f,fi) = do
   reachable <- eqReachable ms fi
+  let Just ps = M.lookup f predsMap
+  (lhs,mbVars,ss) <-
+    case () of
+      --f is a function; infer wlen, slen.
+      --Need to map Var => abvar chan to ensure each chan is given exactly
+      --one AVar.
+      _ | Just ((ws,_,ss),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
+            --Allocate lhs abvar chans
+            (wchs,schs) <- lhsAbVars ms (length ws, length ss) ps
+            --Assign them to their corresponding Vars
+            let initVars = M.fromList $ zip (ws ++ ss) (wchs ++ schs)
+            finalVars <- aiOps ops initVars
+            ss <- aiSuccs finalVars branch 
+            error "todo"
+        --f is a JT; use wlen,slen directly to alloc abvar chans.
+        | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
+            lhs <- lhsAbVars ms (wlen,slen) ps
+            ss <- newChan $ M.fromList $ zip fs $ repeat Normal
+            return (lhs,Nothing,ss)
+        | let -> error "!!?"
+  --Live is obtained by going in the opposite direction.
   return FI {
     fiReachable = reachable,
     fiLHS = error "todo",
     fiBodyInfo = error "todo",
     fiPassed = error "todo",
-    succs = error "todo",
+    succs = ss,
     preds = case M.lookup f predsMap of
               Nothing -> error "!!?"
               Just ps -> ps
     }
 
+--Complete the var -> abvar map using the lhs as input.
+--I could just map rather than eval in topological order, but
+--that would require fetching the input vars.
+--Post-SSA there should be no var loops, so this should terminate.
+{-
+State:
+chans = initMap : var => abvar chan
+Algo:
+explore v =
+ if v in chans: return chans[v]
+ else:
+  (lhs,(op,rhs)) = ops[v]
+  cr <- mapM explore rhs
+  cl <- apply(lhs,op,cr)
+  for i in lhs: chans[i] = cl[i]
+
+apply(lhs,op,cr) =
+ --errors if missing:
+ Just ((argArity,retArity),f) = opBehavior[op]
+ error if arities don't match
+ opAI (arity lhs) f cr
+-}
+aiOps :: (AIC m, MonadError AIError m) =>
+  Map Var (Value,OpE) -> Map Var (Chan (S m) AbVar) ->
+  m (Map Var (Chan (S m) AbVar))
+aiOps ops initMap =
+  execStateT (mapM_ explore $ M.keys ops) initMap
+  where
+    explore v = do
+      mch <- gets (M.lookup v)
+      case mch of
+        Just v -> return v
+        Nothing ->
+          case M.lookup v ops of
+            Nothing -> error "Impossible: v comes from M.keys ops"
+            Just (lhs,(op,(rws,rss)))
+              | Push ser <- op, null $ rws++rss ->
+                  error "todo"
+              | Op mnemonic <- op -> do
+                  rwchs <- mapM explore rws
+                  rschs <- mapM explore rss
+                  case M.lookup mnemonic opBehavior of
+                    Nothing -> throwError $ BadMnemonic mnemonic
+                    Just (argArity,retArity,behavior) -> do
+                      let actualAA = (length rws, length rss)
+                      if argArity /= actualAA
+                        then throwError $ BadArity Arg mnemonic
+                             argArity actualAA
+                        else return ()
+                      let actualRA = (length***length) lhs
+                      if retArity /= actualRA
+                        then throwError $ BadArity Ret mnemonic
+                             retArity actualRA
+                        else return ()
+                      --Apply the op circuit
+                      (lwchs,lschs) <- lift $ opAI retArity behavior
+                                       (rwchs,rschs)
+                      --Assign the resulting channels to the lhs
+                      zipWithM_ (\k v -> modify $ M.insert k v)
+                        (fst lhs ++ snd lhs) (lwchs ++ lschs)
+                      --Look up v, which is now guaranteed to be set
+                      gets (M.! v)
+--Given the vars and branch, which gs may f transition to?
+--TODO add jtMap param to look up fs per jt.
+--NOTE: succs should be {} until the BB is reachable.
+aiSuccs :: AIC m =>
+  Map Var (Chan (S m) AbVar) -> Branch ->
+  m (Chan (S m) (Map FunVar BranchType))
+aiSuccs finalVars branch = do
+  fsetch <-
+    case branch of
+      --A call g,args,ret,scope;
+      --for each g <- dest, f makes a normal jump to g
+      --for each r <- ret, f continues to r (note for now ret is constant)
+      --A call never jumps to a JT.
+      Jump (Calling (args,rets)) (dest:args_ret_scope,_,_) ->
+        error "todo"
+      --Only case jumps may jump to a JT,
+      --but I handle all non-calls uniformly.
+      Jump other (dest:ws,_,_) -> error "todo"
+      --{else_f | 0 in cond} U {f | f <- dest} U {f | jt <- dest, f <- jt}
+      Jumpi else_f (cond:dest:_,_,_) -> error "todo"
+      --Exiting branches have no successors
+      _ -> newChan S.empty
+  --Condition on reachable
+  error "todo"
+                      
 --reachable[f] = any reachable (preds f)
 --Taking continues into account:
 --reachable[f] = any reachable *and not continues* (preds f)
