@@ -16,6 +16,7 @@ import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.Except
 import Control.Monad.State
+import Control.Monad.Reader
 import Control.Monad
 import Control.Arrow ((***))
 
@@ -69,7 +70,15 @@ data FunInfo_ f = FI {
                     ), --Nothing for exits
   --Need to M.map over funInfo to get the succs map : f => set f.
   succs :: f (Map FunVar BranchType),
-  preds :: f (Map FunVar BranchType)
+  preds :: f (Map FunVar BranchType),
+  --Only relevant to calls: if f has badFunSuccs[g]=(args,rets),
+  --then g is passed rets arbitrary words from badfun and scope from f.
+  --Badfun is any non-fun, non-jt[ix] value, e.g. coerce 42 :: Word -> Word.
+  --It's not added to the CFG when called, but it's assumed it may return.
+  --TODO distinguish {jt,mayBeK} from jt+k in AbVar?
+  --No, a non-call jump already ignores mayBeK.
+  badFunSuccs :: f (Map FunVar (Int,Int)),
+  badFunPreds :: f (Map FunVar (Int,Int))
                     }
 data BranchType = Normal --call, return, ipc: a real direct jump
                 --call continues to; establishes dataflow but not reachability
@@ -121,7 +130,9 @@ instance HTraversable FunInfo_ where
                    htraverse f (fiBodyInfo fi) <*>
                    htMaybe (htPassed f) (fiPassed fi) <*>
                    f (succs fi) <*>
-                   f (preds fi)
+                   f (preds fi) <*>
+                   f (badFunSuccs fi) <*>
+                   f (badFunPreds fi)
 instance HTraversable ModState_ where
   htraverse f ms = MS <$> htMap (htraverse f) (funInfo ms)
 --Helpers for defining htraversable
@@ -214,13 +225,17 @@ initialFunInfo ei_fun_jt {-(lhs,(ops,branch))-} = do
   --must be computed in fiEquation anyway.
   ss <- newChan M.empty
   ps <- newChan M.empty
+  bfss <- newChan M.empty
+  bfps <- newChan M.empty
   return FI {
     fiReachable = reachable,
     fiLHS = alhs,
     fiBodyInfo = bi,
     fiPassed = passed,
     succs = ss,
-    preds = ps
+    preds = ps,
+    badFunSuccs = bfss,
+    badFunPreds = bfps
     }
 --JTs have a lhs, so Core must contain a record of its stack and state arity.
 --Obscure opt: BBs which are <= 4 bytes could be inlined directly into the JT,
@@ -361,11 +376,14 @@ aiEquation core ms = do
   let fim = funInfo ms
   --First: define preds in terms of succs
   let succsMap = M.map succs fim
+      badSuccsMap = M.map badFunSuccs fim
   predsMap <- runCB $ invertLabeledGraph succsMap
+  badPredsMap <- runCB $ invertLabeledGraph badSuccsMap
   --Need to map funInfo with keys to get the key for predsMap
   let f_fis = M.toList fim
-  fim' <- M.fromList <$>
-          mapM (\(f,fi) -> (,) f <$> fiEquation core ms predsMap (f,fi))
+  fim' <- flip runReaderT (core,ms) $
+          M.fromList <$>
+          mapM (\(f,fi) -> (,) f <$> fiEquation predsMap badPredsMap (f,fi))
           f_fis
   return MS {funInfo = fim'}
 
@@ -373,14 +391,17 @@ aiEquation core ms = do
 --Do I really need opsLive? Once Var liveness has been solved I can infer it
 --from that. But AVars are consumed by ops; opsLive prevents the AVar from
 --being notified every time a var in the lhs becomes live.
-fiEquation :: (AIC m, MonadError AIError m) =>
-              OptCore -> ModState (S m) ->
+fiEquation :: (AIC m, MonadError AIError m,
+               MonadReader (OptCore, ModState (S m)) m) =>
               Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
+              Map FunVar (Chan (S m) (Map FunVar (Int,Int))) ->
               (FunVar, FunInfo (S m)) ->
               m (FunInfo (S m))
-fiEquation core ms predsMap (f,fi) = do
+fiEquation predsMap badPredsMap (f,fi) = do
+  (core,ms) <- ask
   reachable <- eqReachable ms fi
   let Just ps = M.lookup f predsMap
+      Just bps = M.lookup f badPredsMap
   (lhs,mbVars,ss) <-
     case () of
       --f is a function; infer wlen, slen.
@@ -388,15 +409,15 @@ fiEquation core ms predsMap (f,fi) = do
       --one AVar.
       _ | Just ((ws,_,ss),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
             --Allocate lhs abvar chans
-            (wchs,schs) <- lhsAbVars ms (length ws, length ss) ps
+            lhs@(wchs,schs) <- lhsAbVars ms (length ws, length ss) ps bps
             --Assign them to their corresponding Vars
             let initVars = M.fromList $ zip (ws ++ ss) (wchs ++ schs)
             finalVars <- aiOps ops initVars
-            ss <- aiSuccs finalVars branch 
-            error "todo"
+            ss <- aiSuccs fi finalVars branch 
+            return (lhs,Just finalVars,ss)
         --f is a JT; use wlen,slen directly to alloc abvar chans.
         | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
-            lhs <- lhsAbVars ms (wlen,slen) ps
+            lhs <- lhsAbVars ms (wlen,slen) ps bps
             ss <- newChan $ M.fromList $ zip fs $ repeat Normal
             return (lhs,Nothing,ss)
         | let -> error "!!?"
@@ -407,9 +428,9 @@ fiEquation core ms predsMap (f,fi) = do
     fiBodyInfo = error "todo",
     fiPassed = error "todo",
     succs = ss,
-    preds = case M.lookup f predsMap of
-              Nothing -> error "!!?"
-              Just ps -> ps
+    preds = ps,
+    badFunSuccs = error "todo",
+    badFunPreds = bps
     }
 
 --Complete the var -> abvar map using the lhs as input.
@@ -475,19 +496,48 @@ aiOps ops initMap =
                       --Look up v, which is now guaranteed to be set
                       gets (M.! v)
 --Given the vars and branch, which gs may f transition to?
---TODO add jtMap param to look up fs per jt.
+--TODO handle badfun: if a call dest mayBeK, the call only has the continues-to
+--ret successor, with retval = lub of args U mayBeK.
+--Problem: there is no badfun node, nor does it make sense to add one.
+--Solution: add BadFunContinue branchType, lhsAbVars handles the return?
+--No, because succs is a map and the caller may already continue to ret.
+--Alright, so that's one way an edge can have two branchTypes. Since a jump can
+--only have one mode and Calling is the only source of multiple bts, it's the
+--only way. BEWARE, if future opts break that the design must be revisited.
+--For now an additional badFunSuccs : f => g => (args,rets) is sufficient.
+--Why should each word of badfun retval be lub of args U mayBeK?
+--Because its behavior is arbitrary, but it should not be able to conjure
+--labels from nothing.
+--For simplicity, badfun is considered not to call any of its arguments.
+--That means (coerce 42)(f) is dangerous...
 --NOTE: succs should be {} until the BB is reachable.
-aiSuccs :: AIC m =>
-  Map Var (Chan (S m) AbVar) -> Branch ->
+aiSuccs :: (AIC m, MonadReader (OptCore, ModState (S m)) m) =>
+  FunInfo (S m) -> Map Var (Chan (S m) AbVar) -> Branch ->
   m (Chan (S m) (Map FunVar BranchType))
-aiSuccs finalVars branch = do
+aiSuccs fi finalVars branch = do
   fsetch <-
     case branch of
       --A call g,args,ret,scope;
       --for each g <- dest, f makes a normal jump to g
       --for each r <- ret, f continues to r (note for now ret is constant)
       --A call never jumps to a JT.
-      Jump (Calling (args,rets)) (dest:args_ret_scope,_,_) ->
+      --"Call may return" is actually the same as "the ret position is live"!
+      --That means I can defer adding the continues return until it becomes
+      --live.
+      --ret position live ~ ret var live for now, but I might add a getRet
+      --primitive in future; safest to use the position.
+      Jump (Calling (args,rets)) (dest:args_ret_scope,_,_) -> do
+        --The ret Var
+        let ret:_ = drop args args_ret_scope
+            --The ret abvar chan
+            Just retch = M.lookup ret finalVars
+            --The callee(s)
+            Just destch = M.lookup dest finalVars
+        --Look up ret slot live
+        let Just (bchws,_) = fiPassed fi
+            retLive = map fst bchws !! args
+        --Look up JTs map
+        jt2arfs <- asks (coreJTs . fst)
         error "todo"
       --Only case jumps may jump to a JT,
       --but I handle all non-calls uniformly.
@@ -495,9 +545,16 @@ aiSuccs finalVars branch = do
       --{else_f | 0 in cond} U {f | f <- dest} U {f | jt <- dest, f <- jt}
       Jumpi else_f (cond:dest:_,_,_) -> error "todo"
       --Exiting branches have no successors
-      _ -> newChan S.empty
+      _ -> newChan M.empty
   --Condition on reachable
-  error "todo"
+  runCB $ do
+    inch <- newInChan M.empty
+    subWhenChan (\b -> if b
+                       then do
+                    subWhenChan (writeInChan inch) fsetch
+                    return ()
+                       else return ()) (fiReachable fi)
+    return $ freeze inch
                       
 --reachable[f] = any reachable (preds f)
 --Taking continues into account:
@@ -563,13 +620,64 @@ eqReachable ms fi =
 --  (drop rets *** id) lhs += (drop (args+1) *** id) passed[g]
 --Why args+1? Can't forget the ret param.
 --The abvars and liveness per var could be computed in two different passes...
+--Since lhs now depends on two maps (preds and badpreds), I can't use
+--forAllMap.
 lhsAbVars :: AIC m =>
   ModState (S m) -> --FunInfo (S m) -> --TODO add to Reader context?
   (Int,Int) -> --lhs word and state var arity
   Chan (S m) (Map FunVar BranchType) -> --predecessors
+  Chan (S m) (Map FunVar (Int,Int)) -> --f's which call badfun and continue here
   m ([Chan (S m) AbVar],[Chan (S m) AbVar])
-lhsAbVars ms (lenw,lens) predecessors =
-  runCB $ forAllMap
+lhsAbVars ms (lenw,lens) predecessors badPredecessors =
+  runCB $ do
+  (wins,sins) <- ((,) <$> replicateM lenw (newInChan bottom)
+                  <*> replicateM lens (newInChan bottom))
+  flip subMapDelta predecessors
+    (\f branchType ->
+        case M.lookup f $ funInfo ms of
+          Nothing -> error "!?"
+          Just fi ->
+            case fiPassed fi of
+              Nothing -> error "An exiting BB has a successor!?"
+              Just (bs_ws,bs_ss) ->
+                let (ws,ss) = (map (avVal.snd) bs_ws, map (avVal.snd) bs_ss)
+                in case branchType of
+                     Normal -> do
+                       zipWithM_ lubLink ws wins
+                       zipWithM_ lubLink ss sins
+                     Continues (args,ret) ->
+                       --ret scope is linked to f scope recardless of whether
+                       --the callee returns; TODO refine using liveness of ret.
+                       zipWithM_ lubLink (drop (args+1) ws) (drop ret wins)
+     )
+  --Only applies to return continuations, but optimization (e.g. eta red)
+  --can create new ones; Core has no concept of return continuation status.
+  --f calls a badfun which takes args argument words and returns rets words
+  --to this function. scope is lub'd with this function's scope; each word of
+  --retval = lub (all arg vars) U {mayBeK}
+  --Simplification: just set them to {mayBeK} for now; TODO extend.
+  flip subMapDelta badPredecessors
+    (\f (args,rets) ->
+       case M.lookup f $ funInfo ms of
+         Nothing -> error "!?"
+         Just fi ->
+           case fiPassed fi of
+             Nothing -> error "An exiting BB made a badfun call!?"
+             --Aside: if f makes a badfun call, all its args should be live.
+             Just (bs_ws,bs_ss) -> do
+               let (ws,ss) = (map (avVal.snd) bs_ws, map (avVal.snd) bs_ss)
+               --retval lub= {mayBeK}*
+               --Since I ignore the labels passed to the badfun for now, this
+               --can be done in a single action rather than via a subscription
+               let retval = take rets wins
+               mapM_ (modInChan (\/ bottom{possKs=All})) retval
+               --As with continues, link f scope to this scope
+               --Unlike in continues, badfun always may return
+               --TODO deduplicate the link using a f => set (g,linkType)
+               --rather than f => g => bt, f => g => (int,int)
+               zipWithM_ lubLink (drop (args+1) ws) (drop rets wins))
+  return $ freeze (wins,sins)
+ {- runCB $ forAllMap
      ((,) <$> replicateM lenw (newInChan bottom)
        <*> replicateM lens (newInChan bottom)) predecessors
      --For each f, look up (ws,ss) = passed[f] and link them to the inchans
@@ -593,7 +701,7 @@ lhsAbVars ms (lenw,lens) predecessors =
                        zipWithM_ lubLink ss sins
                      Continues (args,ret) ->
                        zipWithM_ lubLink (drop (args+1) ws) (drop ret wins)
-     )
+     )-}
   where
     lubLink :: (JoinSemilattice a, Eq a) =>
                Chan s a -> InChan iv s a -> CB iv s ()
