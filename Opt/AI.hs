@@ -519,6 +519,8 @@ aiSuccs :: (AIC m, MonadReader (OptCore, ModState (S m)) m) =>
      Chan (S m) (Map FunVar (Int,Int))
     )
 aiSuccs fi finalVars branch = do
+  --Look up JTs map (used in all jumps)
+  jtMap <- asks (coreJTs . fst)
   (ssch,bssch) <-
     case branch of
       --A call g,args,ret,scope;
@@ -531,8 +533,6 @@ aiSuccs fi finalVars branch = do
       --ret position live ~ ret var live for now, but I might add a getRet
       --primitive in future; safest to use the position.
       Jump (Calling (args,rets)) (dest:args_ret_scope,_,_) -> do
-        --Look up JTs map
-        jtMap <- asks (coreJTs . fst)
         --for each g <- dest...
         let Just destch = M.lookup dest finalVars
         (fsch,mayBeBad) <- possFunsCircuit jtMap destch
@@ -561,9 +561,36 @@ aiSuccs fi finalVars branch = do
           return $ freeze (succsIn,badSuccsIn)
       --Only case jumps may jump to a JT,
       --but I handle all non-calls uniformly.
-      Jump other (dest:ws,_,_) -> error "todo"
-      --{else_f | 0 in cond} U {f | f <- dest} U {f | jt <- dest, f <- jt}
-      Jumpi else_f (cond:dest:_,_,_) -> error "todo"
+      --A walk in the park compared to call; TODO deduplicate
+      Jump other (dest:_,_,_) -> do
+        let Just destch = M.lookup dest finalVars
+        (fsch,_mayBeBad) <- possFunsCircuit jtMap destch
+        runCB $ do
+          --TODO write better suite of primitives so this can be implemented
+          --with a nice map combinator.
+          inch <- newInChan M.empty
+          subSetDelta (\f -> modInChan (M.insert f Normal) inch) fsch
+          --There can be no badfun calls in non-calls
+          bss <- newInChan M.empty
+          return $ freeze (inch,bss)
+      --{else_f | falsy cond} U {f | f <- possFuns dest, truthy cond}
+      Jumpi else_f (cond:dest:_,_,_) -> do
+        let Just destch = M.lookup dest finalVars
+        (fsch,_mayBeBad) <- possFunsCircuit jtMap destch
+        let Just condch = M.lookup cond finalVars
+        (truthy,falsy) <- truthyCircuit condch
+        runCB $ do
+          inch <- newInChan M.empty
+          --{else_f | falsy cond}
+          doWhen falsy $ modInChan (M.insert else_f Normal) inch
+          --{f | ..., truthy cond}
+          doWhen truthy $
+            subSetDelta (\f ->
+                            modInChan (M.insert f Normal) inch)
+            fsch
+          --There can be no badfun calls in non-calls
+          bss <- newInChan M.empty
+          return $ freeze (inch,bss)
       --Exiting branches have no successors
       _ -> (,) <$> newChan M.empty <*> newChan M.empty
   --Condition on reachable
@@ -611,7 +638,39 @@ possFunsCircuit jtMap chav =
                  modInChan (\/ b) bch)
     chav
   return $ freeze (fsch,bch)
-      
+--Returns two Boolean chans (truthy,falsy) which indicate whever the abvar
+--may be truthy or 0 respectively.
+--Minor opt: I could unsub when both become true.
+truthyCircuit :: AIC m =>
+                 Chan (S m) AbVar ->
+                 m (Chan (S m) Bool, Chan (S m) Bool)
+truthyCircuit avch =
+  runCB $ do
+  truthy <- newInChan False
+  falsy <- newInChan False
+  --TODO make a variant where the callback takes the sub so it can unsub
+  --itself?
+  --TODO build flexible f lift combinator and use it here
+  subWhenChan (\av -> do
+                  let (t,f) = truthiness av
+                  if t then writeInChan truthy True else return ()
+                  if f then writeInChan falsy True else return ()) avch
+  return $ freeze (truthy,falsy)
+--TODO move to Opt.AbVar?
+--Returns whether the av may be true or false respectively, i.e. whether the
+--set of values it represents them includes a nonzero or zero value.
+--Note truthiness bottom == (False,False); truthiness is monotonic
+truthiness :: AbVar -> (Bool,Bool)
+truthiness av =
+  let hasLabels = not $ S.null $ S.unions [funs av, jts av, codeGs av]
+  in ((possKs av > K 0) || hasLabels,
+      --All labels are nonzero so they don't help make falsy possible
+      case possKs av of
+        None -> False
+        K n -> n == 0
+        All -> True
+     )
+  
 --reachable[f] = any reachable (preds f)
 --Taking continues into account:
 --reachable[f] = any reachable *and not continues* (preds f)
