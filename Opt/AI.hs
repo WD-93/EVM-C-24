@@ -402,7 +402,7 @@ fiEquation predsMap badPredsMap (f,fi) = do
   reachable <- eqReachable ms fi
   let Just ps = M.lookup f predsMap
       Just bps = M.lookup f badPredsMap
-  (lhs,mbVars,ss) <-
+  (lhs,mbVars,ss,bss) <-
     case () of
       --f is a function; infer wlen, slen.
       --Need to map Var => abvar chan to ensure each chan is given exactly
@@ -413,13 +413,14 @@ fiEquation predsMap badPredsMap (f,fi) = do
             --Assign them to their corresponding Vars
             let initVars = M.fromList $ zip (ws ++ ss) (wchs ++ schs)
             finalVars <- aiOps ops initVars
-            ss <- aiSuccs fi finalVars branch 
-            return (lhs,Just finalVars,ss)
+            (ss,bss) <- aiSuccs fi finalVars branch 
+            return (lhs,Just finalVars,ss,bss)
         --f is a JT; use wlen,slen directly to alloc abvar chans.
         | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
             lhs <- lhsAbVars ms (wlen,slen) ps bps
             ss <- newChan $ M.fromList $ zip fs $ repeat Normal
-            return (lhs,Nothing,ss)
+            bss <- newChan M.empty
+            return (lhs,Nothing,ss,bss)
         | let -> error "!!?"
   --Live is obtained by going in the opposite direction.
   return FI {
@@ -429,7 +430,7 @@ fiEquation predsMap badPredsMap (f,fi) = do
     fiPassed = error "todo",
     succs = ss,
     preds = ps,
-    badFunSuccs = error "todo",
+    badFunSuccs = bss,
     badFunPreds = bps
     }
 
@@ -511,11 +512,14 @@ aiOps ops initMap =
 --For simplicity, badfun is considered not to call any of its arguments.
 --That means (coerce 42)(f) is dangerous...
 --NOTE: succs should be {} until the BB is reachable.
+--Edit: added badFunSuccs
 aiSuccs :: (AIC m, MonadReader (OptCore, ModState (S m)) m) =>
   FunInfo (S m) -> Map Var (Chan (S m) AbVar) -> Branch ->
-  m (Chan (S m) (Map FunVar BranchType))
+  m (Chan (S m) (Map FunVar BranchType),
+     Chan (S m) (Map FunVar (Int,Int))
+    )
 aiSuccs fi finalVars branch = do
-  fsetch <-
+  (ssch,bssch) <-
     case branch of
       --A call g,args,ret,scope;
       --for each g <- dest, f makes a normal jump to g
@@ -527,35 +531,87 @@ aiSuccs fi finalVars branch = do
       --ret position live ~ ret var live for now, but I might add a getRet
       --primitive in future; safest to use the position.
       Jump (Calling (args,rets)) (dest:args_ret_scope,_,_) -> do
+        --Look up JTs map
+        jtMap <- asks (coreJTs . fst)
+        --for each g <- dest...
+        let Just destch = M.lookup dest finalVars
+        (fsch,mayBeBad) <- possFunsCircuit jtMap destch
+        --for each r <- ret...
         --The ret Var
         let ret:_ = drop args args_ret_scope
             --The ret abvar chan
             Just retch = M.lookup ret finalVars
-            --The callee(s)
-            Just destch = M.lookup dest finalVars
+        (rsch,_) <- possFunsCircuit jtMap retch
         --Look up ret slot live
         let Just (bchws,_) = fiPassed fi
             retLive = map fst bchws !! args
-        --Look up JTs map
-        jt2arfs <- asks (coreJTs . fst)
-        error "todo"
+        runCB $ do
+          succsIn    <- newInChan M.empty
+          badSuccsIn <- newInChan M.empty
+          --for each g <- dest, this makes a normal jump to g
+          subSetDelta (\g -> modInChan (M.insert g Normal) succsIn) fsch
+          --for each r <- ret, this continues to r iff any call returns
+          --If dest may be bad, this continues to r via badfun - TODO
+          subSetDelta (\r -> do
+                          modInChan (M.insert r $ Continues (args,rets))
+                            succsIn
+                          doWhen retLive $
+                            modInChan (M.insert r (args,rets)) badSuccsIn
+                      ) rsch
+          return $ freeze (succsIn,badSuccsIn)
       --Only case jumps may jump to a JT,
       --but I handle all non-calls uniformly.
       Jump other (dest:ws,_,_) -> error "todo"
       --{else_f | 0 in cond} U {f | f <- dest} U {f | jt <- dest, f <- jt}
       Jumpi else_f (cond:dest:_,_,_) -> error "todo"
       --Exiting branches have no successors
-      _ -> newChan M.empty
+      _ -> (,) <$> newChan M.empty <*> newChan M.empty
   --Condition on reachable
   runCB $ do
-    inch <- newInChan M.empty
-    subWhenChan (\b -> if b
-                       then do
-                    subWhenChan (writeInChan inch) fsetch
-                    return ()
-                       else return ()) (fiReachable fi)
-    return $ freeze inch
-                      
+    ssin <- newInChan M.empty
+    bssin <- newInChan M.empty
+    doWhen (fiReachable fi) $ do
+      subWhenChan (writeInChan ssin) ssch
+      subWhenChan (writeInChan bssin) bssch
+    return $ freeze (ssin,bssin)
+
+--The Core functions a jump to abvar av may reach; includes badfun.
+--jump av may reach {f | f <- v} U {f | jt <- v, f <- jt}, where the JT map
+--param provides the mapping from jts to fs they contain.
+--Any value other than f or jt is a badfun, but fortunately that has no
+--implications for case since jt+ix = {jt,mayBeK} and badfuns are assumed to
+--be impossible outside calls (i.e. within intraprocedural control flow).
+--Corollary: case on malformed N1 DTs is UB.
+--Note: a jt will never be encountered in a call barring UB.
+possFuns :: Map FunVar ((Int,Int),[FunVar]) ->
+            AbVar ->
+            (Set FunVar, --reachable
+             Bool        --may be badfun
+            )
+possFuns jtMap av =
+  (funs av `S.union`
+   S.unions (S.map (\jt ->
+                      case M.lookup jt jtMap of
+                        Nothing -> error "!?"
+                        Just (_,fs) -> S.fromList fs) $ jts av),
+   not (S.null $ codeGs av) || possKs av > None)
+--TODO make a class for this pattern where you can choose how deep in the
+--structure of A, B in A -> B you replace a with Chan (S m) a
+possFunsCircuit :: AIC m =>
+  Map FunVar ((Int,Int),[FunVar]) ->
+  Chan (S m) AbVar ->
+  m (Chan (S m) (Set FunVar), Chan (S m) Bool)
+possFunsCircuit jtMap chav =
+  runCB $ do
+  fsch <- newInChan S.empty
+  bch <- newInChan False
+  subWhenChan (\av -> do
+                 let (fs,b) = possFuns jtMap av
+                 modInChan (\/ fs) fsch
+                 modInChan (\/ b) bch)
+    chav
+  return $ freeze (fsch,bch)
+      
 --reachable[f] = any reachable (preds f)
 --Taking continues into account:
 --reachable[f] = any reachable *and not continues* (preds f)

@@ -601,6 +601,15 @@ setAny :: (AIC m, Ord a) =>
   (a -> Chan (S m) Bool) -> Chan (S m) (Set a) -> m (Chan (S m) Bool)
 setAny = setFoldr (||) False
 
+--When a Boolean chan becomes true (which happens only once), run an action.
+--Unsubscribes itself for efficiency. Ignores action return type.
+doWhen :: Chan s Bool -> CB iv s a -> CB iv s ()
+doWhen bch m = do
+  sub <- subChan bch
+  whenSub sub (\b -> if b
+                     then m >> unSub sub
+                     else return ())
+
 --The combinator used for EVM op AI
 --Behavior: if any input chan changes, update output chans
 --Assumption: the chans and op are monotonic.
