@@ -5,7 +5,7 @@ module Opt.AI where
 import Opt.Concurrent
 import Opt.AbVar
 import Opt.Semilattice
-import Opt.AI.EVM (opBehavior)
+import Opt.AI.EVM (opBehavior,pushBehavior)
 --import Opt.ModState
 import Core.RestrictedCore
 import Core.SSA (OptCore,OptFunRHS,OpMap)
@@ -677,7 +677,8 @@ apply(lhs,op,cr) =
  error if arities don't match
  opAI (arity lhs) f cr
 -}
-aiOps :: (AIC m, MonadError AIError m) =>
+aiOps :: (AIC m, MonadError AIError m,
+          MonadReader (OptCore, ModState (S m)) m) =>
   Map Var (Value,OpE) -> Map Var (Chan (S m) AbVar) ->
   m (Map Var (Chan (S m) AbVar))
 aiOps ops initMap =
@@ -691,8 +692,34 @@ aiOps ops initMap =
           case M.lookup v ops of
             Nothing -> error "Impossible: v comes from M.keys ops"
             Just (lhs,(op,(rws,rss)))
-              | Push ser <- op, null $ rws++rss ->
-                  error "todo"
+              | Push ser <- op -> do
+                  if not $ null $ rws ++ rss
+                    then throwError $ BadArity Arg "push"
+                         (0,0) (length rws, length rss)
+                    else return ()
+                  case lhs of
+                    ([w],[]) -> do
+                      --Look up label => label type map; it's a function to
+                      --avoid having to construct a M.union for each push.
+                      core <- asks fst
+                      let lab2lt = \lab ->
+                            case () of
+                              _ | M.member lab $ coreDefuns core ->
+                                  Just Fun
+                                | M.member lab $ coreJTs core ->
+                                  Just JT
+                                | M.member lab $ coreStatic core ->
+                                  Just CodeG
+                                | let -> Nothing
+                          ei_lab_abvar = pushBehavior lab2lt ser
+                      case ei_lab_abvar of
+                        Left lab -> throwError $ UndefinedLabel lab
+                        Right ab -> do
+                          abch <- newChan ab
+                          modify (M.insert w abch)
+                          return abch
+                    (ws,ss) -> throwError $ BadArity Ret "push"
+                               (0,0) (length rws, length rss)
               | Op mnemonic <- op -> do
                   rwchs <- mapM explore rws
                   rschs <- mapM explore rss
