@@ -431,37 +431,78 @@ fiEquation predsMap badPredsMap (f,fi) = do
   --both at once in confusing spaghetti code, I compute them in separate
   --passes.
   let par = passedArity ei_fun_jt
+  --Maybe live of passed
   mlps <- case par of
             Just par -> Just <$> livePassed par ss bss
             _ -> return Nothing
-  --(liveLHS,mbLiveVars,livePassed) <- error "todo"
-  {-  case ei_fun_jt of
+  (lhsavs,bi,mpassed) <-
+    case ei_fun_jt of
       Left ((ws,_,ss),(ops,branch)) -> do
-        (llhs,lvs,lps) <- liveFun ws ss ops branch
-        
+        --Here we use fi to avoid being careful about definition order.
+        let IsFun {fiVars = fivs,
+                   fiOpsLive = fiol
+                  } = fiBodyInfo fi
+        --The demand per var from the branch
+        --if mlps is Nothing, the branch is exiting and all vars in it are
+        --live.
+        demandFromBranch <- case mlps of
+                              Nothing -> do
+                                let Just (wes,ses) = exitBranchValue branch
+                                    vset = S.fromList $ wes ++ ses
+                                true <- newChan True
+                                return $ M.fromSet (const [true]) vset
+                              Just (wbs,sbs) ->
+                                return $ demandedPassed (ws,ss) (wbs,sbs)
+        --The op demand graph:
+        let (v2ops,vals) = demandedOps ops
+        --Each v in v2vals is demanded by op[lhs] for lhs in v2vals[v],
+        --as well as each bch in demandFromBranch[v]
+        v2live <- M.fromList <$> forM (M.toList v2ops)
+                  (\(v,valset) -> do
+                     let vals = S.toList valset
+                         live_per_op = map (fiol M.!) vals
+                         Just bchs = M.lookup v demandFromBranch
+                     bch <- cbOr $ live_per_op ++ bchs
+                     return (v,bch)
+                  )
+        --Each op lhs is demanded by each v in lhs
+        lhs2live <- M.fromList <$> forM (S.toList vals)
+                    (\lhs -> do
+                        let vs = S.toList $ varsIn lhs
+                            bchs = map (\v -> avLive $ fivs M.! v) vs
+                        b <- cbOr bchs
+                        return (lhs,b))
+        let Just v2abv = mbVars
+            --Since v2av and v2live are the same shape, it should be possible
+            --to do this in O(n) rather than O(n log n)
+            v2av = M.mapWithKey (\v abv -> AVar (v2live M.! v) abv)
+                   v2abv
+            mpassed = case mlps of
+                        Nothing -> Nothing
+                        Just (wbs,sbs) ->
+                          Just (zip wbs $ map (v2av M.!) ws,
+                                zip sbs $ map (v2av M.!) ss)
+        return ((map (v2av M.!) ws, map (v2av M.!) ss),
+                IsFun {fiVars = v2av,
+                       fiOpsLive = lhs2live
+                      },
+                mpassed
+               )
       --A JT has no ops; its lhs vars are live if any f in fs has a live var
       --at that position. Precondition: all fs have the same arity so one
       --can safely transpose.
       Right ((wlen,slen),fs) -> do
-        --Get fs lhses
-        lhses <- forM fs (\f -> do
-                            mfi <- asks (M.lookup f. funInfo. snd)
-                            case mfi of
-                              Nothing -> error "JT jumps to nonexistent f!?"
-                              Just fi -> return $ fiLHS fi)
-        let bchss = transpose $ map (uncurry (++)) lhses
-        lives <- mapM cbOr bchss
-        --Need to split back into a pair
-        --Here I can just zip the lives with the lhs to get the AVars
-        --(the same in lhs and passed), but in fun I must get the lives
-        --from a map; better do that here and return lhs, bi, passed
-        --directly.
-        return (_,Nothing)-}
+        --lhs, passed are the same AVars
+        let Just (wls,sls) = mlps
+            (wabvs,sabvs) = lhs
+            (wavs,savs) = (zipWith AVar wls wabvs, zipWith AVar sls sabvs)
+            passed = (zip wls wavs, zip sls savs)
+        return ((wavs,savs),IsJT,Just passed)
   return FI {
     fiReachable = reachable,
-    fiLHS = error "todo",
-    fiBodyInfo = error "todo",
-    fiPassed = error "todo",
+    fiLHS = lhsavs,
+    fiBodyInfo = bi,
+    fiPassed = mpassed,
     succs = ss,
     preds = ps,
     badFunSuccs = bss,
@@ -474,10 +515,7 @@ passedArity :: Either (BranchValue,OptFunRHS) ((Int,Int),[FunVar]) ->
                Maybe (Int,Int)
 passedArity = \case
   Left (_lhs,(_ops,branch)) ->
-    case branch of
-      Jump _mode (dest:ws,_,ss) -> Just (length ws, length ss)
-      Jumpi _else_f (cond:dest:ws,_,ss) -> Just (length ws, length ss)
-      _ -> Nothing
+    (length***length) <$> branchPassed branch
   Right (ar,_) -> Just ar
 --A simple utility function. Precondition: all lists are of equal length.
 --Not that it's significant for compiler performance, but hopefully GHC
@@ -564,6 +602,55 @@ askFI f = do
   case mfi of
     Nothing -> error "!?"
     Just fi -> return fi
+
+--Returns the Value passed by a branch, if any. TODO use to deduplicate.
+--Note the Maybe stk is ignored for now.
+branchPassed :: Branch -> Maybe Value
+branchPassed = \case
+  Jump _mode (dest:ws,_,ss) -> Just (ws,ss)
+  Jumpi _else_f (cond:dest:ws,_,ss) -> Just (ws,ss)
+  _ -> Nothing
+--The vars demanded by an exiting branch; these are guaranteed to be live.
+--Returns Nothing if not exiting
+exitBranchValue :: Branch -> Maybe Value
+exitBranchValue = \case
+  Revert v -> Just v
+  Return v -> Just v
+  Stop v -> Just v
+  _ -> Nothing
+
+--Helper for live computation in funs. Given passed, a Core Value (ws,ss) and
+--liveness per position (bchs,bchs),
+--map Var => bchs of positions which demand it.
+demandedPassed :: Value -> ([a],[a]) -> Map Var [a]
+demandedPassed (wvs,svs) (was,sas) =
+  foldr (\(v,bch) ->
+           M.alter (\case Nothing -> Just [bch]
+                          Just bchs -> Just $ bch:bchs
+                   ) v) M.empty $
+        zip (wvs++svs) $ was++sas
+--Given an op map, returns the demand graph var => ops and op => vars.
+--Since ops are indexed by lhs and the lhs is exactly the vars that demand it,
+--the op => vars map is returned as a set lhs.
+demandedOps :: Map Var (Value,(PrimOp,Value)) ->
+               (Map Var (Set Value), Set Value)
+demandedOps ops = foldr (\(lhs,(op,rhs)) (v2vals,lhses) ->
+                           if S.member lhs lhses
+                           --the op has already been encountered
+                           then (v2vals,lhses)
+                           --each v in rhs is demanded by op;
+                           --op is demanded by each v in lhs
+                           --unionWith inserts lhs for each v in a single
+                           --traversal.
+                           else (M.unionWith S.union
+                                 (M.fromSet (const $ S.singleton lhs) $
+                                  varsIn rhs)
+                                 v2vals,
+                                 S.insert lhs lhses))
+                  (M.empty,S.empty) $ M.elems ops
+--TODO deduplicate
+varsIn :: Value -> Set Var
+varsIn (ws,ss) = S.fromList $ ws ++ ss
 
 --Given function body, return liveness of vars and passed
 --Note AVars don't need unique chans; you can reuse existing ones.
