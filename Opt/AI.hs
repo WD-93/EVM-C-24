@@ -402,12 +402,17 @@ fiEquation predsMap badPredsMap (f,fi) = do
   reachable <- eqReachable ms fi
   let Just ps = M.lookup f predsMap
       Just bps = M.lookup f badPredsMap
+  let ei_fun_jt =
+        case () of
+          _ | Just fdef <- M.lookup f $ coreDefuns core -> Left fdef
+            | Just jtdef <- M.lookup f $ coreJTs core -> Right jtdef
+          _ -> error "!?"
   (lhs,mbVars,ss,bss) <-
-    case () of
+    case ei_fun_jt of
       --f is a function; infer wlen, slen.
       --Need to map Var => abvar chan to ensure each chan is given exactly
       --one AVar.
-      _ | Just ((ws,_,ss),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
+      Left ((ws,_,ss),(ops,branch)) -> do
             --Allocate lhs abvar chans
             lhs@(wchs,schs) <- lhsAbVars ms (length ws, length ss) ps bps
             --Assign them to their corresponding Vars
@@ -416,13 +421,42 @@ fiEquation predsMap badPredsMap (f,fi) = do
             (ss,bss) <- aiSuccs fi finalVars branch 
             return (lhs,Just finalVars,ss,bss)
         --f is a JT; use wlen,slen directly to alloc abvar chans.
-        | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
-            lhs <- lhsAbVars ms (wlen,slen) ps bps
-            ss <- newChan $ M.fromList $ zip fs $ repeat Normal
-            bss <- newChan M.empty
-            return (lhs,Nothing,ss,bss)
-        | let -> error "!!?"
-  --Live is obtained by going in the opposite direction.
+      Right ((wlen,slen),fs) -> do
+        lhs <- lhsAbVars ms (wlen,slen) ps bps
+        ss <- newChan $ M.fromList $ zip fs $ repeat Normal
+        bss <- newChan M.empty
+        return (lhs,Nothing,ss,bss)
+  --Abvars are computed forward, but liveness is computed backward: a var
+  --is live iff any of its later consumers are live. Instead of computing
+  --both at once in confusing spaghetti code, I compute them in separate
+  --passes.
+  let par = passedArity ei_fun_jt
+  mlps <- case par of
+            Just par -> Just <$> livePassed par ss bss
+            _ -> return Nothing
+  --(liveLHS,mbLiveVars,livePassed) <- error "todo"
+  {-  case ei_fun_jt of
+      Left ((ws,_,ss),(ops,branch)) -> do
+        (llhs,lvs,lps) <- liveFun ws ss ops branch
+        
+      --A JT has no ops; its lhs vars are live if any f in fs has a live var
+      --at that position. Precondition: all fs have the same arity so one
+      --can safely transpose.
+      Right ((wlen,slen),fs) -> do
+        --Get fs lhses
+        lhses <- forM fs (\f -> do
+                            mfi <- asks (M.lookup f. funInfo. snd)
+                            case mfi of
+                              Nothing -> error "JT jumps to nonexistent f!?"
+                              Just fi -> return $ fiLHS fi)
+        let bchss = transpose $ map (uncurry (++)) lhses
+        lives <- mapM cbOr bchss
+        --Need to split back into a pair
+        --Here I can just zip the lives with the lhs to get the AVars
+        --(the same in lhs and passed), but in fun I must get the lives
+        --from a map; better do that here and return lhs, bi, passed
+        --directly.
+        return (_,Nothing)-}
   return FI {
     fiReachable = reachable,
     fiLHS = error "todo",
@@ -433,6 +467,106 @@ fiEquation predsMap badPredsMap (f,fi) = do
     badFunSuccs = bss,
     badFunPreds = bps
     }
+
+--The number of words and state vars respectively passed by a fun or jt.
+--TODO deduplicate with similar code.
+passedArity :: Either (BranchValue,OptFunRHS) ((Int,Int),[FunVar]) ->
+               Maybe (Int,Int)
+passedArity = \case
+  Left (_lhs,(_ops,branch)) ->
+    case branch of
+      Jump _mode (dest:ws,_,ss) -> Just (length ws, length ss)
+      Jumpi _else_f (cond:dest:ws,_,ss) -> Just (length ws, length ss)
+      _ -> Nothing
+  Right (ar,_) -> Just ar
+--A simple utility function. Precondition: all lists are of equal length.
+--Not that it's significant for compiler performance, but hopefully GHC
+--eliminates the intermediate tuples.
+transpose :: [[a]] -> [[a]]
+transpose xss = go xss
+  where go [] = []
+        go ([]:xss) = []:xss
+        go xss = uncurry (:) $ go' xss
+        --head and tail each (nonempty) list in one pass
+        go' [] = ([],[])
+        go' ((x:xs):xss) =
+          let (heads,tails) = go' xss
+          in (x:heads,xs:tails)
+
+--When computing liveness, the last use is handled first.
+--Given a function's successors, get the liveness of each var passed.
+--This is ~the logic for computing lhs abvars in reverse:
+--need to handle normal jumps, call continues and badfun calls.
+--f -normal-> g => g.lhs[i] live => f.passed[i] live
+--f -continues(args,rets)-> r =>
+-- for i >= 0, r.lhs[rets+i] live => f.passed[args+i] live
+--f -badfuncont(args,rets)-> r =>
+-- f.passed[0..args] live, --since badfun may use any arg and may return
+--When a position becomes live, it would be efficient to drop its subscriptions.
+--That's challenging because the subMapDelta writes to many inchans.
+--TODO rewrite using combinators that accurately track dependencies...
+--badfuncont implies continues, so there's no need to repeat the scope linking.
+livePassed :: (AIC m, MonadReader (OptCore, ModState (S m)) m) =>
+  (Int,Int) ->
+  Chan (S m) (Map FunVar BranchType) ->
+  Chan (S m) (Map FunVar (Int,Int)) ->
+  m ([Chan (S m) Bool],[Chan (S m) Bool])
+livePassed (wlen,slen) ss bss = do
+  --Can't run askFi in CB ofc...
+  fim <- asks $ funInfo . snd
+  runCB $ do
+    wins <- replicateM wlen $ newInChan False
+    sins <- replicateM slen $ newInChan False
+    subMapDelta (\f branchType -> do
+                    (ws,ss) <- case fiLHS <$> M.lookup f fim of
+                                 Nothing -> error "!?"
+                                 Just (wavs,savs) ->
+                                   return (map avLive wavs, map avLive savs)
+                    case branchType of
+                      Normal -> do
+                        zipWithM_ implies ws wins
+                        zipWithM_ implies ss sins
+                      Continues (args,rets) -> do
+                        let InChan rrc : scopeCaller = drop args wins
+                            scopeCallee = drop rets ws
+                            --Hack: we obtain retLive directly rather than
+                            --via input modstate.
+                            retLive = Chan rrc
+                        --Liven scope only if ret is live
+                        doWhen retLive $
+                          zipWithM_ implies scopeCallee scopeCaller
+                )
+      ss
+    --If bss becomes nonempty then args,ret become live; after that you can
+    --unsubscribe.
+    --We could also obtain args from the branch; the (args,rets) in every
+    --key is for the benefit of preds.
+    sub <- subChan bss
+    whenSub sub (\r2ar ->
+                   if M.null r2ar
+                   then return ()
+                   else do
+                     let (_r,(args,_rets)) = head $ M.toList r2ar
+                     let args_ret = take args wins
+                     mapM (`writeInChan` True) args_ret
+                     unSub sub
+                )
+    return $ freeze (wins,sins)
+      where
+        --Similar to lubLink (defined in a where), except implies unsubs itself
+        --when the premise becomes true.
+        a `implies` b = doWhen a $ writeInChan b True
+--Helper; todo reuse elsewhere.
+--Compiler errors if the function doesn't exist.
+askFI :: MonadReader (OptCore, ModState s) m => FunVar -> m (FunInfo s)
+askFI f = do
+  mfi <- asks (M.lookup f . funInfo . snd)
+  case mfi of
+    Nothing -> error "!?"
+    Just fi -> return fi
+
+--Given function body, return liveness of vars and passed
+--Note AVars don't need unique chans; you can reuse existing ones.
 
 --Complete the var -> abvar map using the lhs as input.
 --I could just map rather than eval in topological order, but
