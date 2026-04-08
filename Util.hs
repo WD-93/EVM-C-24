@@ -21,7 +21,7 @@ complainIf b err
   | b = throwError err
   | let = return ()
 
-debugFlag = True
+debugFlag = False
 --For debugging
 unsafePrint :: Monad m => String -> m ()
 unsafePrint str

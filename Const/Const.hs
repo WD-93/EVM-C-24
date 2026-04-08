@@ -4,6 +4,7 @@ module Const.Const where
 import AST.DTs
 
 import Data.Generics (Data(..))
+import Data.Char (intToDigit) --used for pretty show
 
 --Just the pure functions from Const.Serialize
 
@@ -17,7 +18,28 @@ data Serialized = Serialized {serLength :: Integer, --length in bytes
                               serSizeof :: Integer, --max length of type
                               serContent :: Content
                              }
-  deriving (Eq,Ord,Read,Show,Data)
+  deriving (Eq,Ord,Read,Data)
+--Giving Serialized a pretty show instance for debug:
+instance Show Serialized where
+  show = cc_showSerialized
+--Copied from Pretty:
+--(hex | label)* : sizeof
+--We don't show len
+cc_showSerialized :: Serialized -> String
+cc_showSerialized ser =
+  "["++ (serContent ser >>= showSerElem) ++ "]:" ++ show (serSizeof ser)
+  where showSerElem :: SerElem -> String
+        showSerElem = \case
+          Left bytes -> bytes >>= showHex
+          Right lab -> showLabel lab
+        --If off == 0: lab:len
+        --else: lab(off):len
+        showLabel :: (Int,Int,String) -> String
+        showLabel (off,len,lab) =
+          lab ++ (if off /= 0 then "("++show off++")" else "") ++ ":" ++
+          show len
+        --Precondition: the b is in 0..255
+        showHex b = map intToDigit [b `div` 16, b `mod` 16]
 emptySer = Serialized 0 0 []
 --Invariant: Content is in normal form, i.e. there are no adjacent [Int]
 --regions, no empty [Int] regions nor zero-size labels.

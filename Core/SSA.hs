@@ -48,12 +48,20 @@ data SSAError = MalformedFunLHS BranchValue Var
               | MalformedOpLHS Value Var
               | UnboundVar Var
               | MalformedCopy Value Value
+              --Adding context in order to track down mysterious UnboundVar
+              --bug appearing to arise from pushes (e.g. main := main fails)
+              | InSSAFun FunVar SSAError
+              | InSSAFunRHS SSAError
+              | InSSAOpCopy SSAError
+              | InSSAOpNormal SSAError
   deriving (Eq,Ord,Read,Show)
 ssa :: Core -> Either (FunVar,SSAError) OptCore
 ssa core = do
   let fdefs = M.toList $ coreDefuns core
   fdefs' <- forM fdefs (\(f,def) ->
-                          ((,) f <$> runExcept (evalStateT (ssaFun def)
+                          ((,) f <$> runExcept (evalStateT
+                                                (withError (InSSAFun f) $
+                                                 ssaFun def)
                           (SSAS M.empty M.empty M.empty)))
                           ? ((,) f)
                        )
@@ -68,7 +76,7 @@ ssaFun :: (BranchValue,FunRHS) ->
 ssaFun (lhs,rhs) =
   (,) <$> ssaFunLHS lhs <*> ssaFunRHS rhs
 ssaFunRHS :: FunRHS -> SSAM OptFunRHS
-ssaFunRHS (ops,branch) = do
+ssaFunRHS (ops,branch) = withError InSSAFunRHS $ do
   mapM_ ssaOp ops
   --ssaBranch resets the opmap, so we need to get it first...
   (,) <$> gets opMap <*> ssaBranch branch
@@ -162,14 +170,14 @@ ssaOp :: (Value,OpE) -> SSAM ()
 --Copy ops are eliminated; subsequent references to x until the next
 --assignment are replaced with the version of y current at the time of
 --the copy.
-ssaOp (([x],[]),(Op "copy",([y],[]))) = do
+ssaOp (([x],[]),(Op "copy",([y],[]))) = withError InSSAOpCopy $ do
   y' <- ssaVar y
   bumpVar x
   x' <- ssaVar x
   modify (\s -> s{substMap = M.insert x' y' $ substMap s})
 --copy ops with the wrong argument or return arity trigger an error.
 ssaOp (lhs,(Op "copy",rhs)) = throwError $ MalformedCopy lhs rhs
-ssaOp (lhs,(op,rhs)) = do
+ssaOp (lhs,(op,rhs)) = withError InSSAOpNormal $ do
   rhs' <- ssaVars rhs
   lhs' <- ssaOpLHS lhs
   let vs = listVars lhs'

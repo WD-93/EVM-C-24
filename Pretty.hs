@@ -31,6 +31,14 @@ prettyStructuredFuns f2def = do
   (f,(bv,stmts)) <- M.toList f2def
   [f ++ " " ++ showBranchValue bv ++ " := "]
     ++ indent (stmts >>= prettyStmt)
+--It's useful to look at one fun at a time since Structured modules are
+--unreadably large before pruning...
+prettyStructuredFun :: FunVar -> Structured -> [String]
+prettyStructuredFun f s =
+  case M.lookup f $ sdefuns s of
+    Just (bv,stmts) ->
+      [f ++ " " ++ showBranchValue bv ++ " := "]
+      ++ indent (stmts >>= prettyStmt)
 --(x * y * z * (stk | ()), s1 * s2 * ())
 showBranchValue :: BranchValue -> String
 showBranchValue (stackWords,mstk,stateVars) =

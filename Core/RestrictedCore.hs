@@ -157,8 +157,11 @@ data ConstSet = Consts [Const]
   deriving (Eq,Ord,Read,Show,Data)
 -}
 --Dynamic value names, as distinct from functions and globals.
+--Time to give it a prettier Show so debug output becomes more readable...
 data Var = Mono {nameOfVar :: Name, typeOfVar :: T}
-  deriving (Eq,Ord,Read,Show,Data)
+  deriving (Eq,Ord,Read,Data)
+instance Show Var where
+  show (Mono nm t) = nm ++ ":(" ++ show t++")"
 
 --Core functions have string labels...
 type FunVar = Name
