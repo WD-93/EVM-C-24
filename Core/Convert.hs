@@ -277,8 +277,12 @@ coreBlock'' cont stmts =
           (_,continue) <- headLoopStack "continue"
           expects scope $ normal [] continue
         --Assuming $ret is already on the stack:
+        --But it's not in vs!
+        --That could either be fixed in Structured or Core; I'll fix it
+        --here. Assuming $ret is last scope:
         Structured.DTs.Return scope vs ->
-          expects scope $ return ([], Jump Returning $ scope2BV vs)
+          expects scope $
+          return ([], Jump Returning $ scope2BV $ last scope : vs)
         --If n16:
         -- tbl <- push conts as one word in reverse order
         -- jump ((tbl >> tag) & 0xffff) (vs ++ scope)

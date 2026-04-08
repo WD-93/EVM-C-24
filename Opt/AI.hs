@@ -14,7 +14,7 @@ import Core.SSA (OptCore,OptFunRHS,OpMap)
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.Map (Map(..))
-import qualified Data.Map as M
+import qualified Data.Map as M hiding ((!)) --(!) is a footgun
 import Control.Monad.Except
 import Control.Monad.State
 import Control.Monad.Reader
@@ -174,6 +174,8 @@ data AIError = BadMnemonic String
              | UndefinedLabel String --push error
              --Assumption: no pushes are >32B; that should've already been
              --filtered out.
+             --Used for debugging
+             | GenericAIError String
   deriving (Eq,Ord,Read,Show)
 data ArgOrRet = Arg | Ret
   deriving (Eq,Ord,Read,Show)
@@ -453,6 +455,12 @@ fiEquation predsMap badPredsMap (f,fi) = do
         --The demand per var from the branch
         --if mlps is Nothing, the branch is exiting and all vars in it are
         --live.
+        --Bug: I was compiling return ws to jump ws, so the jump was
+        --malformed for return ()
+        case (exitBranchValue branch, mlps) of
+          (Nothing,Nothing) -> throwError $ GenericAIError $
+            "Huh!? " ++ show (branch,par,ei_fun_jt)
+          _ -> return ()
         demandFromBranch <- case mlps of
                               Nothing -> do
                                 let Just (wes,ses) = exitBranchValue branch
@@ -462,35 +470,58 @@ fiEquation predsMap badPredsMap (f,fi) = do
                               Just (wbs,sbs) ->
                                 return $ demandedPassed (ws,ss) (wbs,sbs)
         --The op demand graph:
+        --Bug: ofc, if the BB contains no ops but has a nonempty passed,
+        --v2ops will not contain all the relevant vars.
+        --The actual set of relevant vars is the union of vars in the lhs
+        --and in ops.
         let (v2ops,vals) = demandedOps ops
-        --Each v in v2vals is demanded by op[lhs] for lhs in v2vals[v],
+            relevantVs = S.union (S.fromList $ ws ++ ss) (M.keysSet ops)
+        --Each v in relevantVs is demanded by op[lhs] for lhs in v2vals[v],
         --as well as each bch in demandFromBranch[v]
-        v2live <- M.fromList <$> forM (M.toList v2ops)
+        v2live <- M.fromList <$> forM (S.toList relevantVs)
+          (\v -> do
+              let vals = maybe [] S.toList $ M.lookup v v2ops
+                  live_per_op = map (index "fiol" fiol) vals
+                  bchs = maybe [] id $ M.lookup v demandFromBranch
+              bch <- cbOr $ live_per_op ++ bchs
+              return (v,bch))
+        {-(M.toList v2ops)
                   (\(v,valset) -> do
                      let vals = S.toList valset
-                         live_per_op = map (fiol M.!) vals
+                         live_per_op = map (index "fiol" fiol) vals
                          Just bchs = M.lookup v demandFromBranch
                      bch <- cbOr $ live_per_op ++ bchs
                      return (v,bch)
-                  )
+                  )-}
         --Each op lhs is demanded by each v in lhs
         lhs2live <- M.fromList <$> forM (S.toList vals)
                     (\lhs -> do
                         let vs = S.toList $ varsIn lhs
-                            bchs = map (\v -> avLive $ fivs M.! v) vs
+                            bchs = map (\v -> avLive $
+                                         index "fivs" fivs v) vs
                         b <- cbOr bchs
                         return (lhs,b))
         let Just v2abv = mbVars
             --Since v2av and v2live are the same shape, it should be possible
             --to do this in O(n) rather than O(n log n)
-            v2av = M.mapWithKey (\v abv -> AVar (v2live M.! v) abv)
+        --Debug, checking they are indeed the same shape
+        do let abvKeys = M.keys v2abv
+               liveKeys = M.keys v2live
+           if abvKeys /= liveKeys
+             then throwError $ GenericAIError $
+             
+             "Abvars, live keys mismatch: " ++ show (abvKeys,liveKeys) ++
+             "; demandedOps " ++ show ops ++ " = " ++ show (v2ops,vals)
+             else return ()
+        let v2av = M.mapWithKey (\v abv -> AVar (index "v2live" v2live v) abv)
                    v2abv
             mpassed = case mlps of
                         Nothing -> Nothing
                         Just (wbs,sbs) ->
-                          Just (zip wbs $ map (v2av M.!) ws,
-                                zip sbs $ map (v2av M.!) ss)
-        return ((map (v2av M.!) ws, map (v2av M.!) ss),
+                          Just (zip wbs $ map (index "wbs" v2av) ws,
+                                zip sbs $ map (index "sbs" v2av) ss)
+        return ((map (index "map v2av ws" v2av) ws,
+                 map (index "map v2av ss" v2av) ss),
                 IsFun {fiVars = v2av,
                        fiOpsLive = lhs2live
                       },
@@ -516,6 +547,17 @@ fiEquation predsMap badPredsMap (f,fi) = do
     badFunSuccs = bss,
     badFunPreds = bps
     }
+
+--A helper that errors with a given error message when k is missing.
+--Used to replace M.! (considered harmful).
+--Throwing Haskell exceptions deep in the thunk graph is also problematic;
+--TODO use MonadError if necessary.
+--It is necessary, need to check and report on conditions in the core logic, not
+--just this leaf call.
+index err k2v k =
+  case M.lookup k k2v of
+    Nothing -> error $ "Bad index " ++ show (k, M.keys k2v) ++ " @ " ++ err
+    Just v -> v
 
 --The number of words and state vars respectively passed by a fun or jt.
 --TODO deduplicate with similar code.
@@ -617,6 +659,9 @@ branchPassed :: Branch -> Maybe Value
 branchPassed = \case
   Jump _mode (dest:ws,_,ss) -> Just (ws,ss)
   Jumpi _else_f (cond:dest:ws,_,ss) -> Just (ws,ss)
+  --A jump or jumpi with too few word args is a compiler error
+  b@Jump{} -> error $ "Malformed jump: " ++ show b
+  b@Jumpi{} -> error $ "Malformed jumpi: " ++ show b
   _ -> Nothing
 --The vars demanded by an exiting branch; these are guaranteed to be live.
 --Returns Nothing if not exiting
@@ -751,7 +796,7 @@ aiOps ops initMap =
                       zipWithM_ (\k v -> modify $ M.insert k v)
                         (fst lhs ++ snd lhs) (lwchs ++ lschs)
                       --Look up v, which is now guaranteed to be set
-                      gets (M.! v)
+                      gets (flip (index "v from explore") v)
 --Given the vars and branch, which gs may f transition to?
 --TODO handle badfun: if a call dest mayBeK, the call only has the continues-to
 --ret successor, with retval = lub of args U mayBeK.
@@ -930,23 +975,43 @@ truthiness av =
 --reachable[f] = any reachable (preds f)
 --Taking continues into account:
 --reachable[f] = any reachable *and not continues* (preds f)
+--If f calls g and continues to r, then that should liven r iff g returns...
+--in which case a return BB in g will jump to r, so continues can be ignored.
+--If f calls badfun and continues to r, then f reachable implies r reachable
+--since badfun has arbitrary return behavior.
 --Add Reader (ModState s)?
 eqReachable :: AIC m => ModState (S m) -> FunInfo (S m) -> m (Chan (S m) Bool)
 eqReachable ms fi =
   let fs = funInfo ms
   --Can't use mapAny because I need to filter first... TODO redesign
   --circuits to be more composable.
-  in runCB $ forAllMap (newInChan False) (preds fi)
-     (\inch g branchType ->
-        case branchType of
-          Normal ->
-            case M.lookup g fs of
-              Nothing -> error "!?"
-              Just gi -> do
-                subWhenChan (inch `modWith` (||)) $
-                  fiReachable gi
-                return ()
-     )
+  in do fromNormal <-
+          runCB $ forAllMap (newInChan False) (preds fi)
+          (\inch g branchType ->
+             case branchType of
+               Normal ->
+                 case M.lookup g fs of
+                   Nothing -> error "!?"
+                   Just gi -> do
+                     --Alt implem that cleans up subscription:
+                     --doWhen (fiReachable gi) (writeInChan inch True)
+                     --That'd likely  actually be costlier since the bool chan
+                     --won't be modified afterward anyway.
+                     subWhenChan (inch `modWith` (||)) $
+                       fiReachable gi
+                     return ()
+               _ -> return ()
+          )
+        fromBadfun <- runCB $ forAllMap (newInChan False) (badFunPreds fi)
+          (\inch g _args_rets ->
+             case M.lookup g fs of
+               Nothing -> error "!?"
+               Just gi -> do
+                 subWhenChan (inch `modWith` (||)) $
+                   fiReachable gi
+                 return ()
+          )
+        cbOr [fromNormal,fromBadfun]
     {-setAny (\g ->
                case M.lookup g fs of
                  Nothing -> error "!?"
