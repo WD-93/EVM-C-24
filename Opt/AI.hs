@@ -1,4 +1,5 @@
-{-# LANGUAGE RankNTypes, LambdaCase, FlexibleContexts #-}
+{-# LANGUAGE RankNTypes, LambdaCase, FlexibleContexts,
+ StandaloneDeriving, FlexibleInstances #-} --for testing
 --MonadError AIError requires flexible contexts
 module Opt.AI where
 
@@ -51,7 +52,7 @@ type ModState s = ModState_ (Chan s)
 data ModState_ f = MS {
   funInfo :: Map FunVar (FunInfo_ f)
                      }
-
+deriving instance Show (ModState_ Id) --for testing
 type FunInfo s = FunInfo_ (Chan s)
 data FunInfo_ f = FI {
   fiReachable :: f Bool,
@@ -80,6 +81,7 @@ data FunInfo_ f = FI {
   badFunSuccs :: f (Map FunVar (Int,Int)),
   badFunPreds :: f (Map FunVar (Int,Int))
                     }
+deriving instance Show (FunInfo_ Id) --for testing
 data BranchType = Normal --call, return, ipc: a real direct jump
                 --call continues to; establishes dataflow but not reachability
                 | Continues (Int,Int)              
@@ -99,12 +101,14 @@ data BodyInfo_ f = IsJT --no ops
                      --Ops are identified by their LHS.
                      fiOpsLive :: Map Value (f Bool)
                      }
+deriving instance Show (BodyInfo_ Id) --for testing
 --TODO pick more suitable names for AVar, AbVar.
 type AVar s = AVar_ (Chan s)
 data AVar_ f = AVar {
   avLive :: f Bool,
   avVal :: f AbVar
   }
+deriving instance Show (AVar_ Id) --for testing
 --Passed also requires info on whether the given position is demanded by
 --any successor.
 type Passed s = ([(Chan s Bool, AVar s)],[(Chan s Bool, AVar s)])
@@ -173,6 +177,10 @@ data AIError = BadMnemonic String
   deriving (Eq,Ord,Read,Show)
 data ArgOrRet = Arg | Ret
   deriving (Eq,Ord,Read,Show)
+
+--Putting it all together:
+ai :: OptCore -> Either AIError FrozenModState
+ai core = runAI $ runExceptT $ aiModule core
 
 --The mfix problem is solved; next step: define the initial state.
 aiModule :: (AIC m, Concurrent m, MonadError AIError m) =>

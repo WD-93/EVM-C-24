@@ -42,6 +42,8 @@ import Core.RestrictedCore (Core(..),
 import Core.Convert (structured2core, CoreError(..))
 --SSA
 import Core.SSA (ssa, SSAError(..),OptCore(..))
+--Abstract interpretation (the analysis used when optimizing)
+import Opt.AI (ai, AIError(..),FrozenModState)
 
 --Poor man's pretty-printing for debugging
 import Pretty
@@ -54,6 +56,8 @@ data CompilerError = ParserError String
                    | FusedError FusedError
                    | CoreError CoreError
                    | SSAError (Name,SSAError)
+                   | AIError AIError --Only thrown in test pipeline2ai
+                   -- | OptError OptError --this will be thrown in the real opt
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -185,6 +189,13 @@ pipeline2ssa :: String -> Either CompilerError OptCore
 pipeline2ssa str = do
   c <- pipeline2core str
   ssa c ? SSAError
+--AI is the first stage of opt, but it's not strictly part of a linear pipeline
+--since it should be used in an analyze => optimize loop.
+--This function is just meant for testing.
+pipeline2ai :: String -> Either CompilerError FrozenModState
+pipeline2ai str = do
+  oc <- pipeline2ssa str
+  ai oc ? AIError
 --No opts for now...
 pipeline2opt :: String -> Either CompilerError OptCore
 pipeline2opt = pipeline2ssa

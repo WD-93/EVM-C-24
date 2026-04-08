@@ -9,6 +9,7 @@ import qualified Data.Set as S
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Control.Monad.State
+import Control.Monad.Except --used to define Concurrent instance
 import Control.Monad
 import Data.Kind (Type(..))
 import Control.Monad.ST
@@ -38,6 +39,12 @@ instance Monad m => Concurrent (ConcT m) where
     where go = ConcT get >>= \case
             [] -> return ()
             ms -> ConcT (put []) >> sequence_ (reverse ms) >> go
+--Implementing for transformers:
+--Problem: to use the underlying spawn, I need to unlift (run) the transformer.
+--That doesn't trivially make sense for every transformer.
+instance Concurrent m => Concurrent (ExceptT e m) where
+  spawn m = lift $ spawn $ runExceptT m >> return ()
+  scheduler = lift scheduler
 instance HasRef m => HasRef (ConcT m) where
   type Ref (ConcT m) = Ref m
   newRef = lift . newRef
