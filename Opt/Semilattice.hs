@@ -2,6 +2,8 @@ module Opt.Semilattice where
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
+import Data.Map(Map(..))
+import qualified Data.Map as M
 
 --I don't need the whole semilattice package...
 class JoinSemilattice a where
@@ -31,3 +33,6 @@ instance JoinSemilattice a => JoinSemilattice (Maybe a) where
   Nothing \/ x = x
   x \/ Nothing = x
   Just a \/ Just b = Just $ a \/ b
+--Assumption: k-vs are only ever added, not updated.
+instance Ord k => JoinSemilattice (Map k v) where
+  (\/) = M.union

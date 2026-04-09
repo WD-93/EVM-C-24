@@ -192,6 +192,11 @@ aiModule core = do
   --The meat of the logic: the equation defining module state
   final <- aiEquation core initial
   --Loop it back to itself to make it recursive
+  --Bug: the initial values of final are ofc bottom, e.g. reachable is False.
+  --If they're written to the values of initial before propagation of
+  --values >= bottom from initial, that incorrectly sets the entire circuit
+  --to bottom. Rather than naively writing (as in unsafeWire), the initial
+  --must be LUB'd with final.
   unsafeWireModState final initial 
   scheduler
   freezeModState initial

@@ -755,9 +755,10 @@ class UnsafeWire a where
 instance UnsafeWire (Chan s a) where
   type UWS (Chan s a) = s
 -}
-unsafeWire :: (AIC m, Eq a) => Chan (S m) a -> Chan (S m) a -> m ()
+unsafeWire :: (AIC m, Eq a, JoinSemilattice a) =>
+  Chan (S m) a -> Chan (S m) a -> m ()
 unsafeWire from (Chan to) = runCB $ do
-  subWhenChan (writeInChan (InChan to)) from
+  subWhenChan (modWith (InChan to) (\/)) from
   return ()
 
 test_4 :: [Bool]
