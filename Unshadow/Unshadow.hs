@@ -27,7 +27,7 @@ f x#1 := {
 
 import AST.DTs
 import AST.Util (freeVarsPat)
-import Mono.Mono (MonoS(..))
+--import Mono.Mono (MonoS(..))
 
 import Data.Map (Map(..))
 import qualified Data.Map as M

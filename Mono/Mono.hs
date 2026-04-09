@@ -1,5 +1,8 @@
 {-# LANGUAGE LambdaCase #-}
-module Mono.Mono where
+--This module is defunct; its main functionality (monomorphizing functions)
+--has been rolled into Fused. It's only used to export the instT and bindT
+--utility functions; TODO delete the cruft.
+module Mono.Mono (instT,bindT,BindError(..)) where
 
 --On the EVM, you can't afford boxing datatypes by default.
 --EVMC therefore has a Hindley-Milner type system with template polymorphism,

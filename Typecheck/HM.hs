@@ -11,6 +11,7 @@ import Typecheck.TySyn (tyVars,tyCons,
 import Typecheck.FIKS (splitTyFun)
 import Typecheck.DependencyGraph (buildGraph)
 import Typecheck.HM.AddConsAndFieldsToTySigs (addConsAndFieldsToTySigs)
+import Mono.Mono (instT,bindT,BindError(..))
 
 import Data.Map (Map(..))
 import qualified Data.Map as M hiding ((!))
@@ -221,6 +222,8 @@ data HMError = Can'tConstructTheInfiniteType Name T --a ~ T a
              --A single constructor for debug tracing
              | InvalidAmpersandExpr E
              | KindNotInScope Name
+             | MistypedSCCThingInSCC Name (T,T,BindError)
+             | AmbiguousSCCThingInSCC Name ([Name],T,T,Name)
   deriving (Eq,Ord,Read,Show)
 --Including the HM state in the error message may be helpful, so we place
 --the Except innermost
@@ -1251,10 +1254,11 @@ inferSCC nms m =
   case runHM go hmr newHMS of
     (Left hme, s) -> Left (hme,s)
     --Updated definitions and new tysigs
-    (Right (sigs,funs,globs), _) ->
+    (Right (schemes,funs,globs), _) ->
       --Change: I simply use mkSig to add a default ordering of tyvars in
-      --polymorphic signatures.
-      return m{tysigs = M.union (M.map mkSig sigs) $ tysigs m,
+      --polymorphic signatures. That's now been moved into go because
+      --tau var => tyapp conversion needs it.
+      return m{tysigs = M.union schemes $ tysigs m,
                defuns = M.union (M.map Left funs) $ defuns m,
                globals = M.union globs $ globals m
               }
@@ -1302,8 +1306,47 @@ inferSCC nms m =
             --that.
             --stats'' <- applyDefaults stats' nm2sig
             globs'' <- applyDefaults globs' nm2uglySig
-            --Fail if any kind var is unbound
-            return (nm2sig,funs'',globs'')
+            -- ^ Fail if any kind var is unbound
+            --Since the final signatures of fs and gs from the SCC aren't
+            --yet known during type inference, we replaced them with a
+            --placeholder TypedVar rather than a TyApp nm params.
+            --Now we must go through funs and globs and replace each
+            --TypedVar nm t for nm in nm2sig with:
+            -- (params,tau) = nm2sig[sig]
+            -- v2t = match tau to nm
+            -- instanceParams = bind v2t to polyparams
+            -- TyApp nm instanceParams
+            --Note the t may be polymorphic
+            --convertSCC... relies on schemes, but nm2sig is nm => T;
+            let nm2scheme = M.map mkSig nm2sig
+            (funs3,globs3) <- convertSCCVarsToTyApps nm2scheme (funs'',globs'')
+            return (nm2scheme,funs3,globs3)
+
+--The only effect this has is MonadError HMError; TODO use constraints on m
+--rather than monomorphic M in type signatures. That limits undesired effects
+--and makes combinators more reusable.
+convertSCCVarsToTyApps :: Data a =>
+  Map Name Scheme -> a -> HM a
+convertSCCVarsToTyApps nm2sig =
+  everywhereM (mkM $
+               \case TypedVar (Just t) nm
+                       | Just (params,tau) <- M.lookup nm nm2sig -> do
+                           let ei_err_v2t = bindT tau t
+                           case ei_err_v2t of
+                             Left bindErr ->
+                               throwError $ MistypedSCCThingInSCC
+                               nm (tau,t,bindErr)
+                             Right v2t -> do
+                               instParams <-
+                                 forM params
+                                 (\v ->
+                                     case M.lookup v v2t of
+                                       Nothing -> throwError $
+                                         AmbiguousSCCThingInSCC
+                                         nm (params,tau,t,v)
+                                       Just t -> return t)
+                               return $ TyApp nm instParams
+                     e -> return e)
 
 --Need to apply rigidizeAndDefault here; the rigid signature is the inferred
 --one (so the inf2rigid map is just an identity map on all the vars in the
