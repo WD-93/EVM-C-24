@@ -1651,11 +1651,18 @@ pushTyApp nm ts = do
   putScope scope
   return v
 --A helper for calling a function var given argument vars and return type.
+--Trying to fix not-in-scope bug in Core: extending scope by res in the
+--continuation.
 callFun :: Var -> [Var] -> T -> FFM [Var]
 callFun fv xs b = do
+  --Copying to ensure lhs is not malformed:
+  fv' <- copy (typeOfVar fv) fv
+  xs' <- copyVars xs
   scope <- getScope --in convertE, will be xs++fs++original scope
   res <- newVars b
-  emitStmt $ Call scope res fv xs
+  --putScope $ fv':xs'++scope
+  emitStmt $ Call scope res fv' xs'
+  putScope $ res ++ scope
   return res
 
 --Invariants: if it returns (vs,t), length vs is the word length of t and

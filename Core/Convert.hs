@@ -207,8 +207,10 @@ coreBlock'' cont stmts =
     stmt:stmts ->
       case stmt of
         --f(args) in C becomes let ret = push next in jump f, args, ret, scope
-        --next expects lhs++scope 
-        Call scope lhs f args -> expects scope $ do
+        --next expects lhs++scope
+        --Attempting to fix var not in scope bug in Core...
+        --Extending expects with (f:args):
+        Call scope lhs f args -> expects (f:args++scope) $ do
           next <- coreBlock (lhs ++ scope) cont stmts
           --The body has only a single op: pushing next
           (ret,o) <- opPushF next
