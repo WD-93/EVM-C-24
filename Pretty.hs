@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, PatternSynonyms #-}
+{-# LANGUAGE LambdaCase, PatternSynonyms, FlexibleInstances #-}
 module Pretty where
 
 import AST.DTs (Name(..),T(..),
@@ -41,20 +41,27 @@ prettyStructuredFun f s =
       ++ indent (stmts >>= prettyStmt)
 --(x * y * z * (stk | ()), s1 * s2 * ())
 showBranchValue :: BranchValue -> String
-showBranchValue (stackWords,mstk,stateVars) =
+showBranchValue = showBranchValue' True
+showBranchValue' b (stackWords,mstk,stateVars) =
   "(" ++
-  intercalate " * " (map showVar stackWords ++ [showMStk mstk]) ++ ", "
-  ++ intercalate " * " (map showVar stateVars ++ ["()"])
+  intercalate " * " (map (showVar' b) stackWords ++ [showMStk' b mstk]) ++ ", "
+  ++ intercalate " * " (map (showVar' b) stateVars ++ ["()"])
   ++ ")"
 --nm:t
 showVar :: Var -> String
-showVar v = nameOfVar v ++ ":" ++ show (typeOfVar v)
+showVar = showVar' True
+showVar' b v = nameOfVar v ++
+  if b
+  then ":(" ++ show (typeOfVar v) ++")"
+  else ""
 showVars :: [Var] -> String
-showVars = showTup showVar
+showVars = showVars' True
+showVars' b = showTup (showVar' b)
 showMStk :: Maybe Var -> String
-showMStk = \case
+showMStk = showMStk' True
+showMStk' b = \case
   Nothing -> "()"
-  Just v -> showVar v
+  Just v -> showVar' b v
 --TODO
 prettyStmt :: Stmt -> [String]
 prettyStmt = \case
@@ -109,8 +116,9 @@ indentBlock stmts = indent (stmts >>= prettyStmt)
 showScope scope = "/#scope = " ++ showVars scope
 --(x,y,z)#(s1,s2,...)
 showValue :: Value -> String
-showValue (stackVs,stateVs) =
-  showVars stackVs ++ "#" ++ showVars stateVs
+showValue = showValue' True
+showValue' b (stackVs,stateVs) =
+  showVars' b stackVs ++ "#" ++ showVars' b stateVs
 
 showPrimOp :: PrimOp -> String
 showPrimOp = \case
@@ -303,6 +311,60 @@ prettySSA :: SSAName -> String
 prettySSA (ix,nm) = nm ++ "[" ++ show ix ++ "]"
 
 -}
+
+--Time to ppr Core so I can see exactly what's going wrong in the SSA bug
+class PrettyCoreOps a where
+  prettyCoreOps :: Bool -> --verbose vars flag
+                   a -> [String]
+instance PrettyCoreOps [(Value,OpE)] where
+  prettyCoreOps v =
+    map $ \(lhs,(op,rhs)) ->
+            showValue' v lhs ++ " = " ++ showPrimOp op ++ showValue' v rhs
+--Again I pay the price for the map containing duplicate elements; TODO change
+--it to DB normal form (v => value, value => op)
+instance PrettyCoreOps (Map Var (Value,OpE)) where
+  prettyCoreOps v v2op =
+    prettyCoreOps v $ M.toList $ M.fromList $ M.elems v2op
+--Not showing the state vars in lhs, they're always the same currently and
+--very verbose. TODO add a show_state flag.
+prettyCoreFun :: PrettyCoreOps ops =>
+  Bool -> FunVar -> (BranchValue, FunRHS_ ops) -> [String]
+prettyCoreFun v f (lhs,(ops,branch)) =
+  [f ++ " " ++ terseBV v lhs ++ " = "] ++
+  indent (indent (prettyCoreOps v ops) ++
+          [showBranch v branch])
+terseBV b (ws,_,_) = showVars' b ws
+--I don't show state vars here either
+showBranch :: Bool -> Branch -> String
+showBranch v = \case
+  Jump mode val -> unwords ["jump",showMode mode,terseBV v val]
+  Jumpi elf val -> "jumpi " ++ terseBV v val ++ " else " ++ elf
+  Revert val -> "revert " ++ showValue' v val
+  Core.RestrictedCore.Return val -> "return " ++ showValue val
+  Stop val -> "stop " ++ showValue val
+showMode = \case
+  Returning -> "returning"
+  Calling p -> "calling"++show p
+  Intraprocedural -> "ipc"
+--Convenience function; prints a list of strings
+display :: [String] -> IO ()
+display = mapM_ putStrLn
+--Present all Core BBs with a given prefix
+showByPrefix :: PrettyCoreOps ops =>
+  Bool -> String -> Core_ ops -> [String]
+showByPrefix v prefix core =
+  --Did M.filterKeys get deprecated?
+  let selected = M.filterWithKey (\k _ -> hasPrefix prefix k) $
+        coreDefuns core
+  in do
+    (f,def) <- M.toList selected
+    prettyCoreFun v f def
+    where hasPrefix [] _ = True
+          hasPrefix (c:cs) (c':cs') =
+            c == c' &&  hasPrefix cs cs'
+--Post-SSA ops can be presented in arbitrary order (though topological from
+--demanded by branch is better).
+
 prettyAsm :: A.Asm -> String
 prettyAsm = \case
   A.Push len n -> "push" ++ show len ++ " " ++ show n
