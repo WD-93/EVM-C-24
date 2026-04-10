@@ -15,7 +15,10 @@ import Control.Monad.Except
 import Test.QuickCheck hiding ((.&.),(.|.),output)
 import qualified Data.Set as S
 import Data.Char (intToDigit) --for Show sym byte and word instance
-import Util (unsafePrint)
+import Util (unsafePrint')
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 --A module for the logic of constructing and deconstructing values (Con and .).
 

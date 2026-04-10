@@ -3,7 +3,7 @@ module Typecheck.TySyn where
 
 --The module where the tysyn substitution phase of typechecking is defined.
 
-import Util ((?),complainIf,unsafePrint)
+import Util ((?),complainIf,unsafePrint')
 
 import AST.DTs
 
@@ -17,6 +17,9 @@ import Control.Monad.Reader
 import Control.Monad.Except
 import Control.Arrow ((***))
 import Data.Typeable (cast)
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 data TySynError = TyConsNotInScope (Set Name)
                 | TyVarsNotInScope (Set Name)

@@ -464,4 +464,4 @@ stateVars ss = map toVar $ S.toList ss
   where toVar s =
           let str = show s
           in Mono ("$"++map toLower str)
-             (TyCon $ str ++ "State")
+             (TyCon $ str ++ "State#") --load-bearing hashtag!

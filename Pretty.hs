@@ -333,7 +333,8 @@ prettyCoreFun v f (lhs,(ops,branch)) =
   [f ++ " " ++ terseBV v lhs ++ " = "] ++
   indent (indent (prettyCoreOps v ops) ++
           [showBranch v branch])
-terseBV b (ws,_,_) = showVars' b ws
+--Temporarily showing state vars; TODO add flag
+terseBV b (ws,_,ss) = showVars' b ws ++ "#" ++ showVars' b ss
 --I don't show state vars here either
 showBranch :: Bool -> Branch -> String
 showBranch v = \case

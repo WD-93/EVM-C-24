@@ -15,7 +15,7 @@ import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
                   mderefBytePtr,mwritePtrSto,ifte,
                   mderefWordPtr)
-import Util (unsafePrint, --for debugging
+import Util (unsafePrint', --for debugging
              complainIf
             )
 import OpcodeInfo hiding (op2, State(..)) --for autogen of EVM primfuns
@@ -34,6 +34,9 @@ import Data.Foldable (foldlM)
 import Control.Arrow ((***))
 --For global -> offset substitution:
 import Data.Generics (everywhere,mkT)
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do

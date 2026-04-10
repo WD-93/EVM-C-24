@@ -2,7 +2,7 @@
 module Core.SSA {-(ssa,SSAError(..),OptCore(..))-} where
 
 import Core.RestrictedCore
-import Util ((?))
+import Util ((?),unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -13,6 +13,9 @@ import Data.Generics (Data(..), everywhere, mkT, everything, mkQ,
 import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad (forM, forM_)
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 --After Core.Convert, the core module contains a map
 --fname => (lhs,rhs), where each fname corresponds to a basic block.
@@ -60,8 +63,9 @@ ssa core = do
   let fdefs = M.toList $ coreDefuns core
   fdefs' <- forM fdefs (\(f,def) ->
                           ((,) f <$> runExcept (evalStateT
-                                                (withError (InSSAFun f) $
-                                                 ssaFun def)
+                                                (withError (InSSAFun f) $ do
+                                                    unsafePrint $ "fun: " ++ f
+                                                    ssaFun def)
                           (SSAS M.empty M.empty M.empty)))
                           ? ((,) f)
                        )
@@ -106,11 +110,12 @@ ssaVars = everywhereM (mkM ssaVar)
 ssaLHS :: Data a => (a -> Var -> SSAError) -> a -> SSAM a
 ssaLHS malformed lhs =
   let vs = listVars lhs
-  in case reportDuplicate vs of
-       Just v -> throwError $ malformed lhs v
-       Nothing -> do
-         mapM_ bumpVar vs
-         ssaVars lhs
+  in do unsafePrint $ "lhs: " ++ show vs
+        case reportDuplicate vs of
+          Just v -> throwError $ malformed lhs v
+          Nothing -> do
+            mapM_ bumpVar vs
+            ssaVars lhs
 ssaFunLHS :: BranchValue -> SSAM BranchValue
 ssaFunLHS = ssaLHS MalformedFunLHS
 ssaOpLHS = ssaLHS MalformedOpLHS

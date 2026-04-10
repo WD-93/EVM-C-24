@@ -21,11 +21,11 @@ complainIf b err
   | b = throwError err
   | let = return ()
 
-debugFlag = False
---For debugging
-unsafePrint :: Monad m => String -> m ()
-unsafePrint str
-  | debugFlag = unsafePerformIO $ putStrLn str >> return (return ())
+--For debugging; each module that uses unsafePrint should
+--define its own unsafePrint and debugFlag.
+unsafePrint' :: Monad m => Bool -> String -> m ()
+unsafePrint' toggle str
+  | toggle = unsafePerformIO $ putStrLn str >> return (return ())
   | let = return ()
 
 --TODO remove this and replace uses with the lib-provided withError.
