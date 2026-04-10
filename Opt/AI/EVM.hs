@@ -4,9 +4,15 @@ module Opt.AI.EVM (opBehavior,pushBehavior) where
 import Opt.Semilattice
 import Opt.AbVar
 import Const.Const (Serialized(..))
+--for ordering state vars correctly
+import OpcodeInfo hiding (State) 
+import qualified OpcodeInfo as OI
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
+import Data.Set (Set(..))
+import qualified Data.Set as S
+import Data.List (sort)
 
 --Defines the abstract behavior of straight-line Core ops, i.e. the
 --non-branching EVM ops less DUP*, SWAP*, POP.
@@ -42,7 +48,12 @@ opBehavior = M.fromList [
   --(**) rid 1, x ** 0 = 1
   ,("exp", arp 2 1 $ rid 1 $ ifRThen (== exactly 0) (const $ exactly 1) $
      op21 (^))
-  ,("signextend", arp 2 1 $ op21 $ error "todo")
+  --signextend(b,f) for b > 1 will not affect labels
+  --signextend(31,x) = x
+  --signextend(b>31,x) = 0 or x?
+  --What if x is larger than b expects? I'll assume those bytes are ignored.
+  --TODO test with hardhat
+  ,("signextend", arp 2 1 $ lid 31 $ op21 signextend)
   --f < f = 0, x < 0 = 0, fs < (n > 0xffff) = 1
   --Should bottom < bottom be bool?
   ,("lt", arp 2 1 $ ifEqual (const $ exactly 0) $ rabsorbing 0 $
@@ -98,14 +109,15 @@ opBehavior = M.fromList [
   ,("callvalue",ar 0 1 1 0 $ arb1)
   ,("calldataload",ar 1 1 1 0 $ arb1)
   ,("calldatasize",ar 0 1 1 0 $ arb1)
+  ,("calldatacopy", copy "calldatacopy" Calldata)
   ,("codesize",ar 0 1 1 0 $ arb1)
   --For all copies: if len == 0, return memory unchanged
   --Otherwise mem += source
-  ,("codecopy", ar 3 2 0 1 $ error "todo")
+  ,("codecopy", ar 3 2 0 1 $ codecopy) --Oops: code isn't in OI.State!
   ,("gasprice", ar 0 1 1 0 $ arb1)
-  ,("extcodecopy", ar 3 2 0 1 $ error "todo")
+  ,("extcodecopy", ar 4 2 0 1 $ extcodecopy)
   ,("returndatasize", ar 0 1 1 0 $ arb1)
-  ,("returndatacopy", ar 3 2 0 1 $ error "todo")
+  ,("returndatacopy", copy "returndatacopy" Returndata)
   ,("extcodehash", ar 1 1 1 0 $ arb1)
   ,("blockhash", ar 1 1 1 0 $ arb1)
   ,("coinbase", ar 0 1 1 0 $ arb1)
@@ -133,7 +145,7 @@ opBehavior = M.fromList [
   ,("gas", ar 0 1 1 0 arb1)
   ,("tload", opload)
   ,("tstore", opstore)
-  ,("mcopy", ar 3 2 0 1 $ error "todo")
+  ,("mcopy", copy "mcopy" Memory)
   ,("log0",error "todo")
   ,("log1",error "todo")
   ,("log2",error "todo")
@@ -191,9 +203,59 @@ opBehavior = M.fromList [
         ar :: Int -> Int -> Int -> Int -> OpFun -> ((Int,Int),(Int,Int),OpFun)
         ar a b c d f = ((a,b),(c,d),f)
         arp a b = ar a 0 b 0
+
+--TODO share logic with toSigned
+signextend :: Integer -> Integer -> Integer
+signextend b x
+  | b > 31 = x --TODO test!
+  | let = --truncate x to a b+1-byte number
+          let bmod = 256 ^ (b+1)
+              halfbmod = bmod `div` 2 --lowest negative number
+              x' = x `mod` bmod
+          in if x' >= bmod
+             then x' - bmod
+             else x'
+              
+--Copy behavior combinator; all copy variants load from memory to a given
+--region. TODO take into account which codeG is being copied off in codecopy.
+--Extcodecopy doesn't fit since it takes an additional address.
+copy :: String -> OI.State -> ((Int,Int),(Int,Int),OpFun)
+copy op r = ((3,if r == Memory then 1 else 2), --takes source region and memory
+             (0,1), --updates memory
+             (\([dst,ost,len],states) ->
+                let mem = getSV op Memory states
+                    dat = getSV op r states
+                in if len == exactly 0 --if copied len is 0 it's a noop
+                   then ([],[mem])
+                   else ([],[mem \/ dat])
+             )
+            )
+--OI.State doesn't have Code... that sort of makes sense since it's immutable,
+--but will probably have to be changed once I add a more detailed region model.
+--For now I assume code ~ {possKs=All}.
+--That means any function or codeG mentioned in codeG initializers must be
+--considered reachable in AI! TODO fix.
+--If not,
+--code jumptbl = Array(f1,f2,...fN);
+--memtbl : Array N (A -> B)
+--memory memtbl;
+--main():= {copy(memtbl,&jumptbl,1); (memtbl!ix)(a)}
+--could fail because f1..fN might be pruned.
+codecopy ([dst,ost,len],[mem]) =
+  if len == exactly 0
+  then ([],[mem])
+  else ([],[mem{possKs=All}])
+--Ext is assumed to always be arbitrary; passing a label to another contract
+--doesn't add it to ext. The ext state variable is solely used to order
+--ops, e.g. an extcodecopy may not be commuted with a CALL.
+extcodecopy ([addr,dst,ost,len],svs) =
+  let mem = getSV "extcodecopy" Memory svs
+  in if len == exactly 0
+     then ([],[mem])
+     else ([],[mem{possKs=All}])
+       
 --TODO use types to enforce arg and ret arity?
 --Arg and ret arity is always a single digit, so no need for _
-
 --The number of words; all word ops are modulo modulus
 modulus = 2^256
 --Positive signed numbers: 0..halfModulus-1
@@ -296,3 +358,56 @@ pushBehavior lab2lt Serialized{serContent = sc}
                   case lab2lt lab of
                     Nothing -> Left lab
                     Just lt -> return lt
+
+--When ops take and return multiple state vars, it's a hassle to remember in
+--which order they're passed and returned.
+--Fused.Monad.runOp defines the order by obtaining the states consumed/borrowed
+--and produced from OpcodeInfo.hs.
+--By duplicating that logic, I can query the argument state var list and
+--produce a correctly ordered result state var list.
+--That makes op AI defs robust to adding new state types which change the
+--order.
+--Aside: Opcodes distinguishes between consuming and borrowing only by whether
+--a new var of the same type is returned. If I add ops which consume state but
+--don't return a new version (e.g. free(ptr)), I'll need to update it.
+
+--Query arg list. Errors if the opcode doesn't exist, a SV that isn't present
+--is requested, or if the argument vars don't match the expected length.
+getSV :: String   -> --the instr (determines the states passed/returned)
+         OI.State -> --state type requested
+         [AbVar]  -> --the argument vars
+         AbVar       --the var of the given state type
+getSV op s vs =
+  let (consumes,_produces) = lookupEffect op
+  in if length consumes /= length vs
+     then error $ "Length mismatch in getSV " ++op++": " ++ show (consumes,vs)
+     else case lookup s $ zip consumes vs of
+            Nothing ->
+              error $ "Requested nonexistent state in getSV "++op++": " ++
+              show s
+            Just v -> v
+lookupEffect :: String -> ([OI.State],[OI.State])
+lookupEffect mnemonic = 
+  case M.lookup mnemonic opcodes of
+    Nothing -> error $ "Bad instr " ++ mnemonic ++ " in lookupEffect!"
+    Just oi ->
+      case oiBehavior oi of
+        Normal {obEffect = Effect consumes produces} ->
+          (M.keys consumes, S.toList produces)
+        other -> error $ "Not straight-line instr " ++ mnemonic ++
+                 " in lookupEffect!"
+--Returns the vars in the correct order.
+--Errors if the state vars don't match what the instr expects.
+retSVs :: String -> [(OI.State,AbVar)] -> [AbVar]
+retSVs op svs =
+  let (_consumes,produces) = lookupEffect op
+      svs' = sort svs
+  in case go produces svs' of
+       Nothing -> error $ "Bad list in retSVs " ++ op ++ ": " ++
+         show (op,produces,svs)
+       Just vs -> vs
+  where go [] [] = return []
+        go (s:ss) ((s',v):svs)
+          | s == s' = (v:) <$> go ss svs
+        go _ _ = Nothing
+          
