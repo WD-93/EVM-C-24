@@ -64,3 +64,27 @@ label lt lab =
        Fun -> bottom{funs = labs}
        JT -> bottom{jts = labs}
        CodeG -> bottom{codeGs = labs}
+--Returns Just n iff the abvar is exactly n
+unexactly ab
+  | K n <- possKs ab =
+      if ab == exactly n
+      then Just n
+      else Nothing
+  | let = Nothing
+--Returns Just (lt,lab) iff the abvar is label lt lab
+--Labels of different label type are disjoint
+--If their union contains 1 element
+unlabel :: AbVar -> Maybe (LabelType,String)
+unlabel ab
+  | possKs ab == None =
+    let fs = funs ab
+        js = jts ab
+        cs = codeGs ab
+    --Avoids computing the union just to discard it
+    in if sum (map S.size [fs,js,cs]) == 1
+       then case () of
+              _ | S.size fs == 1 -> Just (Fun, S.findMin fs)
+                | S.size js == 1 -> Just (JT, S.findMin js)
+                | S.size cs == 1 -> Just (CodeG, S.findMin cs)
+       else Nothing
+  | let = Nothing

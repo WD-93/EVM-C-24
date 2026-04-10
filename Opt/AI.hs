@@ -21,6 +21,11 @@ import Control.Monad.Reader
 import Control.Monad
 import Control.Arrow ((***))
 
+--TODO:
+--Initial mem, sto, tsto = 0. Loop back sto and tsto from every exit to
+-- $trueMain.
+--code, calldata, ext, other = bottom{possKs=All}
+
 --The module that defines the EVMC program abstract state and its recursive
 --equation.
 --Because CB treats Chans as the unit of incremental computation and

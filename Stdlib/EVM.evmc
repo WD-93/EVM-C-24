@@ -217,5 +217,7 @@ staticcall _ := {};
 revert : (Word,Word) -> ();
 revert _ := {};
 //invalid excluded
+//selfdestruct is an exiting instruction, so I need to add another Branch type
+//for it; TODO. It's low prio, since selfdestruct is basically deprecated.
 selfdestruct : Word -> ();
 selfdestruct _ := {};
