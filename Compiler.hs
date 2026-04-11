@@ -43,7 +43,8 @@ import Core.Convert (structured2core, CoreError(..))
 --SSA
 import Core.SSA (ssa, SSAError(..),OptCore(..))
 --Abstract interpretation (the analysis used when optimizing)
-import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..))
+import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..),FunInfo_(..),
+              BodyInfo_(..),AVar_(..))
 
 --Poor man's pretty-printing for debugging
 import Pretty

@@ -441,7 +441,7 @@ structuredPrims = M.fromList [
            )
           )
         bitwise fnm instr =
-          ("bwAnd",
+          (fnm,
            (PT $ \case Tu2 a a' :-> a'' | all (==a) [a',a''] -> Just []
                        _ -> Nothing,
              const $ mkPrim $ binary $ \as bs -> do
