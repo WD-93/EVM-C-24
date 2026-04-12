@@ -363,6 +363,7 @@ showByPrefix v prefix core =
     where hasPrefix [] _ = True
           hasPrefix (c:cs) (c':cs') =
             c == c' &&  hasPrefix cs cs'
+          hasPrefix _ _ = False
 --Post-SSA ops can be presented in arbitrary order (though topological from
 --demanded by branch is better).
 

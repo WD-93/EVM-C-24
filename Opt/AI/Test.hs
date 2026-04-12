@@ -16,6 +16,16 @@ import Control.Monad.Except
 import Control.Monad
 import Control.Arrow ((***))
 
+--Discovered bug: livePassed always seems to be False.
+--In mstore(0,1);evm_return(0,32):
+--evm_return[] and $trueMain have correct live state vars.
+--However, mstore[] is reachable but has no live vars.
+--In $trueMain, the m var (containing main) is dead; TODO add cond, dest to
+--live.
+-- $ret not being live in mstore[] perhaps explains part of it.
+--I get complaints about unreachable BBs as well... ignore?
+--All passed are no longer False, but they're not correct either...
+
 --The recursive equation that defines the abstract state is what necessitates
 --abstract interpretation via circuits rather than a more conventional monadic
 --program a la Fused.
@@ -200,4 +210,11 @@ getBB f = do
 --Useful debugging queries:
 liveWordsLHS f ms = map avLive $ fst $ fiLHS $ funInfo ms M.! f
 liveWordsPassed f ms =
-  map fst $ fst $ (\(Just x) -> x) $ fiPassed $ funInfo ms M.! f
+  ((map fst . fst) <$>) $ fiPassed $ funInfo ms M.! f
+--This shouldn't happen!
+allPassedFalse ms =
+  all (\fi ->
+         case aitLivePassed fi of
+           Nothing -> True
+           Just (ws,ss) -> not $ or $ ws ++ ss) $
+  funInfo ms

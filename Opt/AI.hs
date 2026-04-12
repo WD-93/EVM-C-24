@@ -373,6 +373,13 @@ unsafeWireFunInfo :: AIC m => FunInfo (S m) -> FunInfo (S m) -> m ()
 unsafeWireFunInfo fi1 fi2 = do
   unsafeWire (fiReachable fi1) (fiReachable fi2)
   --Wiring lhs and passed is redundant, since the AVars occur in fiVars.
+  --AHA, not quite! The passed position liveness Bools do not occur in AVars.
+  case fiPassed fi1 of
+    Just (b_ws1, b_ss1) -> do
+      let Just (b_ws2, b_ss2) = fiPassed fi2
+      zipWithM_ unsafeWire (map fst b_ws1) $ map fst b_ws2
+      zipWithM_ unsafeWire (map fst b_ss1) $ map fst b_ss2
+    Nothing -> return ()
   unsafeWireBodyInfo (fiBodyInfo fi1) (fiBodyInfo fi2) fi1 fi2
   unsafeWire (succs fi1) (succs fi2)
   unsafeWire (preds fi1) (preds fi2)
