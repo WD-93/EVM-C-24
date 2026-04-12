@@ -48,6 +48,8 @@ import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..),FunInfo_(..),
 
 --Poor man's pretty-printing for debugging
 import Pretty
+--Testing AI
+import Opt.AI.Test
 
 data CompilerError = ParserError String
                    | CreateBucketError CreateBucketError
@@ -193,10 +195,11 @@ pipeline2ssa str = do
 --AI is the first stage of opt, but it's not strictly part of a linear pipeline
 --since it should be used in an analyze => optimize loop.
 --This function is just meant for testing.
-pipeline2ai :: String -> Either CompilerError FrozenModState
+pipeline2ai :: String -> Either CompilerError (OptCore,FrozenModState)
 pipeline2ai str = do
   oc <- pipeline2ssa str
-  ai oc ? AIError
+  fms <- ai oc ? AIError
+  return (oc,fms)
 --No opts for now...
 pipeline2opt :: String -> Either CompilerError OptCore
 pipeline2opt = pipeline2ssa

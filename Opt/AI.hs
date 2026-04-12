@@ -40,6 +40,8 @@ import Control.Arrow ((***))
 --pure.
 newtype Id a = Id a
   deriving (Eq,Ord,Read,Show)
+unId :: Id a -> a
+unId (Id a) = a
 type FrozenModState = ModState_ Id
 type ModState s = ModState_ (Chan s)
 --Core has defuns, jts, and codeGs.
@@ -58,6 +60,7 @@ data ModState_ f = MS {
   funInfo :: Map FunVar (FunInfo_ f)
                      }
 deriving instance Show (ModState_ Id) --for testing
+type FrozenFunInfo = FunInfo_ Id
 type FunInfo s = FunInfo_ (Chan s)
 data FunInfo_ f = FI {
   fiReachable :: f Bool,
@@ -91,6 +94,7 @@ data BranchType = Normal --call, return, ipc: a real direct jump
                 --call continues to; establishes dataflow but not reachability
                 | Continues (Int,Int)              
   deriving (Eq,Ord,Read,Show)
+type FrozenBodyInfo = BodyInfo_ Id
 type BodyInfo s = BodyInfo_ (Chan s)
 data BodyInfo_ f = IsJT --no ops
                  | IsFun {
@@ -108,6 +112,7 @@ data BodyInfo_ f = IsJT --no ops
                      }
 deriving instance Show (BodyInfo_ Id) --for testing
 --TODO pick more suitable names for AVar, AbVar.
+type FrozenAVar = AVar_ Id
 type AVar s = AVar_ (Chan s)
 data AVar_ f = AVar {
   avLive :: f Bool,
@@ -206,6 +211,22 @@ aiModule core = do
   scheduler
   freezeModState initial
 
+--TODO set $trueMain's initial state vars:
+--memory: 0
+--storage: 0
+--tstorage: 0
+--calldata: All
+--returndata: 0
+--extstate: All
+--other: All
+--On the All states: they're considered to contain no functions and are
+--treated as arbitrary constants. The 0 states are those solely controlled by
+--EVMC. It might seem strange to set storage and tstorage (which might be
+--set by an earlier CALL) to be 0 initially, but looping the output of each
+--exit to $trueMain ensures the effect of repeated calls is considered.
+--TODO set all functions mentioned in codeGs to reachable!
+--Refinement: codecopy off g should add only the fs and gs mentioned by g's
+--initializer to $memory. Then need a g => set (lt,label) map.
 initialModState :: AIC m =>
   OptCore -> m (ModState (S m))
 initialModState core = do
@@ -411,6 +432,10 @@ aiEquation core ms = do
 --Do I really need opsLive? Once Var liveness has been solved I can infer it
 --from that. But AVars are consumed by ops; opsLive prevents the AVar from
 --being notified every time a var in the lhs becomes live.
+--TODO collect storage and tstorage from each STOP and RETURN branch and
+--lub it with $trueMain's lhs.
+--TODO reuse logic from Opt.AI.EVM for getting the index of state vars
+--(I might add more).
 fiEquation :: (AIC m, MonadError AIError m,
                MonadReader (OptCore, ModState (S m)) m) =>
               Map FunVar (Chan (S m) (Map FunVar BranchType))  ->

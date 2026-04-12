@@ -77,6 +77,19 @@ module Opt.Opt where
 --it enables further optimizations - ideally it should be possible to
 --backtrack!
 
+--Inlining is guaranteed to reduce jumps iff you inline the straight-line
+--skeleton.
+--Ex: a and b jump to f, which falls through to g.
+--If a inlines f but not g, then the jump is only delayed.
+--Choose fallthrough in opt? That would benefit from exec intensity calculation.
+--Would that be convenient to calculate incrementally alongside AI
+--(changing as the graph grows)? Would need to look at the equations.
+--Aside: AI could assist in branch probability estimation.
+--If the loop counter is [1..100] and the branch cond is == 100, the probability
+--can be estimated to be some function of 1%.
+--On inlining loops: the straight-line skeleton of a while loop is <= the
+--cond and body.
+
 -- *****************************Eta reduction**********************************
 
 --If f args = jump g args, every mention of f can be replaced with g.
