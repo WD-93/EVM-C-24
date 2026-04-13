@@ -142,7 +142,8 @@ opBehavior = M.fromList [
   ,("sstore", opstore)
   ,("pc", ar 0 1 1 0 arb1)
   ,("msize", ar 0 1 1 0 arb1)
-  ,("gas", ar 0 1 1 0 arb1)
+  --gas modifies Other in order to prevent reordering:
+  ,("gas", ar 0 1 1 1 arb1) 
   ,("tload", opload)
   ,("tstore", opstore)
   ,("mcopy", copy "mcopy" Memory)

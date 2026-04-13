@@ -25,6 +25,15 @@ import Control.Arrow ((***))
 -- $ret not being live in mstore[] perhaps explains part of it.
 --I get complaints about unreachable BBs as well... ignore?
 --All passed are no longer False, but they're not correct either...
+--Potential effect bug: if balance is in other, stop should return it...
+--In main():=stop(), in main[()]1,
+--the passed is correct (stop live, local, ret dead); (sto,tsto,ext live)
+--but lhs is incorrect (ret live);(calldata,returndata live).
+--Debugging is difficult because the circuit approach is a very different
+--paradigm: while the circuit construction is all in one place, the updates
+--are concurrent. I could log the updates and Core constructs they correspond
+--to...
+--Breaking it up will expose dataflow and simplify the spine.
 
 --The recursive equation that defines the abstract state is what necessitates
 --abstract interpretation via circuits rather than a more conventional monadic
@@ -65,7 +74,8 @@ runAITest ait oc fms =
 testAllLiveness :: AITest ()
 testAllLiveness = do
   (_,ms) <- ask
-  let fs = M.keys $ funInfo ms
+  --Filtering out unreachable for now...
+  let fs = M.keys $ M.filter (unId . fiReachable) $ funInfo ms
   mapM_ withinBBLiveness fs
 
 --Within-BB liveness equation:

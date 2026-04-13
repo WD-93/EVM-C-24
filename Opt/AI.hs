@@ -443,6 +443,8 @@ aiEquation core ms = do
 --lub it with $trueMain's lhs.
 --TODO reuse logic from Opt.AI.EVM for getting the index of state vars
 --(I might add more).
+--Simplification for debug: broke out the abvar and liveness calculation.
+--TODO separate liveness per var and op from the stitching with abvar chans.
 fiEquation :: (AIC m, MonadError AIError m,
                MonadReader (OptCore, ModState (S m)) m) =>
               Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
@@ -459,8 +461,43 @@ fiEquation predsMap badPredsMap (f,fi) = do
           _ | Just fdef <- M.lookup f $ coreDefuns core -> Left fdef
             | Just jtdef <- M.lookup f $ coreJTs core -> Right jtdef
           _ -> error "!?"
-  (lhs,mbVars,ss,bss) <-
-    case ei_fun_jt of
+  (lhs,mbVars,ss,bss) <- fiEqAbVars ei_fun_jt ms fi ps bps
+  --Abvars are computed forward, but liveness is computed backward: a var
+  --is live iff any of its later consumers are live. Instead of computing
+  --both at once in confusing spaghetti code, I compute them in separate
+  --passes.
+  let par = passedArity ei_fun_jt
+  --Maybe live of passed
+  mlps <- case par of
+            Just par -> Just <$> livePassed par ss bss
+            _ -> return Nothing
+  (lhsavs,bi,mpassed) <- fiEqLive ei_fun_jt fi mlps par mbVars lhs
+  return FI {
+    fiReachable = reachable,
+    fiLHS = lhsavs,
+    fiBodyInfo = bi,
+    fiPassed = mpassed,
+    succs = ss,
+    preds = ps,
+    badFunSuccs = bss,
+    badFunPreds = bps
+    }
+fiEqAbVars
+  :: (AIC m, MonadError AIError m,
+      MonadReader (OptCore, ModState (S m)) m) =>
+     Either
+       (BranchValue, OptFunRHS)
+       ((Int, Int), [FunVar])
+     -> ModState_ (Chan (S m))
+     -> FunInfo_ (Chan (S m))
+     -> Chan (S m) (Map FunVar BranchType)
+     -> Chan (S m) (Map FunVar (Int, Int))
+     -> m (([Chan (S m) AbVar], [Chan (S m) AbVar]),
+           Maybe (Map Var (Chan (S m) AbVar)),
+           Chan (S m) (Map FunVar BranchType),
+           Chan (S m) (Map FunVar (Int, Int)))
+fiEqAbVars ei_fun_jt ms fi ps bps =
+  case ei_fun_jt of
       --f is a function; infer wlen, slen.
       --Need to map Var => abvar chan to ensure each chan is given exactly
       --one AVar.
@@ -478,17 +515,24 @@ fiEquation predsMap badPredsMap (f,fi) = do
         ss <- newChan $ M.fromList $ zip fs $ repeat Normal
         bss <- newChan M.empty
         return (lhs,Nothing,ss,bss)
-  --Abvars are computed forward, but liveness is computed backward: a var
-  --is live iff any of its later consumers are live. Instead of computing
-  --both at once in confusing spaghetti code, I compute them in separate
-  --passes.
-  let par = passedArity ei_fun_jt
-  --Maybe live of passed
-  mlps <- case par of
-            Just par -> Just <$> livePassed par ss bss
-            _ -> return Nothing
-  (lhsavs,bi,mpassed) <-
-    case ei_fun_jt of
+
+fiEqLive
+  :: (MonadError AIError m, AIC m) =>
+     Either
+       (BranchValue, OptFunRHS)
+       ((Int,Int),[FunVar]) --ignored except for show
+     -> FunInfo_ (Chan (S m))
+     -> Maybe ([Chan (S m) Bool], [Chan (S m) Bool])
+     -> Maybe (Int,Int) --ignored except for show
+     -> Maybe (Map Var (Chan (S m) AbVar))
+     -> ([Chan (S m) AbVar], [Chan (S m) AbVar])
+     -> m (([AVar_ (Chan (S m))], [AVar_ (Chan (S m))]),
+           BodyInfo_ (Chan (S m)),
+           Maybe
+             ([(Chan (S m) Bool, AVar_ (Chan (S m)))],
+              [(Chan (S m) Bool, AVar_ (Chan (S m)))]))
+fiEqLive ei_fun_jt fi mlps par mbVars lhs =
+  case ei_fun_jt of
       Left ((ws,_,ss),(ops,branch)) -> do
         --Here we use fi to avoid being careful about definition order.
         let IsFun {fiVars = fivs,
@@ -499,18 +543,17 @@ fiEquation predsMap badPredsMap (f,fi) = do
         --live.
         --Bug: I was compiling return ws to jump ws, so the jump was
         --malformed for return ()
+        --The branch is either exiting (fst /= Nothing) or a jump/i
+        --(maybe live passed /= Nothing):
         case (exitBranchValue branch, mlps) of
           (Nothing,Nothing) -> throwError $ GenericAIError $
             "Huh!? " ++ show (branch,par,ei_fun_jt)
           _ -> return ()
-        demandFromBranch <- case mlps of
-                              Nothing -> do
-                                let Just (wes,ses) = exitBranchValue branch
-                                    vset = S.fromList $ wes ++ ses
-                                true <- newChan True
-                                return $ M.fromSet (const [true]) vset
-                              Just (wbs,sbs) ->
-                                return $ demandedPassed (ws,ss) (wbs,sbs)
+        --var => [bool chan], the list of chans var liveness should be or'd
+        --with.
+        --Why a list rather than a cbOr? It's an opt to avoid an intermediate
+        --cbOr; instead a single one is used for branch and op demand.
+        demandFromBranch <- getDemandFromBranch mlps branch
         --The op demand graph:
         --Bug: ofc, if the BB contains no ops but has a nonempty passed,
         --v2ops will not contain all the relevant vars.
@@ -527,14 +570,6 @@ fiEquation predsMap badPredsMap (f,fi) = do
                   bchs = maybe [] id $ M.lookup v demandFromBranch
               bch <- cbOr $ live_per_op ++ bchs
               return (v,bch))
-        {-(M.toList v2ops)
-                  (\(v,valset) -> do
-                     let vals = S.toList valset
-                         live_per_op = map (index "fiol" fiol) vals
-                         Just bchs = M.lookup v demandFromBranch
-                     bch <- cbOr $ live_per_op ++ bchs
-                     return (v,bch)
-                  )-}
         --Each op lhs is demanded by each v in lhs
         lhs2live <- M.fromList <$> forM (S.toList vals)
                     (\lhs -> do
@@ -546,15 +581,6 @@ fiEquation predsMap badPredsMap (f,fi) = do
         let Just v2abv = mbVars
             --Since v2av and v2live are the same shape, it should be possible
             --to do this in O(n) rather than O(n log n)
-        --Debug, checking they are indeed the same shape
-        do let abvKeys = M.keys v2abv
-               liveKeys = M.keys v2live
-           if abvKeys /= liveKeys
-             then throwError $ GenericAIError $
-             
-             "Abvars, live keys mismatch: " ++ show (abvKeys,liveKeys) ++
-             "; demandedOps " ++ show ops ++ " = " ++ show (v2ops,vals)
-             else return ()
         let v2av = M.mapWithKey (\v abv -> AVar (index "v2live" v2live v) abv)
                    v2abv
             mpassed = case mlps of
@@ -579,16 +605,32 @@ fiEquation predsMap badPredsMap (f,fi) = do
             (wavs,savs) = (zipWith AVar wls wabvs, zipWith AVar sls sabvs)
             passed = (zip wls wavs, zip sls savs)
         return ((wavs,savs),IsJT,Just passed)
-  return FI {
-    fiReachable = reachable,
-    fiLHS = lhsavs,
-    fiBodyInfo = bi,
-    fiPassed = mpassed,
-    succs = ss,
-    preds = ps,
-    badFunSuccs = bss,
-    badFunPreds = bps
-    }
+
+--Bugfix: passed vars from lhs rather than using branch passed
+getDemandFromBranch :: AIC m =>
+  Maybe ([Chan (S m) Bool], [Chan (S m) Bool]) -> --live passed (if not exit)
+  Branch -> --fun branch
+  m (Map Var [Chan (S m) Bool])
+getDemandFromBranch mlps branch = do
+  true <- newChan True
+  case mlps of
+    Nothing -> do
+      let Just (wes,ses) = exitBranchValue branch
+          vset = S.fromList $ wes ++ ses
+      return $ M.fromSet (const [true]) vset
+    --Bugfix: cond, dest from jump/i must always be live.
+    Just (wbs,sbs) -> do
+      let Just (ws,ss) = branchPassed branch
+      let cond_dest =
+            case branch of
+              Jump _mode (dest:_,_,_) ->
+                [dest]
+              Jumpi _elf (cond:dest:_,_,_) ->
+                [cond,dest]
+          alwaysLive = M.fromSet (const [true]) $
+                       S.fromList cond_dest
+      return $ M.union alwaysLive $
+        demandedPassed (ws,ss) (wbs,sbs)
 
 --A helper that errors with a given error message when k is missing.
 --Used to replace M.! (considered harmful).
