@@ -297,7 +297,7 @@ instance HasRef (AI s) where
   writeRef r a = AI $ writeRef r a
 class Monad m => AIC m where
   type S m
-  runCB :: (forall iv . CB iv (S m) a) -> m a
+  runCB :: (forall iv . CB (S m) iv a) -> m a
   readChan :: Chan (S m) a -> m a
 instance AIC (AI s) where
   type S (AI s) = s
@@ -305,8 +305,8 @@ instance AIC (AI s) where
   readChan (Chan rc) = readRef $ rcState rc
 --AI is CB with additional internal state; everything AI can do CB iv can as
 --well.
-instance AIC (CB iv s) where
-  type S (CB iv s) = s
+instance AIC (CB s iv) where
+  type S (CB s iv) = s
   runCB = id
   readChan ch = CB $ readChan ch
 --A single instance for transformers.
@@ -315,7 +315,7 @@ instance (MonadTrans t, AIC m) => AIC (t m) where
   runCB cb = lift $ runCB cb
   readChan = lift . readChan
 --Circuit builder; the rigid iv param prevents InChans from escaping.
-newtype CB iv s a = CB {unCB :: AI s a}
+newtype CB s iv a = CB {unCB :: AI s a}
   deriving (Functor,Applicative,Monad,Concurrent)
 --CB may only spawn its own actions, preventing it from mutating external
 --state. However, it converts them to AI actions and spawns them to AI's
@@ -325,9 +325,9 @@ newtype CB iv s a = CB {unCB :: AI s a}
 --It must therefore be limited to its own internal CBRefs.
 --The Chan pattern could be generalized by freezing CBRefs, but for now we
 --only need Chans.
-newtype CBRef iv s a = CBRef (STRef s a)
-instance HasRef (CB iv s) where
-  type Ref (CB iv s) = CBRef iv s
+newtype CBRef s iv a = CBRef (STRef s a)
+instance HasRef (CB s iv) where
+  type Ref (CB s iv) = CBRef s iv
   newRef a = CB $ CBRef <$> newRef a
   readRef (CBRef r) = CB $ readRef r
   writeRef (CBRef r) a = CB $ writeRef r a
@@ -359,21 +359,21 @@ data Subscription iv s a = Sub {
   subRC :: RawChan s a
   }
 --Wraps the raw chan with the iv
-newtype InChan iv s a = InChan (RawChan s a)
+newtype InChan s iv a = InChan (RawChan s a)
 --The read-only Chan may escape
 newtype Chan s a = Chan (RawChan s a)
 --CB actions: alloc new mutable chans, wire them together, then return as
 --read-only Chans.
-newInChan :: a -> CB iv s (InChan iv s a)
+newInChan :: a -> CB s iv (InChan s iv a)
 newInChan a = InChan <$> newRawChan a
 --Internal.
-newRawChan :: a -> CB iv s (RawChan s a)
+newRawChan :: a -> CB s iv (RawChan s a)
 newRawChan a = RawChan <$> CB (newRef a) <*> newConsumers
-newConsumers :: CB iv s (Consumers s a)
+newConsumers :: CB s iv (Consumers s a)
 --It doesn't actually matter which Int I pick since Int silently overflows.
 newConsumers = CB $ Consumers <$> newRef 0 <*> newRef IM.empty
 --Creates a cancelable subscription handle; starts with no callback.
-subChan :: Chan s a -> CB iv s (Subscription iv s a)
+subChan :: Chan s a -> CB s iv (Subscription iv s a)
 subChan (Chan rc) = do
   let cons = rcConsumers rc
   let ctr = CBRef $ cSubCtr cons
@@ -382,7 +382,7 @@ subChan (Chan rc) = do
   return Sub{subID = n, subRC = rc}
 --A convenience function that creates a subscription and sets the callback at
 --the same time.
-subWhenChan :: (a -> CB iv s ()) -> Chan s a -> CB iv s (Subscription iv s a)
+subWhenChan :: (a -> CB s iv ()) -> Chan s a -> CB s iv (Subscription iv s a)
 subWhenChan f ch = do
   sub <- subChan ch
   whenSub sub f
@@ -392,7 +392,7 @@ subWhenChan f ch = do
 --Note this is the one way CB actions with privileged access to the circuit's
 --internal chans can escape - they'll later be called from within AI s!
 --That's achieved by extracting the internal AI s of CB iv s.
-whenSub :: Subscription iv s a -> (a -> CB iv s ()) -> CB iv s ()
+whenSub :: Subscription iv s a -> (a -> CB s iv ()) -> CB s iv ()
 whenSub (Sub{subID=id,subRC=rc}) f = do
   let subs = CBRef $ cSubs $ rcConsumers rc
   i2f <- readRef subs
@@ -401,7 +401,7 @@ whenSub (Sub{subID=id,subRC=rc}) f = do
   a <- readRef $ CBRef $ rcState rc
   spawn $ f a
 --Deletes the subscription's callback; TODO use helper to share code.
-unSub :: Subscription iv s a -> CB iv s ()
+unSub :: Subscription iv s a -> CB s iv ()
 unSub (Sub{subID=id,subRC=rc}) = do
   let subs = CBRef $ cSubs $ rcConsumers rc
   i2f <- readRef subs
@@ -409,7 +409,7 @@ unSub (Sub{subID=id,subRC=rc}) = do
 
 --Updates an inChan.
 --Needs Eq because subscribers are only notified when the value changes.
-writeInChan :: Eq a => InChan iv s a -> a -> CB iv s ()
+writeInChan :: Eq a => InChan s iv a -> a -> CB s iv ()
 writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
   a' <- readRef (CBRef ra)
   if a == a'
@@ -422,19 +422,19 @@ writeInChan (InChan RawChan{rcState=ra,rcConsumers=rcc}) a = do
     forM_ (IM.elems i2f) (spawn . CB . ($ a))
 --Used when modifying InChans; TODO add classes to share implem between
 --monads. IsRef r?
-readInChan :: InChan iv s a -> CB iv s a
+readInChan :: InChan s iv a -> CB s iv a
 readInChan (InChan rc) = CB $ readRef $ rcState rc
 modInChan :: Eq a => (a -> a) -> InChan iv s a -> CB iv s ()
 modInChan f ic = do
   a <- readInChan ic
   writeInChan ic $ f a
 --A helper for using modInChan succinctly in circuit combinators
-modWith :: Eq a => InChan iv s a -> (a -> a -> a) -> a -> CB iv s ()
+modWith :: Eq a => InChan s iv a -> (a -> a -> a) -> a -> CB s iv ()
 modWith ic (+) a = modInChan (+a) ic
 
 --Converts a mutable InChan to a read-only Chan so it can be returned by the
 --CB monad.
-freezeInChan :: InChan iv s a -> Chan s a
+freezeInChan :: InChan s iv a -> Chan s a
 freezeInChan (InChan raw) = Chan raw
 
 --Applications:
@@ -468,7 +468,7 @@ cbOr cbs = runCB $ do
 --S.difference on the successor sets risks getting expensive... TODO
 --propagate deltas further.
 invertGraph :: Ord k => Map k (Chan s (Set k)) ->
-               CB iv s (Map k (Chan s (Set k)))
+               CB s iv (Map k (Chan s (Set k)))
 invertGraph k2chks = do
   --Allocate a map of inchans initialized to be empty
   k2in <- mapM (\_ -> newInChan S.empty) k2chks
@@ -486,7 +486,7 @@ invertGraph k2chks = do
 --f => g => label -> g => f => label
 invertLabeledGraph :: (Ord k, Eq v) =>
   Map k (Chan s (Map k v)) ->
-  CB iv s (Map k (Chan s (Map k v)))
+  CB s iv (Map k (Chan s (Map k v)))
 invertLabeledGraph k2chm = do
   k2in <- mapM (\_ -> newInChan M.empty) k2chm
   --When k
@@ -502,8 +502,8 @@ invertLabeledGraph k2chm = do
 --Uses a CBRef to track the old value; the initial delta is the current value
 --of the Chan.
 --Requirement: forall x . x-zero = x
-subDelta :: a -> (a -> a -> a) -> (a -> CB iv s ()) ->
-  Chan s a -> CB iv s (Subscription iv s a)
+subDelta :: a -> (a -> a -> a) -> (a -> CB s iv ()) ->
+  Chan s a -> CB s iv (Subscription iv s a)
 subDelta zero (-) callback chan = do
   cbr <- newRef zero
   subWhenChan (\a -> do
@@ -513,18 +513,18 @@ subDelta zero (-) callback chan = do
 --As the input set grows, applies a callback to each new element.
 --Q: Is exposing the subscription dangerous?
 subSetDelta :: Ord a =>
-  (a -> CB iv s ()) ->
+  (a -> CB s iv ()) ->
   Chan s (Set a) ->
-  CB iv s (Subscription iv s (Set a))
+  CB s iv (Subscription iv s (Set a))
 subSetDelta callback =
   subDelta S.empty S.difference
   (\delta -> forM_ (S.toList delta) callback)
 --Ditto extended to Map; applies a callback for each new k-v mapping.
 --Assumption: maps only grow, and their v's never change.
 subMapDelta :: Ord k =>
-  (k -> v -> CB iv s ()) ->
+  (k -> v -> CB s iv ()) ->
   Chan s (Map k v) ->
-  CB iv s (Subscription iv s (Map k v))
+  CB s iv (Subscription iv s (Map k v))
 subMapDelta callback =
   subDelta M.empty M.difference
   (\delta -> forM_ (M.toList delta) $ uncurry callback)
@@ -550,7 +550,7 @@ collectVars :: (JoinSemilattice b, HasBottom b, Eq b, Ord a) =>
   Int -> --length of result, >= 0
   Chan s (Set a) ->
   (a -> [Chan s b]) -> --vars associated with a
-  CB iv s [Chan s b]
+  CB s iv [Chan s b]
 collectVars len chset f =
   forAll (sequence $ replicate len (newInChan bottom)) chset $
   \inchs a -> linkChans (f a) inchs
@@ -563,27 +563,27 @@ collectVars len chset f =
 --Using the m () ~ an equation view, but now the mutable state being updated
 --is kept internal.
 forAll :: (Ord a, Freezable state) =>
-  CB iv s state ->
+  CB s iv state ->
   Chan s (Set a) ->
-  (state -> a -> CB iv s ()) ->
-  CB iv s (Frozen state)
+  (state -> a -> CB s iv ()) ->
+  CB s iv (Frozen state)
 forAll mkSt chset f = do
   st <- mkSt
   subSetDelta (f st) chset
   return $ freeze st
 --Generalizing to maps:
 forAllMap :: (Ord k, Freezable state) =>
-  CB iv s state ->
+  CB s iv state ->
   Chan s (Map k v) ->
-  (state -> k -> v -> CB iv s ()) ->
-  CB iv s (Frozen state)
+  (state -> k -> v -> CB s iv ()) ->
+  CB s iv (Frozen state)
 forAllMap mkSt chmap f = do
   st <- mkSt
   subMapDelta (f st) chmap
   return $ freeze st
 --Helper function; links a new list of a's to the inchans.
 linkChans :: (JoinSemilattice a, Eq a) =>
-  [Chan s a] -> [InChan iv s a] -> CB iv s ()
+  [Chan s a] -> [InChan s iv a] -> CB s iv ()
 linkChans chans inchans
   | length chans /= length inchans = error "!!?"
   | let = zipWithM_ (\inchan ->
@@ -610,7 +610,7 @@ setAny = setFoldr (||) False
 
 --When a Boolean chan becomes true (which happens only once), run an action.
 --Unsubscribes itself for efficiency. Ignores action return type.
-doWhen :: Chan s Bool -> CB iv s a -> CB iv s ()
+doWhen :: Chan s Bool -> CB s iv a -> CB s iv ()
 doWhen bch m = do
   sub <- subChan bch
   whenSub sub (\b -> if b
@@ -650,8 +650,8 @@ opAI (wlen,slen) f (wchs,schs) = runCB $ do
 class Freezable a where
   type Frozen a
   freeze :: a -> Frozen a
-instance Freezable (InChan iv s a) where
-  type Frozen (InChan iv s a) = Chan s a
+instance Freezable (InChan s iv a) where
+  type Frozen (InChan s iv a) = Chan s a
   freeze = freezeInChan
 instance Freezable a => Freezable [a] where
   type Frozen [a] = [Frozen a]
@@ -672,7 +672,7 @@ instance Functor f => Freezable (f a) where
 --Apply f to a Chan, unsubscribing when f x becomes max.
 --Invariant: f is monotonic.
 --Useful for "jumpi cond may be false/true"
-mapChan :: (Eq b, HasTop b) => (a -> b) -> Chan s a -> CB iv s (Chan s b)
+mapChan :: (Eq b, HasTop b) => (a -> b) -> Chan s a -> CB s iv (Chan s b)
 mapChan f ch = do
   b <- f <$> readChan ch
   inch <- newInChan b
@@ -829,9 +829,15 @@ class Linkable (Submonad m) => Circuit m where
 class Linkable t where
   type Container t :: Type -> Type
   type InContainer t :: Type -> Type -> Type
-  link :: JoinSemilattice a =>
+  link :: (Eq a, JoinSemilattice a) =>
     InContainer t iv a -> Container t a ->
     t iv (InContainer t iv a)
+instance Linkable (CB s) where
+  type Container (CB s) = Chan s
+  type InContainer (CB s) = InChan s
+  link inch ch = do
+    subWhenChan (\a -> modInChan (\/ a) inch) ch
+    return inch
 
 --Unsafely wiring the circuit output to the knot-tying value is the one point
 --where the abstraction breaks.
