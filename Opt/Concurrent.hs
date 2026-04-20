@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, LambdaCase,
- RankNTypes, DeriveFunctor, FlexibleInstances #-}
+ RankNTypes, DeriveFunctor, FlexibleInstances, FlexibleContexts #-}
 module Opt.Concurrent where
 
 import Opt.Semilattice
@@ -779,6 +779,59 @@ test_4 = runAI $ do
 --A chan with no subscriptions and a constant value... until you unsafeWire it.
 newChan :: AIC m => a -> m (Chan (S m) a)
 newChan a = runCB $ freeze <$> newInChan a
+
+--Testing concurrent, incrementally computed circuits is complicated by
+--incrementality: until quiescence, a circuit may be in an intermediate state
+--where its output chans aren't the intended function of its inputs.
+--By giving the circuit combinators another interpretation, we can strip
+--away the incrementality and focus on testing the function.
+--That doesn't guarantee correctness (there could still be a bug in the
+--concurrency), but if the pure circuit is incorrect then the concurrent one
+--definitely is.
+--Why not simply use the pure circuit if it's easier to debug? Because
+--every circuit node is reevaluated for each iteration of the fixpoint, so
+--it should be much more expensive for large circuits where changes propagate
+--over many iterations.
+class Linkable (Submonad m) => Circuit m where
+  --type Container m :: Type -> Type
+  --AI has a submonad CB, which is the monad used to contain impure updates
+  --to InChan.
+  --type InContainer m :: Type -> Type -> Type
+  type Submonad m :: Type -> Type -> Type
+  runSubmonad :: (forall iv . Submonad m iv a) -> m a
+  --Concurrent meaning of x += y: subscribe to y, lub x with y.
+  --Can be used to implement cbOr.
+  --Problem: this can't just return a Submonad m because the type family isn't
+  --injective: the m can't be inferred from a concrete Submonad.
+  --link :: m (InContainer m iv Bool)
+  --Q: How to implement fold over set and map?
+  --Either need to generalize Freezable or pass the freeze method.
+  --Parameterizing Freezable by a and m is undesirable...
+  --freeze just maps InContainer iv m a -> m (Container m a) using a
+  --traversable variant. Decompose the base freeze from the traversal?
+  --Barbie types could be relevant.
+  --Best to just pass the freeze method before coming up with a satisfactory
+  --answer.
+  foldSet ::
+    (state -> upd -> Submonad m iv state) ->  --(+)
+    Submonad m iv state ->                      --0
+    Container (Submonad m) (Set k) -> (k -> upd) ->      --upd source
+    (state -> Submonad m iv frozen) ->        --freeze method
+    m frozen
+  foldMap ::
+    (state -> k -> v -> Submonad m iv state) ->
+    Submonad m iv state ->
+    Container (Submonad m) (Map k v) ->
+    (state -> Submonad m iv frozen) ->
+    m frozen
+--To solve the non-injective Submonad m problem, need a separate Linkable
+--class that defines Container and InContainer
+class Linkable t where
+  type Container t :: Type -> Type
+  type InContainer t :: Type -> Type -> Type
+  link :: JoinSemilattice a =>
+    InContainer t iv a -> Container t a ->
+    t iv (InContainer t iv a)
 
 --Unsafely wiring the circuit output to the knot-tying value is the one point
 --where the abstraction breaks.

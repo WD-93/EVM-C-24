@@ -34,6 +34,8 @@ import Control.Arrow ((***))
 --are concurrent. I could log the updates and Core constructs they correspond
 --to...
 --Breaking it up will expose dataflow and simplify the spine.
+--Solution to testing issue: separate the a -> b circuit from the logic for
+--fetching info from (core,fi); test the circuit in isolation.
 
 --The recursive equation that defines the abstract state is what necessitates
 --abstract interpretation via circuits rather than a more conventional monadic
