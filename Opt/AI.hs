@@ -6,6 +6,7 @@ module Opt.AI where
 import Opt.Concurrent
 import Opt.AbVar
 import Opt.Semilattice
+import Opt.HTraversable
 import Opt.AI.EVM (opBehavior,pushBehavior)
 --import Opt.ModState
 import Core.RestrictedCore
@@ -38,10 +39,12 @@ import Control.Arrow ((***))
 
 --The f param is Chan s while the mod state is mutable, then Id when it's
 --pure.
+{-
 newtype Id a = Id a
   deriving (Eq,Ord,Read,Show)
 unId :: Id a -> a
 unId (Id a) = a
+-}
 type FrozenModState = ModState_ Id
 type ModState s = ModState_ (Chan s)
 --Core has defuns, jts, and codeGs.
@@ -126,9 +129,11 @@ type AValue s = ([AVar s],[AVar s])
 --Freezable doesn't work for DT (Chan s | Id)
 --Barbies (the package) doesn't seem to fit the datatypes because their
 --structure is too complex... better write manual HTraversable instances.
+{-
 class HTraversable t where
   htraverse :: Applicative f =>
     (forall a . g a -> f (h a)) -> t g -> f (t h)
+-}
 instance HTraversable AVar_ where
   htraverse f av = AVar <$> f (avLive av) <*> f (avVal av)
 instance HTraversable BodyInfo_ where
@@ -1224,7 +1229,7 @@ lhsAbVars ms (lenw,lens) predecessors badPredecessors =
      )-}
   where
     lubLink :: (JoinSemilattice a, Eq a) =>
-               Chan s a -> InChan iv s a -> CB iv s ()
+               Chan s a -> InChan s iv a -> CB s iv ()
     lubLink from to = do
       subWhenChan (\a -> modInChan (\/ a) to) from
       return ()

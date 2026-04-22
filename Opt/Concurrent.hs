@@ -1,8 +1,10 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, LambdaCase,
- RankNTypes, DeriveFunctor, FlexibleInstances, FlexibleContexts #-}
+ RankNTypes, DeriveFunctor, FlexibleInstances, FlexibleContexts,
+ GADTs #-} --to express "forall iv, Submonad m iv is a monad"
 module Opt.Concurrent where
 
 import Opt.Semilattice
+import Opt.HTraversable
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
@@ -792,52 +794,135 @@ newChan a = runCB $ freeze <$> newInChan a
 --every circuit node is reevaluated for each iteration of the fixpoint, so
 --it should be much more expensive for large circuits where changes propagate
 --over many iterations.
-class Linkable (Submonad m) => Circuit m where
+class (Linkable (Submonad m), Monad m) => Circuit m where
   --type Container m :: Type -> Type
   --AI has a submonad CB, which is the monad used to contain impure updates
   --to InChan.
   --type InContainer m :: Type -> Type -> Type
   type Submonad m :: Type -> Type -> Type
-  runSubmonad :: (forall iv . Submonad m iv a) -> m a
-  --Concurrent meaning of x += y: subscribe to y, lub x with y.
-  --Can be used to implement cbOr.
+  --runSubmonad handles the insistMonad using monadDict
+  runSubmonad_ :: (forall iv . Submonad m iv a) -> m a
   --Problem: this can't just return a Submonad m because the type family isn't
   --injective: the m can't be inferred from a concrete Submonad.
-  --link :: m (InContainer m iv Bool)
-  --Q: How to implement fold over set and map?
-  --Either need to generalize Freezable or pass the freeze method.
-  --Parameterizing Freezable by a and m is undesirable...
-  --freeze just maps InContainer iv m a -> m (Container m a) using a
-  --traversable variant. Decompose the base freeze from the traversal?
-  --Barbie types could be relevant.
-  --Best to just pass the freeze method before coming up with a satisfactory
-  --answer.
-  foldSet ::
-    (state -> upd -> Submonad m iv state) ->  --(+)
-    Submonad m iv state ->                      --0
-    Container (Submonad m) (Set k) -> (k -> upd) ->      --upd source
-    (state -> Submonad m iv frozen) ->        --freeze method
-    m frozen
-  foldMap ::
-    (state -> k -> v -> Submonad m iv state) ->
-    Submonad m iv state ->
-    Container (Submonad m) (Map k v) ->
-    (state -> Submonad m iv frozen) ->
-    m frozen
+  --Using Htraversable to htraverse baseFreeze. Annoyance: that will need to
+  --be repeated in each instance. Can foldSet and foldMap be implemented
+  --using Linkable? Need to break out subSetDelta.
+  --To implement dependence on multiple chans, pass the inchan through them.
+  
 --To solve the non-injective Submonad m problem, need a separate Linkable
 --class that defines Container and InContainer
 class Linkable t where
   type Container t :: Type -> Type
   type InContainer t :: Type -> Type -> Type
+  --To avoid ambiguity, baseFreeze must be a t rather than pure.
+  --Thanks to HTraverse, that's not a problem.
+  baseFreeze :: InContainer t iv a -> t iv (Container t a)
   link :: (Eq a, JoinSemilattice a) =>
     InContainer t iv a -> Container t a ->
     t iv (InContainer t iv a)
+  --Derp, ofc moving these to Linkable is the solution to the non-injective
+  --Submonad type family problem. It also avoids referring to HTraversable
+  --here.
+  foldSet_ :: Ord k =>
+    (upd -> state -> t iv state) ->  --(+)
+    state ->                      --0
+    Container t (Set k) -> (k -> upd) ->      --upd source
+    t iv state
+  foldMap_ :: Ord k =>
+    (k -> v -> state -> t iv state) ->
+    state ->
+    Container t (Map k v) ->
+    t iv state
+  --Need a way to express "forall iv, t iv is a Monad".
+  --Solution: a polymorphic monad dict. NB: don't do this at home!
+  monadDict :: MonadDict (t iv)
 instance Linkable (CB s) where
   type Container (CB s) = Chan s
   type InContainer (CB s) = InChan s
+  baseFreeze (InChan rc) = return $ Chan rc
   link inch ch = do
     subWhenChan (\a -> modInChan (\/ a) inch) ch
     return inch
+  foldSet_ f id chset k2upd = do
+    subSetDelta (\k -> f (k2upd k) id >> return ()) chset
+    return id
+  foldMap_ f id chmap = do
+    subMapDelta (\k v -> f k v id >> return ()) chmap
+    return id
+  monadDict = MonadDict
+instance Circuit (AI s) where
+  type Submonad (AI s) = CB s
+  runSubmonad_ = runCB
+
+data MonadDict m where MonadDict :: Monad m => MonadDict m
+insistMonad :: MonadDict m -> (Monad m => m a) -> m a
+insistMonad MonadDict ma = ma
+runSubmonad :: Circuit m =>
+  (forall iv . Monad (Submonad m iv) => Submonad m iv a) ->
+  m a
+runSubmonad m = runSubmonad_ $ insistMonad monadDict m
+
+type IC m = InContainer (Submonad m)
+type C m = Container (Submonad m)
+--Problem: how to resolve Monad (Submonad m iv) forall iv?
+foldSet :: (Circuit m, HTraversable t, Ord k) =>
+  (forall iv . upd -> t (IC m iv) -> Submonad m iv (t (IC m iv))) ->
+  (forall iv . Submonad m iv (t (IC m iv))) ->
+  C m (Set k) -> (k -> upd) ->
+  m (t (C m))
+foldSet f idm chset k2upd = runSubmonad $ do
+  id <- idm
+  foldSet_ f id chset k2upd >>= htraverse baseFreeze
+foldMap :: (Circuit m, HTraversable t, Ord k) =>
+  (forall iv . k -> v -> t (IC m iv) -> Submonad m iv (t (IC m iv))) ->
+  (forall iv . Submonad m iv (t (IC m iv))) ->
+  C m (Map k v) ->
+  m (t (C m))
+foldMap f idm chmap = runSubmonad $ do
+  id <- idm
+  foldMap_ f id chmap >>= htraverse baseFreeze
+
+--Non-incremental circuit monad; AI should be rewritten to require only
+--Circuit, thus allowing its components to be tested without incrementality.
+--If the non-incremental version works but the AI/CB one doesn't, the fault
+--must lie in the concurrent write propagation.
+--Id is the Circuit monad, IdSM the submonad
+newtype IdSM iv a = IdSM {unIdSM :: Id a}
+  deriving (Functor,Applicative,Monad)
+newtype InId iv a = InId a
+instance Linkable IdSM where
+  type InContainer IdSM = InId
+  type Container IdSM = Id
+  baseFreeze (InId a) = return $ Id a
+  link (InId a) (Id b) = return $ InId $ a \/ b
+  foldSet_ f id (Id kset) k2upd =
+    IdSM $ Id $ foldr (\k s -> unId $ unIdSM $ f (k2upd k) s) id $
+    S.toList kset
+  foldMap_ f id (Id k2v) =
+    IdSM $ Id $ foldr (\(k,v) s -> unId $ unIdSM $ f k v s) id $
+    M.toList k2v
+  monadDict = MonadDict
+instance Circuit Id where
+  type Submonad Id = IdSM
+  runSubmonad_ (IdSM id) = id
+
+--Solution to the freeze problem: Barbie types, plus defining newtypes that
+--specify how the btraverse is to be applied. With the structure provided by
+--the type, the Frozen type family can be eliminated.
+--Map k v => MapT k nestedStructure f
+--Base case: newtype Id1 a f = Id1 (f a)
+--I'll need to contrive a Barbie type for every fold accumulator.
+--Related: converting Chan to Id. Since btraverse takes place in an
+--Applicative, the same class can be used.
+--fixpoint requires unsafeWire, which should ideally be hidden from AI.
+--If you can enumerate the f a's, you should be able to do the same for two or
+--N isomorphic structures at once...
+--unsafeWire should lub the outputs with the inputs... unsafely convert the
+--Container structure back to InContainer using btraverse, then use link?
+--Pairwise traversal op: JoinSemilattice a => f a -> g a -> Submonad m iv (g a)?
+--Solve btraversal first; the solution should reveal helpful structure.
+
+--Goal: overload AI so I can run it non-incrementally.
 
 --Unsafely wiring the circuit output to the knot-tying value is the one point
 --where the abstraction breaks.
