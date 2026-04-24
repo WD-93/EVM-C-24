@@ -558,7 +558,7 @@ fiEqLive ei_fun_jt fi mlps par mbVars lhs =
         --with.
         --Why a list rather than a cbOr? It's an opt to avoid an intermediate
         --cbOr; instead a single one is used for branch and op demand.
-        demandFromBranch <- getDemandFromBranch mlps branch
+        let demandFromBranch = getDemandFromBranch mlps branch
         --The op demand graph:
         --Bug: ofc, if the BB contains no ops but has a nonempty passed,
         --v2ops will not contain all the relevant vars.
@@ -572,8 +572,12 @@ fiEqLive ei_fun_jt fi mlps par mbVars lhs =
           (\v -> do
               let vals = maybe [] S.toList $ M.lookup v v2ops
                   live_per_op = map (index "fiol" fiol) vals
-                  bchs = maybe [] id $ M.lookup v demandFromBranch
-              bch <- cbOr $ live_per_op ++ bchs
+                  mbchs = maybe (Just []) id $ M.lookup v demandFromBranch
+              bch <- case mbchs of
+                       --The var is guaranteed to be live (jump/i dest,cond
+                       --or revert/return param).
+                       Nothing -> newChan True
+                       Just bchs -> cbOr $ live_per_op ++ bchs
               return (v,bch))
         --Each op lhs is demanded by each v in lhs
         lhs2live <- M.fromList <$> forM (S.toList vals)
@@ -612,30 +616,32 @@ fiEqLive ei_fun_jt fi mlps par mbVars lhs =
         return ((wavs,savs),IsJT,Just passed)
 
 --Bugfix: passed vars from lhs rather than using branch passed
-getDemandFromBranch :: AIC m =>
-  Maybe ([Chan (S m) Bool], [Chan (S m) Bool]) -> --live passed (if not exit)
+--Simpl: this doesn't need to be monadic; instead use Nothing to represent
+--"v is guaranteed to be true". The cbOr can then be entirely avoided in
+--v2live when the v is guaranteed to be true.
+getDemandFromBranch ::
+  Maybe ([v], [v]) -> --live passed (if not exit)
   Branch -> --fun branch
-  m (Map Var [Chan (S m) Bool])
-getDemandFromBranch mlps branch = do
-  true <- newChan True
+  (Map Var (Maybe [v]))
+getDemandFromBranch mlps branch =
   case mlps of
-    Nothing -> do
+    Nothing ->
       let Just (wes,ses) = exitBranchValue branch
           vset = S.fromList $ wes ++ ses
-      return $ M.fromSet (const [true]) vset
+      in M.fromSet (const Nothing) vset
     --Bugfix: cond, dest from jump/i must always be live.
-    Just (wbs,sbs) -> do
+    Just (wbs,sbs) ->
       let Just (ws,ss) = branchPassed branch
-      let cond_dest =
+          cond_dest =
             case branch of
               Jump _mode (dest:_,_,_) ->
                 [dest]
               Jumpi _elf (cond:dest:_,_,_) ->
                 [cond,dest]
-          alwaysLive = M.fromSet (const [true]) $
+          alwaysLive = M.fromSet (const Nothing) $
                        S.fromList cond_dest
-      return $ M.union alwaysLive $
-        demandedPassed (ws,ss) (wbs,sbs)
+      in M.union alwaysLive $ M.map Just $
+         demandedPassed (ws,ss) (wbs,sbs)
 
 --A helper that errors with a given error message when k is missing.
 --Used to replace M.! (considered harmful).
