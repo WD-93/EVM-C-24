@@ -4,6 +4,7 @@ module Opt.AI.Test where
 import Core.RestrictedCore
 import Core.SSA (OptCore,OptFunRHS)
 import Opt.AI
+import Opt.HTraversable (Id(..))
 
 import Data.Map(Map(..))
 import qualified Data.Map as M
@@ -100,6 +101,7 @@ withinBBLiveness f = pass $ do
             lthing <- getBB f
             case lthing of
               AFun (lhs,(ops,branch)) fi -> do
+                --The set of vars demanded by the branch
                 let bvs = liveBranch fi branch
                     --If op is live, its rhs is live
                     op2vs = M.map (varsIn . snd) $ M.fromList $ M.elems ops
@@ -108,9 +110,7 @@ withinBBLiveness f = pass $ do
                     --I didn't really need to convert bvs to a set since
                     --explore is
                     --idempotent... but minimizing state is good practice.
-                    (vs,lhses) = execState (mapM_ (explore op2vs v2op) $
-                                            S.toList bvs)
-                                 (S.empty,S.empty)
+                    (vs,lhses) = depGraph2Live op2vs v2op bvs
                 --Each v in fiVars is live iff it's in vs
                 --Each op in fiOpsLive is live iff it's in lhses
                 let IsFun {fiVars = fvs, fiOpsLive = fiol} = fiBodyInfo fi
@@ -129,7 +129,15 @@ withinBBLiveness f = pass $ do
                     Just passedLiveness = aitLivePassed fi
                 reportIf (lhsLiveness /= passedLiveness)
                   $ JTLiveness lhsLiveness passedLiveness
-        explore :: Map Value (Set Var) -> Map Var Value -> Var ->
+--(op => vars it demands, var => op it demands) -> vars demanded by branch ->
+--live vars, live ops.
+depGraph2Live :: Map Value (Set Var) -> Map Var Value -> Set Var ->
+  (Set Var, Set Value)
+depGraph2Live op2vs v2op bvs =
+  execState (mapM_ (explore op2vs v2op) $
+             S.toList bvs)
+  (S.empty,S.empty)
+  where explore :: Map Value (Set Var) -> Map Var Value -> Var ->
           State (Set Var, Set Value) ()
         explore op2vs v2op v = do
           (vs,lhses) <- get
