@@ -470,7 +470,9 @@ fiEquation predsMap badPredsMap (f,fi) = do
                       Just (wps,sps) ->
                         Just <$> livePassed (length wps, length sps) ss bss
                       _ -> return Nothing
-            (lhsavs,bi,mpassed) <- fiEqLiveFun wvs svs ops branch fi mlps v2abv
+            let demand = getDemandFromBranch mlps branch
+            (lhsavs,bi,mpassed) <- fiEqLiveFun wvs svs ops demand
+              {-branch-} fi mlps v2abv
             return (lhsavs,bi,mpassed,ss,bss)
         | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
             (lhs,ss,bss) <- fiEqAbVarsJT wlen slen fs ms ps bps
@@ -529,6 +531,7 @@ fiEqAbVarsJT wlen slen fs ms ps bps = do
   bss <- newChan M.empty
   return (lhs,ss,bss)
 
+{-
 fiEqLive
   :: (MonadError AIError m, AIC m) =>
      Either
@@ -548,7 +551,8 @@ fiEqLive ei_fun_jt fi mlps par mbVars lhs =
   case ei_fun_jt of
       Left ((ws,_,ss),(ops,branch)) -> do
         let Just v2abv = mbVars
-        fiEqLiveFun ws ss ops branch fi mlps v2abv
+        let demand = getDemandFromBranch mlps branch
+        fiEqLiveFun ws ss ops demand {-branch-} fi mlps v2abv
       --A JT has no ops; its lhs vars are live if any f in fs has a live var
       --at that position. Precondition: all fs have the same arity so one
       --can safely transpose.
@@ -556,6 +560,7 @@ fiEqLive ei_fun_jt fi mlps par mbVars lhs =
         let Just lps = mlps
         (wavs,savs,passed) <- fiEqLiveJT wlen slen fs lps lhs
         return ((wavs,savs),IsJT, Just passed)
+-}
 fiEqLiveJT wlen slen fs lps lhs = do
   --lhs, passed are the same AVars
   let (wls,sls) = lps
@@ -567,7 +572,8 @@ fiEqLiveFun :: AIC m =>
                [Var]
             -> [Var]
             -> Map Var (Value, (PrimOp, Value))
-            -> Branch
+            -> Map Var (Maybe [Chan (S m) Bool])
+            -- -> Branch
             -> FunInfo_ (Chan (S m))
             -> Maybe ([Chan (S m) Bool], [Chan (S m) Bool])
             -> Map Var (Chan (S m) AbVar)
@@ -576,7 +582,11 @@ fiEqLiveFun :: AIC m =>
                   Maybe
                   ([(Chan (S m) Bool, AVar_ (Chan (S m)))],
                    [(Chan (S m) Bool, AVar_ (Chan (S m)))]))
-fiEqLiveFun ws ss ops branch fi mlps v2abv = do
+fiEqLiveFun ws ss ops demandFromBranch
+ --branch
+  fi
+  mlps
+  v2abv = do
   --Here we use fi to avoid being careful about definition order.
   let IsFun {fiVars = fivs,
              fiOpsLive = fiol
@@ -590,7 +600,7 @@ fiEqLiveFun ws ss ops branch fi mlps v2abv = do
   --with.
   --Why a list rather than a cbOr? It's an opt to avoid an intermediate
   --cbOr; instead a single one is used for branch and op demand.
-  let demandFromBranch = getDemandFromBranch mlps branch
+  --let demandFromBranch = getDemandFromBranch mlps branch
   --The op demand graph:
   --Bug: ofc, if the BB contains no ops but has a nonempty passed,
   --v2ops will not contain all the relevant vars.
@@ -600,25 +610,9 @@ fiEqLiveFun ws ss ops branch fi mlps v2abv = do
       relevantVs = S.union (S.fromList $ ws ++ ss) (M.keysSet ops)
   --Each v in relevantVs is demanded by op[lhs] for lhs in v2vals[v],
   --as well as each bch in demandFromBranch[v]
-  v2live <- M.fromList <$> forM (S.toList relevantVs)
-            (\v -> do
-                let vals = maybe [] S.toList $ M.lookup v v2ops
-                    live_per_op = map (index "fiol" fiol) vals
-                    mbchs = maybe (Just []) id $ M.lookup v demandFromBranch
-                bch <- case mbchs of
-                         --The var is guaranteed to be live (jump/i dest,cond
-                         --or revert/return param).
-                         Nothing -> newChan True
-                         Just bchs -> cbOr $ live_per_op ++ bchs
-                return (v,bch))
-  --Each op lhs is demanded by each v in lhs
-  lhs2live <- M.fromList <$> forM (S.toList vals)
-              (\lhs -> do
-                  let vs = S.toList $ varsIn lhs
-                      bchs = map (\v -> avLive $
-                                   index "fivs" fivs v) vs
-                  b <- cbOr bchs
-                  return (lhs,b))
+  --Splitting out to make it readily testable in Opt.AI.Test:
+  (v2live,lhs2live) <- testableCoreLive
+    relevantVs v2ops vals fiol (M.map avLive fivs) demandFromBranch
   --Since v2av and v2live are the same shape, it should be possible
   --to do this in O(n) rather than O(n log n)
   let v2av = M.mapWithKey (\v abv -> AVar (index "v2live" v2live v) abv)
@@ -635,6 +629,30 @@ fiEqLiveFun ws ss ops branch fi mlps v2abv = do
                  },
            mpassed
          )
+--Because this uses op liveness (fiol) and var liveness (fivs) from the
+--fixpoint, it avoids having to define op and var liveness in topological
+--order: the circuit is threaded rather than sequential.
+--The downside of that is I must unsafeWire to test it.
+testableCoreLive relevantVs v2ops vals fiol fivs demandFromBranch = do
+  v2live <- M.fromList <$> forM (S.toList relevantVs)
+            (\v -> do
+                let vals = maybe [] S.toList $ M.lookup v v2ops
+                    live_per_op = map (index "fiol" fiol) vals
+                    mbchs = maybe (Just []) id $ M.lookup v demandFromBranch
+                bch <- case mbchs of
+                         --The var is guaranteed to be live (jump/i dest,cond
+                         --or revert/return param).
+                         Nothing -> newChan True
+                         Just bchs -> cbOr $ live_per_op ++ bchs
+                return (v,bch))
+    --Each op lhs is demanded by each v in lhs
+  lhs2live <- M.fromList <$> forM (S.toList vals)
+              (\lhs -> do
+                  let vs = S.toList $ varsIn lhs
+                      bchs = map (\v -> index "fivs" fivs v) vs
+                  b <- cbOr bchs
+                  return (lhs,b))
+  return (v2live,lhs2live)
 
 --Bugfix: passed vars from lhs rather than using branch passed
 --Simpl: this doesn't need to be monadic; instead use Nothing to represent
