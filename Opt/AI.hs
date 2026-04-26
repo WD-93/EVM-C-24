@@ -1,5 +1,5 @@
 {-# LANGUAGE RankNTypes, LambdaCase, FlexibleContexts,
- StandaloneDeriving, FlexibleInstances #-} --for testing
+ StandaloneDeriving, FlexibleInstances, PatternSynonyms #-} --for testing
 --MonadError AIError requires flexible contexts
 module Opt.AI where
 
@@ -10,7 +10,10 @@ import Opt.HTraversable
 import Opt.AI.EVM (opBehavior,pushBehavior)
 --import Opt.ModState
 import Core.RestrictedCore
+import Core.PrimTypes hiding (pattern Arg) --for debug print (W)
+import AST.DTs (pattern UInt) --for debug print
 import Core.SSA (OptCore,OptFunRHS,OpMap)
+import Util (unsafePrint')
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
@@ -21,6 +24,9 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad
 import Control.Arrow ((***))
+
+debugFlag = True
+unsafePrint str = unsafePrint' debugFlag str
 
 --TODO:
 --Initial mem, sto, tsto = 0. Loop back sto and tsto from every exit to
@@ -372,8 +378,7 @@ addBools (as,bs) = (,) <$> add as <*> add bs
 --one can't get any savings from making op map evaluation non-recursive.
 unsafeWireModState :: AIC m => ModState (S m) -> ModState (S m) -> m ()
 unsafeWireModState ms1 ms2 =
-  zipWithM_ unsafeWireFunInfo
-  (M.elems $ funInfo ms1) (M.elems $ funInfo ms2)
+  wireMap unsafeWireFunInfo (funInfo ms1) (funInfo ms2)
 unsafeWireFunInfo :: AIC m => FunInfo (S m) -> FunInfo (S m) -> m ()
 unsafeWireFunInfo fi1 fi2 = do
   unsafeWire (fiReachable fi1) (fiReachable fi2)
@@ -384,6 +389,23 @@ unsafeWireFunInfo fi1 fi2 = do
       let Just (b_ws2, b_ss2) = fiPassed fi2
       zipWithM_ unsafeWire (map fst b_ws1) $ map fst b_ws2
       zipWithM_ unsafeWire (map fst b_ss1) $ map fst b_ss2
+      {-case fiBodyInfo fi1 of
+        IsFun fivs fiols ->
+          if M.member (Mono "ret!1" (W (UInt 32) 1)) fivs
+          then runCB $ do
+            unsafePrint $ "Woo " ++ show (M.keys fivs)
+            if length b_ws1 /= length b_ws2
+              then error $ "Gotcha: " ++ show (length b_ws1, length b_ws2)
+              else return ()
+            let [finalRet] = map fst b_ws1
+                [initialRet] = map fst b_ws2
+            subWhenChan (\b -> unsafePrint $
+                          "finalRet = " ++ show b) finalRet
+            subWhenChan (\b -> unsafePrint $
+                               "initialRet = " ++ show b) initialRet
+            return ()
+          else return ()
+        _ -> return ()-}
     Nothing -> return ()
   unsafeWireBodyInfo (fiBodyInfo fi1) (fiBodyInfo fi2) fi1 fi2
   unsafeWire (succs fi1) (succs fi2)
@@ -405,16 +427,23 @@ unsafeWireBodyInfo bi1 bi2 fi1 fi2 =
       --Redundant, since the vars of passed = the lhs:
       --wireVal (passed2val p1) (passed2val p2)
     (IsFun{},IsFun{}) -> do
-      zipWithM_ unsafeWireAV (M.elems $ fiVars bi1) (M.elems $ fiVars bi2)
+      wireMap unsafeWireAV (fiVars bi1) (fiVars bi2)
       --Assumes the maps have the same shape:
       --Using a mapM with key on the first map and looking up keys in the
       --second map would add a log(n) complexity factor.
-      zipWithM_ unsafeWire (M.elems $ fiOpsLive bi1) (M.elems $ fiOpsLive bi2)
+      wireMap unsafeWire (fiOpsLive bi1) (fiOpsLive bi2)
     _ -> error "Precondition violated: shape mismatch in unsafeWireBodyInfo"
   where wireVal (ws1,ss1) (ws2,ss2) =
           zipWithM_ unsafeWireAV (ws1++ss1) (ws2++ss2)
         passed2bs (bws,bss) = map fst bws ++ map fst bss
         passed2val = map snd *** map snd
+--Checking the liveness bug isn't from bad wiring:
+wireMap wire m1 m2 =
+  let ks1 = M.keys m1
+      ks2 = M.keys m2
+  in if ks1 /= ks2
+     then error $ "Map shape mismatch in wireMap: " ++ show (ks1,ks2)
+     else zipWithM_ wire (M.elems m1) (M.elems m2)
 unsafeWireAV :: AIC m => AVar (S m) -> AVar (S m) -> m ()
 unsafeWireAV av1 av2 = do
   unsafeWire (avLive av1) (avLive av2)
@@ -465,13 +494,18 @@ fiEquation predsMap badPredsMap (f,fi) = do
     case () of
       _ | Just ((wvs,_,svs),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
             (lhs,v2abv,ss,bss) <- fiEqAbVarsFun wvs svs ops branch ms fi ps bps
+            --Bug: fiEqLiveFun treated wvs, svs as the vars of passed, but
+            --they're actually from the lhs.
+            --Adding passed Vars mvps:
+            let mvps = branchPassed branch
             --Maybe live of passed
             mlps <- case branchPassed branch of
                       Just (wps,sps) ->
                         Just <$> livePassed (length wps, length sps) ss bss
                       _ -> return Nothing
             let demand = getDemandFromBranch mlps branch
-            (lhsavs,bi,mpassed) <- fiEqLiveFun wvs svs ops demand
+            
+            (lhsavs,bi,mpassed) <- fiEqLiveFun wvs svs mvps ops demand
               {-branch-} fi mlps v2abv
             return (lhsavs,bi,mpassed,ss,bss)
         | Just ((wlen,slen),fs) <- M.lookup f $ coreJTs core -> do
@@ -569,20 +603,25 @@ fiEqLiveJT wlen slen fs lps lhs = do
       passed = (zip wls wavs, zip sls savs)
   return (wavs,savs,passed)
 fiEqLiveFun :: AIC m =>
-               [Var]
-            -> [Var]
+               [Var] --word vars from lhs
+            -> [Var] --stack vars from lhs
+            -> Maybe ([Var],[Var]) --Passed var names
             -> Map Var (Value, (PrimOp, Value))
             -> Map Var (Maybe [Chan (S m) Bool])
             -- -> Branch
             -> FunInfo_ (Chan (S m))
             -> Maybe ([Chan (S m) Bool], [Chan (S m) Bool])
             -> Map Var (Chan (S m) AbVar)
-            -> m (([AVar_ (Chan (S m))], [AVar_ (Chan (S m))]),
+            -> m
+               --LHS
+               (([AVar_ (Chan (S m))], [AVar_ (Chan (S m))]),
+                --Var, op liveness
                   BodyInfo_ (Chan (S m)),
+                 --Passed
                   Maybe
                   ([(Chan (S m) Bool, AVar_ (Chan (S m)))],
                    [(Chan (S m) Bool, AVar_ (Chan (S m)))]))
-fiEqLiveFun ws ss ops demandFromBranch
+fiEqLiveFun ws ss mvps ops demandFromBranch
  --branch
   fi
   mlps
@@ -620,8 +659,15 @@ fiEqLiveFun ws ss ops demandFromBranch
       mpassed = case mlps of
                   Nothing -> Nothing
                   Just (wbs,sbs) ->
-                    Just (zip wbs $ map (index "wbs" v2av) ws,
-                          zip sbs $ map (index "sbs" v2av) ss)
+                    let Just (wps,sps) = mvps
+                    in Just (zip wbs $ map (index "wbs" v2av) wps,
+                             zip sbs $ map (index "sbs" v2av) sps)
+  {-
+  if fmap (length***length) mlps /=
+     fmap (length***length) mpassed
+    then error "Gotcha!!"
+    else return ()
+-}
   return ((map (index "map v2av ws" v2av) ws,
             map (index "map v2av ss" v2av) ss),
            IsFun {fiVars = v2av,
@@ -636,14 +682,30 @@ fiEqLiveFun ws ss ops demandFromBranch
 testableCoreLive relevantVs v2ops vals fiol fivs demandFromBranch = do
   v2live <- M.fromList <$> forM (S.toList relevantVs)
             (\v -> do
+                --let dbg msg = if nameOfVar v == "ret!1"
+                --              then unsafePrint msg
+                --              else return ()
                 let vals = maybe [] S.toList $ M.lookup v v2ops
                     live_per_op = map (index "fiol" fiol) vals
                     mbchs = maybe (Just []) id $ M.lookup v demandFromBranch
+                --dbg $ "vals: " ++ show vals
+                --dbg $ "length live_per_op: " ++ show (length live_per_op)
+                --dbg $ "mbchs: " ++ show (fmap (map (const ())) mbchs)
                 bch <- case mbchs of
                          --The var is guaranteed to be live (jump/i dest,cond
                          --or revert/return param).
-                         Nothing -> newChan True
-                         Just bchs -> cbOr $ live_per_op ++ bchs
+                         Nothing -> {-dbg "Nothing!?">>-} newChan True
+                         Just bchs -> --do
+                           --dbg "Just :)"
+                           cbOr $ live_per_op ++ bchs
+                {-if nameOfVar v == "ret!1"
+                  then runCB $ do
+                  let Just [passed] = mbchs
+                  subWhenChan (\b->unsafePrint $ "bch = " ++ show b) bch
+                  subWhenChan (\b->unsafePrint $ "passed = " ++ show b)
+                      passed
+                  return ()
+                  else return ()-}
                 return (v,bch))
     --Each op lhs is demanded by each v in lhs
   lhs2live <- M.fromList <$> forM (S.toList vals)
