@@ -218,7 +218,7 @@ aiModule core = do
   --values >= bottom from initial, that incorrectly sets the entire circuit
   --to bottom. Rather than naively writing in unsafeWire, the initial
   --must be LUB'd with final.
-  unsafeWireModState final initial 
+  unsafeWireModState core final initial 
   scheduler
   freezeModState initial
 
@@ -246,8 +246,32 @@ initialModState core = do
         M.map Right $ coreJTs core
   --Set reachable trueMain to True
   true <- newChan True
-  return MS{funInfo = M.adjust (\fi -> fi{fiReachable=true}) "$trueMain" fim}
-
+  --Allocate initial state value chans. Setting $trueMain's fiLHS to new
+  --AVars breaks the circuit by eliminating sharing (another way the
+  --circuit/modstate abstraction is fragile). Hack: we instead extract the
+  --chans and unsafeWire the throwaway initSVs to them.
+  initSVs <- initialStateValues
+  let Just fi = M.lookup "$trueMain" fim
+      ([],svs) = fiLHS fi
+  zipWithM_ unsafeWire initSVs $ map avVal svs
+  return MS{funInfo = M.insert "$trueMain" fi{fiReachable=true} fim}
+--[mem,sto,tsto,cd,rd,ext,other]
+--Mem is initially 0
+--Sto and tsto likewise
+--Calldata is arbitrary; we assume it cannot liven labels
+--Ditto for returndata, ext, other: since they come from outside the
+--contract where EVMC's abstractions don't hold, we assume we have no control
+--over their abstract value. Their abstract value is actually ignored by ops
+--that use them, but they still need to be assigned one to fit in the AI
+--model.
+initialStateValues :: AIC m => m [Chan (S m) AbVar]
+initialStateValues =
+  mapM newChan [z,z,z,
+                arb,
+                z, --returndata is initially 0; *CALL sets it 
+                arb,arb]
+  where z = exactly 0
+        arb = bottom{possKs = All}
 --Applies to both Core functions and JTs
 initialFunInfo :: AIC m =>
   Either (BranchValue,OptFunRHS) ((Int,Int),[FunVar]) ->
@@ -376,9 +400,51 @@ addBools (as,bs) = (,) <$> add as <*> add bs
 --Assumes ms1 and ms2 have the same shape.
 --Or is it...? Liveness flows in the opposite direction from var values, so
 --one can't get any savings from making op map evaluation non-recursive.
-unsafeWireModState :: AIC m => ModState (S m) -> ModState (S m) -> m ()
-unsafeWireModState ms1 ms2 =
+unsafeWireModState :: AIC m =>
+  OptCore -> --for feeding back sto,tsto,ext from stop/return
+  ModState (S m) -> ModState (S m) -> m ()
+unsafeWireModState core ms1 ms2 = do
   wireMap unsafeWireFunInfo (funInfo ms1) (funInfo ms2)
+  --sto, tsto and ext in stop/return must be fed back to $trueMain
+  --stop order: sto,tsto,ext
+  --return order: mem,sto,tsto,ext
+  --truemain order: mem,sto,tsto,cd,rd,ext,other
+  --TODO use same lookup logic as in Opt.AI.EVM
+  let Just trueMainFi = M.lookup "$trueMain" $ funInfo ms2
+      ([],[_mem,sto,tsto,_cd,_rd,ext,_other]) = fiLHS trueMainFi
+  --For each reachable BB with stop or EVM return branch, collect its
+  --(sto,tsto,ext). Wire each to trueMain.
+  --Since FunInfo doesn't record vars passed to an exit, I must recover them
+  --using the Core branch and fiVars.fiBodyInfo.
+  --For each f in funInfo:
+  --Ah, need to add Core as a param.
+  let exit2ste =
+        M.mapMaybe (\(_lhs,(_obs,branch)) ->
+                       --Why not use a list that could be mapped more
+                       --succinctly? To make bad lists unrepresentable.
+                       case branch of
+                         Return (_,[_mem,sto,tsto,ext]) ->
+                           Just (sto,tsto,ext)
+                         Stop (_,[sto,tsto,ext]) ->
+                           Just (sto,tsto,ext)
+                         _ -> Nothing
+                   ) $
+        coreDefuns core
+      --Get the AbVar chans from the Vars; liveness if ofc not wired.
+      exit2abvs =
+        M.mapWithKey (\f (x,y,z) ->
+                         let Just fi = M.lookup f (funInfo ms1)
+                             IsFun {fiVars=v2av} = fiBodyInfo fi
+                             (Just abvx, Just abvy, Just abvz) =
+                               mapTriplet ((avVal<$>).flip M.lookup v2av)
+                               (x,y,z)
+                         in (abvx,abvy,abvz))
+                 exit2ste
+  forM_ exit2abvs (\(stoOut,tstoOut,extOut) -> do
+                    unsafeWire stoOut $ avVal sto
+                    unsafeWire tstoOut $ avVal tsto
+                    unsafeWire extOut $ avVal ext)
+    where mapTriplet f (x,y,z) = (f x, f y, f z)
 unsafeWireFunInfo :: AIC m => FunInfo (S m) -> FunInfo (S m) -> m ()
 unsafeWireFunInfo fi1 fi2 = do
   unsafeWire (fiReachable fi1) (fiReachable fi2)

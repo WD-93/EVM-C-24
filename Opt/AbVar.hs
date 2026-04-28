@@ -29,14 +29,31 @@ data AbVar = S {funs :: Set Label,
                 codeGs :: Set Label,
                 possKs :: PossKs
                }
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read)
+--It would be nice to be able to separate defining the derived dict from
+--setting it as the Show instance.
+instance Show AbVar where
+  show abv
+    | S.null $ S.unions $
+      map ($ abv) [funs,jts,codeGs] = show $ possKs abv
+    | Just (lt,lab) <- unlabel abv = show lt ++ ":" ++ lab
+    | let = "S {funs = " ++ show (funs abv) ++
+            ", jts = " ++ show (jts abv) ++
+            ", codeGs = " ++ show (codeGs abv) ++
+            ", possKs = " ++ show (possKs abv)
 --An abstract value may mention labels or consist of constants.
 --Labels are to be "garbage-collected" during optimization, eliminating
 --functions, jump tables and code globals which are never used or (better yet)
 --never mentioned in reachable BBs.
 --TODO useful extension: byte length or nonzero ranges.
 data PossKs = None | K Integer | All --invariant: 0 <= n < 2^256
-  deriving (Eq,Ord,Read,Show)
+  deriving (Eq,Ord,Read)
+instance Show PossKs where
+  show pks =
+    case pks of
+      None -> "_|_"
+      K n -> show n
+      All -> "*"
 instance JoinSemilattice PossKs where
   None \/ x = x
   x \/ None = x
