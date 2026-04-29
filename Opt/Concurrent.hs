@@ -639,8 +639,8 @@ opAI (wlen,slen) f (wchs,schs) = runCB $ do
         ws <- mapM readChan wchs
         ss <- mapM readChan schs
         let (outws,outss) = f (ws,ss)
-        zipWithM_ writeInChan wins ws
-        zipWithM_ writeInChan sins ss
+        zipWithM_ writeInChan wins outws
+        zipWithM_ writeInChan sins outss
   mapM_ (subWhenChan (const callback)) (wchs++schs)
   return $ freeze (wins,sins)
          
