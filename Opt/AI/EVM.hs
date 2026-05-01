@@ -13,6 +13,11 @@ import qualified Data.Map as M
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.List (sort)
+--For concrete bitwise ops; I still use Integer for K in order to represent
+--small integers more compactly
+import Data.WideWord.Word256 (Word256())
+import qualified Data.WideWord.Word256 as W
+import Data.Bits
 
 --Defines the abstract behavior of straight-line Core ops, i.e. the
 --non-branching EVM ops less DUP*, SWAP*, POP.
@@ -78,10 +83,10 @@ opBehavior = M.fromList [
            | let -> ([bool],[]))
   --f & 0x...ff = f
   --Need bitwise ops on Word256
-  ,("and", arp 2 1 $ lrid (modulus-1) $ absorbing 0 $ op21 $ error "todo")
-  ,("or", arp 2 1 $ lrid 0 $ absorbing (modulus-1) $ op21 $ error "todo")
-  ,("xor", arp 2 1 $ lrid 0 $ ifEqual id $ op21 $ error "todo")
-  ,("not", arp 1 1 $ op11 $ error "todo")
+  ,("and", arp 2 1 $ lrid (modulus-1) $ absorbing 0 $ op21W (.&.))
+  ,("or", arp 2 1 $ lrid 0 $ absorbing (modulus-1) $ op21W (.|.))
+  ,("xor", arp 2 1 $ lrid 0 $ ifEqual id $ op21W xor)
+  ,("not", arp 1 1 $ op11W complement)
   --byte (n>31) _ = 0, byte _ 0 = 0
   ,("byte", arp 2 1 $ rabsorbing 0 $ ifRThen (isKAnd (>31)) (const $ exactly 0)
      $ op21 (\ix a ->
@@ -284,11 +289,16 @@ op21 (+) ([w1,w2],[])
   | Just a <- unexactly w1,
     Just b <- unexactly w2 = ([exactly $ toWord $ a+b],[])
   | let = ([(w1 \/ w2){possKs = All}],[])
+--Converts the Integers to Word256 and back
+op21W :: (Word256 -> Word256 -> Word256) -> OpFun
+op21W (+) = op21  $ \a b -> fromIntegral $ fromInteger a + fromInteger b
 op11 :: (Integer -> Integer) -> OpFun
 op11 f ([w],[])
   | w == bottom = ([w],[])
   | Just k <- unexactly w = ([exactly $ toWord $ f k],[])
   | let = ([w{possKs=All}],[])
+op11W :: (Word256 -> Word256) -> OpFun
+op11W f = op11 (fromIntegral . f . fromInteger)
 --TODO answer q: is it safe for Boolean ops on bottom to return bool?
 --That's safe but overapproximates: consider w1,w2 = bottom.
 --If the result is bottom then they might increase to k1,k2, at which point
