@@ -195,8 +195,6 @@ exploreF f ts =
                          in return ps'
 --Generate the Structured definition of a given C function, store it in
 --fsDefuns.
---Primfuns are handled in Core rather than Structured (which can only express
---normal return, not e.g. stop).
 --Calling convention for a -> b:
 --Type: Cont (a#1..a#n,Cont (b#..b#m,stk) Env,stk) Env
 --where n, m is wordsize a, b

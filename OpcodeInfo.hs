@@ -299,7 +299,8 @@ opcodes = M.fromList $
         oiBehavior = Swaps n
        })
   | (op,n) <- zip [0x90..] [1..16]] ++
-  [impureOp (modifies Other) ("log"++show n) op (2+n) False (375*(n+1))
+  [impureOp (reads Memory & modifies Other)
+    ("log"++show n) op (2+n) False (375*(n+1))
   | (op,n) <- zip [0xa0..] [0..4]] ++
   --What does CREATE do? It may modify the balance and nonce (Other),
   --extstate (directly), storage and tstorage (via calls).
@@ -344,7 +345,8 @@ opcodes = M.fromList $
   --burning the caller's gas.
   --The minimum gas cost is technically 0...
   [("invalid", (jumpy 0xfe 0 0){oiBehavior = Branching nothing})] ++
-  --selfdestruct deletes the contract's own code if it was created.
+  --selfdestruct deletes the contract's own code if it was created in the same
+  --transaction.
   --Note it's deprecated and unsupported by Core.
   [("selfdestruct", (jumpy 0xff 1 5000){oiBehavior =
                                         Branching $ consumesAll [

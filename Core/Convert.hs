@@ -61,9 +61,11 @@ exitingPrims = M.fromList [
         mem = Mono "$memory" MemoryState
 --The state that persists after a STOP or RETURN:
 --TODO keep current as state is subdivided
+--Since log is included in other, other must be persisted.
+--TODO split out log so stop/return doesn't force inclusion of dead GAS ops.
 stopState :: [Var]
 stopState = [v | v <- envV, not $ nameOfVar v `elem`
-              words "$memory $calldata $returndata $other"]
+              words "$memory $calldata $returndata"]
 --main:()->() is an ordinary function, meaning it has $ret on the stack and
 --will jump to it on return.
 --We therefore need a $trueMain Core function, so named to avoid clashing

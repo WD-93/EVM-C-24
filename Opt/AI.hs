@@ -422,10 +422,12 @@ unsafeWireModState core ms1 ms2 = do
         M.mapMaybe (\(_lhs,(_obs,branch)) ->
                        --Why not use a list that could be mapped more
                        --succinctly? To make bad lists unrepresentable.
+                       --Other could be fed back, but since it has no effect
+                       --on op abvars anyway...
                        case branch of
-                         Return (_,[_mem,sto,tsto,ext]) ->
+                         Return (_,[_mem,sto,tsto,ext,_other]) ->
                            Just (sto,tsto,ext)
-                         Stop (_,[sto,tsto,ext]) ->
+                         Stop (_,[sto,tsto,ext,_other]) ->
                            Just (sto,tsto,ext)
                          _ -> Nothing
                    ) $
