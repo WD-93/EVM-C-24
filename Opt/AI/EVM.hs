@@ -156,26 +156,65 @@ opBehavior = M.fromList [
   ,("tload", opload)
   ,("tstore", opstore)
   ,("mcopy", copy "mcopy" Memory)
-  ,("log0",error "todo")
-  ,("log1",error "todo")
-  ,("log2",error "todo")
-  ,("log3",error "todo")
-  ,("log4",error "todo")
-  ,("create",error "todo")
-  --If retlen = 0, has no effect on memory
-  --Modifies returndata, which is initially 0
+  --log* reads memory and modifies other
+  ,("log0", logfun 0)
+  ,("log1", logfun 1)
+  ,("log2", logfun 2)
+  ,("log3", logfun 3)
+  ,("log4", logfun 4)
+  --Like call*, create can modify contract-private state via reentrancy.
+  --However, that needn't be simulated in the op itself - since AI is
+  --monotonic, sto etc will already be the LUB of the effect of repeated CALLs
+  --to main.
+  --Minor opt: if code len is 0, it will not reenter.
+  --Should I return bottom if any arg is bottom?
+  ,("create", ar 3 5 1 4 $ \_ ([val,ost,len],[mem,sto,tsto,ext,other]) ->
+                             ([bottom{possKs=All}], --0 or an addr
+                              [sto,tsto,ext,other]))
+  --If retlen = 0, doesn't write memory.
+  --If arglen = 0, doesn't read memory.
+  --Modifies returndata, which is initially 0.
   --Returns a Bool.
-  --Q: does CREATE affect returndata?
-  --A CALL or CREATE may reenter, modifying sto and tsto.
+  --Q: does CREATE affect returndata? No.
+  --A CALL or CREATE may reenter, modifying sto, tsto and other.
   --However, it can only do so by calling main... and so the
-  --effect will be captured by looping back sto and tsto from
+  --effect will be captured by looping back sto, tsto, other from
   --all exits to $trueMain.
-  ,("call",error "todo")
-  ,("callcode",error "todo")
-  ,("delegatecall", error "todo")
-  ,("staticcall", error "todo")
+  ,("call", ar 7 6 1 6 $ \_ (_,[mem,sto,tsto,rd,ext,other]) ->
+                           ([mem{possKs=All}],
+                            [bottom{possKs=All}, --May make arb changes to mem
+                             sto,tsto,
+                             bottom{possKs=All}, --Since it's initially 0
+                             ext,other]))
+  --callcode and delegatecall differ from call in that they can make arbitrary
+  --changes to storage (and tstorage?).
+  ,("callcode", ar 7 6 1 6 $ \_ (_,[mem,sto,tsto,rd,ext,other]) ->
+                               ([bottom{possKs=All}],
+                                [mem{possKs=All},
+                                 sto{possKs=All},
+                                 tsto{possKs=All},
+                                 bottom{possKs=All}, --Since it's initially 0
+                                 ext,other]))
+  ,("delegatecall", ar 6 6 1 6 $ \_ (_,[mem,sto,tsto,rd,ext,other]) ->
+                                   ([bottom{possKs=All}],
+                                    [mem{possKs=All},
+                                     sto{possKs=All},
+                                     tsto{possKs=All},
+                                     bottom{possKs=All},
+                                     --Since it's initially 0
+                                     ext,other]))
+  ,("create2", ar 4 5 1 4 $ \_ ([val,ost,len,salt],
+                                [mem,sto,tsto,ext,other]) ->
+                              ([bottom{possKs=All}], --0 or an addr
+                               [sto,tsto,ext,other]))
+  --staticcall is like call except it transfers no value and the call may not
+  --have any side effects (other than consuming gas).
+  ,("staticcall", ar 6 2 1 2 $ \_ (_,[mem,rd]) ->
+                                 ([bottom{possKs=All}],
+                                  [mem{possKs=All},
+                                   bottom{possKs=All}
+                                  ]))
   --Boolean ops never return a label
-  --TODO assume codecopy(to,codeG,n) mentions labs in codeG
   --TODO automate state var position calc using OpcodeInfo
   ]
   where ifRLEQ1then0 f =
@@ -211,6 +250,8 @@ opBehavior = M.fromList [
         --same behavior.
         opload = ar 1 1 1 0 $ \_c2ls ([_off],[s]) -> ([s],[])
         opstore = ar 2 1 0 1 $ \_c2ls ([_off,w],[s]) -> ([],[w \/ s])
+        logfun topics = ar (2+topics) 2 0 1 $
+                        \_c2ls (_,[mem,other]) -> ([],[other])
         --Tag the behavior with its arity; boilerplate
         ar :: Int -> Int -> Int -> Int -> OpFun -> ((Int,Int),(Int,Int),OpFun)
         ar a b c d f = ((a,b),(c,d),f)
