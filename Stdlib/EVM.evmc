@@ -191,7 +191,7 @@ log2 : (Word,Word,Word,Word) -> ();
 log2 _ := {};
 log3 : (Word,Word,Word,Word,Word) -> ();
 log3 _ := {};
-log4 : (Word,Word,Word,Word,Word) -> ();
+log4 : (Word,Word,Word,Word,Word,Word) -> ();
 log4 _ := {};
 
 //0xf0-0xf5
