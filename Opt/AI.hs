@@ -14,6 +14,7 @@ import Core.PrimTypes hiding (pattern Arg) --for debug print (W)
 import AST.DTs (pattern UInt) --for debug print
 import Core.SSA (OptCore,OptFunRHS,OpMap)
 import Util (unsafePrint')
+import Opt.CodeG2Labels (codeG2Labels)
 
 import Data.Set (Set(..))
 import qualified Data.Set as S
@@ -529,11 +530,17 @@ aiEquation core ms = do
       badSuccsMap = M.map badFunSuccs fim
   predsMap <- runCB $ invertLabeledGraph succsMap
   badPredsMap <- runCB $ invertLabeledGraph badSuccsMap
+  --Create the codeG->mentioned labels map; error immediately if it's
+  --malformed.
+  c2ls <- case codeG2Labels core of
+            Left err -> error $ "Compiler error in codeG2Labels: " ++ show err
+            Right c2ls -> return c2ls
   --Need to map funInfo with keys to get the key for predsMap
   let f_fis = M.toList fim
   fim' <- flip runReaderT (core,ms) $
           M.fromList <$>
-          mapM (\(f,fi) -> (,) f <$> fiEquation predsMap badPredsMap (f,fi))
+          mapM (\(f,fi) -> (,) f <$> fiEquation c2ls predsMap badPredsMap
+                           (f,fi))
           f_fis
   return MS {funInfo = fim'}
 
@@ -549,11 +556,12 @@ aiEquation core ms = do
 --TODO separate liveness per var and op from the stitching with abvar chans.
 fiEquation :: (AIC m, MonadError AIError m,
                MonadReader (OptCore, ModState (S m)) m) =>
+              Map FunVar AbVar -> --codeG => labels
               Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
               Map FunVar (Chan (S m) (Map FunVar (Int,Int))) ->
               (FunVar, FunInfo (S m)) ->
               m (FunInfo (S m))
-fiEquation predsMap badPredsMap (f,fi) = do
+fiEquation c2ls predsMap badPredsMap (f,fi) = do
   (core,ms) <- ask
   reachable <- eqReachable ms fi
   let Just ps = M.lookup f predsMap
@@ -561,7 +569,8 @@ fiEquation predsMap badPredsMap (f,fi) = do
   (lhsavs,bi,mpassed,ss,bss) <-
     case () of
       _ | Just ((wvs,_,svs),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
-            (lhs,v2abv,ss,bss) <- fiEqAbVarsFun wvs svs ops branch ms fi ps bps
+            (lhs,v2abv,ss,bss) <-
+              fiEqAbVarsFun c2ls wvs svs ops branch ms fi ps bps
             --Bug: fiEqLiveFun treated wvs, svs as the vars of passed, but
             --they're actually from the lhs.
             --Adding passed Vars mvps:
@@ -593,6 +602,7 @@ fiEquation predsMap badPredsMap (f,fi) = do
     badFunSuccs = bss,
     badFunPreds = bps
     }
+{-
 fiEqAbVars
   :: (AIC m, MonadError AIError m,
       MonadReader (OptCore, ModState (S m)) m) =>
@@ -619,12 +629,13 @@ fiEqAbVars ei_fun_jt ms fi ps bps =
       Right ((wlen,slen),fs) -> do
         (lhs,ss,bss) <- fiEqAbVarsJT wlen slen fs ms ps bps
         return (lhs,Nothing,ss,bss)
-fiEqAbVarsFun ws ss ops branch ms fi ps bps = do
+-}
+fiEqAbVarsFun c2ls ws ss ops branch ms fi ps bps = do
   --Allocate lhs abvar chans
   lhs@(wchs,schs) <- lhsAbVars ms (length ws, length ss) ps bps
   --Assign them to their corresponding Vars
   let initVars = M.fromList $ zip (ws ++ ss) (wchs ++ schs)
-  finalVars <- aiOps ops initVars
+  finalVars <- aiOps c2ls ops initVars
   (ss,bss) <- aiSuccs fi finalVars branch 
   return (lhs,finalVars,ss,bss)
 fiEqAbVarsJT wlen slen fs ms ps bps = do
@@ -996,9 +1007,10 @@ apply(lhs,op,cr) =
 -}
 aiOps :: (AIC m, MonadError AIError m,
           MonadReader (OptCore, ModState (S m)) m) =>
+  Map FunVar AbVar -> --codeG => labels
   Map Var (Value,OpE) -> Map Var (Chan (S m) AbVar) ->
   m (Map Var (Chan (S m) AbVar))
-aiOps ops initMap =
+aiOps c2ls ops initMap =
   execStateT (mapM_ explore $ M.keys ops) initMap
   where
     explore v = do
@@ -1054,7 +1066,7 @@ aiOps ops initMap =
                              retArity actualRA
                         else return ()
                       --Apply the op circuit
-                      (lwchs,lschs) <- lift $ opAI retArity behavior
+                      (lwchs,lschs) <- lift $ opAI retArity (behavior c2ls)
                                        (rwchs,rschs)
                       --Assign the resulting channels to the lhs
                       zipWithM_ (\k v -> modify $ M.insert k v)

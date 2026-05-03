@@ -1146,8 +1146,11 @@ exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
           then let Just e = me
                in Just <$> serialize e
           else return Nothing
+  --Handling codecopy in AI exposed bug: given a code global codeG,
+  -- &codeG pushes a label codeG[] (i.e. codeG with an empty type application).
+  --That means g++"[]" rather than g must be stored in the map.
   modify (\fs->
-             fs{fsGlobals = M.insert g (r,t,mser) $ fsGlobals fs})
+             fs{fsGlobals = M.insert (g++"[]") (r,t,mser) $ fsGlobals fs})
 
 --Map monomorphic fields to offsets; that info is not required after
 --Structured. Is sizeof used in post-Structured case compilation? Add it later

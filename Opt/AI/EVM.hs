@@ -7,6 +7,7 @@ import Const.Const (Serialized(..))
 --for ordering state vars correctly
 import OpcodeInfo hiding (State) 
 import qualified OpcodeInfo as OI
+import Core.RestrictedCore (FunVar())
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -22,7 +23,10 @@ import Data.Bits
 --Defines the abstract behavior of straight-line Core ops, i.e. the
 --non-branching EVM ops less DUP*, SWAP*, POP.
 
-type OpFun = AbValue -> AbValue
+--Added the codeG => labels map to OpFun; it's used by codecopy and ignored
+--by everything else, but handling that here avoids spreading EVM AI over
+--several modules.
+type OpFun = Map FunVar AbVar -> AbValue -> AbValue
 type AbValue = ([AbVar],[AbVar])
 opBehavior :: Map String ((Int,Int), --arg arity
                           (Int,Int), --ret arity
@@ -74,7 +78,7 @@ opBehavior = M.fromList [
   ,("eq", arp 2 1 $ ifEqual (const $ exactly 1) $ op21bool (==))
   --iszero fs = 0
   ,("iszero", arp 1 1 $
-     \([w],[]) ->
+     \_c2ls ([w],[]) ->
        case () of
          _ | w == bottom -> ([bottom],[])
            | isLabel w && w /= bottom -> ([exactly 0],[])
@@ -102,7 +106,7 @@ opBehavior = M.fromList [
   ,("sar", arp 2 1 $ lid 0 $ rabsorbing 0 $
            ifLThen (isKAnd (> 255)) (const $ exactly 0) $
            op21 (\sh a -> toSigned a `div` 2 ^ sh))
-  ,("keccak256", ar 2 1 1 0 $ \([ost,len],[mem]) ->
+  ,("keccak256", ar 2 1 1 0 $ \_c2ls ([ost,len],[mem]) ->
                   if bottom `elem` [ost,len,mem]
                   then ([bottom],[])
                   else ([bottom{possKs=All}],[]))
@@ -176,18 +180,20 @@ opBehavior = M.fromList [
   ]
   where ifRLEQ1then0 f =
           ifRThen (isLEQThan 1) (const $ exactly 0) f
-        ifRThen pred f' f args@([w1,w2],[]) =
+        ifRThen :: (AbVar -> Bool) -> (AbVar -> AbVar) -> OpFun -> OpFun
+        ifRThen pred f' f c2ls args@([w1,w2],[]) =
           if pred w2
           then ([f' w1],[])
-          else f args
-        ifLThen pred f' f args@([w1,w2],[]) =
+          else f c2ls args
+        ifLThen :: (AbVar -> Bool) -> (AbVar -> AbVar) -> OpFun -> OpFun
+        ifLThen pred f' f c2ls args@([w1,w2],[]) =
           if pred w1
           then ([f' w2],[])
-          else f args
-        labelsUnaffectedIf pred f args@([w1,w2],[]) =
+          else f c2ls args
+        labelsUnaffectedIf pred f c2ls args@([w1,w2],[]) =
           if isKAnd pred w2 && isLabel w1
           then ([w1],[])
-          else f args
+          else f c2ls args
         --abv is guaranteed to be > k
         isGreaterThan k = isKAnd (>k)
         --guaranteed to be <= k
@@ -198,13 +204,13 @@ opBehavior = M.fromList [
         --abv is either a label or bottom, but certainly not a k
         isLabel abv = possKs abv == None
         --TODO answer Q: should I propagate bottom here?
-        arb1 (ws,ss)
+        arb1 _c2ls (ws,ss)
           | bottom `elem` (ws++ss) = ([bottom],[])
           | let = ([bottom{possKs=All}],[])
         --For now, all mutable region loads and stores have the
         --same behavior.
-        opload = ar 1 1 1 0 $ \([_off],[s]) -> ([s],[])
-        opstore = ar 2 1 0 1 $ \([_off,w],[s]) -> ([],[w \/ s])
+        opload = ar 1 1 1 0 $ \_c2ls ([_off],[s]) -> ([s],[])
+        opstore = ar 2 1 0 1 $ \_c2ls ([_off,w],[s]) -> ([],[w \/ s])
         --Tag the behavior with its arity; boilerplate
         ar :: Int -> Int -> Int -> Int -> OpFun -> ((Int,Int),(Int,Int),OpFun)
         ar a b c d f = ((a,b),(c,d),f)
@@ -228,7 +234,7 @@ signextend b x
 copy :: String -> OI.State -> ((Int,Int),(Int,Int),OpFun)
 copy op r = ((3,if r == Memory then 1 else 2), --takes source region and memory
              (0,1), --updates memory
-             (\([dst,ost,len],states) ->
+             (\_c2ls ([dst,ost,len],states) ->
                 let mem = getSV op Memory states
                     dat = getSV op r states
                 in if len == exactly 0 --if copied len is 0 it's a noop
@@ -247,14 +253,23 @@ copy op r = ((3,if r == Memory then 1 else 2), --takes source region and memory
 --memory memtbl;
 --main():= {copy(memtbl,&jumptbl,1); (memtbl!ix)(a)}
 --could fail because f1..fN might be pruned.
-codecopy ([dst,ost,len],[mem]) =
+--Adding codeG => labels handling:
+--For each codeG in codeGs ost, union its abvar with mem.
+--Precondition: any label mentioned in Core exists in the map...
+codecopy c2ls ([dst,ost,len],[mem]) =
   if len == exactly 0
   then ([],[mem])
-  else ([],[mem{possKs=All}])
+  else
+    let cs = S.toList $ codeGs ost
+        abvs = map (\c ->
+                      case M.lookup c c2ls of
+                        Just abv -> abv
+                        _ -> error $ "Undefined label in Core: " ++ c) cs
+    in ([],[foldr (\/) bottom abvs])
 --Ext is assumed to always be arbitrary; passing a label to another contract
 --doesn't add it to ext. The ext state variable is solely used to order
 --ops, e.g. an extcodecopy may not be commuted with a CALL.
-extcodecopy ([addr,dst,ost,len],svs) =
+extcodecopy _c2ls ([addr,dst,ost,len],svs) =
   let mem = getSV "extcodecopy" Memory svs
   in if len == exactly 0
      then ([],[mem])
@@ -279,12 +294,12 @@ toSigned n | n >= halfModulus = n - modulus
 onSigned (*) a b = toSigned a * toSigned b
 
 op31 :: (Integer -> Integer -> Integer -> Integer) -> OpFun
-op31 f ([a,b,c],[])
+op31 f _c2ls ([a,b,c],[])
   | bottom `elem` [a,b,c] = ([bottom],[])
   | Just [x,y,z] <- mapM unexactly [a,b,c] = ([exactly $ toWord $ f x y z],[])
   | let = ([(a \/ b \/ c){possKs=All}],[])
 op21 :: (Integer -> Integer -> Integer) -> OpFun
-op21 (+) ([w1,w2],[])
+op21 (+) _c2ls ([w1,w2],[])
   | bottom `elem` [w1,w2] = ([bottom],[])
   | Just a <- unexactly w1,
     Just b <- unexactly w2 = ([exactly $ toWord $ a+b],[])
@@ -293,7 +308,7 @@ op21 (+) ([w1,w2],[])
 op21W :: (Word256 -> Word256 -> Word256) -> OpFun
 op21W (+) = op21  $ \a b -> fromIntegral $ fromInteger a + fromInteger b
 op11 :: (Integer -> Integer) -> OpFun
-op11 f ([w],[])
+op11 f _c2ls ([w],[])
   | w == bottom = ([w],[])
   | Just k <- unexactly w = ([exactly $ toWord $ f k],[])
   | let = ([w{possKs=All}],[])
@@ -304,7 +319,7 @@ op11W f = op11 (fromIntegral . f . fromInteger)
 --If the result is bottom then they might increase to k1,k2, at which point
 --you should be able to give a definite answer. If you've already returned
 --bool it's too late.
-op21bool (&) ([w1,w2],[])
+op21bool (&) _c2ls ([w1,w2],[])
   | bottom `elem` [w1,w2] = ([bottom],[])
   | Just a <- unexactly w1,
     Just b <- unexactly w2 = ([exactly $ if a & b then 1 else 0],[])
@@ -312,33 +327,33 @@ op21bool (&) ([w1,w2],[])
 bool = bottom{possKs=All}
 --Binary op left and right identity
 lrid k = lid k . rid k
-lid k f args@([w1,w2],[]) =
+lid k f c2ls args@([w1,w2],[]) =
   if w1 == exactly k
   then ([w2],[])
-  else f args
-rid k f args@([w1,w2],[]) =
+  else f c2ls args
+rid k f c2ls args@([w1,w2],[]) =
   if w2 == exactly k
   then ([w1],[])
-  else f args
+  else f c2ls args
 --Binary op left and right absorbing element
-absorbing k f args@([w1,w2],[]) =
+absorbing k f c2ls args@([w1,w2],[]) =
   if exactly k `elem` [w1,w2]
   then ([exactly k],[])
-  else f args
+  else f c2ls args
 --Used by div, sdiv
-rabsorbing k f args@([w1,w2],[]) =
+rabsorbing k f c2ls args@([w1,w2],[]) =
   if w2 == exactly k
   then ([w2],[])
-  else f args
+  else f c2ls args
 --TODO use for (-), (==), xor, and, or
 --What I really want to check for is equality, but that can only be determined
 --for labels and constants with the current AbVar repr.
 --Since equal constants are already handled by the concrete implementation,
 --I check only for equal labels.
-ifEqual a2a f args@([w1,w2],[])
+ifEqual a2a f c2ls args@([w1,w2],[])
   | Just p1 <- unlabel w1, Just p2 <- unlabel w2,
     p1 == p2 = ([a2a w1],[])
-  | let = f args
+  | let = f c2ls args
 --Generic behavior: result = lub of inputs, possKs = All
              
 --Push isn't part of the opBehavior map, but it makes sense to define its
