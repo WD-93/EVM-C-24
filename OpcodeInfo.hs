@@ -232,7 +232,7 @@ opcodes = M.fromList $
   --It's just a constant... in any given compiled program.
   [pureOp "codesize" 0x38 0 True 2] ++
   --Similarly, should code be assumed to be fixed in codecopy?
-  [impureOp (modifies Memory) "codecopy" 0x39 3 True 3] ++
+  [impureOp (modifies Memory) "codecopy" 0x39 3 False 3] ++
   [env "gasprice" 0x3a] ++
   --Again, highly misleading min gas costs for all ops that touch ExtState.
   [impureOp (reads ExtState) "extcodesize" 0x3b 1 True 100] ++

@@ -122,7 +122,7 @@ opBehavior = M.fromList [
   ,("codesize",ar 0 1 1 0 $ arb1)
   --For all copies: if len == 0, return memory unchanged
   --Otherwise mem += source
-  ,("codecopy", ar 3 2 0 1 $ codecopy) --Oops: code isn't in OI.State!
+  ,("codecopy", ar 3 1 0 1 $ codecopy)
   ,("gasprice", ar 0 1 1 0 $ arb1)
   ,("extcodecopy", ar 4 2 0 1 $ extcodecopy)
   ,("returndatasize", ar 0 1 1 0 $ arb1)
@@ -265,7 +265,7 @@ codecopy c2ls ([dst,ost,len],[mem]) =
                       case M.lookup c c2ls of
                         Just abv -> abv
                         _ -> error $ "Undefined label in Core: " ++ c) cs
-    in ([],[foldr (\/) bottom abvs])
+    in ([],[foldr (\/) bottom{possKs=All} abvs])
 --Ext is assumed to always be arbitrary; passing a label to another contract
 --doesn't add it to ext. The ext state variable is solely used to order
 --ops, e.g. an extcodecopy may not be commuted with a CALL.
