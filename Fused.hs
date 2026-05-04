@@ -790,13 +790,11 @@ assignEP ep vs =
             --Potential future opt: knowing the tag has only one of
             --n possible values, optimize the equality check.
             --That would make checks on corrupt tags UB.
-            else do
+            else require $ do
             (serTag,tagT) <- liftFused $ getTag con ts
             desiredTag <- pushMultiWordSer serTag tagT
             (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
-            eq <- equals actualTag desiredTag
-            --Now we need an ifte!
-            require eq
+            equals actualTag desiredTag
           else return ()
         forM_ fieldPs (\(field,p) -> do
                           fld <- fst <$> getDot vs field ts
@@ -820,16 +818,23 @@ assignEP ep vs =
 --can all jump to the same revertValue@[()].
 --The else body just jumps to the subsequent code; that should be
 --inlined once it's recognized that the jump is the only edge.
-require :: Var -> FFM ()
+
+--Fixed scope bug: case False of {False=>{}} failed with a scope error
+--because the cond was not passed on the stack.
+--Structured branches become a jumpi between basic blocks under the hood;
+--any variables passed between BBs must be passed on the stack.
+--That's why Structured requires scope tracking. Branching on a var without
+--pushing it to scope will cause a scope error; I must instead pass a FFM Var
+--and use ifte.
+--Lifting working code from if-then-else compilation:
+require :: FFM Var -> FFM ()
 require cond = do
-  --code inspired by convertE A.Ifte; TODO make shared helper?
   scope <- getScope
-  --Can I safely use block here or do I need a callCFun helper?
-  unsafePrint $ "Reached require " ++ show cond
+  (w,code) <- collect scope cond
   els <- block scope $ SE $
     TyApp "revertValue" [Unit] :$
     ConRecord "Unit" (Just []) []
-  emitStmt $ IR.Ifte scope [] cond [] els
+  emitStmt $ IR.Ifte scope code w [] els
 
 {-
 Copied from comment at line 275:
