@@ -386,7 +386,7 @@ initialAVar = AVar <$> newChan False <*> newChan bottom
 
 --Drops the first word var (dest) from a value
 dropJump p = (drop 1 *** id) p
---Drops the first two word vars (cond,dest) from a value
+--Drops the first two word vars (dest,cond) from a value
 dropJumpi p = (drop 2 *** id) p
 --Pairs each var of a value with a false Boolean chan
 addBools :: AIC m =>
@@ -816,8 +816,8 @@ getDemandFromBranch mlps branch =
             case branch of
               Jump _mode (dest:_,_,_) ->
                 [dest]
-              Jumpi _elf (cond:dest:_,_,_) ->
-                [cond,dest]
+              Jumpi _elf (dest:cond:_,_,_) ->
+                [dest,cond]
           alwaysLive = M.fromSet (const Nothing) $
                        S.fromList cond_dest
       in M.union alwaysLive $ M.map Just $
@@ -933,7 +933,7 @@ askFI f = do
 branchPassed :: Branch -> Maybe Value
 branchPassed = \case
   Jump _mode (dest:ws,_,ss) -> Just (ws,ss)
-  Jumpi _else_f (cond:dest:ws,_,ss) -> Just (ws,ss)
+  Jumpi _else_f (dest:cond:ws,_,ss) -> Just (ws,ss)
   --A jump or jumpi with too few word args is a compiler error
   b@Jump{} -> error $ "Malformed jump: " ++ show b
   b@Jumpi{} -> error $ "Malformed jumpi: " ++ show b
@@ -1151,7 +1151,11 @@ aiSuccs fi finalVars branch = do
           bss <- newInChan M.empty
           return $ freeze (inch,bss)
       --{else_f | falsy cond} U {f | f <- possFuns dest, truthy cond}
-      Jumpi else_f (cond:dest:_,_,_) -> do
+      --For now mayBeBad is ignored, assuming the then and else branches are
+      --intraprocedural. FW: add mode info to each branch, share stack suffix
+      --computation so "if cond then f() else g() end" can be optimized to
+      --jumpi to f and fall through to g.
+      Jumpi else_f (dest:cond:_,_,_) -> do
         let Just destch = M.lookup dest finalVars
         (fsch,_mayBeBad) <- possFunsCircuit jtMap destch
         let Just condch = M.lookup cond finalVars
