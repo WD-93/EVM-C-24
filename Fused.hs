@@ -1498,8 +1498,6 @@ compileCase scope dt vs cases =
   case cases of
     --no cases; simply revert
     [] -> revertNil
-    --One case; it doesn't matter whether it's fallible.
-    [ps] -> simpleCase ps
     --Check if first pattern is infallible, boxed or unboxed
     --TODO special-case {FallibleCon => ...; inf => ...}, where I really
     --only need to check the tag.
@@ -1507,42 +1505,82 @@ compileCase scope dt vs cases =
         fpi <- liftFused $ getFPI dt p
         case fpi of
           Infallible -> simpleCase (p,s)
-          Fallible mr cons tagScheme -> do
-            (tag,tagT) <- getTagOfValue dt mr tagScheme vs
-            --If tag scheme = N1, need to mul tag by 5
-            tag' <- case tagScheme of
-                      N1 _ -> do
-                        let [tagw] = tag
-                        (:[]) <$> opE2 "mul" (constant 5) (return tagw)
-                      _ -> return tag
-            --Branching on the tag...
-            putScope $ tag ++ vs ++ scope
-            let (fals,minf) = collectCases cons cases
-            case tagScheme of
-              Custom _ con2tag ->
-                compileCustomBranch scope tagT con2tag fals minf tag vs
-              --Need to jump into a JT; whether it's pushed onto the stack
-              --or in code, it's sequential in order of cons.
-              _ -> do
-                let [tagw] = tag
-                --Each (p,s) needs to be converted to [Stmt].
-                --First, the default case.
-                --TODO opt: revert(0,0) ignores the scope above it, so I
-                --only need one jumpdest for it.
-                dflt <- snd <$> collect (vs++scope)
-                  (case minf of
-                     Nothing -> revertNil
-                     Just (p,s) -> caseBody scope vs p s
-                  )
-                con2stmts <- forM (M.fromList fals)
-                             (\(p,s) -> snd <$> collect (vs ++ scope)
-                               (caseBody scope vs p s))
-                let jt = map (\con ->
-                                case M.lookup con con2stmts of
-                                  Nothing -> dflt
-                                  Just stmts -> stmts) cons
-                emitStmt $ CaseBranch scope
-                  (tagScheme == N16) vs tagw jt
+          Fallible mr cons tagScheme
+            --Bool case should compile to an ifte even if there is only one
+            --case. The tag computation must be in the ifte cond to avoid
+            --a scope error. That unfortunately means code duplication...
+            | Bool <- tagScheme -> do
+                let (fals,minf) = collectCases cons cases
+                let [falseCon,_trueCon] = cons
+                --Possibilities:
+                --Two disjoint infallible cases
+                --One infallible, one fallible
+                --Only one infallible; the other reverts
+                let (con1,_ps1):cps = fals
+                    --Nothing => ignore vs, use revertNil directly
+                    mps2 = case (cps,minf) of
+                             ([],Nothing) -> Nothing
+                             ([(_con2,ps2)],Nothing) -> Just ps2
+                             ([], Just ps2) -> Just ps2
+                let scopeCase = vs ++ scope
+                stmts1 <- snd <$> collect scopeCase
+                          (caseBody scope vs p s)
+                stmts2 <- snd <$> collect scopeCase
+                          (case mps2 of
+                             Nothing -> revertNil
+                             Just (p2,s2) -> caseBody scope vs p2 s2)
+                let [th,el] = (if con1 == falseCon
+                               then reverse
+                               else id) [stmts1,stmts2]
+                --Copied from require:
+                (bool,cond) <- collect scopeCase $ do
+                  (tag,tagT) <- getTagOfValue dt mr Bool vs
+                  return $ head tag
+                putScope scopeCase
+                emitStmt $ IR.Ifte scopeCase cond bool th el
+                --convertS will handle resetting the scope to scope
+            --If the tag scheme is not Bool, it's fine to convert single-case
+            --case statements to assignments.
+            | [ps] <- cases -> simpleCase ps
+            | let -> do
+                (tag,tagT) <- getTagOfValue dt mr tagScheme vs
+                --If tag scheme = N1, need to mul tag by 5
+                tag' <- case tagScheme of
+                          N1 _ -> do
+                            let [tagw] = tag
+                            (:[]) <$> opE2 "mul" (constant 5) (return tagw)
+                          _ -> return tag
+                let tag = tag'
+                --Branching on the tag...
+                putScope $ tag ++ vs ++ scope
+                let (fals,minf) = collectCases cons cases
+                case tagScheme of
+                  Custom _ con2tag ->
+                    compileCustomBranch scope tagT con2tag fals minf tag vs
+                  --Need to jump into a JT; whether it's pushed onto the stack
+                  --or in code, it's sequential in order of cons.
+                  --N5 is already handled; after the mul by 5 if scheme = N1, it
+                  --has the same repr as N1.
+                  _ -> do
+                    let [tagw] = tag
+                    --Each (p,s) needs to be converted to [Stmt].
+                    --First, the default case.
+                    --TODO opt: revert(0,0) ignores the scope above it, so I
+                    --only need one jumpdest for it.
+                    dflt <- snd <$> collect (vs++scope)
+                      (case minf of
+                         Nothing -> revertNil
+                         Just (p,s) -> caseBody scope vs p s
+                      )
+                    con2stmts <- forM (M.fromList fals)
+                                 (\(p,s) -> snd <$> collect (vs ++ scope)
+                                   (caseBody scope vs p s))
+                    let jt = map (\con ->
+                                    case M.lookup con con2stmts of
+                                      Nothing -> dflt
+                                      Just stmts -> stmts) cons
+                    emitStmt $ CaseBranch scope
+                      (tagScheme == N16) vs tagw jt
   where simpleCase (p,s) = do
           assignValue p vs
           convertS s
