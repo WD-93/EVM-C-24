@@ -1240,10 +1240,12 @@ exploreD monoTs monoTset mt@(tycon,ts)
                  (monoTagScheme,tagSz,mtagT) <-
                    case tagScheme of
                      Nil -> return (Nil,0, Nothing)
+                     Bool -> return (Bool, 1, Just $ UInt 1)
+                     N16 -> return (N16, 1, Just $ UInt 1)
+                     N5 -> return (N5, 1, Just $ UInt 1)
                      N1 len -> return (N1 len,
                                        fromIntegral len,
                                        Just $ UInt $ fromIntegral len)
-                     N16 -> return (N16, 1, Just $ UInt 1)
                      Custom t con2tag -> do
                        --Share mt insertions
                        let mts = mt:monoTs
@@ -1901,29 +1903,26 @@ getTag con ts = do
   (cons,tagScheme) <- getTagScheme tycon ts
   --Will fail for a boxed constructor... TODO fix
   let Just conIx = elemIndex con cons
+      lit len v = Serialized {
+        serLength = len,
+        serSizeof = len,
+        serContent = 
+            [Left $ serInt len $ fromIntegral v]
+        }
   return $ case tagScheme of
              Nil -> (emptySer, TyCon "Unit")
+             Bool -> (lit 1 conIx, UInt 1)
+             N16 -> (lit 1 $ conIx*16, UInt 1)
+             N5 -> (lit 1 $ conIx*5, UInt 1)
+             N1 len ->
+               --TODO make a combinator for Serialized from serInt...
+               let leni = fromIntegral len
+               in (lit leni conIx, UInt leni)
              Custom tagT con2eser ->
                case M.lookup con con2eser of
                  Nothing -> error "Compiler error: !!?"
                  Just (_e,ser) -> (ser,tagT)
-             N1 len ->
-               --TODO make a combinator for Serialized from serInt...
-               let leni = fromIntegral len
-               in (Serialized {
-                      serLength = leni,
-                      serSizeof = leni,
-                      serContent = 
-                          [Left $ serInt leni $ fromIntegral conIx]
-                      },
-                    UInt leni)
-             N16 -> (Serialized {
-                        serLength = 1,
-                        serSizeof = 1,
-                        serContent = 
-                            [Left $ serInt 1 $ fromIntegral conIx]
-                        },
-                      UInt 1)
+             
 --This helper computes the tag of a constructor value given type info.
 --For boxed types, it's *vs :: tagType.
 --For unboxed types, it's vs.tagTyCon

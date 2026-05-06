@@ -460,10 +460,13 @@ may.
 Change: default tags are always UInts, never enums.
 Information about possible values is still preserved.
 -}
-data TagScheme e = Nil    --DTs with 0-1 constructors, array, integer
-                 | N1 Int
-                   --DTs with 2 or >16 constructors; type is UInt <Int>
-                 | N16    --DTs with 3-16 constructors; type is Byte
+data TagScheme e = Nil  --0-1 constructors: array, integer, (). Repr: ()
+                 | Bool --DTs with 2 constructors: Bool, List... Repr: 0 | 1
+                 | N16  --DTs with 3-16 constructors. Repr: 0, 16, 32...
+                 | N5   --DTs with <=52 constructors. Repr: 0, 5, 10...
+                 | N1 Int --DTs with 2 or >16 constructors. Repr: 0, 1, 2...
+                 --The Int is the size of the tag (in case the user defines a
+                 --DT with a massive number of constructors).
                  | Custom T (Map Name e)
                  -- ^ inline (unboxed) tags with arbitary, potentially
                  -- overlapping values. The values must be constants

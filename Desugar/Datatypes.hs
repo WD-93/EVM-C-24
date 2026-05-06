@@ -160,7 +160,9 @@ processDTs' dts tagTs cons fields kindsigs = do
                                          Nothing ->
                                            case length cons of
                                              len | len < 2 -> Nil
+                                                 | len == 2 -> Bool
                                                  | len <= 16 -> N16
+                                                 | len <= 52 -> N5
                                                  | otherwise ->
                                                    N1 $ log256 $
                                                    fromIntegral len
