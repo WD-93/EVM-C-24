@@ -783,18 +783,33 @@ assignEP ep vs =
           unsafePrint "Got here! assignEP EPCon unboxed"
           liftFused $ exploreD [] S.empty (tycon,ts)
           (cons,tagScheme) <- liftFused $ getTagScheme tycon ts
-          if tagScheme == Nil
-            then return ()
+          case tagScheme of
+            Nil -> return ()
+            --Determine whether the lhs tag is 0 or 1; if 0 swap the order of
+            --the then and else branch.
+            --Hack: I'll just look at the serialized tag directly.
+            Bool -> do
+              (serTag,_tagT) <- liftFused $ getTag con ts
+              let [Left [byte]] = serContent serTag
+              --Logic copied from require:
+              scope <- getScope
+              (w,cond) <- collect scope $ do
+                (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
+                return $ head actualTag
+              els <- snd <$> collect scope revertNil
+              let th = []
+                  [true,false] = (if byte == 0 then reverse else id) [th,els]
+              emitStmt $ IR.Ifte scope cond w true false
             --If the tag scheme is custom but zero-sized, the equality
             --check should be optimized to True.
             --Potential future opt: knowing the tag has only one of
             --n possible values, optimize the equality check.
             --That would make checks on corrupt tags UB.
-            else require $ do
-            (serTag,tagT) <- liftFused $ getTag con ts
-            desiredTag <- pushMultiWordSer serTag tagT
-            (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
-            equals actualTag desiredTag
+            _ -> require $ do
+              (serTag,tagT) <- liftFused $ getTag con ts
+              desiredTag <- pushMultiWordSer serTag tagT
+              (actualTag,_tagT) <- getDot vs ("tag"++tycon) ts
+              equals actualTag desiredTag
           else return ()
         forM_ fieldPs (\(field,p) -> do
                           fld <- fst <$> getDot vs field ts
