@@ -491,6 +491,8 @@ mdot :: (Construct m, Op m ~ String) =>
   [Var m] -> --struct words
   m [Var m]
 mdot _ _ 0 _ = return []
+--Special case encountered by newtypes, .tagBool etc:
+mdot szStruct _ szField vs | szStruct == szField = return vs
 mdot szStruct off szField vs = do
   let leftPad = (szStruct `roundedUpMod` 32) - szStruct
       stackOff = leftPad + off
