@@ -1,0 +1,100 @@
+Need a central repository of footguns (unintuitive or unexpected behavior)
+for inclusion in writeup and docs for new users. This file is a temporary
+measure; TODO move to proper writeup.
+
+1:
+Case does not behave like in Haskell or Erlang: there is no branching on
+nested fallible patterns, instead case only branches on the top-level tag
+to select a case, then reverts if any of that case's subpatterns fail to
+match.
+
+Example:
+xs = Cons 1 (Cons 2 Nil)
+case xs of
+ Cons x Nil => foo()
+ Cons x (Cons y xs') => bar()
+--The above code reverts: only the first Cons pattern is considered during
+compilation. Control flows to case 1, where x,Nil are assigned to
+xs.head (1) and xs.tail (Cons 2 Nil); the latter fails to match and so the
+code reverts.
+
+This is part design choice, part compiler simplification.
+Case on nested patterns must be implemented by scrutinizing one constructor 
+at a time, so to support multiple cases with fallthrough to the next on match
+failure one must choose an order in which to scrutinize them.
+For a list of integers like xs, that's simple enough (there is only one
+order assuming no support for integer literal patterns) - but consider
+case pair of
+ (True,False) => ...
+ _ => ...
+Now the compiler must choose whether to check pair.fst or pair.snd, a
+nontrivial decision; which is optimal depends on the probability 
+distributions of the respective values.
+Haskell makes the choice using heuristics (cf Peyton Jones' STG paper), but
+as a non-real-time language running on conventional hardware it faces 
+different design constraints from EVMC.
+Since EVMC targets a resource-constrained, performance-critical environment, 
+it cannot afford to leave choices that influence performance to compiler 
+discretion or luck; instead it leaves them to the programmer.
+
+2:
+Arrays are unboxed values.
+If you define a memory global
+"
+arr : Array 256 Word
+memory arr;
+"
+then referring to arr rather than &arr will (attempt to) load all 256 words
+onto the stack.
+"arr!ix = 1" will fail, because the compiler rejects array index assignment
+to arrays larger than a word. Instead you must write
+"*(&(arr!ix)) = 1", which first computes the address of arr!ix and then
+performs a pointer assignment to it.
+
+This design error resulted from EVMC's design goals (elegance, low-level 
+control) colliding with the quirks of the EVM.
+In a conventional architecture, most objects are in memory, registers play
+the role of the stack, and memory loads are both common and cheap (as long
+as they hit the cache). Arrays live in memory, and if you want to fetch an
+int to manipulate from one you just perform a load.
+A memory load is still pretty cheap on the EVM, but it's 
+resource-constrained enough that it's worth making memory ops such as
+derefs and allocation visible to the programmer.
+I therefore chose to make EVMC types unboxed by default.
+I also thought it would be elegant to represent all types as fixed-size
+unboxed types, allowing array globals to be declared using the same compiler
+logic as scalar types. That may have been a mistake.
+
+How to rectify?
+Because the EVM only allows access to the top 17 stack words and has no
+opcodes for dynamic stack slot access, indexing of multi-word unboxed arrays 
+is inevitably inefficient for >1 word and impossible for >17.
+*arrPtr!ix = k --could be supported anyway, but that introduces unintuitive
+non-compositional behavior where an array index write may or may not raise
+a compile-time error based on whether the array pattern refers to memory.
+One solution would be to add sugar for boxed array indexing (e.g. !! as
+opposed to ! for small unboxed arrays); then support for declaring boxed
+arrays would need to be added to global layout logic.
+
+3. Failing pattern matches revert the EVM CALL; there is no call-local
+exception handling. That's pretty much inevitable given EVMC is a low-level
+EVM language, but it could still be surprising.
+
+4. String literals are unboxed arrays of bytes; if you want to efficiently
+allocate a long in-memory string, you must do:
+code codeStr = "A string allocated to code";
+main() := {
+ var memStr = alloc 1;
+ copy(memStr,codeStr,1)
+}
+var memStr = alloc 1;
+*memStr = *codeStr --would also work, but it would alloc the codeStr to
+scratch memory, mload that to the stack and then mstore it back one word at
+a time. I haven't yet implemented *COPY-based optimization of *from = *to.
+Since arrays have a length type parameter, the following code will error:
+var str = "I have one length!"
+str = "But I have another length!"
+
+5. Alloc is just a bump allocator. Various functions (such as deref for code)
+use memAllocPtr as scratch memory, so there's no guarantee newly alloc'd
+memory is zero unless you're careful about scratch alloc.
