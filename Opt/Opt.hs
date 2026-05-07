@@ -1,8 +1,116 @@
+{-# LANGUAGE LambdaCase,
+ StandaloneDeriving, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable
+#-}
 module Opt.Opt where
 
---Before this'll work properly, need to set and loopback the state vars
---in $trueMain. Loopback requires identifying non-revert exiting branches
---and feeding their sto and tsto to $trueMain.
+import Core.RestrictedCore
+import Opt.AI
+import Core.SSA (OptCore())
+import Util ((?))
+import Const.Const
+import Opt.HTraversable (Id(..))
+
+import Data.Map (Map(..))
+import qualified Data.Map as M
+import Data.Set (Set(..))
+import qualified Data.Set as S
+import Data.Generics
+
+--Opt errors are compiler errors
+data OptError = OptAIError AIError
+  deriving (Eq,Ord,Read,Show)
+--I'll need to repeatedly run ai.
+opt :: OptCore -> Either OptError OptCore
+opt = iteratively optimize
+
+--Apply transformation until error or convergence
+iteratively :: Eq a => (a -> Either err a) -> a -> Either err a
+iteratively f = go
+  where go a = do
+          a' <- f a
+          if a == a'
+            then return a
+            else go a'
+
+--Problem: AI is expensive, so we want to perform it as rarely as possible.
+--However, opt rules may invalidate the results.
+--For now I'll redo AI whenever a rule fires rather than try to be clever.
+optimize :: OptCore -> Either OptError OptCore
+optimize core = do
+  ms <- ai core ? OptAIError
+  applyRules ms core [pruneUnreachableFuns]
+--Invariant: ms pertains to core
+applyRules ms core =
+  \case [] -> return core
+        rule:rules -> do
+          core' <- rule ms core
+          if core == core'
+            then applyRules ms core rules
+            --Return to iteratively, which recomputes ms via optimize
+            else return core'
+
+type OptRule = FrozenModState -> OptCore -> Either OptError OptCore
+--AI gives an upper bound on behavior; if a Core function is unreachable it
+--will never become reachable.
+--A function may be mentioned in push ops, but never called. Any mention should
+--be replaced with 0x0001 to ensure labels are always nonzero (assumed by AI).
+--Pruning before substitution avoids wasted substitution work.
+--JTs are part of funInfo, so they can be pruned as well.
+--A JT is always jumped into in the BB that mentions it, so if it's
+--unreachable then its parent BB is as well. That means it'll never need to
+--be substituted.
+pruneUnreachableFuns :: OptRule
+pruneUnreachableFuns ms core =
+  let unreachableFuns = unreachable coreDefuns
+      unreachableJTs = unreachable coreJTs
+      --Short-circuiting: if there's nothing to prune don't traverse
+  in if S.null unreachableFuns && S.null unreachableJTs
+     then return core
+     else return $ substUnreachable unreachableFuns core{
+    coreDefuns = filterKeys (not . flip S.member unreachableFuns) $
+      coreDefuns core,
+    coreJTs = filterKeys (not . flip S.member unreachableJTs) $
+      coreJTs core
+    } --filterKeys on S.member adds a log n factor... TODO exploit shared
+      --structure.
+  where unreachable field =
+          S.filter (\f ->
+                      case M.lookup f $ funInfo ms of
+                        Just fi -> not $ unId $ fiReachable fi
+                        Nothing -> error "!?"
+                   ) $
+          M.keysSet $ field core
+--M.filterKeys requires containers>=0.8... writing an inefficient replacement
+--for now.
+filterKeys :: Ord k => (k -> Bool) -> Map k a -> Map k a
+filterKeys f = M.fromList . filter (f . fst) . M.toList
+
+--Unreachable function labels are present only in map keys (where they'll
+--be filtered out) and Serialized values in pushes and staticData.
+--In all Serialized values: substitute each Right (0,2,deadf) for Left [0,1],
+--then normalize to coalesce adjacent bytestring regions.
+--Problem: that might affect the byte length of static data... need to ensure
+--it's aligned correctly afterward.
+substUnreachable :: Data a => Set FunVar -> a -> a
+substUnreachable ur = everywhere (mkT go)
+  where go :: Serialized -> Serialized
+        go ser = ser{serContent = normalizeContent $
+                      map (\case Right (off,len,lab)
+                                   | (off,len) == (0,2) ->
+                                     if S.member lab ur
+                                     then Left [0,1]
+                                     else Right (off,len,lab)
+                                   | let -> error "!?"
+                                 x -> x) $
+                      serContent ser
+                    }
+deriving instance Data OptCore
+
+--Step 1: prune unreachable functions.
+--Inlining may restrict abvars, which restricts control flow.
+--It's therefore not possible to prune unreachable functions, JTs or codeGs
+--just once... it must be done on every iteration!
+--Better apply as many rewrites as possible each iteration then.
 
 --Use AI and per-BB symbolic reasoning to apply opts
 --TODO log opt rules applied.
@@ -93,10 +201,17 @@ module Opt.Opt where
 -- *****************************Eta reduction**********************************
 
 --If f args = jump g args, every mention of f can be replaced with g.
---Problem: need to preserve the call boundary.
+--Problem: need to preserve the call boundary. For the entrypoints to C
+--functions (which are always eta-reducible), that's not a problem.
 --If h -> f was ipc and f -> g a call, then h -> g needs to become a call.
 --Why is that? To preserve continues dataflow.
 --f may be pushed far away from its use, but if so it's a C function.
+--What if $trueMain is eta-reducible? I could add an entrypoint field... for
+--now just don't eta reduce it.
+
+--Related: duplicate codeGs could be merged. That's weaker than using overlap,
+--which should be done during codegen.
+--Equal or overlapping JTs could be merged!
 
 -- ************************Symbolic simplification*****************************
 

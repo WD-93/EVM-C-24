@@ -45,6 +45,8 @@ import Core.SSA (ssa, SSAError(..),OptCore(..))
 --Abstract interpretation (the analysis used when optimizing)
 import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..),FunInfo_(..),
               BodyInfo_(..),AVar_(..))
+--Optimization Core => Core
+import Opt.Opt (opt,OptError(..))
 
 --Poor man's pretty-printing for debugging
 import Pretty
@@ -60,7 +62,7 @@ data CompilerError = ParserError String
                    | CoreError CoreError
                    | SSAError (Name,SSAError)
                    | AIError AIError --Only thrown in test pipeline2ai
-                   -- | OptError OptError --this will be thrown in the real opt
+                   | OptError OptError
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -200,9 +202,10 @@ pipeline2ai str = do
   oc <- pipeline2ssa str
   fms <- ai oc ? AIError
   return (oc,fms)
---No opts for now...
 pipeline2opt :: String -> Either CompilerError OptCore
-pipeline2opt = pipeline2ssa
+pipeline2opt str = do
+  core <- pipeline2ssa str
+  opt core ? OptError
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str
