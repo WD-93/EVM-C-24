@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase,
+{-# LANGUAGE LambdaCase, PatternSynonyms,
  StandaloneDeriving, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable
 #-}
 module Opt.Opt where
@@ -9,12 +9,16 @@ import Core.SSA (OptCore())
 import Util ((?))
 import Const.Const
 import Opt.HTraversable (Id(..))
+import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
+import Core.PrimTypes (pattern W)
+import AST.DTs (pattern Memory, pattern UInt)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.Generics
+import Control.Monad.State
 
 --Opt errors are compiler errors
 data OptError = OptAIError AIError
@@ -105,6 +109,103 @@ substUnreachable ur = everywhere (mkT go)
                       serContent ser
                     }
 deriving instance Data OptCore
+
+--Goal for minimal optimizer:
+--DCE, CE, inlining, eta reduction, BB-local symbolic opt
+
+--Using Opt.Analysis.Exitness.analyzeExitness, identify infinite loops and
+--replace them with revert(0,0).
+revertDivergent :: OptRule
+revertDivergent ms core =
+  let f2e = analyzeExitness ms core
+      divergent = M.keysSet $ M.filter (==Bottom) f2e
+      --Substitute all fs in divergent for revert(0,0)
+      --It's fine to leave JTs unchanged, since if it's divergent
+      --then the BB that jumps into it must be as well and so it'll no longer
+      --be reachable.
+      --Since this only modifies bodies, there's no risk of invalidating
+      --mentioned function names.
+  in return core{coreDefuns =
+                 M.mapWithKey (\f (lhs,rhs) ->
+                                 (lhs,if S.member f divergent
+                                   then revert_0_0 lhs
+                                   else rhs)) $
+                 coreDefuns core
+                }
+  where
+    --let z = push 0; m = emptyMem in revert ([z,z],[$mem])
+    --Problem: if mem is dead in the divergent BB, it may not be available.
+    --Fortunately, revert(0,0) doesn't really need memory... but I need to add
+    --an emptyMem op!
+    --I also need to ensure z and m don't conflict with any vars in lhs.
+    revert_0_0 lhs =
+      --Alloc new names:
+      --Precondition: there are no Vars with the same name but different types
+      let (ws,_,ss) = lhs
+          vs = S.fromList $ map nameOfVar $ ws ++ ss
+          [z,m] = evalState (mapM allocName ["z","m"]) vs
+          zv = Mono z (W (UInt 32) 1)
+          mv = Mono m Memory
+      in (M.fromList [ --let
+             --z = push 0
+             (,) zv $ (,) ([zv],[]) $
+               (,) (Push Serialized{serLength=0,serSizeof=0,serContent=[]})
+               ([],[])
+             ,(,) mv $ (([],[mv]), (Op "emptyMem", ([],[])))
+             ],
+          --in revert (z,z);m
+          Revert ([zv,zv],[mv])
+         )
+
+--When adding new ops to a BB (e.g. when replacing an infinite loop with
+--revert(0,0) or inlining), we need to allocate names not already bound.
+--That can be done locally (without a global counter) by trying variants of
+--a name until you find one not in the set.
+--I do that naively by trying x, x1, x2, ... for nm param x.
+--That's not very efficient (worst case n*log n*length x), but vars are short
+--in practice and string processing is unlikely to be the dominant cost
+--factor.
+--Separating the name generator from go is nice, but 
+allocName :: String -> State (Set String) String
+allocName nm = do
+  taken <- get
+  go taken $ nm : [nm ++ show n | n <- [1..]] 
+ where
+   go :: Set String -> [String] -> State (Set String) String
+   go taken (nm:nms) =
+     if nm `elem` taken
+       then go taken nms
+       else do
+       modify $ S.insert nm
+       return nm
+--DCE:
+--Control flow: prune unreachable funs, ifte->jump, case->jump
+--Ops: prune dead ops unless 0 and passed to dead params; if dead and passed
+--to dead param replace with 0.
+
+--Constant expansion (BB-local):
+--Treat a var as constant if 1) it's a word param from lhs and its abstract
+--value is exactly n or label lt lab, or 2) it's from a push.
+--Propagation of sers could be part of symbolic opt (also BB-local).
+--Rewrites with op tree depth > 1 are fine then, but whether they can be
+--applied depends on whether the tree crosses a BB boundary.
+--Fortunately, inlining merges BBs.
+
+--Eta reduction:
+--If f lhs = let x = g in jump g lhs, then f ~ g.
+--Restrict to intraprocedural jumps to avoid confusing AI.
+
+--Intraprocedural inlining:
+--f lhs = let ops in jump g args where g is a static fun and
+--g lhs' = let ops' in branch =>
+--f lhs = let ops;ops' in branch, where ops' and branch have been renamed to
+--avoid clashes with ops.
+--Inline iff g has only one pred, f.
+--Straight-line function inlining:
+--f lhs = let ops in call g,args,ret,scope
+--g lhs' = let ops' in return $ret, val =>
+--f lhs = let ops;ops' in jump intraprocedural ret,val,scope
+--That's enough for primfuns and would already make a big difference.
 
 --Step 1: prune unreachable functions.
 --Inlining may restrict abvars, which restricts control flow.

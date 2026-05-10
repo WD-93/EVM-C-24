@@ -216,6 +216,15 @@ opBehavior = M.fromList [
                                   ]))
   --Boolean ops never return a label
   --TODO automate state var position calc using OpcodeInfo
+
+  --The first straight-line op that isn't an EVM instruction!
+  --emptyMem returns an empty memory map, and is used to pass a trivial
+  --memory parameter to Revert when replacing infinite loops with reverts.
+  --That's necessary because the original $mem may be dead in the loop.
+  --It can also be used to pass an empty mem to revert(0,0) and return(0,0)
+  --in place of $mem, allowing memory writes before them to be recognized as
+  --dead by eliminating the false dependence on $mem.
+  ,("emptyMem", ar 0 0 0 1 $ \_ _ -> ([],[exactly 0]))
   ]
   where ifRLEQ1then0 f =
           ifRThen (isLEQThan 1) (const $ exactly 0) f
