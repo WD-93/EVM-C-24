@@ -127,7 +127,6 @@ revertDivergent ms core =
       --Since this only modifies bodies, there's no risk of invalidating
       --mentioned function names.
   in return core{coreDefuns =
-                 M.mapWithKey (\f (lhs,rhs) ->
                     M.mapWithKey (\f (lhs,rhs) ->
                                     (lhs, if S.member f divergent
                                           then revert_0_0 lhs
