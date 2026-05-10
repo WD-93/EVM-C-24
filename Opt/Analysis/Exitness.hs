@@ -3,8 +3,9 @@ module Opt.Analysis.Exitness where
 import Opt.Semilattice
 import Core.RestrictedCore
 import Core.SSA (OptCore())
-import Opt.AI
+import Opt.AI hiding (unsafePrint,debugFlag)
 import Opt.HTraversable (Id(..))
+import Util (unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -14,6 +15,9 @@ import Control.Monad
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Arrow ((***))
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 --A module for determining whether each BB may exit or return;
 --a BB which may do neither is divergent and can be replaced with
@@ -77,12 +81,14 @@ analyzeExitness ms core =
                          aesRunQueue = []
                         }
         go = do
+          unsafePrint "Start analyzeExitness!"
           forM_ (M.toList $ funInfo ms) $
             uncurry handleFun
           aemScheduler
 --Cases: call, return, exit, normal (other branch including JT)
 handleFun :: FunVar -> FrozenFunInfo -> AEM ()
-handleFun f fi =
+handleFun f fi = do
+  unsafePrint $ "handleFun " ++ f
   case fiBodyInfo fi of
     IsJT -> handleNormal f $ unId $ succs fi
     IsFun {fiVars = v2av} -> do
@@ -96,15 +102,19 @@ handleFun f fi =
             --if r is continues, it's a return cont
             --Ignore the possibility of coerced funs with bad arity
             --If the callee may be a badfun, the caller may exit
-            Jump (Calling _) _ ->
+            Jump (Calling _) _ -> do
+              unsafePrint (f ++ " calls")
               if not $ M.null $ unId $ badFunSuccs fi
-              then set f True
-              else let gs = M.keys $ M.filter (==Normal) $ unId $ succs fi
-                   in forM_ gs (`calledBy` f)
-            Jump Returning _ -> set f False
-            Revert _ -> set f True
-            Return _ -> set f True
-            _ -> handleNormal f $ unId $ succs fi
+                then set f True
+                else let gs = M.keys $ M.filter (==Normal) $ unId $ succs fi
+                     in forM_ gs (`calledBy` f)
+            Jump Returning _ -> unsafePrint (f++" returns") >> set f False
+            Stop _ -> unsafePrint (f++" stops") >> set f True
+            Revert _ -> unsafePrint (f++" reverts") >> set f True
+            Return _ -> unsafePrint (f++" RETURNs") >> set f True
+            _ -> do
+              unsafePrint (f++" is normal")
+              handleNormal f $ unId $ succs fi
 --The default rule: f >= its successors
 --Since f is not a call, it won't have any continues successors or
 --badfun succs.
@@ -114,17 +124,24 @@ aemScheduler :: AEM ()
 aemScheduler = do
   rq <- gets aesRunQueue
   case rq of
-    [] -> return ()
+    [] -> unsafePrint "All done!" >> return ()
     (f,b):rq' -> do
+      let e' = bool2exitness b
+      unsafePrint $ f ++ " >= " ++ show e'
+      modify (\aes->aes{aesRunQueue = rq'})
       --Fetch callbacks and run each if f modified
       m <- gets exitness
       case M.lookup f m of
         Just (e,cbs) ->
-          if bool2exitness b > e
-          then mapM_ (runCallback b) cbs
+          if e' > e
+          then do
+            --Forgot to actually update exitness!
+            setExitness f e'
+            mapM_ (\cb -> do
+                            unsafePrint $ "Triggered: " ++ show cb 
+                            runCallback b cb) cbs
           else return ()
         Nothing -> error "!?"
-      modify (\aes->aes{aesRunQueue = rq'})
       aemScheduler
 runCallback b cb =
   case cb of

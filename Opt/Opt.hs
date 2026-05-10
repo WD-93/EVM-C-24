@@ -42,7 +42,8 @@ iteratively f = go
 optimize :: OptCore -> Either OptError OptCore
 optimize core = do
   ms <- ai core ? OptAIError
-  applyRules ms core [pruneUnreachableFuns]
+  applyRules ms core [pruneUnreachableFuns,
+                      revertDivergent]
 --Invariant: ms pertains to core
 applyRules ms core =
   \case [] -> return core
@@ -127,10 +128,11 @@ revertDivergent ms core =
       --mentioned function names.
   in return core{coreDefuns =
                  M.mapWithKey (\f (lhs,rhs) ->
-                                 (lhs,if S.member f divergent
-                                   then revert_0_0 lhs
-                                   else rhs)) $
-                 coreDefuns core
+                    M.mapWithKey (\f (lhs,rhs) ->
+                                    (lhs, if S.member f divergent
+                                          then revert_0_0 lhs
+                                          else rhs)) $
+                    coreDefuns core
                 }
   where
     --let z = push 0; m = emptyMem in revert ([z,z],[$mem])
