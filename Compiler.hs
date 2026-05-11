@@ -46,7 +46,13 @@ import Core.SSA (ssa, SSAError(..),OptCore(..))
 import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..),FunInfo_(..),
               BodyInfo_(..),AVar_(..))
 --Optimization Core => Core
-import Opt.Opt (opt,OptError(..))
+import Opt.Opt (opt,OptError(..),
+                --For debugging:
+                pruneUnreachableFuns
+               ,revertDivergent
+               ,etaReduction
+               ,dbgApplyRules
+               )
 
 --Poor man's pretty-printing for debugging
 import Pretty

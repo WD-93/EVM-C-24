@@ -57,6 +57,15 @@ applyRules ms core =
             else return core'
 
 type OptRule = FrozenModState -> OptCore -> Either OptError OptCore
+--For debugging: apply a list of rules so I can step through the opt process
+--and see where etaReduction with eta-reducible fs deleted goes wrong.
+dbgApplyRules :: [OptRule] -> OptCore -> Either OptError OptCore
+dbgApplyRules [] core = return core
+dbgApplyRules (rule:rules) core = do
+  ms <- ai core ? OptAIError
+  core' <- rule ms core
+  dbgApplyRules rules core'
+
 --AI gives an upper bound on behavior; if a Core function is unreachable it
 --will never become reachable.
 --A function may be mentioned in push ops, but never called. Any mention should
@@ -199,8 +208,12 @@ allocName nm = do
 etaReduction :: OptRule
 etaReduction ms core =
   let fdefs = M.toList $ coreDefuns core
-      --For each eta-reducible f, the g it reduces to 
-      f2g = M.fromList [(f,g) | (f,def) <- fdefs, Just g <- [etaCallee f def]]
+      --For each eta-reducible f, the g it directly reduces to 
+      f2g_ = M.fromList [(f,g) | (f,def) <- fdefs, Just g <- [etaCallee f def]]
+      --But of course it must be normalized! If f eta-> g eta-> h, substituting
+      --using f2g_ and deleting [f, g] will lead to f being replaced with g,
+      --which no longer exists.
+      f2g = normalizeEtaMap f2g_
       --Substitute all mentions of f for g in:
       --pushes (Serialized)
       --else branches (FunVar)
@@ -212,7 +225,9 @@ etaReduction ms core =
     return $ if M.null f2g
              then core
              else Core {
-    coreDefuns = M.map (substEtaDefun f2g) $ coreDefuns core,
+    coreDefuns = M.map (substEtaDefun f2g) $
+                 flip M.withoutKeys (M.keysSet f2g) $
+                 coreDefuns core,
     coreStatic = M.map (substEtaSer f2g) $ coreStatic core,
     coreJTs = M.map (substEtaJT f2g) $ coreJTs core
     }
@@ -269,6 +284,44 @@ substEtaJT f2g (ar,fs) =
                  Just g -> g
                  Nothing -> f) fs
   )
+--Deja vu... need a graph algo module
+--Given an acyclic map of direct eta reductions f->g, follows each f to its
+--ultimate non-reducible destination.
+--IOW, m[f] = g <=> f -> g
+--For all f1->f2->...->fN st fN is not reducible, normalizeEtaMap m[f1]=fN.
+{-
+Algo:
+out = {}
+for f in keys m:
+ follow f
+follow f =
+ if f in out:
+  return out[f]
+ if f in m:
+  ult = follow m[f]
+  out[f] = ult
+  return ult
+ return f
+-}
+normalizeEtaMap :: Ord k => Map k k -> Map k k
+normalizeEtaMap m = execState (mapM_ (follow m) $ M.keys m) M.empty
+  where
+    follow :: Ord k => Map k k -> k -> State (Map k k) k
+    follow m f = do
+      mg <- gets $ M.lookup f
+      case mg of
+        --Already explored
+        Just g -> return g
+        Nothing ->
+          case M.lookup f m of
+            --Recurse and set f
+            Just g -> do
+              ult <- follow m g
+              modify (M.insert f ult)
+              return ult
+            --Irreducible
+            Nothing -> return f
+  
 --Intraprocedural inlining:
 --f lhs = let ops in jump g args where g is a static fun and
 --g lhs' = let ops' in branch =>
