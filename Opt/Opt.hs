@@ -5,7 +5,7 @@ module Opt.Opt where
 
 import Core.RestrictedCore
 import Opt.AI
-import Core.SSA (OptCore())
+import Core.SSA (OptCore(),OptFunRHS())
 import Util ((?))
 import Const.Const
 import Opt.HTraversable (Id(..))
@@ -42,8 +42,10 @@ iteratively f = go
 optimize :: OptCore -> Either OptError OptCore
 optimize core = do
   ms <- ai core ? OptAIError
-  applyRules ms core [pruneUnreachableFuns,
-                      revertDivergent]
+  applyRules ms core [pruneUnreachableFuns
+                      ,revertDivergent
+                      ,etaReduction
+                     ]
 --Invariant: ms pertains to core
 applyRules ms core =
   \case [] -> return core
@@ -157,7 +159,6 @@ revertDivergent ms core =
           --in revert (z,z);m
           Revert ([zv,zv],[mv])
          )
-
 --When adding new ops to a BB (e.g. when replacing an infinite loop with
 --revert(0,0) or inlining), we need to allocate names not already bound.
 --That can be done locally (without a global counter) by trying variants of
@@ -166,7 +167,6 @@ revertDivergent ms core =
 --That's not very efficient (worst case n*log n*length x), but vars are short
 --in practice and string processing is unlikely to be the dominant cost
 --factor.
---Separating the name generator from go is nice, but 
 allocName :: String -> State (Set String) String
 allocName nm = do
   taken <- get
@@ -193,9 +193,82 @@ allocName nm = do
 --Fortunately, inlining merges BBs.
 
 --Eta reduction:
---If f lhs = let x = g in jump g lhs, then f ~ g.
+--If f lhs = let x = g in jump g lhs, then f ~ g and f can be removed.
+--Infinite loops have been eliminated, so removing f is now safe.
 --Restrict to intraprocedural jumps to avoid confusing AI.
-
+etaReduction :: OptRule
+etaReduction ms core =
+  let fdefs = M.toList $ coreDefuns core
+      --For each eta-reducible f, the g it reduces to 
+      f2g = M.fromList [(f,g) | (f,def) <- fdefs, Just g <- [etaCallee f def]]
+      --Substitute all mentions of f for g in:
+      --pushes (Serialized)
+      --else branches (FunVar)
+      --code global initializers (Serialized)
+      --JTs (FunVar)
+      --delete all fs
+      --If there are no eta-reducible fs, do nothing.
+  in --error $ "Eta-reducible: " ++ show f2g
+    return $ if M.null f2g
+             then core
+             else Core {
+    coreDefuns = M.map (substEtaDefun f2g) $ coreDefuns core,
+    coreStatic = M.map (substEtaSer f2g) $ coreStatic core,
+    coreJTs = M.map (substEtaJT f2g) $ coreJTs core
+    }
+  where
+    --Eta-reducible form:
+    --ops = {gv = push g}
+    --bv = (ws,mstk,ss)
+    --branch = Jump ipc (gv:ws,mstk,ss)
+    --That could be made less restrictive by requiring only that abvar(gv)=g,
+    --but op DCE and constant expansion should simplify that to reducible form.
+    etaCallee :: FunVar -> (BranchValue,OptFunRHS) -> Maybe FunVar
+    etaCallee f (bv,(ops,branch)) =
+      case branch of
+        Jump Intraprocedural bv'
+          | M.size ops == 1,
+            --Could be a let but the Emacs Hs mode indenter doesn't like that
+            [(gv,push_g)] <- M.toList ops,
+            (_,(Push Serialized{serLength=2,
+                               serSizeof=2,
+                               serContent=[Right (0,2,g)]
+                              },_)
+            ) <- push_g,
+            M.member g $ coreDefuns core ->
+            let Just fi = M.lookup f $ funInfo ms
+                IsFun {fiVars = v2av} = fiBodyInfo fi
+                Just av = M.lookup gv v2av
+                abv = unId $ avLive av
+                (ws,mstk,ss) = bv
+            in if bv' == (gv:ws,mstk,ss)
+               then Just g
+               else Nothing
+        _ -> Nothing
+--Pushes and jumpi else branches need substitution
+substEtaDefun f2g (bv,(ops,branch)) =
+  (bv,(M.map (substEtaPush f2g) ops, substEtaBranch f2g branch))
+--Problem with op map repr: ops with multiple returned vars will be
+--traversed repeatedly, which is asking for inconsistencies to arise.
+substEtaPush f2g (lhs, (Push ser, ([],[]))) =
+  (lhs, (Push $ substEtaSer f2g ser, ([],[])))
+substEtaPush _ op = op
+substEtaSer f2g ser = ser{
+  serContent = map (\case Right (off,len,lab)
+                            | Just g <- M.lookup lab f2g ->
+                                Right (off,len,g)
+                          x -> x) $ serContent ser
+  }
+substEtaBranch f2g = \case
+  Jumpi else_f bv
+    | Just g <- M.lookup else_f f2g -> Jumpi g bv
+  branch -> branch
+substEtaJT f2g (ar,fs) =
+  (ar, map (\f ->
+               case M.lookup f f2g of
+                 Just g -> g
+                 Nothing -> f) fs
+  )
 --Intraprocedural inlining:
 --f lhs = let ops in jump g args where g is a static fun and
 --g lhs' = let ops' in branch =>

@@ -1042,7 +1042,9 @@ aiOps c2ls ops initMap =
                                 | let -> Nothing
                           ei_lab_abvar = pushBehavior lab2lt ser
                       case ei_lab_abvar of
-                        Left lab -> throwError $ UndefinedLabel lab
+                        Left lab -> do
+                          unsafePrint' True $ "Offending ser: " ++ show ser
+                          throwError $ UndefinedLabel lab
                         Right ab -> do
                           abch <- newChan ab
                           modify (M.insert w abch)
