@@ -45,6 +45,7 @@ optimize core = do
   applyRules ms core [pruneUnreachableFuns
                       ,revertDivergent
                       ,etaReduction
+                      ,pruneDeadOps
                      ]
 --Invariant: ms pertains to core
 applyRules ms core =
@@ -191,7 +192,53 @@ allocName nm = do
 --DCE:
 --Control flow: prune unreachable funs, ifte->jump, case->jump
 --Ops: prune dead ops unless 0 and passed to dead params; if dead and passed
---to dead param replace with 0.
+--to dead param replace with 0. The zeroes will be eliminated later if
+--possible: that requires assigning callers and callees to calling conventions
+--and eliminating params that are dead for all callees in the CC.
+
+--Ops are keyed by lhs.
+--For f in coreDefuns, the lhses are the keys of fiOpsLive.
+--An op is prunable iff fiOpsLive[op] = Id False and none of the lhs vars
+--are mentioned in the branch.
+--A dead op is prunable if the set of vars in its lhs doesn't intersect with
+--the vars in the branch.
+pruneDeadOps :: OptRule
+pruneDeadOps ms core =
+  return core{
+  coreDefuns =
+      M.mapWithKey (\f (flhs,(opMap,branch)) ->
+                       case M.lookup f $ funInfo ms of
+                         Nothing -> error "!?"
+                         Just fi ->
+                           let op2live = fiOpsLive $ fiBodyInfo fi
+                               deadOps = M.keysSet $
+                                         M.filter (not . unId) op2live
+                               bvs = branch2vs branch
+                               prunableOps =
+                                 S.filter (\lhs ->
+                                              let vs = v2vs lhs
+                                              in S.null $
+                                                 S.intersection vs bvs)
+                                 deadOps
+                           in (flhs,
+                                (M.filter
+                                  (\(lhs,op) ->
+                                      not $ S.member lhs prunableOps)
+                                  opMap
+                                , branch))
+                   ) $
+      coreDefuns core
+      }
+  where
+    branch2vs :: Branch -> Set Var
+    branch2vs = \case
+      Jump _ bv -> bv2vs bv
+      Jumpi _ bv -> bv2vs bv
+      Revert v -> v2vs v
+      Return v -> v2vs v
+      Stop v -> v2vs v
+    bv2vs (ws,_,ss) = v2vs (ws,ss)
+    v2vs (ws,ss) = S.fromList $ ws ++ ss
 
 --Constant expansion (BB-local):
 --Treat a var as constant if 1) it's a word param from lhs and its abstract
