@@ -5,12 +5,12 @@ module Opt.Opt where
 
 import Core.RestrictedCore
 import Opt.AI
-import Core.SSA (OptCore(),OptFunRHS())
+import Core.SSA (OptCore(),OptFunRHS(),OpMap())
 import Util ((?))
 import Const.Const
 import Opt.HTraversable (Id(..))
 import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
-import Core.PrimTypes (pattern W)
+import Core.PrimTypes
 import AST.DTs (pattern Memory, pattern UInt)
 
 import Data.Map (Map(..))
@@ -18,7 +18,9 @@ import qualified Data.Map as M
 import Data.Set (Set(..))
 import qualified Data.Set as S
 import Data.Generics
+import Control.Monad
 import Control.Monad.State
+import Control.Arrow ((***))
 
 --Opt errors are compiler errors
 data OptError = OptAIError AIError
@@ -198,47 +200,199 @@ allocName nm = do
 
 --Ops are keyed by lhs.
 --For f in coreDefuns, the lhses are the keys of fiOpsLive.
---An op is prunable iff fiOpsLive[op] = Id False and none of the lhs vars
---are mentioned in the branch.
---A dead op is prunable if the set of vars in its lhs doesn't intersect with
---the vars in the branch.
+--If an op is dead, but not trivial and used in a dead param, then it can
+--be pruned. The trivial ops are 0 for stack vars and empty* for state vars.
+--If a dead 0 is used across several dead params, it will be split into
+--one 0 for each.
+--We ensure other dead ops used by dead params can be pruned by replacing
+--the vars used in the branch with new vars bound to trivial ops.
+--The "is not trivial" condition prevents a loop where trivial ops are
+--endlessly replaced with new ones.
+--Exiting branches have no passed liveness info, but that's fine because all
+--vars are live.
+--New cond: if an op is dead and is not a trivial op passed to a dead branch
+--param position, prune it.
+--Need to look at branch and opMap together:
+--if w = ws[i] is dead and its op is not push 0, add a new w' = push 0 and
+--replace with w'
+--if s = ss[i] is dead and its op is not trivial(typeOfVar s), add a new
+--s' = trivial and replace with s'.
+--If branch is an exit, just prune all dead ops
+--Keep a set of vars already used as dead trivial in branch so you can alloc
+--new ones.
 pruneDeadOps :: OptRule
 pruneDeadOps ms core =
   return core{
   coreDefuns =
-      M.mapWithKey (\f (flhs,(opMap,branch)) ->
-                       case M.lookup f $ funInfo ms of
-                         Nothing -> error "!?"
-                         Just fi ->
-                           let op2live = fiOpsLive $ fiBodyInfo fi
-                               deadOps = M.keysSet $
-                                         M.filter (not . unId) op2live
-                               bvs = branch2vs branch
-                               prunableOps =
-                                 S.filter (\lhs ->
-                                              let vs = v2vs lhs
-                                              in S.null $
-                                                 S.intersection vs bvs)
-                                 deadOps
-                           in (flhs,
-                                (M.filter
-                                  (\(lhs,op) ->
-                                      not $ S.member lhs prunableOps)
-                                  opMap
-                                , branch))
-                   ) $
+      M.mapWithKey
+      (\f (flhs,(opMap,branch)) ->
+          case M.lookup f $ funInfo ms of
+            Nothing -> error "!?"
+            Just fi ->
+              let op2live = fiOpsLive $ fiBodyInfo fi
+                  deadOps = M.keysSet $
+                            M.filter (not . unId) op2live
+                  --If branch is an exit, prune all dead
+                  (opMap',branch') =
+                    case branchPassed branch of
+                      Nothing ->
+                        (M.filter (\(lhs,_opE) ->
+                                     not $ S.member lhs deadOps)
+                          opMap,
+                         branch)
+                      Just val ->
+                        --Liveness of passed vars:
+                        let Just (pws,pss) = fiPassed fi
+                            (lws,lss) = (map (unId.fst) pws,
+                                         map (unId.fst) pss)
+                            (val',ATS{atsOpMap = opMap',
+                                      atsEncountered = ops
+                                     }) =
+                              runState (allocTrivialAlgo val (lws,lss)) ATS{
+                              --Names of vars in lhs and opMap
+                              atsScope = S.map nameOfVar $ M.keysSet $ fiVars $
+                                fiBodyInfo fi,
+                              atsOpMap = opMap,
+                              atsEncountered = S.empty
+                              }
+                        in (M.filter (\(lhs,_opE) ->
+                                        not $ S.member lhs $
+                                        S.difference deadOps ops)
+                             opMap',
+                             setPassed val' branch
+                           )
+              in (flhs, (opMap', branch'))) $
       coreDefuns core
-      }
+  }
   where
-    branch2vs :: Branch -> Set Var
-    branch2vs = \case
-      Jump _ bv -> bv2vs bv
-      Jumpi _ bv -> bv2vs bv
-      Revert v -> v2vs v
-      Return v -> v2vs v
-      Stop v -> v2vs v
-    bv2vs (ws,_,ss) = v2vs (ws,ss)
-    v2vs (ws,ss) = S.fromList $ ws ++ ss
+    --Sets the passed value for jump/i; dest,cond remain unchanged.
+    --mstk also remains unchanged.
+    setPassed (ws,ss) = \case
+      Jump mode (dest:_,mstk,_) ->
+        Jump mode (dest:ws,mstk,ss)
+      Jumpi else_f (dest:cond:_,mstk,_) ->
+        Jumpi else_f (dest:cond:ws,mstk,ss)
+
+--A branch either exits or continues. If it continues, it has a passed Value.
+--Some of those vars may be at dead param positions. Those need to
+--be replaced with new vars bound to trivial ops (push 0 for stack words,
+--empty* for state vars).
+--Reusing the original var name doesn't work, because a var x at a dead
+--position may still be bound by a live op that shouldn't be pruned.
+{-
+Algo:
+scope = vars in lhs and opmap
+ops = initial ops (no pruning done)
+for each v, poslive:
+ if poslive || opMap[v] == trivialOp v:
+  return v
+ else:
+  v' = allocTrivial v
+allocTrivial v =
+ op = trivialOp v
+ v' = allocVar v
+ ops[v'] = v'=op
+allocVar v =
+ nm = allocName with state = scope
+ return v{nameOfVar=nm}
+Return scope, triv, v's list
+Postcondition: if an op is dead, nontrivial and not used by the branch,
+it can be safely removed.
+-}
+--Alloc trivial ops monad
+data ATS = ATS {
+  atsScope :: Set String,
+  --The set of trivial op lhses in the new branchValue so far;
+  --ensures zeroes passed as dead params aren't shared.
+  --Also used to distinguish between dead and prunable vars;
+  --prunable = dead \ encountered
+  atsEncountered :: Set Value, 
+  atsOpMap :: OpMap
+  }
+type ATM = State ATS
+--If the dead push 0 is repeated, the false sharing is not eliminated;
+--TODO split each use of a small constant into a separate op to enable better
+--codegen. Alt: let the code generator handle it.
+allocTrivialAlgo :: Value ->
+                    --liveness of param positions; includes jump/i dest,cond
+                    ([Bool],[Bool]) -> 
+                    ATM Value
+allocTrivialAlgo (ws,ss) (live_ws,live_ss) = do
+  ws' <- allocLoop ws live_ws
+  ss' <- allocLoop ss live_ss
+  return (ws',ss')
+    where
+      allocLoop :: [Var] -> [Bool] -> ATM [Var]
+      allocLoop vs live_vs =
+        forM (zip vs live_vs) $
+        \(v,live) -> do
+          if live
+            then return v
+            else do
+            opMap <- gets atsOpMap
+            if isTrivial opMap v
+              then do
+              encounterLHS $ trivialLHS v
+              return v
+              else allocTrivial v
+      push0 = Push $ Serialized 0 0 []
+--Replace v with v', emit v' = trivial op, add v' to scope.
+allocTrivial :: Var -> ATM Var
+allocTrivial v = do
+  let op = trivialOp v
+  v' <- allocVar v
+  let lhs = trivialLHS v'
+  encounterLHS lhs
+  modify (\ats->ats{
+             atsOpMap = M.insert v' (lhs, (op, ([],[]))) $
+                     atsOpMap ats
+             })
+  return v'
+encounterLHS :: Value -> ATM ()
+encounterLHS lhs =
+  modify (\ats->ats{atsEncountered = S.insert lhs $
+                     atsEncountered ats})
+trivialLHS v =
+  if M.member (typeOfVar v) stateT2mnem
+  then ([],[v])
+  else ([v],[])
+--One function for both stack and state vars
+trivialOp v =
+  case M.lookup (typeOfVar v) stateT2mnem of
+    Just nm -> Op $ "empty" ++ nm
+    --It must be a stack var:
+    Nothing -> push0
+--There's a conflict between consistent naming schemes (reducing bug
+--risk) and IR readability here... perhaps change to first three letters.
+stateT2mnem = M.fromList [
+        (MemoryState,"Mem")
+        ,(StorageState,"Sto")
+        ,(TStorageState,"TSto")
+        ,(CalldataState,"CD")
+        ,(ReturndataState,"RD")
+        ,(ExtStateState,"Ext")
+        ,(OtherState,"Other")
+        ]
+push0 :: PrimOp
+push0 = Push $ Serialized 0 0 []
+--Does not check the lhs of the op, but there can only be one valid one for
+--an op that returns one var of a given kind (stack or state).
+isTrivial :: Map Var (Value,OpE) -> Var -> Bool
+isTrivial opMap v =
+  case M.lookup v opMap of
+    --It's fine if a var is unbound; that means it's in the lhs (assuming the
+    --Core is well-formed). An lhs var cannot be assumed to be trivial.
+    Nothing -> False
+    Just (_lhs,(op,([],[]))) ->
+      op == trivialOp v
+--Allocs a new var not currently in scope, with a related name to its
+--predecessor for explanatory purposes.
+allocVar :: Var -> ATM Var
+allocVar v = do
+  scope <- gets atsScope
+  let (nm,scope') = runState (allocName $ nameOfVar v) scope
+  modify (\ats->ats{atsScope=scope'})
+  return v{nameOfVar = nm}
 
 --Constant expansion (BB-local):
 --Treat a var as constant if 1) it's a word param from lhs and its abstract

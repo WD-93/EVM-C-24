@@ -52,6 +52,7 @@ import Opt.Opt (opt,OptError(..),
                ,revertDivergent
                ,etaReduction
                ,dbgApplyRules
+               ,pruneDeadOps
                )
 
 --Poor man's pretty-printing for debugging

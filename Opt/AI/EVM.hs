@@ -224,7 +224,15 @@ opBehavior = M.fromList [
   --It can also be used to pass an empty mem to revert(0,0) and return(0,0)
   --in place of $mem, allowing memory writes before them to be recognized as
   --dead by eliminating the false dependence on $mem.
-  ,("emptyMem", ar 0 0 0 1 $ \_ _ -> ([],[exactly 0]))
+  ,("emptyMem", emptyS)
+  --Adding the rest (they're needed for eliminating false deps on dead ops
+  --from dead branch params)
+  ,("emptySto", emptyS)
+  ,("emptyTSto", emptyS)
+  ,("emptyCD", emptyS)
+  ,("emptyRD", emptyS)
+  ,("emptyExt", emptyS)
+  ,("emptyOther", emptyS)
   ]
   where ifRLEQ1then0 f =
           ifRThen (isLEQThan 1) (const $ exactly 0) f
@@ -265,6 +273,9 @@ opBehavior = M.fromList [
         ar :: Int -> Int -> Int -> Int -> OpFun -> ((Int,Int),(Int,Int),OpFun)
         ar a b c d f = ((a,b),(c,d),f)
         arp a b = ar a 0 b 0
+        --Return a state var with abvar 0; its exact abvar doesn't really
+        --matter because it's for emptyMem et al
+        emptyS = ar 0 0 0 1 $ \_ _ -> ([],[exactly 0])
 
 --TODO share logic with toSigned
 signextend :: Integer -> Integer -> Integer
