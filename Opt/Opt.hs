@@ -504,28 +504,61 @@ etaReduction ms core =
     --branch = Jump ipc (gv:ws,mstk,ss)
     --That could be made less restrictive by requiring only that abvar(gv)=g,
     --but op DCE and constant expansion should simplify that to reducible form.
+    --pruneDeadOps complicates this: dead branch params are bound to trivial
+    --ops, meaning the body will no longer be just {gv = push g}.
+    --However, since those params are dead they can be replaced with anything
+    --to make the eta-reducible pattern fit.
+    --Amended condition: if the only live op is gv = push g and
+    --each var in the branch params either matches the lhs or is dead, f
+    --is eta-reducible to g.
     etaCallee :: FunVar -> (BranchValue,OptFunRHS) -> Maybe FunVar
     etaCallee f (bv,(ops,branch)) =
       case branch of
-        Jump Intraprocedural bv'
-          | M.size ops == 1,
-            --Could be a let but the Emacs Hs mode indenter doesn't like that
-            [(gv,push_g)] <- M.toList ops,
-            (_,(Push Serialized{serLength=2,
-                               serSizeof=2,
-                               serContent=[Right (0,2,g)]
-                              },_)
-            ) <- push_g,
-            M.member g $ coreDefuns core ->
-            let Just fi = M.lookup f $ funInfo ms
-                IsFun {fiVars = v2av} = fiBodyInfo fi
-                Just av = M.lookup gv v2av
-                abv = unId $ avLive av
-                (ws,mstk,ss) = bv
-            in if bv' == (gv:ws,mstk,ss)
-               then Just g
-               else Nothing
+        Jump Intraprocedural bv' ->
+          let Just fi = M.lookup f $ funInfo ms
+              IsFun {fiVars = v2av,
+                     fiOpsLive = fiol
+                    } = fiBodyInfo fi
+              liveOps = M.filter (\(val,_) ->
+                                    case M.lookup val fiol of
+                                      Just (Id live) -> live
+                                      _ -> error "!?") ops
+          in case () of
+               _ | M.size liveOps == 1,
+                   --Could be a let but the Emacs Hs mode indenter
+                   --doesn't like that
+                   [(gv,push_g)] <- M.toList liveOps,
+                   (_,(Push Serialized{serLength=2,
+                                       serSizeof=2,
+                                       serContent=[Right (0,2,g)]
+                                      },_)
+                   ) <- push_g,
+                   M.member g $ coreDefuns core ->
+                     --let (ws,mstk,ss) = bv
+                     --in if bv' == (gv:ws,mstk,ss)
+                     if etaMatches gv v2av bv bv'
+                     then Just g
+                     else Nothing
+                 | let -> Nothing
         _ -> Nothing
+    etaMatches gv v2av bv bv'
+      | (ws,mstk,ss) <- bv,
+        (dest:ws',mstk',ss') <- bv',
+        length ws == length ws',
+        length ss == length ss',
+        mstk == mstk',
+        dest == gv =
+          --Each branch param var must either be equal to the corresponding
+          --lhs var or be dead.
+          let match lhsV argV =
+                (lhsV == argV) || not (live argV)
+              live v =
+                case M.lookup v v2av of
+                  Nothing -> error "!?"
+                  Just av -> unId $ avLive av
+          in and $ zipWith match (ws++ss) (ws'++ss')
+      | let = False
+         
 --Pushes and jumpi else branches need substitution
 substEtaDefun f2g (bv,(ops,branch)) =
   (bv,(M.map (substEtaPush f2g) ops, substEtaBranch f2g branch))
