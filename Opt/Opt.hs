@@ -12,6 +12,7 @@ import Opt.HTraversable (Id(..))
 import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
 import Core.PrimTypes
 import AST.DTs (pattern Memory, pattern UInt)
+import Opt.AbVar (unlabel) --for control flow DCE
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -48,6 +49,7 @@ optimize core = do
                       ,revertDivergent
                       ,etaReduction
                       ,pruneDeadOps
+                      ,controlFlowDCE
                      ]
 --Invariant: ms pertains to core
 applyRules ms core =
@@ -193,6 +195,69 @@ allocName nm = do
        return nm
 --DCE:
 --Control flow: prune unreachable funs, ifte->jump, case->jump
+
+--ifte on known cond => jump, ifte with same dest in both cases => jump
+--case: jump (jt+5k) => jump jt[k].
+{-
+jumpi destv,cond,rest s.t. truthiness abvar cond = (True,False) =>
+ jump ipc dest,rest
+jumpi dest,cond,rest else elf s.t. ditto = (False,True) =>
+ add elfv = elf to ops, jump ipc elfv,rest
+jumpi destv,cond,rest else elf s.t. abvar destv == label Fun elf =>
+ jump ipc destv,rest
+jump dest,rest s.t. dest = a + b, abvar a == label JT jt, abvar b == exactly 5k
+ => look up fs of jt. If k in range, add op dest' = fs[k], else revert (UB).
+-}
+controlFlowDCE :: OptRule
+controlFlowDCE ms core =
+  return core{coreDefuns = M.mapWithKey
+             (\f def@(flhs,(opMap,branch)) ->
+                (,) flhs $
+                case branch of
+                  Jumpi else_f (dest:cond:rest,mstk,ss) ->
+                    case M.lookup f $ funInfo ms of
+                      Nothing -> error "!?"
+                      Just fi ->
+                        --Check for known cond:
+                        let v2av = fiVars $ fiBodyInfo fi
+                            Just avcond = M.lookup cond v2av
+                            abvcond = unId $ avVal avcond
+                            (t,f) = truthiness abvcond
+                        in case (t,f) of
+                             (True,False) ->
+                               (opMap, Jump Intraprocedural (dest:rest,mstk,ss))
+                             (False,True) ->
+                               --Here I need to add a push else_f op.
+                               let scope = S.map nameOfVar $ M.keysSet v2av
+                                   elf' = evalState (allocName else_f) scope
+                                   elfv = dest{nameOfVar=elf'}
+                                   elfop = (([elfv],[]),
+                                            (Push Serialized{
+                                                serLength=2,
+                                                serSizeof=2,
+                                                serContent=[Right(0,2,else_f)]
+                                                },
+                                              ([],[])))
+                               in (M.insert elfv elfop opMap,
+                                   Jump Intraprocedural (elfv:rest,mstk,ss))
+                             --No known cond, try for equal branches:
+                             _ ->
+                               let Just avdest = M.lookup dest v2av
+                                   abvdest = unId $ avVal avdest
+                               in case unlabel abvdest of
+                                    Just (_,then_f)
+                                      --If this is true then_f is necessarily
+                                      --a Fun:
+                                      | then_f == else_f ->
+                                        (opMap, Jump Intraprocedural
+                                          (dest:rest,mstk,ss))
+                                    _ -> (opMap,branch)
+                  --Jump Intraprocedural bv -> error "todo"
+                  _ -> (opMap,branch)
+                  )$
+             coreDefuns core
+             }
+
 --Ops: prune dead ops unless 0 and passed to dead params; if dead and passed
 --to dead param replace with 0. The zeroes will be eliminated later if
 --possible: that requires assigning callers and callees to calling conventions
@@ -382,9 +447,9 @@ isTrivial opMap v =
   case M.lookup v opMap of
     --It's fine if a var is unbound; that means it's in the lhs (assuming the
     --Core is well-formed). An lhs var cannot be assumed to be trivial.
-    Nothing -> False
     Just (_lhs,(op,([],[]))) ->
       op == trivialOp v
+    _ -> False
 --Allocs a new var not currently in scope, with a related name to its
 --predecessor for explanatory purposes.
 allocVar :: Var -> ATM Var
