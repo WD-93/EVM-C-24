@@ -4,7 +4,7 @@
 module Opt.Opt where
 
 import Core.RestrictedCore
-import Opt.AI
+import Opt.AI hiding (unsafePrint,debugFlag)
 import Core.SSA (OptCore(),OptFunRHS(),OpMap())
 import Util ((?))
 import Const.Const
@@ -13,6 +13,8 @@ import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
 import Core.PrimTypes
 import AST.DTs (pattern Memory, pattern UInt)
 import Opt.AbVar (unlabel) --for control flow DCE
+import Opt.CC --for param DCE
+import Util (unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -22,6 +24,9 @@ import Data.Generics
 import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
 data OptError = OptAIError AIError
@@ -50,6 +55,7 @@ optimize core = do
                       ,etaReduction
                       ,pruneDeadOps
                       ,controlFlowDCE
+                      ,pruneParams
                      ]
 --Invariant: ms pertains to core
 applyRules ms core =
@@ -257,6 +263,72 @@ controlFlowDCE ms core =
                   )$
              coreDefuns core
              }
+
+--First divide intraprocedural callers and callees into calling conventions
+--(CCs) whose params must be jointly modified.
+--For now, just prune dead params in words; state remains unchanged and
+--is therefore always the same as envV (modulo SSA versions).
+--To change state, need to modify the logic for getting and setting state
+--params in AI.
+--For each CC, liveness = lub of liveness of each caller (for words)
+--If any pos in liveness is false, update branch params of all callers to
+--filter out the dead var; update lhs of all callees as well.
+--Annoyance: I already discarded the f => cc, g => cc maps!
+--TODO modify CC; until then just reconstruct.
+--Each f is caller of at most one scc and callee of at most one scc (they
+--may be different).
+--BUG: If a f in a CC is C-called, the entire CC must be fixed, but this may
+--change it. That may occur if a function starts with a while loop.
+--TODO filter out C-called CCs in Opt.CC.
+pruneParams :: OptRule
+pruneParams ms core = do
+  let ccs = cc ms core
+      r2live_fs_gs =
+        M.map (\cc -> (livenessCC cc, ccCallers cc, ccCallees cc)) ccs
+      --Implicitly reconstructing f => cc:
+      f2live =
+        M.unions $ map (\(live,fs,_) -> M.fromSet (const live) fs) $
+        M.elems r2live_fs_gs
+      g2live =
+        M.unions $ map (\(live,_,gs) -> M.fromSet (const live) gs) $
+        M.elems r2live_fs_gs
+  unsafePrint $ "ccs: " ++ show ccs
+  unsafePrint $ "f2live: " ++ show f2live
+  return core{
+    coreDefuns =
+        M.mapWithKey (\f (lhs,(ops,branch)) ->
+                         let lhs' = case M.lookup f g2live of
+                                      Just live -> updLHS live lhs
+                                      Nothing -> lhs
+                             branch' = case M.lookup f f2live of
+                                         Just live -> updBranch live branch
+                                         Nothing -> branch
+                         in (lhs',(ops,branch'))) $
+        coreDefuns core
+    }
+  where livePassed :: FunVar -> [Bool]
+        livePassed f =
+          case M.lookup f $ funInfo ms of
+            Nothing -> error "!?"
+            Just fi ->
+              let Just (pws,_pss) = fiPassed fi
+              in map (unId . fst) pws
+        --The lub of livePassed of all fs
+        livenessCC :: CC -> [Bool]
+        livenessCC CC{ccShape = (warity,_), ccCallers = fs} =
+          foldr (zipWith (||)) (replicate warity False) $
+          map livePassed $ S.toList fs
+        updLHS liveness (ws,mstk,ss) =
+          (map snd $ filter fst $ zip liveness ws, mstk, ss)
+        --Only applies to IP branches:
+        updBranch liveness = \case
+          Jump Intraprocedural (dest:ws,mstk,ss) ->
+            let (ws',_,_) = updLHS liveness (ws,mstk,ss)
+            in Jump Intraprocedural (dest:ws',mstk,ss)
+          Jumpi elf (dest:cond:ws,mstk,ss) ->
+            let (ws',_,_) = updLHS liveness (ws,mstk,ss)
+            in Jumpi elf (dest:cond:ws',mstk,ss)
+          _ -> error "!?"
 
 --Ops: prune dead ops unless 0 and passed to dead params; if dead and passed
 --to dead param replace with 0. The zeroes will be eliminated later if

@@ -1,10 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
-module Opt.CC where
+module Opt.CC (cc,CC(..)) where
 
 import Core.RestrictedCore
 import Core.SSA (OptCore())
-import Opt.AI
+import Opt.AI hiding (unsafePrint,debugFlag)
 import Opt.HTraversable (Id(..))
+import Util (unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -12,6 +13,9 @@ import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.State
 import Control.Monad (forM,forM_)
+
+debugFlag = False
+unsafePrint str = unsafePrint' debugFlag str
 
 --The pruneDeadOps opt rule eliminates nontrivial dead ops, but trivial values
 --(0 for stack words, empty* for state vars) still need to be passed to
@@ -56,7 +60,8 @@ import Control.Monad (forM,forM_)
 cc :: FrozenModState -> OptCore -> CCPartition
 cc ms core =
   let fgs = ccEquations ms core
-      ccs = execState (do mapM_ (uncurry calls) fgs
+      ccs = execState (do unsafePrint $ "ccEquations: " ++ show fgs
+                          mapM_ (uncurry calls) fgs
                           normalizeCCS) CCS{ccsCaller=M.empty,
                                             ccsCallee=M.empty
                                            }
@@ -101,7 +106,8 @@ unifyR r1 r2 =
       | let -> setCaller r1 r2
 --Helpers
 setCaller :: FunVar -> FunVar -> CCM ()
-setCaller k v =
+setCaller k v = do
+  unsafePrint $ "setCaller " ++ k ++ " " ++ v
   modify $ \ccs->ccs{
              ccsCaller = M.insert k v $
                          ccsCaller ccs
@@ -127,17 +133,22 @@ calls f g = do
 
 --Follow the ccsCaller chain until the representative f is found, then return
 --it and update caller[f] for each f in the chain.
+--Bugfix: if the code is sequential, every f is in its own CC and
+--so caller will remain empty. That leads to an empty CC partition... instead
+--I'll represent "f is representative" as mapping f to itself.
 getCaller :: FunVar -> CCM FunVar
 getCaller = go
   where go f = do
           caller <- gets ccsCaller
           case M.lookup f caller of
-            --f is the representative element
-            Nothing -> return f
-            Just f' -> do
-              repr <- go f'
-              setCaller f repr
-              return repr
+            --f is a new representative element
+            Nothing -> setCaller f f >> return f
+            Just f'
+              | f == f' -> return f
+              | let -> do
+                  repr <- go f'
+                  setCaller f repr
+                  return repr
 --A callee may not yet belong to a CC, but since it's not a representative
 --we should return Nothing in that case.
 --Does not need to lazily update callee[g]: that's a log n operation, the
@@ -201,6 +212,7 @@ For each callee[g]=rf:
 ccPartition :: FrozenModState -> CCS -> CCPartition
 ccPartition ms ccs =
   execState (do let caller = ccsCaller ccs
+                unsafePrint $ "ccs in ccPartition: " ++ show ccs
                 forM_ (M.toList caller)
                   (\(f,rf) -> do
                       initRF rf
