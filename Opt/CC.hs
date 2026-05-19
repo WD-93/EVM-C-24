@@ -65,7 +65,7 @@ cc ms core =
                           normalizeCCS) CCS{ccsCaller=M.empty,
                                             ccsCallee=M.empty
                                            }
-  in ccPartition ms ccs
+  in ccFilterFixed ms core $ ccPartition ms ccs
 
 {-
 Unification algo: key CCs by highest caller fun.
@@ -248,3 +248,29 @@ ccPartition ms ccs =
         Just fi ->
           let Just (ws,ss) = fiPassed fi
           in (length ws, length ss)
+
+--pruneParams modifies all the callers and callees in CCs without regard for
+--whether one of the callees is also C-called, i.e. jumped to via a
+--Calling rather than intraprocedural mode. If a CC that is C-called is
+--modified without modifying all C-callers, the Core program will become
+--malformed.
+--NB: no IP callee will also be jumped to from a return, so don't need to
+--worry about that.
+--Edge case: fs which are both return address and call site.
+--Here we filter out the CCs which are also C-called to avoid modifying them.
+--Simple algo: collect all C call entrypoints, filter out any CC whose callees
+--intersect with them.
+ccFilterFixed :: FrozenModState -> OptCore -> CCPartition -> CCPartition
+ccFilterFixed ms core =
+  --For each BB with branch Jump Calling{}, get fs = its normal successors.
+  --cfuns is the union of those fs.
+  let callsites =
+        M.filter (\(lhs,(ops,branch)) ->
+                    case branch of
+                      Jump Calling{} _ -> True
+                      _ -> False) $ coreDefuns core
+      site2cfuns = M.intersectionWith
+                   (\_ fi -> M.keysSet $ M.filter (==Normal) $ unId $ succs fi)
+                   callsites $ funInfo ms
+      cfuns = S.unions $ M.elems site2cfuns
+  in M.filter (S.null . S.intersection cfuns . ccCallees)
