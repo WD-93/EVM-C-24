@@ -699,11 +699,94 @@ normalizeEtaMap m = execState (mapM_ (follow m) $ M.keys m) M.empty
 --f lhs = let ops;ops' in branch, where ops' and branch have been renamed to
 --avoid clashes with ops.
 --Inline iff g has only one pred, f.
+
+
 --Straight-line function inlining:
 --f lhs = let ops in call g,args,ret,scope
 --g lhs' = let ops' in return $ret, val =>
 --f lhs = let ops;ops' in jump intraprocedural ret,val,scope
 --That's enough for primfuns and would already make a big difference.
+
+--Inlines single-BB C functions with fewer than (say) 20 ops. Proper inlining
+--heuristics would require computing an exec intensity map and perhaps peeking
+--BB => bytecode compilation, but this'll do for now since it covers primfuns.
+--Finally code using words, primops etc will generate readable output...
+--Candidates for inlining: callsites (branch = Jump Calling{} (dest:ws,m,ss))
+--with dest = a static f.
+--Inlinable fs: f lhs = let ops in (exit | jump returning) s.t.
+--ops has <= 20 distinct lhses. If the dest is inlinable, inline immediately.
+inlineSmallFuns :: OptRule
+inlineSmallFuns ms core = error "todo"
+
+--Returns Just fundef if the given fun is a small inlinable function. 
+lookupSmallInlinable :: OptCore -> FunVar -> Maybe Fundef
+lookupSmallInlinable core f =
+  case M.lookup f $ coreDefuns core of
+    Just def | okDef def -> Just def
+    _ -> Nothing
+  where
+    okDef (_lhs,(ops,branch)) =
+      okBranch branch &&
+      length (S.fromList (M.elems (M.map fst ops))) <= 20
+    okBranch = \case
+      Jump Returning _ -> True
+      Jump {} -> False
+      Jumpi {} -> False
+      _ -> True
+type Fundef = (BranchValue,OptFunRHS)
+--Precondition: the first fundef is a call to the second.
+--NOTE: assumes no state var pruning for now.
+--Algo: start by associating callee lhs vars with caller passed.
+--For each lhs = op args in opsF, substitute args and lhs, allocating a new
+--name if a var isn't present in the subst table.
+--Substitute vars in the branch using the accumulated substitution table.
+--Jump Returning => Jump IP; append scope unchanged.
+--exit => exit
+inline :: Fundef -> Fundef -> Fundef
+inline (lhs,
+        (ops,
+         Jump (Calling (arglen,retlen)) (dest:args_ret_scope,_mstk,ss)))
+  ((wsF,_,ssF),(opsF,branchF)) =
+  let args_ret = take (arglen+1) args_ret_scope
+      scope = drop (arglen+1) args_ret_scope
+  in if length ss /= length ssF
+     then error $ "Looks like you've pruned state vars; fix inline!"
+     else let
+    (lhsws,_,lhsss) = lhs
+    initS = (S.fromList $ map nameOfVar $ lhsws ++ lhsss ++ M.keys ops
+            , M.fromList $ zip (wsF++ssF) (args_ret++ss)
+            )
+    (v_ops',(_,finalSubst)) = runState (mapM go $ M.toList opsF) initS
+    ops' = M.fromList v_ops'
+    branch' = everywhere (mkT $ \v ->
+                             case M.lookup v finalSubst of
+                               Nothing -> error "!?"
+                               Just v' -> v') branchF
+    --Set mode to IP if returning, add scope unchanged
+    branch'' = case branch' of
+                 Jump Returning (ret_val,mstk,ss) ->
+                   Jump Intraprocedural (ret_val++scope,mstk,ss)
+                 _ -> branch'
+    in (lhs,(ops',branch''))
+  where go (v,(lhs,opE)) =
+          (,) <$> substVar v <*> ((,) <$> substValue lhs <*> substOpE opE)
+--Invariant: the Set String is the set of live names so far in the post-inline
+--def.
+type InlineM = State (Set String, Map Var Var)
+substVar :: Var -> InlineM Var
+substVar v = do
+  (scope,v2v) <- get
+  case M.lookup v v2v of
+    Just v' -> return v'
+    Nothing -> do
+      let (nm',scope') = runState (allocName $ nameOfVar v) scope
+          v' = v{nameOfVar = nm'}
+      put (scope',M.insert v v' v2v)
+      return v'
+substValue :: Value -> InlineM Value
+substValue (ws,ss) = (,) <$> mapM substVar ws <*> mapM substVar ss
+substOpE :: OpE -> InlineM OpE
+substOpE (op,rhs) = (,) op <$> substValue rhs
 
 --Step 1: prune unreachable functions.
 --Inlining may restrict abvars, which restricts control flow.
