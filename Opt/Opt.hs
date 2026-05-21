@@ -12,7 +12,7 @@ import Opt.HTraversable (Id(..))
 import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
 import Core.PrimTypes
 import AST.DTs (pattern Memory, pattern UInt)
-import Opt.AbVar (unlabel) --for control flow DCE
+import Opt.AbVar (unlabel,LabelType(Fun)) --for control flow DCE
 import Opt.CC --for param DCE
 import Util (unsafePrint')
 
@@ -56,6 +56,7 @@ optimize core = do
                       ,pruneDeadOps
                       ,controlFlowDCE
                       ,pruneParams
+                      ,inlining
                      ]
 --Invariant: ms pertains to core
 applyRules ms core =
@@ -692,6 +693,13 @@ normalizeEtaMap m = execState (mapM_ (follow m) $ M.keys m) M.empty
               return ult
             --Irreducible
             Nothing -> return f
+
+--Inlining: to start with, inline only IP jumps where the dest has one
+--predecessor (so there's no code size cost to inlining) and small (<=20 op)
+--straight-line functions. Always inline if straight-line and #preds=1.
+--TODO opt: identify chains of IP-inlinable BBs, inline the start of the
+--chain and delete the rest. For now I'll just inline one at a time and leave
+--it to iteration to get the same result.
   
 --Intraprocedural inlining:
 --f lhs = let ops in jump g args where g is a static fun and
@@ -700,24 +708,74 @@ normalizeEtaMap m = execState (mapM_ (follow m) $ M.keys m) M.empty
 --avoid clashes with ops.
 --Inline iff g has only one pred, f.
 
-
 --Straight-line function inlining:
 --f lhs = let ops in call g,args,ret,scope
 --g lhs' = let ops' in return $ret, val =>
 --f lhs = let ops;ops' in jump intraprocedural ret,val,scope
 --That's enough for primfuns and would already make a big difference.
 
---Inlines single-BB C functions with fewer than (say) 20 ops. Proper inlining
+--Inlines IP jumps with one pred and small straight-line calls. Proper inlining
 --heuristics would require computing an exec intensity map and perhaps peeking
 --BB => bytecode compilation, but this'll do for now since it covers primfuns.
 --Finally code using words, primops etc will generate readable output...
---Candidates for inlining: callsites (branch = Jump Calling{} (dest:ws,m,ss))
---with dest = a static f.
---Inlinable fs: f lhs = let ops in (exit | jump returning) s.t.
---ops has <= 20 distinct lhses. If the dest is inlinable, inline immediately.
-inlineSmallFuns :: OptRule
-inlineSmallFuns ms core = error "todo"
+--Algo:
+--Identify functions which jump to a static dest.
+--For each such f:
+-- if mode = 1 and size target.preds == 1: inline
+-- if mode = calling{} and target returns or exits: inline
+--inline handles both call and IP jumps; if it's a call return is converted to
+--a jump.
+inlining :: OptRule
+inlining ms core =
+  return core{
+  coreDefuns =
+      --Using intersectionWith opt:
+      --Note funInfo's keys are a superset of coreDefuns
+      M.intersectionWith
+      (\fi fundef@(flhs,(ops,branch)) ->
+          case branch of
+            Jump mode (dest:rest,_,ss) ->
+              let v2av = fiVars $ fiBodyInfo fi
+                  Just av = M.lookup dest v2av
+              in case unlabel $ unId $ avVal av of
+                   --f makes a static jump to g
+                   --If it's a call, require g is a single-BB C fun
+                   --If it's IP, require g has #preds=1
+                   Just (Fun,g) ->
+                     let Just fundef' = M.lookup g $ coreDefuns core
+                     in if acceptable mode fundef' g ms
+                        then inline fundef fundef'
+                        else fundef
+                   _ -> fundef
+            _ -> fundef
+      ) (funInfo ms) $ coreDefuns core
+  }
+  where
+    --Given caller jump mode (Calling or IP), returns whether the callee
+    --is inlinable.
+    acceptable :: Mode -> Fundef -> FunVar -> FrozenModState -> Bool
+    --ops must be of size <= 20 and have returning or exiting branch
+    --Note M.size gives you the number of vars bound, not number of ops that
+    --bind vars.
+    acceptable Calling{} (_,(ops,branch)) _g _ms =
+      let sz = S.size $ S.fromList $ M.elems $ M.map fst ops
+          okBranch = case branch of
+                       Jump Returning _ -> True
+                       Jump {} -> False
+                       Jumpi {} -> False
+                       _ -> True
+      in sz <= ipInliningSizeParam && okBranch
+    --Must have #preds = 1
+    acceptable Intraprocedural _fundef g ms =
+      let Just fi = M.lookup g $ funInfo ms
+      in M.size (unId $ preds fi) == 1
+    --No other jump types may be inlined for now
+    acceptable _ _ _ _ = False
+--TODO collect config params into one place, perhaps allow them to be passed
+--as compiler flags.
+ipInliningSizeParam = 100
 
+{-
 --Returns Just fundef if the given fun is a small inlinable function. 
 lookupSmallInlinable :: OptCore -> FunVar -> Maybe Fundef
 lookupSmallInlinable core f =
@@ -733,43 +791,66 @@ lookupSmallInlinable core f =
       Jump {} -> False
       Jumpi {} -> False
       _ -> True
+-}
 type Fundef = (BranchValue,OptFunRHS)
---Precondition: the first fundef is a call to the second.
+--Precondition: the first fundef is a jump to the second; the mode is either
+--call or IP and if call then the second is a single-BB C function.
 --NOTE: assumes no state var pruning for now.
 --Algo: start by associating callee lhs vars with caller passed.
 --For each lhs = op args in opsF, substitute args and lhs, allocating a new
 --name if a var isn't present in the subst table.
 --Substitute vars in the branch using the accumulated substitution table.
---Jump Returning => Jump IP; append scope unchanged.
---exit => exit
+--In both call and IP, params need to be passed to the dest.
+-- In call, they're the first arglen+1 words of the jump params + ss.
+--  Need to change return in callee to IP; append scope unchanged.
+-- In IP, they're unchanged.
 inline :: Fundef -> Fundef -> Fundef
 inline (lhs,
         (ops,
-         Jump (Calling (arglen,retlen)) (dest:args_ret_scope,_mstk,ss)))
+         Jump mode (dest:rest,_mstk,ss)))
   ((wsF,_,ssF),(opsF,branchF)) =
-  let args_ret = take (arglen+1) args_ret_scope
-      scope = drop (arglen+1) args_ret_scope
+  let (gparams,adjustBranch) =
+        case mode of
+          Intraprocedural -> (rest,id)
+          Calling (arglen,_retlen) ->
+            let args_ret = take (arglen+1) rest
+                scope = drop (arglen+1) rest
+            in (args_ret,
+                \branch ->
+                  case branch of
+                    --Set mode to IP if returning, add scope unchanged
+                    Jump Returning (ret_val,mstk,ss) ->
+                      Jump Intraprocedural (ret_val++scope,mstk,ss)
+                    _ -> branch
+               )
   in if length ss /= length ssF
      then error $ "Looks like you've pruned state vars; fix inline!"
      else let
     (lhsws,_,lhsss) = lhs
     initS = (S.fromList $ map nameOfVar $ lhsws ++ lhsss ++ M.keys ops
-            , M.fromList $ zip (wsF++ssF) (args_ret++ss)
+            , M.fromList $ zip (wsF++ssF) (gparams++ss)
             )
     (v_ops',(_,finalSubst)) = runState (mapM go $ M.toList opsF) initS
-    ops' = M.fromList v_ops'
-    branch' = everywhere (mkT $ \v ->
-                             case M.lookup v finalSubst of
-                               Nothing -> error "!?"
-                               Just v' -> v') branchF
-    --Set mode to IP if returning, add scope unchanged
-    branch'' = case branch' of
-                 Jump Returning (ret_val,mstk,ss) ->
-                   Jump Intraprocedural (ret_val++scope,mstk,ss)
-                 _ -> branch'
-    in (lhs,(ops',branch''))
+    ops' = M.union ops $ M.fromList v_ops'
+    branch' = adjustBranch $ substBranch finalSubst branchF
+    in (lhs,(ops',branch'))
   where go (v,(lhs,opE)) =
           (,) <$> substVar v <*> ((,) <$> substValue lhs <*> substOpE opE)
+        --Avoids substituting the $stk var; TODO revisit when stk is actually
+        --used.
+        substBranch v2v =
+          let subst v =
+                case M.lookup v v2v of
+                  Nothing -> error "!?"
+                  Just v' -> v'
+              substV (ws,ss) = (map subst ws, map subst ss)
+              substBV (ws,mstk,ss) = (map subst ws, mstk, map subst ss) 
+          in \case
+            Jump mode bv -> Jump mode $ substBV bv
+            Jumpi elf bv -> Jumpi elf $ substBV bv
+            Revert v -> Revert $ substV v
+            Return v -> Return $ substV v
+            Stop v -> Stop $ substV v
 --Invariant: the Set String is the set of live names so far in the post-inline
 --def.
 type InlineM = State (Set String, Map Var Var)
