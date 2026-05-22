@@ -902,9 +902,12 @@ constantExpansion ms core =
            --To CE non-push ops with constant results passed to branch params:
            --for each w in ws of branch:
            -- if (v',k) = v2v'k[w] && ops[w] is non-push:
-           --  add v' to newOps, replace w with v'
-           (ops',newOps) = runState (go v2v'k ops) M.empty
-       in (lhs,(M.union ops' newOps,branch))
+           --  add v' to newOps, replace w with v' (TODO)
+           ((ops',branch'),newOps) = flip runState M.empty $ do
+             ops' <- go v2v'k ops
+             branch' <- substBranch v2v'k ops branch
+             return (ops',branch')
+       in (lhs,(M.union ops' newOps,branch'))
     )
     (funInfo ms) $ coreDefuns core
   }
@@ -933,6 +936,26 @@ constantExpansion ms core =
         Just (v',k) -> do
           modify $ M.insert v' (([v'],[]), (Push k,([],[])))
           return v'
+    substBranch :: Map Var (Var,Serialized) -> OpMap -> Branch ->
+      State OpMap Branch
+    substBranch v2v'k ops =
+      let substBV (ws,mstk,ss) = do
+            ws' <- mapM substParam ws
+            return (ws',mstk,ss)
+          substV (ws,ss) = (,) <$> mapM substParam ws <*> return ss
+          --If v is in ops, then allocAndSubst; that checks whether
+          --it's also in v2v'k, implying it's a small constant and not a
+          --push.
+          substParam v =
+            if M.member v ops
+            then allocAndSubst v2v'k v
+            else return v
+      in \case
+        Jump mode bv -> Jump mode <$> substBV bv
+        Jumpi elf bv -> Jumpi elf <$> substBV bv
+        Revert v -> Revert <$> substV v
+        Return v -> Return <$> substV v
+        Stop v -> Stop <$> substV v
 
 --TODO make a convenient API for adding new ops; I've duplicated use of
 --allocName in several places.
