@@ -12,7 +12,7 @@ import Opt.HTraversable (Id(..))
 import Opt.Analysis.Exitness (Exitness(..),analyzeExitness)
 import Core.PrimTypes
 import AST.DTs (pattern Memory, pattern UInt)
-import Opt.AbVar (unlabel,LabelType(Fun)) --for control flow DCE
+import Opt.AbVar --for control flow DCE, CE
 import Opt.CC --for param DCE
 import Util (unsafePrint')
 
@@ -57,6 +57,7 @@ optimize core = do
                       ,controlFlowDCE
                       ,pruneParams
                       ,inlining
+                      ,constantExpansion
                      ]
 --Invariant: ms pertains to core
 applyRules ms core =
@@ -775,23 +776,6 @@ inlining ms core =
 --as compiler flags.
 ipInliningSizeParam = 100
 
-{-
---Returns Just fundef if the given fun is a small inlinable function. 
-lookupSmallInlinable :: OptCore -> FunVar -> Maybe Fundef
-lookupSmallInlinable core f =
-  case M.lookup f $ coreDefuns core of
-    Just def | okDef def -> Just def
-    _ -> Nothing
-  where
-    okDef (_lhs,(ops,branch)) =
-      okBranch branch &&
-      length (S.fromList (M.elems (M.map fst ops))) <= 20
-    okBranch = \case
-      Jump Returning _ -> True
-      Jump {} -> False
-      Jumpi {} -> False
-      _ -> True
--}
 type Fundef = (BranchValue,OptFunRHS)
 --Precondition: the first fundef is a jump to the second; the mode is either
 --call or IP and if call then the second is a single-BB C function.
@@ -868,6 +852,91 @@ substValue :: Value -> InlineM Value
 substValue (ws,ss) = (,) <$> mapM substVar ws <*> mapM substVar ss
 substOpE :: OpE -> InlineM OpE
 substOpE (op,rhs) = (,) op <$> substValue rhs
+
+--Symbolic simplification and constant expansion:
+--Need a DSL for expressing symbolic rewrites such as x*a + y*b => x*(a+b)
+--if x == y.
+--For now, I'll limit symsimpl to ops in a single BB.
+--But first, CE: if a var x used in an op has a small constant value k (a single
+--label or 4-byte number), replace it with x' = push k.
+--That'll eliminate arith on known values (esp. useful in deep stacks of
+--functions) and deaden ops where the result value is known.
+--Note I add pushes on use by ops, not branches; that avoids N pushes each BB
+--for constant params. Replacement with pushes should deaden the params,
+--ultimately allowing them to be eliminated via pruneParams.
+--That should deal with the issue that f(x) pushes f first, then x, then
+--needs to swap them to make the call.
+--Note: sometimes it would be more efficient to remove a constant param from
+--the stack, pushing it only when you jump to a BB in which it's not constant.
+--TODO use FrozenModState during codegen: pushing instead of duping would be
+--useful when the param is out of reach.
+--TODO change the opmap repr to be in DB normal form; I waste code and cycles
+--every time I need to do something once per op.
+constantExpansion :: OptRule
+constantExpansion ms core =
+  return core{
+  coreDefuns = M.intersectionWith
+    (\fi (lhs@(ws,_,ss),(ops,branch)) ->
+       let v2abv = M.map (unId . avVal) $ fiVars $ fiBodyInfo fi
+           --Collect a map of small constants (<=4B)
+           --Note it may include state vars, so need to be careful to only
+           --alloc push ops for uses in the word part of op rhses.
+           --To avoid an infinite loop where pushes are replaced with new
+           --pushes, need to filter out the vs that are already pushes.
+           v2k = M.filterWithKey
+             (\v k ->
+                 serLength k <= 4 &&
+                 case M.lookup v ops of
+                   Just (_,(Push _, _)) -> False
+                   _ -> True) $
+             M.mapMaybe abv2ser v2abv
+           --For each v = k, map v to a new v' and its k
+           v2v'k = evalState (sequence $ M.mapWithKey
+                               (\v k -> (,) <$> allocVar v <*> return k) v2k) $
+                   S.fromList $ map nameOfVar $ ws ++ ss ++ M.keys v2k
+           --for each v -> lhs=op (ws,ss) in ops:
+           -- for each w in ws:
+           --  if (v',k) = v2v'k[w]:
+           --   add v'->v'=push k to newOps
+           --   replace w with v'
+           --To CE non-push ops with constant results passed to branch params:
+           --for each w in ws of branch:
+           -- if (v',k) = v2v'k[w] && ops[w] is non-push:
+           --  add v' to newOps, replace w with v'
+           (ops',newOps) = runState (go v2v'k ops) M.empty
+       in (lhs,(M.union ops' newOps,branch))
+    )
+    (funInfo ms) $ coreDefuns core
+  }
+  where
+    --Accepts labels and integer constants; TODO extend AbVar to support
+    --Serialized directly.
+    abv2ser :: AbVar -> Maybe Serialized
+    abv2ser abv
+      | Just (_lt,lab) <- unlabel abv =
+          Just $ Serialized 2 2 [Right (0,2,lab)]
+      | Just n <- unexactly abv = Just $ serWord n
+      | let = Nothing
+    allocVar :: Var -> State (Set String) Var
+    allocVar v = do
+      nm' <- allocName $ nameOfVar v
+      return v{nameOfVar = nm'}
+    go v2v'k ops =
+      forM ops (\(lhs,(primOp,(ws,ss))) -> do
+                   ws' <- mapM (allocAndSubst v2v'k) ws
+                   return (lhs,(primOp,(ws',ss))))
+    allocAndSubst :: Map Var (Var,Serialized) -> Var ->
+                     State OpMap Var
+    allocAndSubst v2v'k v =
+      case M.lookup v v2v'k of
+        Nothing -> return v
+        Just (v',k) -> do
+          modify $ M.insert v' (([v'],[]), (Push k,([],[])))
+          return v'
+
+--TODO make a convenient API for adding new ops; I've duplicated use of
+--allocName in several places.
+
 
 --Step 1: prune unreachable functions.
 --Inlining may restrict abvars, which restricts control flow.

@@ -56,6 +56,7 @@ import Opt.Opt (opt,OptError(..)
                ,controlFlowDCE
                ,pruneParams
                ,inlining
+               ,constantExpansion
                )
 
 --Poor man's pretty-printing for debugging
