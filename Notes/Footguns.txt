@@ -98,3 +98,19 @@ str = "But I have another length!"
 5. Alloc is just a bump allocator. Various functions (such as deref for code)
 use memAllocPtr as scratch memory, so there's no guarantee newly alloc'd
 memory is zero unless you're careful about scratch alloc.
+
+6. Locals can't shadow globals or functions: if a global x is declared, it
+changes the meaning of any function which uses x as a param, usually
+triggering a type error.
+The problem stems from assignments modifying preexisting values
+(incl globals) rather than binding new ones a la Haskell.
+It could be solved for locals by allowing shadowing var x statements, but
+that wouldn't work for function params unless you allowed a var keyword in
+patterns.
+That would also require more complex desugaring; currently globals in
+patterns and exprs are desugared to a deref without regard for the
+surrounding local scope.
+For now, just avoid using one-letter global or function names such as x, f.
+Problem demo: Stdlib/Test/Shadowing.evmc
+"import Prelude; import Test.Shadowing; main():=()" will error with a
+unification error in testFun.

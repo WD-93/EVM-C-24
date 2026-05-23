@@ -1,0 +1,9 @@
+//Until var shadowing rules are changed, this should fail with a type error in
+//testFun. The issue is that locals can't shadow globals or functions, so
+//declaring a global that's already used as a param in a function changes the
+//meaning of the function.
+
+testGlobal : Word;
+memory testGlobal;
+testFun : Byte -> Byte;
+testFun testGlobal := return testGlobal
