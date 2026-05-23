@@ -701,7 +701,19 @@ computeAddressOf ptrE indexPath = do
                 -- .field@ts
                 EDot field ts -> do
                   --Explore the datatype of .field!
-                  --If it's boxed, throw a compiler error.
+                  --Copied from getDot:
+                  --Infer struct type from field
+                  tycon <- liftFused $ getFieldParent field
+                  liftFused $ exploreD [] S.empty (tycon,ts)
+                  --If it's boxed, throw a compiler error. TODO consider
+                  --whether that makes sense... &((*xsptr).hd) should be
+                  --possible.
+                  --Copied from getFPI:
+                  boxed <- liftFused $ dtBoxed <$> getModDTInfo tycon
+                  if boxed
+                    then throwError $ GenericFE $ "Boxed DT " ++ tycon
+                         ++ " in computeAddressOf!"
+                    else return ()
                   --Look up field index and type in fsOffsets
                   offs <- liftFused $ gets fsOffsets
                   let Just (off,sz,t) = M.lookup (field,ts) offs

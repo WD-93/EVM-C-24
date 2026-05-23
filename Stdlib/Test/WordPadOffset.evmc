@@ -1,0 +1,7 @@
+//WordPad's unWordPad field seems to have the wrong offset...
+import Prelude;
+main():= {
+ var p = null() :: MPtr (WordPad Short);
+ mstore(0,coerce (&(p->unWordPad)));
+ evm_return(0,32)
+}
