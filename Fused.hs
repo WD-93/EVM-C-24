@@ -689,6 +689,9 @@ evaluatePat = go
 --We also compute the return type at the same time.
 computeAddressOf :: E -> [EIndex] -> FFM (Var,T)
 computeAddressOf ptrE indexPath = do
+  --p->field=e is triggering a scope error in SSA
+  --Fix: push its result ptr' to scope
+  scope <- getScope
   (ptrWs,ptrT) <- convertE ptrE
   let [ptr] = ptrWs
       Ptr r referent = ptrT
@@ -735,6 +738,7 @@ computeAddressOf ptrE indexPath = do
                   p' <- op2 "add" product p
                   return (p',ref)
            ) (ptr,referent) indexPath --Bug: I was passing Ptr r referent...
+  putScope $ ptr':scope
   return (ptr', Ptr r ref')
                     
 --A smart constructor for Maybe EPCon

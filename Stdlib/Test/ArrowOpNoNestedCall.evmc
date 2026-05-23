@@ -1,0 +1,9 @@
+//The compiler is failing with a SSA error when assigning to ->...
+//a call in the rhs is the likely trigger. Moving it before the assignment to
+//ensure it's not the size that is the problem.
+import Prelude;
+main() := {
+ var sh = 3 :: UInt 2;
+ (null())->unWordPad = sh;
+ evm_return(0,32)
+}

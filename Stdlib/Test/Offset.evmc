@@ -1,9 +1,9 @@
 //Debugging revertValue and returnValue...
-
-data D = {D{a:Word,b:Word}};
+import Prelude;
+data D = {D{a:Bool,b:Bool}};
 main () := {
  var p = coerce 0 :: MPtr D;
- p->a = 10;
- p->b = 11;
- evm_return(0,64)
+ p->a = True;
+ p->b = False;
+ evm_return(0,2)
 }

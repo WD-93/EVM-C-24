@@ -1,0 +1,6 @@
+//This works; the problem seems specific to the -> operator.
+import Prelude;
+main() := {
+ *(coerce(2+2)) = (1+2);
+ returnPtr (null())
+}

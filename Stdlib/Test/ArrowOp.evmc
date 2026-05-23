@@ -1,0 +1,9 @@
+//The compiler is failing with a SSA error when assigning to ->...
+import Prelude;
+main() := {
+ (null())->unWordPad =
+  (3 :: UInt 16); //This fails
+  //True works
+  //1 + 2 fails... scope confusion in assignEP due to call is likely culprit.
+ evm_return(0,32)
+}
