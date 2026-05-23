@@ -1,0 +1,15 @@
+//Patterns may contain pointer and short exprs in *ptr and pattern!ix
+//respectively. To ensure side effects aren't repeated in assignments such as
+//pat+=5, the exprs must be evaluated and saved on the stack.
+//Their Vars are saved in EvaluatedPattern in the Fused stage.
+//However, the type of the pattern doesn't determine how many words its
+//EvaluatedPattern contains, inviting scope errors.
+//This program is a simple test of multi-word EvaluatedPats.
+
+import Prelude;
+main() := {
+ (*coerce 0,
+  *coerce 1,
+  *coerce 2) = (0xaa,0xbb,0xcc);
+  evm_return(0,3)
+}
