@@ -319,7 +319,10 @@ structuredPrims = M.fromList [
                 szb <- liftFused $ sizeof b
                 let wlenb = (sza `roundedUpMod` 32) `div` 32
                     b_is_whole = (sza `mod` 32) == 32
-                    m = sza `mod` 32
+                    --Bugfix: it's ofc the modulus of the size of b that should
+                    --be used, otherwise coercing a word to any non-whole-word
+                    --type will zero the top word.
+                    m = szb `mod` 32
                 --Avoiding pointer overflow vuln:
                 --TODO ensure they're all eliminated by bounding max type size
                 --by Haskell's maxBound :: Int.
