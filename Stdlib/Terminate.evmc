@@ -31,8 +31,8 @@ returnPtrLen (p,n) := {
 revertValue : a -> ();
 revertValue a := {
  var p = coerce 0;
- *p = a;
- revertPtr p
+ *p = WordPad a;
+ revertPtr (&(p->unWordPad))
  };
 revertPtr : MPtr a -> ();
 revertPtr p := revertPtrLen (p,1);

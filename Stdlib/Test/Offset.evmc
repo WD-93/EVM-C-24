@@ -1,0 +1,9 @@
+//Debugging revertValue and returnValue...
+
+data D = {D{a:Word,b:Word}};
+main () := {
+ var p = coerce 0 :: MPtr D;
+ p->a = 10;
+ p->b = 11;
+ evm_return(0,64)
+}

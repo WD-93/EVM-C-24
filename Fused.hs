@@ -91,11 +91,12 @@ placeGlobals = do
   --Split globals by region:
   let (memgs,stogs,tstogs) =
         foldr bucket (M.empty,M.empty,M.empty) ncgs
-  m2off <- process "memOffset" memgs
-  s2off <- process "stoOffset" stogs
-  ts2off <- process "tstoOffset" tstogs
+  m2off <- process "memOffset[]" memgs
+  s2off <- process "stoOffset[]" stogs
+  ts2off <- process "tstoOffset[]" tstogs
   --Each g has label g[]; that's what we need to subst
-  return $ M.mapKeys (++"[]") $ M.unions [m2off,s2off,ts2off]
+  --Bugfix: [] was already added to the names elsewhere.
+  return $ M.unions [m2off,s2off,ts2off]
   where bucket (g,(r,t,_)) (m,s,ts) =
           let i = M.insert g t
           in case r of
