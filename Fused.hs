@@ -718,8 +718,11 @@ computeAddressOf ptrE indexPath = do
                   offs <- liftFused $ gets fsOffsets
                   let Just (off,sz,t) = M.lookup (field,ts) offs
                   --Bump the pointer:
-                  szw <- pushK sz
-                  p' <- op2 "add" szw p
+                  --Bugfix: it should be bumped by the offset, not the field
+                  --size!
+                  --szw <- pushK sz
+                  offw <- pushK off
+                  p' <- op2 "add" offw p
                   return (p',t)
                 --len is ignored because we do no bounds checking
                 EBang _len ref ixE -> do
