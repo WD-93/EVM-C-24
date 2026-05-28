@@ -6,7 +6,10 @@ import Core.SSA
 import Const.Const (Serialized(..))
 import Opt.AI
 import Opt.HTraversable (Id(..))
+import Opt.AbVar
+import Opt.Opt (Fundef())
 import Asm
+import Util ((?))
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -14,6 +17,7 @@ import Data.Set (Set(..))
 import qualified Data.Set as S
 import Control.Monad.State
 import Control.Monad
+import Data.List (sort)
 
 --At long last, the Core optimizer is good enough that it's worth generating
 --code from it. That allows compiler debugging using test programs with output
@@ -95,9 +99,11 @@ data CompiledContract = CompiledContract {
   }
   deriving (Eq,Ord,Read,Show)
 
+--TODO split out the part after asm in order to be able to debug (readable) asm
+--rather than bytecode.
 codegen :: OptCore -> Either CodegenError CompiledContract
 codegen core =
-  case codegenFuns $ coreDefuns core of
+  case codegenFuns core of
     Left fcge -> Left $ InFunction fcge
     Right fasm ->
       let jtasm = codegenJTs $ coreJTs core
@@ -181,6 +187,211 @@ computeDistance ms core =
           S.toList $ M.keysSet $ M.filter (== Normal) $ unId $ succs fi
 
 --Note: the Core iset contains non-EVM ops emptyMem etc.
-codegenFuns :: Map FunVar (BranchValue,OptFunRHS) ->
+codegenFuns :: OptCore ->
                Either (FunVar,CodegenFunError) [Asm]
-codegenFuns = error "todo"
+codegenFuns core = do
+  --I could return this in Opt instead of recomputing it
+  let Right ms = ai core
+      f2dist = computeDistance ms core
+  --For each BB, determine
+  --1) If it will be jumped to by any BB or JT
+  --2) Which (if any) f it will fall through to and vice versa.
+  let (f2decdef,f2g,g2f) = decorateBBs f2dist ms core
+  --Given that information, compile each BB to [Asm].
+  f2asm <- sequence $ M.mapWithKey codegenBB f2decdef
+  --Concatenate together chains of BBs that fall through to each other,
+  --starting with the first.
+  let head2asm = concatFallthroughChains f2g g2f f2asm
+      --Place $trueMain's chain first, then the rest in arbitrary order.
+      Just mainAsm = M.lookup trueMain head2asm
+      rest = concat $ M.delete trueMain head2asm
+  return $ mainAsm ++ rest
+
+--For each f, get its non-continues preds.
+--Split out those that are fallthroughable; if there are any, select the
+--one with the lowest distance (from $trueMain) as the ft.
+--Return the rest to the set; if it's nonempty then the f will be jumped to.
+--FW: a JT could fall through to its last element, but that would require
+--mixing fs and JTs. A function will never fall through to a JT (since if
+--the index is constant you might as well jump to the f), but you could reduce
+--code size by sharing an overlapping "push2 f, jump" at the cost of executing
+--an unnecessary jumpdest.
+{-
+Algo:
+f2ft = for each f, get the g it could fall through to
+g2fset = invert that map
+g2f = map select_best g2fset
+f2g = reverse g2f
+f2preds = non-continues predecessors
+f will be jumped to if:
+ #f2preds[f] > 1, or
+ not (f in g2f) && #f2preds[f] > 0
+f will fallthrough if: f in f2g
+-}
+decorateBBs :: Map FunVar Int -> FrozenModState -> OptCore ->
+               (Map FunVar (Bool, --Will be jumped to
+                            Bool, --Will fallthrough to jump dest or jumpi else
+                            Fundef
+                           ),
+                Map FunVar FunVar, --f=>the g it falls through to
+                Map FunVar FunVar  --g=>the f that falls through to it
+               )
+decorateBBs f2dist ms core =
+  let f2fi_def = M.intersectionWith (,) (funInfo ms) $ coreDefuns core
+      --f can fall through if:
+      --1) It makes a static jump to a function.
+      --2) It jumpis.
+      f2ft = M.mapMaybe
+             (\(fi,(_lhs,(_opMap,branch))) ->
+                case branch of
+                  Jump _mode (dest:_,_,_) ->
+                    let Just destabv = fmap (unId.avVal) $ M.lookup dest $
+                                      fiVars $ fiBodyInfo fi
+                    in case unlabel destabv of
+                         Just (Fun,f) -> Just f
+                         _ -> Nothing
+                  Jumpi elf _ -> Just elf
+                  _ -> Nothing
+             ) f2fi_def
+      --for f=>g, out[g] insert= f
+      --TODO optimize
+      g2fset = foldr (\(f,g) ->
+                        M.alter (Just . maybe (S.singleton g) (S.insert g)) g)
+                        M.empty $
+               M.toList f2ft
+      --Select the best fallthrough
+      --Note fs is nonempty for every key g
+      g2f = M.map (\fs ->
+                     --Associate fs with dist and branch
+                     let f2dist_branch =
+                           flip M.restrictKeys fs $
+                           M.intersectionWith (,) f2dist $
+                           M.map (\(_lhs,(_ops,branch)) -> branch) $
+                           coreDefuns core
+                         --Sort by them; fortunately Jump{} < Jumpi{}
+                     in snd $ head $ sort $ map swap $
+                        M.toList f2dist_branch
+                  )
+            g2fset
+      f2g = M.fromList $ map swap $ M.toList g2f
+  in (M.mapWithKey
+      (\f (fi,def) ->
+         --Number of non-continues (direct) predecessors
+         let npreds = M.size $ M.filter (==Normal) $ unId $ preds fi
+             --Whether f is jumped to:
+         in (npreds > 1 || (not (M.member f g2f) && npreds > 0),
+             --Whether f falls through:
+             M.member f f2g,
+             def
+            )
+      ) f2fi_def,
+      f2g,
+      g2f
+     )
+  where
+    swap (a,b) = (b,a)
+{-
+--Unreachable JTs are pruned, so all the fs in JTs may be jumped to.
+  let jtFs = S.fromList $ concat $ M.map snd $ coreJTs core
+-}
+
+--BBs with neither predecessor nor successor form 1-elem chains.
+--The chain heads are those BBs not in g2f.
+concatFallthroughChains :: Ord k =>
+  Map k k -> --fallthrough
+  Map k k -> --inverse fallthrough
+  Map k [a] -> --compiled BBs
+  Map k [a] --chain start => all BBs in chain
+concatFallthroughChains f2g g2f f2asm =
+  let heads = S.difference (M.keysSet f2asm) (M.keysSet g2f)
+  in M.fromSet follow heads
+  --I could optimize follow by fusing f2g and f2asm
+  where follow f =
+          let Just asm = M.lookup f f2asm
+          in asm ++
+             case M.lookup f f2g of
+               Nothing -> []
+               Just g -> follow g
+
+--The trickiest part of codegen, hence why it's placed last.
+--TODO exploit that only the top words of the stack (and not its height)
+--matters if mstk is dead.
+codegenBB :: FunVar -> --f
+             (Bool, --May be jumped to
+              Bool, --Falls through
+              Fundef) ->
+             Either (FunVar,CodegenFunError) [Asm]
+codegenBB f (j,ft,(flhs,(opMap,branch))) = do
+  --body depends on starting stack,
+  --ops and their ordering constraints,
+  --and the target stack.
+  body <- codegenOps ft flhs opMap branch ? (,) f
+  return $
+    [PlaceLabel $ LNamed f] ++
+    [Opcode "jumpdest" | j] ++
+    body ++
+    codegenBranch ft branch
+--ft can only be true for Jump and Jumpi
+--The ops have already placed the vars in the right position.
+--It might appear that fallthrough saves two ops for jumpi and only one for
+--jump, but that's not true since dest is removed from the target in jump
+--fallthhrough.
+codegenBranch :: Bool -> Branch -> [Asm]
+codegenBranch ft = \case
+  Jump {} -> [Opcode "jump" | not ft]
+  Jumpi else_f _ ->
+    [Opcode "jumpi"] ++
+    if ft
+    then []
+    else [PushLabel 2 $ LNamed else_f,
+          Opcode "jump"
+         ]
+  Revert {} -> [Opcode "revert"]
+  Return {} -> [Opcode "return"]
+  Stop {} -> [Opcode "stop"]
+targetStack :: Bool -> Branch -> [Var]
+targetStack ft = \case
+  Jump _mode (ws,_,_) -> ws
+  Jumpi _elf (ws,_,_) -> ws
+  Revert (ws,_) -> ws
+  Return (ws,_) -> ws
+  --You could save a lot of gas here by relaxing the stack target when $stk
+  --is dead, since [] ++ _ matches any stack.
+  Stop ([],_) -> []
+
+--Since dest may be pruned, opMap must be pruned as well. The remaining ops
+--must be run.
+--Convert state var borrow and consume into ordering constraints:
+--If op2 borrows s produced by op1, op1 -> op2
+--If opW consumes s borrowed by opR, opR -> opW
+--For now, there is only one state var at a time per state type, so key by
+--type.
+--Prune redundant constraints: A->B->C dominates A->C, stack dependency
+--dominates state dependency.
+
+--FW: exploit that vars in the source stack may have known values;
+--if a constant is already on the stack, dup it instead of pushing the same
+--constant.
+--FW: replicate idempotent subexprs if it saves enough stack shuffling overhead.
+--FW: if ToS is x,y,0 and garbage, use mcopy instead of pop.
+--Full treegraph may not be optimal, but at least...
+--Collapse the leftmost constant part of subtrees into atomic ops for
+--planning purposes: op ~ (args,pushed,[Asm]).
+--Vars in the target are never last-use, so they may be treated like
+--constants: any use becomes a dup.
+--Is that optimal? Consider target = x*5, where x,5 are on the stack and 5
+--is garbage. You can mul instead of push1 5, mul, swap1, pop.
+
+--A suffix of the stack matches the target; it should never be touched again.
+--If a var x will be last-used, it may be efficient to pause exec of the tree
+--that last-uses x, eval the var y that replaces x at the same position,
+--use it to "fish" out x with swap, then continue.
+--If trees share constants and don't interfere, it may be worth doing the
+--pushing of one to expose dupable constants for the other (stack space
+--allowing). Avoid the tree abstraction entirely?
+codegenOps :: Bool -> BranchValue -> OpMap -> Branch ->
+  Either CodegenFunError [Asm]
+codegenOps ft flhs opMap branch = do
+  --The target stack layout; depends on whether the branch falls through
+  let target = targetStack ft branch
+  error "todo"
