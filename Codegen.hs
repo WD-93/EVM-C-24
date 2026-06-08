@@ -468,9 +468,9 @@ data StateVarUseInfo = SVUI {
 --I have to normalize the opmap yet again... TODO change its repr.
 normalizeOpMap :: OpMap -> Map Value (PrimOp,Value)
 normalizeOpMap = M.fromList . M.elems
-stateVarUseInfo :: OpMap -> StateVarUseInfo
+stateVarUseInfo :: Map Value (PrimOp,Value) -> StateVarUseInfo
 stateVarUseInfo ops =
-  execState (mapM_ go $ M.toList $ normalizeOpMap ops) $
+  execState (mapM_ go $ M.toList ops) $
   SVUI M.empty M.empty M.empty
   where
     go :: (Value,(PrimOp,Value)) -> State StateVarUseInfo ()
@@ -513,12 +513,45 @@ stateVarUseInfo ops =
 --its consumer (if any).
 --Computing direct deps : Map op (Set op):
 --deps = {}
---For each s in statevars:
--- if has producer p:
---  for each o in borrowers[s]: deps[o] += p
---  deps[consumer[s]] += p
--- if has consumer c:
---  deps[c] U= borrowers[s]
+--For each s,bs in borrowers:
+-- if p = producer[s]:
+--  for each o in bs:
+--   deps[o] += p
+-- if c = consumer[s]:
+--   deps[c] U= bs
+--For each s,c in consumers:
+--  deps[c] += producer[s]
+stateDepGraph :: StateVarUseInfo -> Map Value (Set Value)
+stateDepGraph SVUI {
+  svuiConsumer = consumer,
+  svuiProducer = producer,
+  svuiBorrowers = borrowers
+  } =
+  flip execState M.empty $ do
+  forM_ (M.toList borrowers)
+    (\(s,bs) -> do
+        case M.lookup s producer of
+          Just p ->
+            forM_ (S.toList bs)
+            (\o -> insertDep o p)
+          _ -> return ()
+        case M.lookup s consumer of
+          Just c -> insertDeps c bs
+          _ -> return ()
+    )
+  forM_ (M.toList consumer)
+    (\(s,c) ->
+       case M.lookup s producer of
+         Just p -> insertDep c p
+         _ -> return ()
+    )
+    where
+      insertDep :: Value -> Value -> State (Map Value (Set Value)) ()
+      insertDep post pre =
+        modify $ M.alter (Just . maybe (S.singleton pre) (S.insert pre)) post
+      insertDeps :: Value -> Set Value -> State (Map Value (Set Value)) ()
+      insertDeps post pres =
+        modify $ M.alter (Just . maybe pres (S.union pres)) post
 --Redundant state deps can be pruned:
 --We have deps : op => Set op
 --Compute preds : Map op (Set op)
@@ -527,6 +560,7 @@ stateVarUseInfo ops =
 -- os = ops(rhs)
 -- os' = os U map preds os
 -- deps[o] = deps[o] difference os'
+
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
