@@ -349,15 +349,17 @@ codegenBranch ft = \case
   Revert {} -> [Opcode "revert"]
   Return {} -> [Opcode "return"]
   Stop {} -> [Opcode "stop"]
-targetStack :: Bool -> Branch -> [Var]
+--Also returns the state vars for pruning (fallthrough may deaden the dest push
+--op)
+targetStack :: Bool -> Branch -> Value
 targetStack ft = \case
-  Jump _mode (ws,_,_) -> ws
-  Jumpi _elf (ws,_,_) -> ws
-  Revert (ws,_) -> ws
-  Return (ws,_) -> ws
+  Jump _mode (ws,_,ss) -> (ws,ss)
+  Jumpi _elf (ws,_,ss) -> (ws,ss)
+  Revert v -> v
+  Return v -> v
   --You could save a lot of gas here by relaxing the stack target when $stk
   --is dead, since [] ++ _ matches any stack.
-  Stop ([],_) -> []
+  Stop v -> v
 
 --Since dest may be pruned, opMap must be pruned as well. The remaining ops
 --must be run.
@@ -368,6 +370,9 @@ targetStack ft = \case
 --type.
 --Prune redundant constraints: A->B->C dominates A->C, stack dependency
 --dominates state dependency.
+--Algo: for each A with direct edges to Bs, keep only the orthogonal Bs with
+--greatest height. If B->C, then height(B) > height(C). Fun lhs vars have
+--height 0.
 
 --FW: exploit that vars in the source stack may have known values;
 --if a constant is already on the stack, dup it instead of pushing the same
@@ -376,11 +381,35 @@ targetStack ft = \case
 --FW: if ToS is x,y,0 and garbage, use mcopy instead of pop.
 --Full treegraph may not be optimal, but at least...
 --Collapse the leftmost constant part of subtrees into atomic ops for
---planning purposes: op ~ (args,pushed,[Asm]).
+--planning purposes: op ~ (args,pushed,asm).
+--Represent the asm using a DT with abstract Dup Var so its value is
+--independent of when it's placed (which is unknown). Should the same be done
+--for swap?
+--If op pushes a var that is not used (possible for CALL, CREATE), fuse the
+--POP and change effect to (args,Nothing,asm++POP).
+--Is there any reason to use a list rather than Maybe for pushed?
 --Vars in the target are never last-use, so they may be treated like
 --constants: any use becomes a dup.
 --Is that optimal? Consider target = x*5, where x,5 are on the stack and 5
 --is garbage. You can mul instead of push1 5, mul, swap1, pop.
+--Don't use constant info for now.
+--FW: commutative reduction can be represented with a set rather than list.
+--Partial state: v=reduce(op,vs) on the stack.
+--Discover DAGs of commassoc ops with no external uses of intermediate
+--reduces, convert to a single reduce.
+--If two vars from a reduce (guaranteed to have no external uses!) are ToS,
+--immediately apply op.
+
+--Problem: ops : args => pushed, source, target, non-stack op dependencies.
+--Big-step: generate a scheduling with as few dups, swaps, and pops as poss.
+--Small-step: generate a sequence of dups, swaps and pops followed by the next
+--op (or none if done).
+--Is it always worth it to pop dead vars ToS? Consider
+--g,y,...,x where you want to run op(x,y). If you swap you're left with
+--garbage to deal with later...
+--Non-commutative ops have stack constraint vs,rest where rest must contain
+--the vars that will be used later.
+--Their constraint is similar to 
 
 --A suffix of the stack matches the target; it should never be touched again.
 --If a var x will be last-used, it may be efficient to pause exec of the tree
@@ -389,9 +418,138 @@ targetStack ft = \case
 --If trees share constants and don't interfere, it may be worth doing the
 --pushing of one to expose dupable constants for the other (stack space
 --allowing). Avoid the tree abstraction entirely?
+--If T2 after T1 and T2 uses v, then it definitely won't be last-used in T1.
 codegenOps :: Bool -> BranchValue -> OpMap -> Branch ->
   Either CodegenFunError [Asm]
 codegenOps ft flhs opMap branch = do
   --The target stack layout; depends on whether the branch falls through
-  let target = targetStack ft branch
+  let (target,ss) = targetStack ft branch
+      --The dest push op may be dead; prune all dead ops for simplicity
+      --TODO opt: refcount vars so you can delete push without traversing ops
+      ops = execState (mapM_ go $ target ++ ss) M.empty
   error "todo"
+  where
+    go :: Var -> State OpMap ()
+    go v = do
+      visited <- get
+      if M.member v visited
+        then return ()
+        else case M.lookup v opMap of
+               Nothing -> return () --It's a function lhs var
+               Just op@(_lhs,(_primop,(ws,ss))) -> do
+                 modify $ M.insert v op
+                 mapM_ go $ ws ++ ss
+
+--Stack scheduling is a tricky problem; it seems likely there's no polytime
+--optimal algo, so it would be worth evaluating a range of heuristic
+--strategies.
+--The logic for extraction and simplification of the problem can be shared
+--between them, so I'll write that first.
+
+--State vars can be eliminated by computing the dependencies between ops:
+--Computing consumer : Map Var op, producer : Map Var op,
+--borrowers : Map Var (Set op), statevars : Set Var:
+-- For each o:
+--  for s in state args of o:
+--   add s to statevars
+--   if state lhs of o contains a var s' of the same type:
+--    o consumes s
+--    o produces s'
+--   else:
+--    o borrows s
+--For now, ops are identified by Value; using an Int index might be worth
+--investigating in future.
+data StateVarUseInfo = SVUI {
+  svuiConsumer  :: Map Var Value,
+  svuiProducer  :: Map Var Value,
+  svuiBorrowers :: Map Var (Set Value)
+                           }
+  deriving (Eq,Ord,Read,Show)
+--I have to normalize the opmap yet again... TODO change its repr.
+normalizeOpMap :: OpMap -> Map Value (PrimOp,Value)
+normalizeOpMap = M.fromList . M.elems
+stateVarUseInfo :: OpMap -> StateVarUseInfo
+stateVarUseInfo ops =
+  execState (mapM_ go $ M.toList $ normalizeOpMap ops) $
+  SVUI M.empty M.empty M.empty
+  where
+    go :: (Value,(PrimOp,Value)) -> State StateVarUseInfo ()
+    go (lhs@(_,slhs),(_,(_,srhs))) =
+      --Map state type to output var to efficiently identify consumes
+      --Invariant: there is at most one var per state type.
+      let t2sv = M.fromList [(typeOfVar v, v) | v <- slhs]
+      in forM_ srhs
+         (\s ->
+            case M.lookup (typeOfVar s) t2sv of
+              Nothing -> lhs `borrows` s
+              Just s' -> do
+                lhs `consumes` s
+                lhs `produces` s'
+         )
+    --TODO use lenses to elim boilerplate
+    borrows :: Value -> Var -> State StateVarUseInfo ()
+    lhs `borrows` s =
+      modify $
+      \svui->svui{
+        svuiBorrowers =
+            M.alter (Just . maybe (S.singleton lhs) (S.insert lhs)) s $
+            svuiBorrowers svui
+        }
+    consumes :: Value -> Var -> State StateVarUseInfo ()
+    lhs `consumes` s = modify $
+      \svui->svui{
+        svuiConsumer =
+            M.insert s lhs $
+            svuiConsumer svui
+        }
+    produces :: Value -> Var -> State StateVarUseInfo ()
+    lhs `produces` s = modify $
+      \svui->svui{
+        svuiProducer =
+            M.insert s lhs $
+            svuiProducer svui
+        }
+--Uses of s must be after its producer (if any); borrows of s must be before
+--its consumer (if any).
+--Computing direct deps : Map op (Set op):
+--deps = {}
+--For each s in statevars:
+-- if has producer p:
+--  for each o in borrowers[s]: deps[o] += p
+--  deps[consumer[s]] += p
+-- if has consumer c:
+--  deps[c] U= borrowers[s]
+--Redundant state deps can be pruned:
+--We have deps : op => Set op
+--Compute preds : Map op (Set op)
+--Pruned deps:
+--For o@(lhs = op rhs):
+-- os = ops(rhs)
+-- os' = os U map preds os
+-- deps[o] = deps[o] difference os'
+
+--Commassoc reduces: replace trees of commassoc ops with a single
+--reduce op vs.
+--Commassoc: add, mul, smul, and, or, xor.
+--Refinement: and, or are idempotent, so duplicate vars can be pruned.
+--Duplicate vars in xor cancel.
+--This needs to be updated in tandem with Opt, which may make some
+--transformations dead.
+--Absorbents (x*0=0) already handled by AI.
+--Identities (x*1=x) yet to be handled.
+--x xor ~0 = ~x
+
+--Last-use analysis:
+--If v in target, it'll never be last-used.
+--The last-use candidate ops are those o which use v and have no successor o'
+--which uses v. If there is only one candidate op, v is definitely last-used
+--in it. Note the op may use v in several places.
+--Heuristics:
+--Q: should ops with no last-uses be treated as ~pushes? Then trees can be
+--combined recursively.
+--Fuse op with unused word with pop.
+--If an op's last-uses are ToS, push its other args and swap into correct pos;
+--adjust the push order so that x is pushed, then swapped into pos(last)
+--when last should be ToS.
+--An op with pushed () and no last-uses should be run as soon as it's
+--runnable.
