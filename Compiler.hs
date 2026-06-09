@@ -58,7 +58,11 @@ import Opt.Opt (opt,OptError(..)
                ,inlining
                ,constantExpansion
                )
-
+--Core => asm => bytecode
+import Codegen (codegen,
+                codegen', --returns asm, exported for debugging
+                CodegenError(..),CodegenFunError(..))
+import Asm
 --Poor man's pretty-printing for debugging
 import Pretty
 --Testing AI
@@ -74,6 +78,7 @@ data CompilerError = ParserError String
                    | SSAError (Name,SSAError)
                    | AIError AIError --Only thrown in test pipeline2ai
                    | OptError OptError
+                   | CodegenError CodegenError
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -217,6 +222,20 @@ pipeline2opt :: String -> Either CompilerError OptCore
 pipeline2opt str = do
   core <- pipeline2ssa str
   opt core ? OptError
+printopt :: String -> String -> IO ()
+printopt prefix str =
+  case pipeline2opt str of
+    Left err -> error $ show err
+    Right core -> mapM_ putStrLn $ showByPrefix False prefix core
+pipeline2asm :: String -> Either CompilerError [Asm]
+pipeline2asm str = do
+  core <- pipeline2opt str
+  codegen' core ? CodegenError
+printasm :: String -> IO ()
+printasm str =
+  case pipeline2asm str of
+    Left err -> error $ show err
+    Right asms -> mapM_ (putStrLn . prettyAsm) asms
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str

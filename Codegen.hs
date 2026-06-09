@@ -105,25 +105,30 @@ data CompiledContract = CompiledContract {
 --TODO split out the part after asm in order to be able to debug (readable) asm
 --rather than bytecode.
 codegen :: OptCore -> Either CodegenError CompiledContract
-codegen core =
+codegen core = do
+  asm <- codegen' core
+  case assemble asm of
+    Left asmError -> error $ "Compiler error (asmError):" ++
+                     show asmError
+    Right obj ->
+      let (undefinedLabels,bytes) = toExe obj
+      in if not $ S.null undefinedLabels
+         then error $ "Compiler error (undefined labels): " ++
+              show undefinedLabels
+         else let len = length bytes
+              in if len > 24000
+                 then Left $ ContractSizeLimitExceeded len
+                 else Right $ CompiledContract {ccText = bytes}
+--Useful for reading asm output
+codegen' :: OptCore -> Either CodegenError [Asm]
+codegen' core =
   case codegenFuns core of
     Left fcge -> Left $ InFunction fcge
     Right fasm ->
       let jtasm = codegenJTs $ coreJTs core
           gasm = codegenStatic $ coreStatic core
           asm = fasm ++ jtasm ++ gasm
-      in case assemble asm of
-           Left asmError -> error $ "Compiler error (asmError):" ++
-                            show asmError
-           Right obj ->
-             let (undefinedLabels,bytes) = toExe obj
-             in if not $ S.null undefinedLabels
-                then error $ "Compiler error (undefined labels): " ++
-                     show undefinedLabels
-                else let len = length bytes
-                     in if len > 24000
-                        then Left $ ContractSizeLimitExceeded len
-                        else Right $ CompiledContract {ccText = bytes}
+      in return asm
 --Place JTs in arbitrary order.
 codegenJTs :: Map FunVar (a,[FunVar]) -> [Asm]
 codegenJTs = placeArbitrary (codegenJT . snd)
@@ -431,7 +436,7 @@ codegenOps ft flhs opMap branch = do
       --TODO opt: refcount vars so you can delete push without traversing ops
       ops = execState (mapM_ go $ target ++ ss) M.empty
       problemSpec = mkProblemSpec flhs ops target
-  error "todo"
+  solveProblemSpec problemSpec
   where
     go :: Var -> State OpMap ()
     go v = do
@@ -688,7 +693,23 @@ data OpSpec = OS {
   osStateDeps :: Set Int
   }
   deriving (Eq,Ord,Read,Show)
-  
+
+--The type of solvers. Needs to throw a CodegenFunError because the BB may be
+--unrealizable due to too many vars on stack causing dup or swap out of range.
+--Spilling is currently not possible because I have no scratch of unbounded
+--size and alloc is an observable side effect.
+type Solver = ProblemSpec -> Either CodegenFunError [Asm]
+--The solver used by the compiler.
+solveProblemSpec :: Solver
+solveProblemSpec = incorrectSolver
+--A placeholder for testing the rest of the compiler.
+incorrectSolver :: Solver
+incorrectSolver _ = Right [Comment "Opcodes go here :)"]
+--The simplest solver runs ops in some topological order, duplicating all of
+--their arguments. That's still not that simple, as once it's done running ops
+--it needs to stack shuffle to reach the target.
+--That's complicated by vars potentially occurring several times, meaning
+--BBs with no ops are not just a combination of popping garbage and permuting.
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
