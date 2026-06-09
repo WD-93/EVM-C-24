@@ -18,6 +18,9 @@ import qualified Data.Set as S
 import Control.Monad.State
 import Control.Monad
 import Data.List (sort)
+--For more efficient ProblemSpec:
+import Data.IntMap (IntMap(..))
+import qualified Data.IntMap as IM
 
 --At long last, the Core optimizer is good enough that it's worth generating
 --code from it. That allows compiler debugging using test programs with output
@@ -427,6 +430,7 @@ codegenOps ft flhs opMap branch = do
       --The dest push op may be dead; prune all dead ops for simplicity
       --TODO opt: refcount vars so you can delete push without traversing ops
       ops = execState (mapM_ go $ target ++ ss) M.empty
+      problemSpec = mkProblemSpec flhs ops target
   error "todo"
   where
     go :: Var -> State OpMap ()
@@ -439,6 +443,51 @@ codegenOps ft flhs opMap branch = do
                Just op@(_lhs,(_primop,(ws,ss))) -> do
                  modify $ M.insert v op
                  mapM_ go $ ws ++ ss
+
+mkProblemSpec :: BranchValue -> OpMap -> [Var] -> ProblemSpec
+mkProblemSpec (src,_mstk,_ss) ops target =
+  let op2def = normalizeOpMap ops
+      deps = stateDepGraph $ stateVarUseInfo op2def
+      v2op = M.map fst ops
+      direct_stack = directStackPreds v2op op2def
+      --Note: pruned_deps may contain no entry for an op, equivalent to S.empty
+      pruned_deps = pruneDeps direct_stack deps
+      --Need to convert the op Map to an IntMap; the dep sets must be
+      --converted to refer to the new keys.
+      --Note the map is invertible and monotonic; TODO use that to optimize.
+      op2int = M.fromList $ zip (M.keys op2def) [0..]
+      op2intdeps = M.map (S.map (\op ->
+                                    let Just n = M.lookup op op2int
+                                    in n
+                                )
+                         ) deps
+      op2spec = M.mapWithKey (\op@(lhsws,_) (primop,(rhsws,_ss)) ->
+                                OS {
+                                 osArgs = rhsws,
+                                 osRet = case lhsws of
+                                           [] -> Nothing
+                                           [w] -> Just w
+                                           _ -> error "!?",
+                                 osOp = primop,
+                                 osStateDeps = case M.lookup op op2intdeps of
+                                                 Nothing -> S.empty
+                                                 Just intdeps -> intdeps
+                                 }) op2def
+  in PS {
+    psSource = src,
+    --The IntMap is dense
+    psOps = IM.fromList $ zip [0..] $ M.elems op2spec,
+    --For each op which returns a v, v => its IntMap index
+    psVar2Op =
+        let v2op = M.mapMaybe (\(op@(ws,_ss),_rhs) ->
+                                 case ws of
+                                   [] -> Nothing
+                                   [w] -> Just op
+                                   _ -> error "!?"
+                              ) ops
+        in M.compose op2int v2op,
+    psTarget = target
+    }
 
 --Stack scheduling is a tricky problem; it seems likely there's no polytime
 --optimal algo, so it would be worth evaluating a range of heuristic
@@ -554,13 +603,92 @@ stateDepGraph SVUI {
         modify $ M.alter (Just . maybe pres (S.union pres)) post
 --Redundant state deps can be pruned:
 --We have deps : op => Set op
---Compute preds : Map op (Set op)
---Pruned deps:
---For o@(lhs = op rhs):
--- os = ops(rhs)
--- os' = os U map preds os
--- deps[o] = deps[o] difference os'
+--Compute direct stack preds : op => Set op
+--Precondition: the ops form a DAG.
+directStackPreds ::
+  Map Var Value ->            --var => parent op
+  Map Value (PrimOp,Value) -> --normalized op map
+  Map Value (Set Value)       --op => ops it has a stack dep on
+directStackPreds v2op =
+  M.map $ \(_,(ws,_ss)) ->
+            S.fromList $ do
+  v <- ws
+  case M.lookup v v2op of
+    --The var must be from lhs
+    Nothing -> []
+    Just op -> [op]
 
+--output[k] includes k' iff there is a path from k to k' in input
+--(viewed as a graph where k1 -> k2 iff input[k1] includes k2).
+--Precondition: the graph is acyclic and has no edges to keys not in the
+--graph.
+transitiveClosure :: Map Value (Set Value) -> Map Value (Set Value)
+transitiveClosure input =
+  execState (mapM_ go $ M.keys input) M.empty
+  where
+    go :: Value -> State (Map Value (Set Value)) (Set Value)
+    go k = do
+      mkset <- gets (M.lookup k)
+      case mkset of
+        Just kset -> return kset
+        _ ->
+          case M.lookup k input of
+            Just dist1 -> do
+              dist2plus <- S.unions <$> mapM go (S.toList dist1)
+              let indirect = S.union dist1 dist2plus
+              modify $ M.insert k indirect
+              return indirect
+--Pruned deps:
+--Need direct stack preds and indirect full (stack+state) preds.
+--For each op o, retain only those direct state deps that are not in
+--direct stack preds[o] or indirect full preds of o's direct full preds.
+--Note: no key in direct_state means S.empty.
+--Note state dep is more inclusive than simply user->producer edges, as
+--it also includes consumer->borrower.
+pruneDeps ::
+  Map Value (Set Value) -> --direct stack deps
+  Map Value (Set Value) -> --direct state deps
+  Map Value (Set Value)    --non-redundant direct state deps
+pruneDeps direct_stack direct_state =
+  let direct_full = M.unionWith S.union direct_state direct_stack
+      indirect_full = transitiveClosure direct_full
+  in M.mapWithKey (\op state ->
+                     let Just stack = M.lookup op direct_stack
+                         Just full = M.lookup op direct_full
+                         indirect = S.unions $ map
+                           (\op -> case M.lookup op indirect_full of
+                                     Just ops -> ops
+                                     _ -> error "!?")
+                           $ S.toList full
+                     in S.difference state (S.union stack indirect))
+     direct_state
+
+--The DT representing stack scheduling problems, to be consumed by stack
+--schedulers:
+--No handling of commassoc reduces for now; I'll figure out how to do so in
+--the solver, then port it back.
+data ProblemSpec = PS {
+  --source stack (invariant: no duplicates)
+  psSource :: [Var],
+  --op intmap: Int => (argws,retws,asm), state dep graph
+  psOps :: IntMap OpSpec,
+  --A redundant map map Var => Int
+  psVar2Op :: Map Var Int,
+  --target stack (duplicates allowed)
+  psTarget :: [Var]
+  }
+  deriving (Eq,Ord,Read,Show)
+data OpSpec = OS {
+  osArgs :: [Var],
+  osRet :: Maybe Var, --always 0 or 1 words
+  --I could use a list of stack instrs here to allow merging, but that would
+  --make osArgs (the vars that must be ToS when the op is run) deceptive, as
+  --merging an op with dup of its args would obscure that it depends on them.
+  osOp :: PrimOp,
+  osStateDeps :: Set Int
+  }
+  deriving (Eq,Ord,Read,Show)
+  
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
