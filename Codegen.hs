@@ -21,6 +21,12 @@ import Data.List (sort)
 --For more efficient ProblemSpec:
 import Data.IntMap (IntMap(..))
 import qualified Data.IntMap as IM
+--For treegraph:
+import Data.IntSet (IntSet(..))
+import qualified Data.IntSet as IS
+--For Stack monad:
+import Control.Monad.Except
+import Control.Monad.Writer
 
 debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
@@ -717,6 +723,171 @@ incorrectSolver _ = Right [Comment "Opcodes go here :)"]
 --it needs to stack shuffle to reach the target.
 --That's complicated by vars potentially occurring several times, meaning
 --BBs with no ops are not just a combination of popping garbage and permuting.
+
+--Treegraph solver:
+--First partition ops into a treegraph, a forest of op trees with a DAG
+--of dependencies between them.
+--An op tree consists of a root with 0 or >1 user ops and nodes with exactly
+--1 user. o1 uses o2 iff o2 returns x and o1 has x in its args, or if
+--o2 is in o1's state deps. Note it may use x repeatedly while still
+--counting as a single user.
+--Leaves are vars returned by the root op of other trees; note a node op
+--such as push or gas may have no leaves.
+--Each tree depends on the trees whose root op vars it uses, as well as
+--all root ops any node has a state dependency on.
+--Trees are indexed by root op ID (an Int).
+--Trees must be run in some topological order; ideally one would search for
+--the best one, but for now I will simply select an arbitrary order.
+--All trees must be run, even those which return no var and which no other
+--tree depends on (e.g. an mstore); dead ops have already been pruned in Opt.
+
+--Treegraph simplifies codegen by reducing the problem of choosing which op
+--to run to choosing which tree to run; internally, tree ops are run in
+--right-to-left DFS order and the stack shuffling for each op is done in
+--isolation. However, the BB stack scheduling problem is
+--more general than that presented in the treegraph paper (Park et al) since
+--the BB starts with a nonempty stack and may have a stack target of length >1.
+--Consequently, treegraph is not optimal: one can save gas by running ops in
+--non-tree order, e.g. running unary ops as soon as their last-use argument
+--is ToS or "fishing" a last-use var x to the ToS by pushing the var y which
+--is in its position in the target, then swapping y into place.
+--My treegraph also requires additional logic for reaching the stack target
+--from a given source when there are no ops left to run.
+--Important performance improvements TODO:
+--1) Make use of target for scheduling trees,
+--e.g. if target = x:rest, rest doesn't depend on x and x doesn't
+--last-use anything in x, then x can be evaluated last.
+--2) Exploit commutativity and associativity of ops.
+newtype Treegraph = TG (IntMap (OpTree, Set Int))
+  deriving (Eq,Ord,Read,Show)
+--Node children should not be [OpTree] since the var returned by a
+--child tree may be used several times. Furthermore, a tree may be a
+--child due to a state dependency without having its return var (if any) used
+--at all.
+--A valid tree must have a root node; it cannot be just a leaf.
+--Var leaves are in fact not required since the OpSpec contains the args list.
+data OpTree = Node OpSpec (Set OpTree)
+  deriving (Eq,Ord,Read,Show)
+--Partitioning ops into a treegraph:
+--Compute the depgraph : IntMap (Set Int)
+--Reverse it to get the parent graph : IntMap (Set Int)
+--Ops with #parents /= 1 become roots; recursively explore to get their trees.
+partitionIntoTreegraph :: ProblemSpec -> Treegraph
+partitionIntoTreegraph PS{psOps = ops, psVar2Op = v2op} =
+  let children =
+        IM.map (\opspec ->
+                   let vs = osArgs opspec
+                       ns = S.fromList [n |
+                                        Just n <- map (flip M.lookup v2op) vs]
+                   in S.union ns $ osStateDeps opspec) ops
+      parents = invert children
+      roots = IM.keysSet $ IM.filter ((/=1) . S.size) parents
+      --When building trees, root nodes should not be followed
+      --TODO opt...
+      rootset = S.fromList $ IS.elems roots
+      follow = IM.map (`S.difference` rootset) children
+      trees = IM.fromSet (explore follow ops) roots
+      --t1 depends on t2 iff:
+      --one of its ops:
+      -- refers to a v s.t. v2op[v] = t2, or
+      -- contains t2 in its state deps
+      withDeps = IM.map (addDependencies rootset) trees
+  in TG withDeps
+  where
+    invert :: IntMap (Set Int) -> IntMap (Set Int)
+    invert n2ms =
+      foldr (uncurry insertSet) IM.empty $ do
+      (n,ms) <- IM.toList n2ms
+      m <- S.toList ms
+      return (m,n)
+      {-foldr (\(n,set) m2ns ->
+               let ms = S.toList nset
+               in foldr (\m m2ns ->
+                           insertSet m n m2ns)
+                  m2ns ms)
+      IM.empty
+      n2ms-}
+    insertSet :: Int -> Int -> IntMap (Set Int) -> IntMap (Set Int)
+    insertSet k v = IM.alter (Just . maybe (S.singleton v) (S.insert v)) k
+
+    explore :: IntMap (Set Int) -> IntMap OpSpec -> Int -> OpTree
+    explore follow ops node =
+      let Just opspec = IM.lookup node ops
+          Just ns = IM.lookup node follow
+          trees = S.map (explore follow ops) ns
+      in Node opspec trees
+
+    addDependencies :: Set Int -> OpTree -> (OpTree, Set Int)
+    addDependencies rootset tree =
+      (tree, 
+       S.unions $ map (depsOp rootset) $ linearize tree)
+    linearize :: OpTree -> [OpSpec]
+    linearize (Node opspec trees) =
+      opspec : do
+      tree <- S.toList trees
+      linearize tree
+    --The interesting deps of an op, i.e. deps intersected with tree roots.
+    --Note v2op is in scope from partitionIntoTreeGraph's lhs.
+    depsOp :: Set Int -> OpSpec -> Set Int
+    depsOp rootset OS{osArgs=args, osStateDeps=stateDeps} =
+      let stackDeps = S.fromList [n | Just n <- map (flip M.lookup v2op) args]
+      in S.union stackDeps stateDeps `S.intersection` rootset
+
+treegraphSolver :: Solver
+treegraphSolver ps@PS{psSource = src, psVar2Op = v2op, psTarget = tar} =
+  let tg = partitionIntoTreegraph ps
+  in treeGraphSolver2 v2op src tar tg
+--The treegraph solver selects some topological order and returns the result
+--of running the trees in that order ++ stack shuffling code to reach the
+--target from the resulting stack.
+--FW: select among several topological orders. Each tree run gives feedback:
+--the stack shuffling overhead + a resulting stack which could be compared vs
+--the target.
+--Invariant: every var in target either remains on the stack or is produced
+--by a tree that hasn't yet been run.
+treeGraphSolver2 :: Map Var Int -> [Var] -> [Var] -> Treegraph ->
+  Either CodegenFunError [Asm]
+treeGraphSolver2 v2op src tar tg = error "todo"
+
+--Need a monad; it can be specialized for treegraph by stacking a var =>
+--uses remaining | in_target map State on top of it.
+--Error: StackError (which includes compiler errors due to bugs in the solver,
+--not just dup and swap out of range).
+--Write: [Asm]
+--State: the stack. It needn't retain the typeOfVar.
+newtype Stack a = Stack {
+  unStack :: ExceptT StackError (WriterT [Asm] (State [String])) a
+  }
+data StackError = SEPlaceholder
+  deriving (Eq,Ord,Read,Show)
+--Run a tree:
+--The node has children due to stack and/or state dependency; they may be
+--run in any order.
+--First run the children which have no stack dependency (their results, if
+--any, will be popped).
+--Then run the rest in reverse order of occurrence of their result in
+--args.
+--Now the necessary vars for the node's op will be on the stack; run the op.
+
+--Run an op:
+--Precondition: its args are somewhere on the stack.
+--Invariant: between op exec, there are no duplicate vars o.t.s.
+--Naive algo: identify longest suffix of last-use vars o.t.s, dup the rest,
+--emit the op.
+--Improvement: if all last-use vars are ToS, you can dup and swap in a
+--careful order to get optimal code. Swap to get them ToS!
+--That solves the x,c2..c7,c1; op:CALL(c1..c7) issue - you get 1 swap instead of
+--7 dups followed by pops.
+--If the result is garbage, pop it.
+--Resulting postcondition: op exec does not leave additional garbage o.t.s.,
+--though there may already be garbage there from the lhs.
+
+--Finally shuffle the stack to meet the target; may involve popping garbage,
+--swapping and duping.
+--Always swapping last-use vars in op exec will *not* avoid the need to pop
+--garbage, since a BB may have no ops and garbage in its lhs.
+--Nor does it avoid garbage ToS.
+--Precondition: no duplicate vars ToS.
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
