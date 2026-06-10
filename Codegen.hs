@@ -2,14 +2,14 @@
 module Codegen where
 
 import Core.RestrictedCore
-import Core.SSA
+import Core.SSA hiding (debugFlag,unsafePrint)
 import Const.Const (Serialized(..))
-import Opt.AI
+import Opt.AI hiding (debugFlag,unsafePrint)
 import Opt.HTraversable (Id(..))
 import Opt.AbVar
 import Opt.Opt (Fundef())
 import Asm
-import Util ((?))
+import Util ((?), unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -21,6 +21,9 @@ import Data.List (sort)
 --For more efficient ProblemSpec:
 import Data.IntMap (IntMap(..))
 import qualified Data.IntMap as IM
+
+debugFlag = True
+unsafePrint str = unsafePrint' debugFlag str
 
 --At long last, the Core optimizer is good enough that it's worth generating
 --code from it. That allows compiler debugging using test programs with output
@@ -209,10 +212,14 @@ codegenFuns core = do
   f2asm <- sequence $ M.mapWithKey codegenBB f2decdef
   --Concatenate together chains of BBs that fall through to each other,
   --starting with the first.
+  --unsafePrint $ "BB keys: " ++ show (M.keys f2asm)
+  --unsafePrint $ "f2g: " ++ show f2g
+  --unsafePrint $ "g2f: " ++ show g2f
   let head2asm = concatFallthroughChains f2g g2f f2asm
       --Place $trueMain's chain first, then the rest in arbitrary order.
       Just mainAsm = M.lookup trueMain head2asm
       rest = concat $ M.delete trueMain head2asm
+  --unsafePrint $ "Heads: " ++ show (M.keys head2asm)
   return $ mainAsm ++ rest
 
 --For each f, get its non-continues preds.
@@ -264,7 +271,7 @@ decorateBBs f2dist ms core =
       --for f=>g, out[g] insert= f
       --TODO optimize
       g2fset = foldr (\(f,g) ->
-                        M.alter (Just . maybe (S.singleton g) (S.insert g)) g)
+                        M.alter (Just . maybe (S.singleton f) (S.insert f)) g)
                         M.empty $
                M.toList f2ft
       --Select the best fallthrough
