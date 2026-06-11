@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, GeneralizedNewtypeDeriving, FlexibleInstances #-}
 module Codegen where
 
 import Core.RestrictedCore
@@ -27,6 +27,7 @@ import qualified Data.IntSet as IS
 --For Stack monad:
 import Control.Monad.Except
 import Control.Monad.Writer
+import Data.List (elemIndex,nub)
 
 debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
@@ -97,8 +98,16 @@ unsafePrint str = unsafePrint' debugFlag str
 data CodegenError = InFunction (FunVar,CodegenFunError)
                   | ContractSizeLimitExceeded Int
   deriving (Eq,Ord,Read,Show)
-data CodegenFunError = DupOutOfRange Var Int
-                     | SwapOutOfRange Var Int
+data CodegenFunError = DupOutOfRange String Int
+                     | SwapOutOfRange String Int
+                     --DupOutOfRange and SwapOutOfRange can be triggered by
+                     --having too many live stack vars, which codegen can't
+                     --do anything about since it's not allowed to spill;
+                     --that's a user error, not a compiler error.
+                     --StackError is thrown if there is a compiler error in
+                     --the stack scheduler, but I return it as a value rather
+                     --than throw a Haskell exception for debugging purposes.
+                     | StackError StackError
   deriving (Eq,Ord,Read,Show)
 --The result of compiling a contract; TODO add interface info in order to
 --support ergonomic calls using datatypes defined in the contract.
@@ -481,10 +490,10 @@ mkProblemSpec (src,_mstk,_ss) ops target =
                          ) deps
       op2spec = M.mapWithKey (\op@(lhsws,_) (primop,(rhsws,_ss)) ->
                                 OS {
-                                 osArgs = rhsws,
+                                 osArgs = map nameOfVar rhsws,
                                  osRet = case lhsws of
                                            [] -> Nothing
-                                           [w] -> Just w
+                                           [w] -> Just $ nameOfVar w
                                            _ -> error "!?",
                                  osOp = primop,
                                  osStateDeps = case M.lookup op op2intdeps of
@@ -492,19 +501,21 @@ mkProblemSpec (src,_mstk,_ss) ops target =
                                                  Just intdeps -> intdeps
                                  }) op2def
   in PS {
-    psSource = src,
+    psSource = map nameOfVar src,
     --The IntMap is dense
     psOps = IM.fromList $ zip [0..] $ M.elems op2spec,
     --For each op which returns a v, v => its IntMap index
     psVar2Op =
-        let v2op = M.mapMaybe (\(op@(ws,_ss),_rhs) ->
-                                 case ws of
-                                   [] -> Nothing
-                                   [w] -> Just op
-                                   _ -> error "!?"
-                              ) ops
+        let v2op =
+              M.mapKeys nameOfVar $
+              M.mapMaybe (\(op@(ws,_ss),_rhs) ->
+                             case ws of
+                               [] -> Nothing
+                               [w] -> Just op
+                               _ -> error "!?"
+                         ) ops
         in M.compose op2int v2op,
-    psTarget = target
+    psTarget = map nameOfVar target
     }
 
 --Stack scheduling is a tricky problem; it seems likely there's no polytime
@@ -685,20 +696,22 @@ pruneDeps direct_stack direct_state =
 --schedulers:
 --No handling of commassoc reduces for now; I'll figure out how to do so in
 --the solver, then port it back.
+--The (stack) Vars are converted to Strings because typeOfVar is not
+--required; better to sanitize early and in one place than across all users.
 data ProblemSpec = PS {
   --source stack (invariant: no duplicates)
-  psSource :: [Var],
+  psSource :: [String],
   --op intmap: Int => (argws,retws,asm), state dep graph
   psOps :: IntMap OpSpec,
-  --A redundant map map Var => Int
-  psVar2Op :: Map Var Int,
+  --A redundant map map var => Int
+  psVar2Op :: Map String Int,
   --target stack (duplicates allowed)
-  psTarget :: [Var]
+  psTarget :: [String]
   }
   deriving (Eq,Ord,Read,Show)
 data OpSpec = OS {
-  osArgs :: [Var],
-  osRet :: Maybe Var, --always 0 or 1 words
+  osArgs :: [String],
+  osRet :: Maybe String, --always 0 or 1 words
   --I could use a list of stack instrs here to allow merging, but that would
   --make osArgs (the vars that must be ToS when the op is run) deceptive, as
   --merging an op with dup of its args would obscure that it depends on them.
@@ -845,7 +858,7 @@ treegraphSolver ps@PS{psSource = src, psVar2Op = v2op, psTarget = tar} =
 --the target.
 --Invariant: every var in target either remains on the stack or is produced
 --by a tree that hasn't yet been run.
-treeGraphSolver2 :: Map Var Int -> [Var] -> [Var] -> Treegraph ->
+treeGraphSolver2 :: Map String Int -> [String] -> [String] -> Treegraph ->
   Either CodegenFunError [Asm]
 treeGraphSolver2 v2op src tar tg = error "todo"
 
@@ -856,10 +869,151 @@ treeGraphSolver2 v2op src tar tg = error "todo"
 --Write: [Asm]
 --State: the stack. It needn't retain the typeOfVar.
 newtype Stack a = Stack {
-  unStack :: ExceptT StackError (WriterT [Asm] (State [String])) a
+  unStack :: WriterT [Asm] (StateT [String] (Except StackError)) a
   }
-data StackError = SEPlaceholder
+  deriving (Functor,Applicative,Monad,MonadError StackError)
+--I don't really want to expose MonadError, but I must to keep dupVar and
+--swapVar out of MonadStack while still allowing them to give informative
+--errors. Unsatisfactory solution: defined throwStackError.
+runStack :: Stack a -> [String] ->
+  Either StackError (a,[String],[Asm])
+runStack stk vs =
+  case runExcept $ flip runStateT vs $ runWriterT $ unStack stk of
+    Left err -> Left err
+    Right ((a,asm),vs) -> Right (a,vs,asm)
+data StackError = BadArgDup Int Int
+                -- ^ As distinct from CodegenFunError's DupOutOfRange,
+                --which is triggered if the var to dup is on the stack,
+                --but at a depth DUP* can't reach.
+                | BadArgSwap Int Int
+                | BadArgPop --can't pop and empty stack!
+                | BadArgOp PrimOp [String]
+                --Not a compiler error: wrap a CodegenFunError to be passed
+                --up to Solver
+                | CGFE CodegenFunError
+                --Compiler error: attempting to dup or swap a var not on the
+                --stack.
+                | DupNonexistent String
+                | SwapNonexistent String
   deriving (Eq,Ord,Read,Show)
+class Monad m => MonadStack m where
+  dup :: Int -> m ()
+  swap :: Int -> m ()
+  pop :: m ()
+  --Fails if the args are not ToS; does not check that the arg and ret arity
+  --matches the primop, ignores state deps.
+  emitOp :: OpSpec -> m ()
+  getStack :: m [String]
+  --Note putStack is not exposed.
+  --Defining a Stack-specific throwError to avoid FlexibleContexts.
+  throwStackError :: StackError -> m a
+instance MonadStack Stack where
+  --Note: this function is 0-indexed, while EVM DUP* is 1-indexed.
+  --dup 0 therefore emits DUP1.
+  dup ix = Stack $ do
+    vs <- get
+    let len = length vs
+    case () of
+      --dupVar intercepts ix > 15 and throws a CodegenFunError instead.
+      _ | ix < 0 || ix > 15 || ix >= len -> throwError $ BadArgDup len ix
+        | let -> do
+            tell [Opcode $ "dup" ++ show (ix+1)]
+            put $ (vs !! ix) : vs
+  --swap is also 0-indexed; swap 0 is a noop. EVM SWAP* is 0-indexed,
+  --but has no SWAP0 instruction.
+  swap ix = Stack $ do
+    vs <- get
+    let len = length vs
+    if ix > 0 || ix > 16 || ix >= len
+      then throwError $ BadArgSwap len ix
+      else do let a:vs' = vs
+                  pre = take (ix-1) vs'
+                  b:post = drop (ix-1) vs'
+              tell [Opcode $ "swap" ++ show ix]
+              put $ b:(pre++a:post)
+  pop = Stack $ do
+    vs <- get
+    case vs of
+      [] -> throwError BadArgPop
+      v:vs' -> do
+        tell [Opcode "pop"]
+        put vs'
+  emitOp OS{osArgs = args,
+            osRet = mret,
+            osOp = primop
+           } = Stack $ do
+    let len = length args
+    vs <- get
+    let argvs = take len vs
+        rest = drop len vs
+    if argvs /= args
+      then throwError $ BadArgOp primop args
+      else do
+      tell $ case primop of
+               Op op -> [Opcode op]
+               Core.RestrictedCore.Push ser ->
+                 error "todo"
+      put $ [r | Just r <- [mret]] ++ rest
+  getStack = Stack get
+  throwStackError err = Stack $ throwError err
+instance (MonadTrans t, MonadStack m) =>
+  MonadStack (t m) where
+  dup = lift . dup
+  swap = lift . swap
+  pop = lift pop
+  emitOp = lift . emitOp
+  getStack = lift getStack
+  throwStackError = lift . throwStackError
+--Unlike swap, it doesn't matter which var we dup.
+--Throws a CFGE if v is out of range; throws a compiler error if it's not on
+--stack at all.
+dupVar :: MonadStack m => String -> m ()
+dupVar v = do
+  vs <- getStack
+  case elemIndex v vs of
+    Nothing -> throwStackError $ DupNonexistent v
+    Just ix
+      | ix > 15 -> throwStackError $ CGFE $ DupOutOfRange v ix
+      | let -> dup ix
+--v may occur at multiple indices on the stack; this swaps with the first
+--occurrence. NB: between op execs in treegraph, there are no repeated
+--occurrences.
+swapVar :: MonadStack m => String -> m ()
+swapVar v = do
+  vs <- getStack
+  case elemIndex v vs of
+    Nothing -> throwStackError $ SwapNonexistent v
+    Just ix
+      | ix > 16 -> throwStackError $ CGFE $ SwapOutOfRange v ix
+      | let -> swap ix
+  
+--Now we have a Stack monad that can be used by any solver!
+--Extending it for treegraph:
+--TGStack tracks uses remaining for each var; presence in target counts as a
+--use.
+--When it runs an op, the use counts of each argument op must be decremented.
+--Note: that's once for each var in the set of arguments, not once per entry in
+--the list!
+--When a var has 0 remaining uses, it's garbage and should be popped
+--eventually. If it has 1 remaining use and is used as an arg, it should be
+--swapped to ToS before duplicated args are pushed.
+newtype TGStack a = TGStack {unTGStack :: StateT (Map String Int) Stack a}
+  deriving (Functor,Applicative,Monad,MonadError StackError,
+            MonadState (Map String Int), MonadStack)
+getUseCount :: String -> TGStack Int
+getUseCount v = do
+  mn <- gets $ M.lookup v
+  case mn of
+    Nothing -> error "!?"
+    Just n -> return n
+decUseCount :: String -> TGStack ()
+decUseCount v = do
+  mn <- gets $ M.lookup v
+  case mn of
+    Nothing -> error "!?"
+    Just 0 -> error $ "Attempted to decrement 0-use var " ++ v
+    Just n -> modify $ M.insert v $ n - 1
+  
 --Run a tree:
 --The node has children due to stack and/or state dependency; they may be
 --run in any order.
@@ -868,6 +1022,38 @@ data StackError = SEPlaceholder
 --Then run the rest in reverse order of occurrence of their result in
 --args.
 --Now the necessary vars for the node's op will be on the stack; run the op.
+runTree :: OpTree -> TGStack ()
+runTree (Node opspec trees) = do
+  --Inefficiency: I now need to reconstruct the relation var => tree.
+  let argset = S.fromList $ osArgs opspec
+      --Those trees on which opspec has a stack dependency, indexed by the
+      --var they return:
+      arg2tree = M.fromList $ do
+        tree <- S.toList trees
+        let Node chop chs = tree
+        case osRet chop of
+          Nothing -> []
+          Just v ->
+            if S.member v argset
+            then return (v,tree)
+            else []
+      --The remaining trees:
+      nostackdep = S.filter (\(Node chop _) ->
+                               case osRet chop of
+                                 Nothing -> True
+                                 Just v -> not $ S.member v argset) trees
+  
+  --We can run those immediately.
+  mapM_ runTree $ S.toList nostackdep
+  --We're left with trees on which opspec has a stack dep, which must be run
+  --in order of *first* appearance in reversed args.
+  mapM_ runTree $
+    map (\v ->
+            case M.lookup v arg2tree of
+              Nothing -> error "!?"
+              Just tree -> tree) $ nub $ reverse $ osArgs opspec
+  --Now the necessary vars for the root op are somewhere on the stack; run it.
+  runOp opspec
 
 --Run an op:
 --Precondition: its args are somewhere on the stack.
@@ -881,13 +1067,95 @@ data StackError = SEPlaceholder
 --If the result is garbage, pop it.
 --Resulting postcondition: op exec does not leave additional garbage o.t.s.,
 --though there may already be garbage there from the lhs.
+runOp :: OpSpec -> TGStack ()
+runOp opspec = do
+  --Dup and swap the op's args to the ToS:
+  gatherArgs $ osArgs opspec
+  --Emit the op and decrement the use counts of its args:
+  tgEmitOp opspec
+  --If the var returned is garbage (which can occur without the op being dead
+  --for e.g. CALL), pop it and any garbage under it.
+  popGarbage
+--First identify which vars are last-use and ensure they're ToS.
+--Naive approach: in order of use. What is the optimal order?
+--Then dup and swap to add rest.
+--Special case: only suffix last-use (covers all and none) and no duplicate
+--use. Then just need to gather in suffix order (which gatherLastUse will
+--already do since it's order of use) and dup.
+--The general solution is still necessary and should not need any special
+--handling of that case.
+gatherArgs :: [String] -> TGStack ()
+gatherArgs vs = do
+  vns <- mapM (\v -> (,) v <$> getUseCount v) vs
+  let lastUse = nub $ map fst $ filter ((==1).snd) vns
+  --Swap last-use vars to ToS in order of first use:
+  --Stack: lastUse ++ rest
+  gatherLastUse lastUse
+  --Dup and swap to get vs ++ rest
+  gatherDupSwap lastUse vs
+--Precondition: each var (and consequently each last-use var) has exactly one
+--instance on the stack.
+--That is preserved.
+--That means a fixed permutation is necessary, so the general optimal
+--permutation algo can't be beat.
+--Algo: find the permutation, pass it to permute.
+--Worst-case cost: 3n, where n is the number of last-use vars to move ToS.
+--That's because permute cost <= 3n/2 in total number of elements to permute,
+--which is 2n in the worst case.
+--It's an open question whether just duping everything but the last-use
+--suffix already on the stack is better; TODO try both.
+gatherLastUse :: [String] -> TGStack ()
+gatherLastUse vs = error "todo"
+
+--Stack: last-use variables lu ++ rest; we will not modify rest.
+--Special case: lu is a suffix of vs; in that case only dup.
+--Precondition: lu has no duplicates; that is not preserved.
+--Vars in correct position should not be touched.
+--lu is in order of first use, so if it's to be permuted then |vs| > |lu|.
+--Strategy: when the next var needs to be dup'd, do so.
+--Note the vars from lu may occur repeatedly in the target, so instances of
+--them may need to be dup'd.
+--Latent permutation: arrows into the stack which hasn't been pushed yet =>
+--dup the source's ultimate value and swap it.
+gatherDupSwap :: [String] -> [String] -> TGStack ()
+gatherDupSwap lu vs = error "todo"
+
+tgEmitOp :: OpSpec -> TGStack ()
+tgEmitOp opspec = error "todo"
+--Pops any garbage ToS
+popGarbage :: TGStack ()
+popGarbage = getStack >>= go
+  where go vs =
+          case vs of
+            [] -> return ()
+            v:vs' -> do
+              b <- isGarbage v
+              if b
+                then pop >> go vs'
+                else return ()
+isGarbage :: String -> TGStack Bool
+isGarbage v = (== 0) <$> getUseCount v
 
 --Finally shuffle the stack to meet the target; may involve popping garbage,
 --swapping and duping.
 --Always swapping last-use vars in op exec will *not* avoid the need to pop
 --garbage, since a BB may have no ops and garbage in its lhs.
---Nor does it avoid garbage ToS.
---Precondition: no duplicate vars ToS.
+--Nor does it avoid garbage ToS, since runOp may never run.
+--Precondition: no duplicate vars on stack.
+--Naive algo:
+--While there is garbage:
+-- if ToS: pop it
+-- else: swap it to top
+--Now there is no garbage, and still no duplicates. The stack length is <=
+--the target length. From now on, we only dup and swap.
+--That's exactly the same problem as gatherDupSwap!
+finalShuffle :: [String] -> TGStack ()
+finalShuffle target = error "todo"
+
+--Efficient GC: if you have a single non-garbage var ToS and a run of garbage
+--under, it's efficient to swap with the deepest garbage in the run possible.
+--In general, you need n swaps to move n non-garb below a run; doing so
+--shortens the run length since you must interleave the swaps with pops.
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
