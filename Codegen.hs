@@ -120,8 +120,6 @@ data CompiledContract = CompiledContract {
   }
   deriving (Eq,Ord,Read,Show)
 
---TODO split out the part after asm in order to be able to debug (readable) asm
---rather than bytecode.
 codegen :: OptCore -> Either CodegenError CompiledContract
 codegen core = do
   asm <- codegen' core
@@ -952,7 +950,7 @@ instance MonadStack Stack where
       tell $ case primop of
                Op op -> [Opcode op]
                Core.RestrictedCore.Push ser ->
-                 error "todo"
+                 pushSer ser
       put $ [r | Just r <- [mret]] ++ rest
   getStack = Stack get
   throwStackError err = Stack $ throwError err
@@ -964,6 +962,26 @@ instance (MonadTrans t, MonadStack m) =>
   emitOp = lift . emitOp
   getStack = lift getStack
   throwStackError = lift . throwStackError
+
+--The asm for pushing the given Serialized value.
+--It consists of alternating bytes and label uses.
+--Problem: for a 33-byte tag value Struct(f,uint31), the label use will be
+--divided across 2 words, so (off,len) is not guaranteed to be (0,2).
+--I can handle that correctly here, but there's code elsewhere that
+--incorrectly requires (0,2); TODO fix it.
+--Q: has right-padding when serSizeof > serLength already been handled?
+--TODO make sure.
+--Convert to a series of Bytes and UseLabel's, prepend with Opcode push<sz>.
+pushSer :: Serialized -> [Asm]
+pushSer ser =
+  Opcode ("push" ++ show (serLength ser)) :
+  map (\case
+          Left bs -> Bytes bs
+          Right (off,len,lab)
+            | off /= 0 -> error "TODO modify asm to handle label slices"
+            | let -> UseLabel len $ LNamed lab)
+  (serContent ser)
+
 --Unlike swap, it doesn't matter which var we dup.
 --Throws a CFGE if v is out of range; throws a compiler error if it's not on
 --stack at all.
@@ -1253,8 +1271,12 @@ processPermutations vs perms =
 --After gatherDupSwap lu vs,
 --stack == vs ++ nonlu
 
+--Decrease use count once per unique var in args, then emitOp
 tgEmitOp :: OpSpec -> TGStack ()
-tgEmitOp opspec = error "todo"
+tgEmitOp opspec = do
+  forM_ (S.toList $ S.fromList $ osArgs opspec) decUseCount
+  emitOp opspec
+  
 --Pops any garbage ToS
 popGarbage :: TGStack ()
 popGarbage = getStack >>= go
@@ -1283,12 +1305,35 @@ isGarbage v = (== 0) <$> getUseCount v
 --the target length. From now on, we only dup and swap.
 --That's exactly the same problem as gatherDupSwap!
 finalShuffle :: [String] -> TGStack ()
-finalShuffle target = error "todo"
+finalShuffle target = do
+  gc
+  vs <- getStack
+  gatherDupSwap vs target
 
 --Efficient GC: if you have a single non-garbage var ToS and a run of garbage
 --under, it's efficient to swap with the deepest garbage in the run possible.
 --In general, you need n swaps to move n non-garb below a run; doing so
 --shortens the run length since you must interleave the swaps with pops.
+--TODO optimize GC and subsequent gatherDupSwap together, choosing which swaps
+--to make more intelligently.
+gc :: TGStack ()
+gc = do
+  vs <- getStack
+  vgs <- zip vs <$> mapM isGarbage vs
+  let garbage = S.fromList [v | (v,True) <- vgs]
+  go garbage
+  where
+    --While there is garbage:
+    -- swap the deepest garbage to ToS, pop it
+    --Note swap 0 is a zero-cost noop
+    go garbage = do
+      ixvs <- zip [0..] <$> getStack
+      case [ix | (ix,v) <- ixvs, S.member v garbage] of
+        [] -> return ()
+        ix:_ -> do
+          swap ix
+          pop
+          go garbage
 
 --Commassoc reduces: replace trees of commassoc ops with a single
 --reduce op vs.
