@@ -1117,8 +1117,141 @@ gatherLastUse vs = error "todo"
 --them may need to be dup'd.
 --Latent permutation: arrows into the stack which hasn't been pushed yet =>
 --dup the source's ultimate value and swap it.
+
+--Each var in lu will have its rightmost duplicate shifted left 0 or more steps.
+--That's only possible because new vars are moved right...
+--gatherDupSwap is the composition of dups and a permutation.
+--There are latent cycles which go through slots not yet on the stack; they
+--should be run once the leftmost slot in the permutation is ToS.
+--Ex: lu = xyz, vs = xaayza.
+--There's a single permutation a->z->y->x.
+--Solution: aaa, swap z, swap y, swap x.
+--swap z, swap y, aaa, swap x is equally efficient.
+--All the permutations have the property that only one a single element moves
+--to the right; since all lu vars move left, it must be a dup'd var.
+--By considering the original lu vars to be their rightmost duplicates, we
+--get a permutation with a missing link. For any longest chain of lu vars moving
+--into the next's position, the rightmost must have some non-lu var moving into
+--its position; that is the var to be dup'd before the permutation is
+--executed.
+--There's no guarantee multiple vars end up in the same permutation, cf
+--xyz => xyzaaa - here all lu vars are in 2-elem permutations.
+--Algo: identify the nontrivial permutations (which always end outside the lu
+--area), list them in ascending order of highest index off BP.
+--pperm ~ (highest_ix,v,poss)
+--for curr_ix <- |lus| to |vs|-1:
+-- if next pperm ix == curr_ix:
+--  dup its v, apply permutation
+-- else just dup vs[curr_ix]
 gatherDupSwap :: [String] -> [String] -> TGStack ()
-gatherDupSwap lu vs = error "todo"
+gatherDupSwap lus vs = do
+  --Determine the indices in vs of the "original" lu vars
+  --Indexing is from the BoS, so leftward movement is upward and indices
+  --remain constant when new elements are pushed.
+  --Con: the indices need to be translated based on sp to get swap index.
+  --Inefficient hack: read stack length on each swap.
+  let lus_ix2vs_ix = getLuIndicesInVs lus vs
+      perms = luPermutations lus_ix2vs_ix
+      pperms = processPermutations vs perms
+      len_lus = length lus
+  dupSwap len_lus pperms (drop len_lus $ reverse vs)
+    where
+      --curr_ix: the index off BP to which we're going to dup
+      dupSwap curr_ix pperms@((ix,v,swap_ixs):pperms') (w:ws)
+        --Time to apply a permutation:
+        --dup v to top, then permute
+        | curr_ix == ix = do
+            dupVar v
+            mapM_ swap swap_ixs
+            dupSwap (curr_ix+1) pperms' ws
+        | let = do
+                dupVar w
+                dupSwap (curr_ix+1) pperms ws
+      --No more permutations to apply, just dup
+      dupSwap _ [] ws = mapM_ dupVar ws
+
+--Precondition: each lu is in vs; lu contains no duplicates.
+--For each lu (identified by index), map it to its rightmost index in vs.
+--The permutations gatherDupSwap needs to consider are series of ix->ix' in
+--this map; two indices are in the same permutation if they're related by
+--the transitive closure of ->.
+--Note permutations never collide or intersect.
+--Is this faster than a simple M.fromList $ zip vs [length vs - 1, that-1,..0]?
+--Perhaps not, but it's guaranteed to only contain mappings for lus, which is
+--useful for getting the permutations.
+--TODO opt: since the map is dense, use an ST array and freeze it.
+getLuIndicesInVs :: [String] -> [String] -> Map Int Int
+getLuIndicesInVs lus vs =
+  let lu2ix = M.fromList $ zip (reverse lus) [0..]
+  in go lu2ix $ zip (reverse vs) [0..]
+  where
+    go lu2ix vixs
+      | M.null lu2ix = M.empty
+      --vixs is guaranteed not to be empty since all lus are in vs
+      | let ((v,ixVs):rest) = vixs =
+        case M.lookup v lu2ix of
+          Nothing -> go lu2ix rest
+          Just ixLus -> M.insert ixLus ixVs $
+            go (M.delete v lu2ix) rest
+
+--Each last-use var is moved >= 0 steps left; those that are moved > 0 steps
+--can be partitioned into permutations, each of which consists of a
+--strictly ascending list of indices terminated by an index outside lus.
+--This function returns those permutations in ascending order of first index.
+luPermutations :: Map Int Int -> [[Int]]
+luPermutations arr =
+  evalState (concat <$> mapM go1 (M.keys arr)) S.empty
+  where
+    go1 :: Int -> State (Set Int) [[Int]]
+    go1 ix = do
+      visited <- get
+      if S.member ix visited
+        then return []
+        else do
+        modify $ S.insert ix
+        case M.lookup ix arr of
+          Just ix' ->
+            if ix == ix'
+            then return []
+            else do
+              ixs <- go2 ix'
+              return [ix:ixs]
+          _ -> error "!?"
+    --ix is guaranteed to be part of a nontrivial permutation
+    go2 :: Int -> State (Set Int) [Int]
+    go2 ix = do
+      modify $ S.insert ix
+      (ix:) <$> case M.lookup ix arr of
+                  Nothing -> return []
+                  Just ix' -> go2 ix'
+--Complete the permutations by identifying the v not from lu which takes the
+--place of the first element. The last element of poss is moved to the first
+--element of the result, indicating when that v is to be dup'd.
+--The remaining [Int] specifies the swap instructions to be performed; we
+--convert from BP-relative to SP-relative indices here.
+--The processed perms are also sorted by highest index.
+processPermutations :: [String] -> [[Int]] -> [(Int,String,[Int])]
+processPermutations vs perms =
+  sort $ go (zip [0..] $ reverse vs) perms
+  where
+    go [] [] = []
+    go ((ix,v):ixvs) ((pos:poss):perms)
+      | ix == pos =
+        --Note perm is guaranteed to be of length >= 2
+        let highest_ix = last poss
+            --There are highest_ix elements below v after it's dup'd.
+            --The rightmost is accessed by swap highest_ix, and the swap index
+            --declines as you move left (and BP-relative index increases).
+            --The correct index conversion is therefore \i -> highest_ix-i
+            swap_indices = map (highest_ix-) (pos:init poss)
+        in (highest_ix,v,swap_indices) : go ixvs perms
+  
+--TODO QuickCheck: for all vs, luset = subset of S.fromList vs,
+--lu = nub $ filter (`S.member` luset) vs,
+--nonlu = filter (not . (`S.member` luset)) vs,
+--stack = lu ++ nonlu
+--After gatherDupSwap lu vs,
+--stack == vs ++ nonlu
 
 tgEmitOp :: OpSpec -> TGStack ()
 tgEmitOp opspec = error "todo"
