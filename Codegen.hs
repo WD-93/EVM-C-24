@@ -24,6 +24,7 @@ import qualified Data.IntMap as IM
 --For treegraph:
 import Data.IntSet (IntSet(..))
 import qualified Data.IntSet as IS
+import Control.Arrow ((***))
 --For Stack monad:
 import Control.Monad.Except
 import Control.Monad.Writer
@@ -1122,8 +1123,123 @@ gatherArgs vs = do
 --which is 2n in the worst case.
 --It's an open question whether just duping everything but the last-use
 --suffix already on the stack is better; TODO try both.
+--Postcondition: stack = vs ++ rest, where rest are the remaining vars in any
+--order.
+--I have the freedom to choose which permutation to apply, as long as vs
+--end up ToS...
+--Each v is at some starting position and must be moved to a new position;
+--chains of moves form permutations.
+--Can I use luPermutations to obtain them?
+--The permutation containing head v is special; once v is ToS applying
+--further permutations requires restoring v.
+--If a move costs n and reduces the lower bound on the cost by n, it's
+--swap it to the correct position, since that reduces the number of vars in
+--incorrect position by >=1. The end result is then either head vs or a non-lu
+--var ToS.
+{-
+Algo:
+ix2ix = v position => target position for each v
+chains = assemble chains i1 => i2 => i3... from ix2ix
+cycles = convert chains to cycles
+apply each cycle
+-}
 gatherLastUse :: [String] -> TGStack ()
-gatherLastUse vs = error "todo"
+gatherLastUse vs = do
+  stk <- getStack
+  let v2ix = M.fromList $ zip vs [0..]
+      ix2v = M.fromList $ zip [0..] stk
+      ix2ix = M.compose v2ix ix2v
+      --I can't use luPermutations because vars may be moved right as well
+      --as left, so there's no telling which var is the head of a chain.
+      chains = assembleChains ix2ix
+      cycles = map chainToCycle chains
+  mapM_ applyCycle cycles
+{-
+Algo(ix2ix):
+ix2chain = {}
+visited = {}
+for ix in ix2ix:
+ if ix not in visited:
+  ix2chain[ix] = follow ix
+return elems ix2chain
+
+--ix need not be the head, so ix may need to join ix=>ix' to ix2chain[ix']
+follow ix =
+ case ix2ix[ix] of
+  Nothing -> [ix] --the end of the lu chain
+  Just ix' ->
+   b = ix' in visited
+   visited += ix'
+   return ix : if b:
+    --ix' must be a chain head
+    chain = ix2chain[ix']
+    delete ix2chain[ix']
+    chain
+   else:
+    follow ix'
+-}
+assembleChains :: Map Int Int -> [[Int]]
+assembleChains ix2ix =
+  M.elems $ snd $ flip execState (S.empty,M.empty) $
+  forM_ (M.keys ix2ix) $
+  \ix -> do
+    b <- isVisited ix
+    if b
+      then return ()
+      else do
+      chain <- follow ix
+      modify (id *** M.insert ix chain)
+        where
+          follow :: Int -> State (Set Int, Map Int [Int]) [Int]
+          follow ix =
+            (ix:) <$>
+            case M.lookup ix ix2ix of
+              Just ix'
+                --ix is part of a trivial cycle
+                | ix == ix' -> return [ix]
+                | let -> do
+                    b <- isVisited ix'
+                    if b
+                      then do
+                      --ix' must be a chain head
+                      mchain <- gets $ M.lookup ix' . snd
+                      let Just chain = mchain
+                      modify (id *** M.delete ix')
+                      return chain
+                      else follow ix'
+          isVisited :: Int -> State (Set Int, Map Int [Int]) Bool
+          isVisited ix = gets $ S.member ix . fst
+
+--Converting a chain to a cycle: if a chain ends with the starting element,
+--it's a cycle; delete it.
+--Otherwise, it already represents a cycle; the backlink is implicit.
+--Precondition: poss is of length > 0 and contains no duplicates 
+chainToCycle :: [Int] -> Cycle
+chainToCycle (pos:poss) =
+  (pos, filter (/=pos) poss)
+      
+--The repr for a cycle: (pos0,rest::[pos]), containing no duplicates;
+--the backlink to pos0 is implicit. Indices refer to depth off ToS, which has
+--index 0.
+type Cycle = (Int,[Int])
+--Applies a permutation consisting of a single cycle
+applyCycle :: Cycle -> TGStack ()
+--Trivial cycle; do nothing
+applyCycle (_,[]) = return ()
+--If the cycle goes through 0, rotate the cycle until 0 is pos0.
+applyCycle (pos0,rest) =
+  case go [] $ pos0:rest of
+    Just (pre,post) ->
+      mapM_ swap $ post ++ pre
+    Nothing -> do
+      swap pos0
+      mapM_ swap $ rest
+      swap pos0
+  where
+    go rseen = \case
+      [] -> Nothing
+      0:post -> Just (reverse rseen,post)
+      ix:rest -> go (ix:rseen) rest
 
 --Stack: last-use variables lu ++ rest; we will not modify rest.
 --Special case: lu is a suffix of vs; in that case only dup.
