@@ -726,7 +726,7 @@ data OpSpec = OS {
 type Solver = ProblemSpec -> Either CodegenFunError [Asm]
 --The solver used by the compiler.
 solveProblemSpec :: Solver
-solveProblemSpec = incorrectSolver
+solveProblemSpec = treegraphSolver
 --A placeholder for testing the rest of the compiler.
 incorrectSolver :: Solver
 incorrectSolver _ = Right [Comment "Opcodes go here :)"]
@@ -833,17 +833,18 @@ partitionIntoTreegraph PS{psOps = ops, psVar2Op = v2op} =
     addDependencies rootset tree =
       (tree, 
        S.unions $ map (depsOp rootset) $ linearize tree)
-    linearize :: OpTree -> [OpSpec]
-    linearize (Node opspec trees) =
-      opspec : do
-      tree <- S.toList trees
-      linearize tree
     --The interesting deps of an op, i.e. deps intersected with tree roots.
     --Note v2op is in scope from partitionIntoTreeGraph's lhs.
     depsOp :: Set Int -> OpSpec -> Set Int
     depsOp rootset OS{osArgs=args, osStateDeps=stateDeps} =
       let stackDeps = S.fromList [n | Just n <- map (flip M.lookup v2op) args]
       in S.union stackDeps stateDeps `S.intersection` rootset
+
+linearize :: OpTree -> [OpSpec]
+linearize (Node opspec trees) =
+  opspec : do
+  tree <- S.toList trees
+  linearize tree
 
 treegraphSolver :: Solver
 treegraphSolver ps@PS{psSource = src, psVar2Op = v2op, psTarget = tar} =
@@ -857,9 +858,49 @@ treegraphSolver ps@PS{psSource = src, psVar2Op = v2op, psTarget = tar} =
 --the target.
 --Invariant: every var in target either remains on the stack or is produced
 --by a tree that hasn't yet been run.
+--Q: what was v2op for again?
 treeGraphSolver2 :: Map String Int -> [String] -> [String] -> Treegraph ->
   Either CodegenFunError [Asm]
-treeGraphSolver2 v2op src tar tg = error "todo"
+treeGraphSolver2 v2op src tar (TG op2tree) =
+  --An arbitrary topological order obtained by recursively exploring the map
+  let trees = topologicalOrder op2tree
+  in case runTGStack (do mapM_ runTree trees
+                         finalShuffle tar
+                     ) (v2uses trees) src of
+       Left err ->
+         Left $ case err of
+                  CGFE cgfe -> cgfe
+                  serr -> StackError serr
+       Right ((),tar',asm)
+         | tar /= tar' ->
+           error $ "Generated wrong result stack: " ++ show (tar,tar')
+         | let -> Right asm
+  where
+    --count[x]++ for each opspec which has x as an arg
+    --and if tar contains x
+    v2uses trees =
+      let opspecs = trees >>= linearize
+          counts = map (countSetList . osArgs) opspecs
+      in M.unionWith (+) (M.unionsWith (+) counts) $ countSetList tar
+    countSetList = M.fromSet (const 1) . S.fromList
+
+topologicalOrder :: IntMap (OpTree, Set Int) -> [OpTree]
+topologicalOrder n2a_ns =
+  execWriter $ flip runStateT S.empty $
+  forM_ (IM.keys n2a_ns) go
+  where
+    go :: Int -> StateT (Set Int) (Writer [OpTree]) ()
+    go n = do
+      visited <- get
+      if S.member n visited
+        then return ()
+        else do
+        modify $ S.insert n
+        let Just (a,ns) = IM.lookup n n2a_ns
+        --List all dependencies that have not yet been visited
+        forM_ (S.toList ns) go
+        --Emit the tree
+        tell [a]      
 
 --Need a monad; it can be specialized for treegraph by stacking a var =>
 --uses remaining | in_target map State on top of it.
@@ -1019,6 +1060,9 @@ swapVar v = do
 newtype TGStack a = TGStack {unTGStack :: StateT (Map String Int) Stack a}
   deriving (Functor,Applicative,Monad,MonadError StackError,
             MonadState (Map String Int), MonadStack)
+runTGStack :: TGStack a -> Map String Int -> [String] ->
+  Either StackError (a,[String],[Asm])
+runTGStack tgs v2count vs = runStack (evalStateT (unTGStack tgs) v2count) vs
 getUseCount :: String -> TGStack Int
 getUseCount v = do
   mn <- gets $ M.lookup v
@@ -1133,6 +1177,7 @@ gatherArgs vs = do
 --The permutation containing head v is special; once v is ToS applying
 --further permutations requires restoring v.
 --If a move costs n and reduces the lower bound on the cost by n, it's
+--optimal. If a var /= head vs is ToS, it is therefore always optimal to
 --swap it to the correct position, since that reduces the number of vars in
 --incorrect position by >=1. The end result is then either head vs or a non-lu
 --var ToS.
@@ -1368,7 +1413,7 @@ processPermutations :: [String] -> [[Int]] -> [(Int,String,[Int])]
 processPermutations vs perms =
   sort $ go (zip [0..] $ reverse vs) perms
   where
-    go [] [] = []
+    go _ [] = []
     go ((ix,v):ixvs) ((pos:poss):perms)
       | ix == pos =
         --Note perm is guaranteed to be of length >= 2
@@ -1379,6 +1424,7 @@ processPermutations vs perms =
             --The correct index conversion is therefore \i -> highest_ix-i
             swap_indices = map (highest_ix-) (pos:init poss)
         in (highest_ix,v,swap_indices) : go ixvs perms
+      | otherwise = go ixvs $ (pos:poss):perms
   
 --TODO QuickCheck: for all vs, luset = subset of S.fromList vs,
 --lu = nub $ filter (`S.member` luset) vs,
