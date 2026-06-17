@@ -3,7 +3,7 @@ module Codegen where
 
 import Core.RestrictedCore
 import Core.SSA hiding (debugFlag,unsafePrint)
-import Const.Const (Serialized(..))
+import Const.Const (Serialized(..), normalizeContent)
 import Opt.AI hiding (debugFlag,unsafePrint)
 import Opt.HTraversable (Id(..))
 import Opt.AbVar
@@ -30,7 +30,7 @@ import Control.Monad.Except
 import Control.Monad.Writer
 import Data.List (elemIndex,nub)
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 --At long last, the Core optimizer is good enough that it's worth generating
@@ -804,11 +804,19 @@ partitionIntoTreegraph PS{psOps = ops, psVar2Op = v2op} =
       -- refers to a v s.t. v2op[v] = t2, or
       -- contains t2 in its state deps
       withDeps = IM.map (addDependencies rootset) trees
-  in TG withDeps
+  in {-error $ unlines ["\nops = " ++ show ops,
+                      "children = " ++ show children,
+                      "parents = " ++ show parents,
+                      "roots = " ++ show roots,
+                      "trees = " ++ show trees
+                     ]-}
+     TG withDeps
   where
+    --Bugfix: parents should include a mapping for every key in children,
+    --even if they're orphans.
     invert :: IntMap (Set Int) -> IntMap (Set Int)
     invert n2ms =
-      foldr (uncurry insertSet) IM.empty $ do
+      foldr (uncurry insertSet) (IM.map (const S.empty) n2ms) {-IM.empty-} $ do
       (n,ms) <- IM.toList n2ms
       m <- S.toList ms
       return (m,n)
@@ -820,7 +828,9 @@ partitionIntoTreegraph PS{psOps = ops, psVar2Op = v2op} =
       IM.empty
       n2ms-}
     insertSet :: Int -> Int -> IntMap (Set Int) -> IntMap (Set Int)
-    insertSet k v = IM.alter (Just . maybe (S.singleton v) (S.insert v)) k
+    insertSet k v =
+      IM.adjust (S.insert v) k
+      --IM.alter (Just . maybe (S.singleton v) (S.insert v)) k
 
     explore :: IntMap (Set Int) -> IntMap OpSpec -> Int -> OpTree
     explore follow ops node =
@@ -864,13 +874,15 @@ treeGraphSolver2 :: Map String Int -> [String] -> [String] -> Treegraph ->
 treeGraphSolver2 v2op src tar (TG op2tree) =
   --An arbitrary topological order obtained by recursively exploring the map
   let trees = topologicalOrder op2tree
-  in case runTGStack (do mapM_ runTree trees
+  in case runTGStack (do unsafePrint $ "op2tree: " ++ show op2tree
+                         unsafePrint $ "trees: " ++ show trees
+                         mapM_ runTree trees
                          finalShuffle tar
                      ) (v2uses trees) src of
        Left err ->
-         Left $ case err of
-                  CGFE cgfe -> cgfe
-                  serr -> StackError serr
+         Left $ case extractCGFE err of
+                  Just cgfe -> cgfe
+                  Nothing -> StackError err
        Right ((),tar',asm)
          | tar /= tar' ->
            error $ "Generated wrong result stack: " ++ show (tar,tar')
@@ -935,7 +947,19 @@ data StackError = BadArgDup Int Int
                 --stack.
                 | DupNonexistent String
                 | SwapNonexistent String
+                --For more info on where the error was raised. Defined as a
+                --single constructor in order to easily extract the CGFE.
+                | In SEContext StackError
   deriving (Eq,Ord,Read,Show)
+data SEContext = RunTree OpTree
+               | FinalShuffle [String] [String]
+  deriving (Eq,Ord,Read,Show)
+extractCGFE :: StackError -> Maybe CodegenFunError
+extractCGFE = go
+  where go = \case
+          In _ se -> go se
+          CGFE cgfe -> Just cgfe
+          _ -> Nothing
 class Monad m => MonadStack m where
   dup :: Int -> m ()
   swap :: Int -> m ()
@@ -964,7 +988,7 @@ instance MonadStack Stack where
   swap ix = Stack $ do
     vs <- get
     let len = length vs
-    if ix > 0 || ix > 16 || ix >= len
+    if ix < 0 || ix > 16 || ix >= len
       then throwError $ BadArgSwap len ix
       else do let a:vs' = vs
                   pre = take (ix-1) vs'
@@ -1022,7 +1046,9 @@ pushSer ser =
           Right (off,len,lab)
             | off /= 0 -> error "TODO modify asm to handle label slices"
             | let -> UseLabel len $ LNamed lab)
-  (serContent ser)
+  --It's strange that I need to normalize here in order to eliminate bytes [];
+  --TODO find the cause, ensure consistent normalization in Core.
+  (normalizeContent $ serContent ser)
 
 --Unlike swap, it doesn't matter which var we dup.
 --Throws a CFGE if v is out of range; throws a compiler error if it's not on
@@ -1086,7 +1112,7 @@ decUseCount v = do
 --args.
 --Now the necessary vars for the node's op will be on the stack; run the op.
 runTree :: OpTree -> TGStack ()
-runTree (Node opspec trees) = do
+runTree tree@(Node opspec trees) = withError (In (RunTree tree)) $ do
   --Inefficiency: I now need to reconstruct the relation var => tree.
   let argset = S.fromList $ osArgs opspec
       --Those trees on which opspec has a stack dependency, indexed by the
@@ -1132,6 +1158,7 @@ runTree (Node opspec trees) = do
 --though there may already be garbage there from the lhs.
 runOp :: OpSpec -> TGStack ()
 runOp opspec = do
+  unsafePrint $ "runOp " ++ show opspec
   --Dup and swap the op's args to the ToS:
   gatherArgs $ osArgs opspec
   --Emit the op and decrement the use counts of its args:
@@ -1153,7 +1180,9 @@ gatherArgs vs = do
   let lastUse = nub $ map fst $ filter ((==1).snd) vns
   --Swap last-use vars to ToS in order of first use:
   --Stack: lastUse ++ rest
+  unsafePrint $ "gatherArgs: (stk,lastUse) = " ++ show (map fst vns, lastUse)
   gatherLastUse lastUse
+  unsafePrint $ "gatherArgs: gatherLastUse done"
   --Dup and swap to get vs ++ rest
   gatherDupSwap lastUse vs
 --Precondition: each var (and consequently each last-use var) has exactly one
@@ -1198,8 +1227,20 @@ gatherLastUse vs = do
       --as left, so there's no telling which var is the head of a chain.
       chains = assembleChains ix2ix
       cycles = map chainToCycle chains
+  unsafePrint $ unlines ["gatherLastUse:",
+                         "ix2ix = " ++ show ix2ix,
+                         "chains = " ++ show chains,
+                         "cycles = " ++ show cycles
+                        ]
   mapM_ applyCycle cycles
 {-
+Given ix2ix, returns chains s.t. each ix in keys ix2ix is in one position of
+one chain.
+If ix => ix' then:
+ if ix' is in keys ix2ix, then either ix,ix' are adjacent or
+  ix is the last element of a cyclical chain where ix' is the first element;
+ else ix,ix' are at the end of a chain.
+
 Algo(ix2ix):
 ix2chain = {}
 visited = {}
@@ -1236,22 +1277,27 @@ assembleChains ix2ix =
       modify (id *** M.insert ix chain)
         where
           follow :: Int -> State (Set Int, Map Int [Int]) [Int]
-          follow ix =
+          follow ix = do
+            --Bugfix: infinite loop for ix2ix = {0=>1,1=>0}
+            modify $ S.insert ix *** id
             (ix:) <$>
-            case M.lookup ix ix2ix of
-              Just ix'
-                --ix is part of a trivial cycle
-                | ix == ix' -> return [ix]
-                | let -> do
-                    b <- isVisited ix'
-                    if b
-                      then do
-                      --ix' must be a chain head
-                      mchain <- gets $ M.lookup ix' . snd
-                      let Just chain = mchain
-                      modify (id *** M.delete ix')
-                      return chain
-                      else follow ix'
+              case M.lookup ix ix2ix of
+                Just ix'
+                  --ix is part of a trivial cycle
+                  | ix == ix' -> return [ix]
+                  | let -> do
+                      b <- isVisited ix'
+                      if b
+                        then do
+                        --ix' must be a chain head
+                        mchain <- gets $ M.lookup ix' . snd
+                        case mchain of
+                          Just chain -> do
+                            modify (id *** M.delete ix')
+                            return chain
+                          --ix' must loop back to the chain head
+                          Nothing -> return []
+                        else follow ix'
           isVisited :: Int -> State (Set Int, Map Int [Int]) Bool
           isVisited ix = gets $ S.member ix . fst
 
@@ -1333,6 +1379,7 @@ gatherDupSwap lus vs = do
       perms = luPermutations lus_ix2vs_ix
       pperms = processPermutations vs perms
       len_lus = length lus
+  --unsafePrint $ "pperms = " ++ show pperms
   dupSwap len_lus pperms (drop len_lus $ reverse vs)
     where
       --curr_ix: the index off BP to which we're going to dup
@@ -1340,10 +1387,12 @@ gatherDupSwap lus vs = do
         --Time to apply a permutation:
         --dup v to top, then permute
         | curr_ix == ix = do
+            --unsafePrint "swapping!"
             dupVar v
             mapM_ swap swap_ixs
             dupSwap (curr_ix+1) pperms' ws
         | let = do
+                --unsafePrint $ "duping " ++ w
                 dupVar w
                 dupSwap (curr_ix+1) pperms ws
       --No more permutations to apply, just dup
@@ -1466,11 +1515,19 @@ isGarbage v = (== 0) <$> getUseCount v
 --Now there is no garbage, and still no duplicates. The stack length is <=
 --the target length. From now on, we only dup and swap.
 --That's exactly the same problem as gatherDupSwap!
+--Incorrect: gatherDupSwap assumes the last-use arguments (i.e. all of them)
+--are ToS in the correct order. I must instead use gatherArgs.
 finalShuffle :: [String] -> TGStack ()
 finalShuffle target = do
-  gc
-  vs <- getStack
-  gatherDupSwap vs target
+  stk <- getStack
+  withError (In $ FinalShuffle stk target) $ do
+    unsafePrint "finalShuffle: starting gc!"
+    gc
+    unsafePrint "finalShuffle: starting gatherArgs!"
+    --vs <- getStack
+    --unsafePrint $ "(vs,target) = " ++ show (vs,target)
+    --gatherDupSwap vs target
+    gatherArgs target
 
 --Efficient GC: if you have a single non-garbage var ToS and a run of garbage
 --under, it's efficient to swap with the deepest garbage in the run possible.
