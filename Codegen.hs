@@ -382,7 +382,7 @@ codegenBranch ft = \case
 --op)
 targetStack :: Bool -> Branch -> Value
 targetStack ft = \case
-  Jump _mode (ws,_,ss) -> (ws,ss)
+  Jump _mode (dest:ws,_,ss) -> ([dest | not ft] ++ ws,ss)
   Jumpi _elf (ws,_,ss) -> (ws,ss)
   Revert v -> v
   Return v -> v
