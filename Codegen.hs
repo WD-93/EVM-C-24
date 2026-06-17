@@ -7,7 +7,7 @@ import Const.Const (Serialized(..), normalizeContent)
 import Opt.AI hiding (debugFlag,unsafePrint)
 import Opt.HTraversable (Id(..))
 import Opt.AbVar
-import Opt.Opt (Fundef())
+import Opt.Opt (Fundef(),stateT2mnem)
 import Asm
 import Util ((?), unsafePrint')
 
@@ -947,6 +947,7 @@ data StackError = BadArgDup Int Int
                 --stack.
                 | DupNonexistent String
                 | SwapNonexistent String
+                | DecUseCountMissingVar String
                 --For more info on where the error was raised. Defined as a
                 --single constructor in order to easily extract the CGFE.
                 | In SEContext StackError
@@ -1002,6 +1003,12 @@ instance MonadStack Stack where
       v:vs' -> do
         tell [Opcode "pop"]
         put vs'
+  --The empty* ops that return empty state vars (used in Opt to pass trivial
+  --state to a cont that expects it when the state is dead) don't correspond
+  --to EVM ops, so they need to be handled specially.
+  emitOp OS{osOp = Op nm}
+    | nm `elem` map ("empty"++) (M.elems stateT2mnem) =
+      return ()
   emitOp OS{osArgs = args,
             osRet = mret,
             osOp = primop
@@ -1093,13 +1100,16 @@ getUseCount :: String -> TGStack Int
 getUseCount v = do
   mn <- gets $ M.lookup v
   case mn of
-    Nothing -> error "!?"
+    --A var may occur in the lhs without being used anywhere, in which case
+    --it will be missing from the usecount map, but its usecount should still
+    --be queriable.
+    Nothing -> return 0
     Just n -> return n
 decUseCount :: String -> TGStack ()
 decUseCount v = do
   mn <- gets $ M.lookup v
   case mn of
-    Nothing -> error "!?"
+    Nothing -> throwError $ DecUseCountMissingVar v
     Just 0 -> error $ "Attempted to decrement 0-use var " ++ v
     Just n -> modify $ M.insert v $ n - 1
   
@@ -1136,11 +1146,14 @@ runTree tree@(Node opspec trees) = withError (In (RunTree tree)) $ do
   mapM_ runTree $ S.toList nostackdep
   --We're left with trees on which opspec has a stack dep, which must be run
   --in order of *first* appearance in reversed args.
-  mapM_ runTree $
+  --Bugfix: v need not be in arg2tree, since it could also be the result of
+  --another tree. In that case do nothing; v will be swapped into place in
+  --runOp.
+  mapM_ runTree $ concat $ 
     map (\v ->
             case M.lookup v arg2tree of
-              Nothing -> error "!?"
-              Just tree -> tree) $ nub $ reverse $ osArgs opspec
+              Nothing -> []
+              Just tree -> [tree]) $ nub $ reverse $ osArgs opspec
   --Now the necessary vars for the root op are somewhere on the stack; run it.
   runOp opspec
 
