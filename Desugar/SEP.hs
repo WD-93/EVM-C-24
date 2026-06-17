@@ -81,7 +81,9 @@ desugarE di{-@DInfo{diGlobalSet = gs,
         return $ EArray Nothing
           [Var "fromWord" :$ EInteger (fromIntegral n)
           | n <- ns]
-         
+          --Restricting string literals to be Byte arrays;
+          --depends on UInt and Array being defined.
+          ::: Array (TyNat $ fromIntegral $ length str) (UInt 1)
         {-
         --str => *g
         case M.lookup str str2id of
