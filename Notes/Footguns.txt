@@ -2,6 +2,45 @@ Need a central repository of footguns (unintuitive or unexpected behavior)
 for inclusion in writeup and docs for new users. This file is a temporary
 measure; TODO move to proper writeup.
 
+0: IF YOU ONLY READ ONE FOOTGUN READ THIS ONE
+Case assumes the value (v :: T) it's casing on is well-formed, i.e. that its 
+runtime representation corresponds to a valid value of the type.
+In particular, it assumes v's tag corresponds to one of T's constructors;
+an invalid tag is UB.
+There are a number of ways to produce an ill-formed value, such as:
+ 1) The .tag<DT> can be set to an invalid value.
+ 2) Dereferencing a pointer that doesn't refer to a valid value.
+That means casing on user-submitted data may lead to arbitrary behavior.
+Vulnerability per tag scheme:
+Bool: 
+No impact (case only cares if the Byte tag is 0).
+Custom: 
+Minor (case checks equality to the custom tag for each con, reverting if none 
+match). That means the contract may unexpectedly revert if the programmer 
+treats *calldataPtr as a valid T.
+N16: 
+Severe. Case jumps to (tbl>>tag)&0xffff, so an invalid tag may lead to
+a jump to some other jumpdest that happens to match one of the 240 invalid
+shifts.
+N5: 
+Severe. Case jumps to jt+tag, meaning it may jump out of the range of the
+JT into any of the 256-5*|cons| jumpdests behind it.
+Jumpdests are placed after function bodies, so the bad dest would need to be
+another JT entry or coincidentally executable static data, but that's still
+dangerous.
+N1: Severe. Case jumps to jt+5*tag, so it may jump into any of the next
+256-|cons| jumptable entries after the JT or coincidentally executable static
+data.
+N1 len datatypes with 256^len constructors aren't affected; N5 datatypes
+with 52 constructors may unexpectedly jump to an invalid dest (equivalent to
+INVALID, i.e. a revert with all gas burned).
+
+A simple countermeasure is to never case on raw user-controlled data, but
+that's a problem for me since I'd like to case on calldata when implementing
+an interpreter.
+Potential fix: a safe annotation for case that adds a tag validity check,
+reverting if the tag is invalid.
+
 1:
 Case does not behave like in Haskell or Erlang: there is no branching on
 nested fallible patterns, instead case only branches on the top-level tag
