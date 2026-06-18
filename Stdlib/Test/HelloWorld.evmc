@@ -1,0 +1,11 @@
+//A test that strings work correctly; previously this would trigger a type
+//error due to desugaring not monomorphizing string literals to a byte array,
+//but that's been fixed.
+import Prelude;
+
+code str = "Hello world!";
+main () := {
+ var p = alloc 1;
+ copy(p,&str,1);
+ returnPtr p
+}

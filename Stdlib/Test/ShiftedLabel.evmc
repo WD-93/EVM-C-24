@@ -1,0 +1,14 @@
+//Parts of the compiler pipeline (Fused through Codegen) incorrectly expect all
+//label uses to have offset 0 into the label and byte length 2.
+//That's an obstacle to imported labels (necessary for Sol-style immutable
+//variables, dynamic linking), but it's already a bug: a 2-byte label in a
+//tag may be shifted across a word boundary.
+//This module should trigger that.
+
+import Prelude;
+
+data D = {D};
+tag D = Struct(()->(),UInt 31) where {
+ D: Struct (main,0) //main will be split over two words
+ };
+main () := returnValue D
