@@ -490,7 +490,9 @@ dtTagType dti =
   case dtTagScheme dti of
     Nil -> error $ "Compiler error: tag type of a datatype with no tag queried."
            ++ " DT Info: " ++ show dti
+    Bool -> UInt 1
     N1 n -> UInt (fromIntegral n)
+    N5 -> UInt 1
     N16 -> UInt 1
     Custom t _ -> t
 
