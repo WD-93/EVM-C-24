@@ -151,6 +151,9 @@ data FusedError = GenericFE String
                 | AddressOfCan'tHandle E
                 | UnevaluableEP String --I show it because EP is defined in
                 --Fused.
+                --Searching for getFieldInfo before exploreD
+                | InConstructCon Name [T] FusedError
+                | InSerialize' [MonoT] FusedError
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

@@ -2076,7 +2076,8 @@ getFieldParent field = do
 constructCon :: Name -> [T] -> [Var] ->
                 Integer -> Map Name ([Var], T) -> T ->
                 FusedFunM [Var]
-constructCon con ts tag tagSz field2vst resT = do
+constructCon con ts tag tagSz field2vst resT =
+  withError (InConstructCon con ts) $ do
   sz <- liftFused $ sizeof resT
   --Look up fields of con and their offsets
   fields <- do
@@ -2230,7 +2231,7 @@ scheduler = do
 serialize :: E -> FusedM Serialized
 serialize = serialize' [] S.empty
 serialize' :: [MonoT] -> Set MonoT -> E -> FusedM Serialized
-serialize' mts mtset = go
+serialize' mts mtset = withError (InSerialize' mts) . go
   where go = \case
           --Arrays
           EArray (Just t) es -> do
@@ -2257,6 +2258,8 @@ serialize' mts mtset = go
                    " in serialize'"
               else return ()
             --Associate fs with their monotypes; this also explores tycon ts
+            --Bugfix: it did not explore tycon ts...
+            exploreD [] S.empty (tycon,ts)
             fts <- forM fs (\field -> do
                                (_off,_len,t) <- getFieldInfo field ts
                                return (field,t))
