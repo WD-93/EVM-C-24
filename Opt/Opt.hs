@@ -120,16 +120,21 @@ filterKeys f = M.fromList . filter (f . fst) . M.toList
 --then normalize to coalesce adjacent bytestring regions.
 --Problem: that might affect the byte length of static data... need to ensure
 --it's aligned correctly afterward.
+--Bugfix: label uses do not necessarily have (off,len) == (0,2), consider
+--a constructor tag = Struct(f,0 :: UInt 31). That will split the function f
+--over two words!
+--For now I'll assume labels are originally 16b before they're sliced;
+--imported labels may change that in future.
 substUnreachable :: Data a => Set FunVar -> a -> a
 substUnreachable ur = everywhere (mkT go)
   where go :: Serialized -> Serialized
         go ser = ser{serContent = normalizeContent $
-                      map (\case Right (off,len,lab)
-                                   | (off,len) == (0,2) ->
+                      map (\case Right (off,len,lab) ->
                                      if S.member lab ur
-                                     then Left [0,1]
+                                     --Will break if unreachable labs are
+                                     --ever permitted to be >2B
+                                     then Left $ take len $ drop off [0,1]
                                      else Right (off,len,lab)
-                                   | let -> error "!?"
                                  x -> x) $
                       serContent ser
                     }

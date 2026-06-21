@@ -1,0 +1,24 @@
+//The original Test.ShiftedLabel now compiles, but the function split over two
+//words is replaced with 0x0001 because Opt detects main is unreachable!
+//That means it doesn't generate a label split over two words, so it doesn't
+//test that the rest of the pipeline handles that.
+//This module should by forcing fun to be placed.
+
+import Prelude;
+
+data D = {D};
+tag D = Struct(()->(),UInt 31) where {
+ D: Struct (fun,0) //fun will be split over two words
+ };
+main () := {
+ //main calls fun
+ fun();
+ returnValue D
+ };
+
+//fun contains an ifte so it shouldn't currently be inlined.
+fun () :=
+ if calldataload 0
+ then returnValue 42
+ else return ()
+ end
