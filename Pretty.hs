@@ -369,15 +369,18 @@ showByPrefix v prefix core =
 
 prettyAsm :: A.Asm -> String
 prettyAsm = \case
-  A.Push len n -> "push" ++ show len ++ " " ++ show n
+  --A.Push len n -> "push" ++ show len ++ " " ++ show n
   PushLabel len lab -> "push" ++ show len ++ " " ++ prettyAsmLabel lab
-  Dup n -> "dup" ++ show n
-  Swap n -> "swap" ++ show n
+  --Dup n -> "dup" ++ show n
+  --Swap n -> "swap" ++ show n
   A.Opcode str -> str
   PlaceLabel lab -> prettyAsmLabel lab ++ ":"
   DefLabel lab lv -> prettyAsmLabel lab ++ " = " ++ show lv
   Bytes bs -> "bytes " ++ show bs
-  UseLabel len lab -> prettyAsmLabel lab ++ ":" ++ show len
+  UseLabel off len lab ->
+    if off == 0
+    then prettyAsmLabel lab ++ ":" ++ show len
+    else prettyAsmLabel lab ++ ".slice("++show off++","++show len++")"
   A.Comment str -> "; " ++ str
 prettyAsmLabel = \case
   LAnon n -> show $ "anon" ++ show n

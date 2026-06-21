@@ -165,11 +165,7 @@ codegenStatic = placeArbitrary codegenCG
 codegenCG :: Serialized -> [Asm]
 codegenCG = map (\case
                     Left bs -> Bytes bs
-                    Right (off,len,lab)
-                      | off /= 0 ->
-                        error $ "Compiler error: can't handle nonzero label "
-                        ++ "offset!"
-                      | let -> UseLabel len $ LNamed lab
+                    Right (off,len,lab) -> UseLabel off len $ LNamed lab
                 ) . serContent
 
 placeArbitrary :: (a -> [Asm]) -> Map FunVar a -> [Asm]
@@ -1051,9 +1047,7 @@ pushSer ser =
   Opcode ("push" ++ show (serLength ser)) :
   map (\case
           Left bs -> Bytes bs
-          Right (off,len,lab)
-            | off /= 0 -> error "TODO modify asm to handle label slices"
-            | let -> UseLabel len $ LNamed lab)
+          Right (off,len,lab) -> UseLabel off len $ LNamed lab)
   --It's strange that I need to normalize here in order to eliminate bytes [];
   --TODO find the cause, ensure consistent normalization in Core.
   (normalizeContent $ serContent ser)

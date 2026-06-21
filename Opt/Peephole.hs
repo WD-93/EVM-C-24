@@ -163,5 +163,5 @@ parseImmArgs = go []
                     Nothing -> error $ "Not an imm arg: " ++ show asm
     immLen = \case
       Bytes bs -> Just $ length bs
-      UseLabel len _ -> Just len
+      UseLabel _off len _ -> Just len
       _ -> Nothing

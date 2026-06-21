@@ -20,10 +20,12 @@ import Control.Monad (filterM)
 --A datatype for generating asm for the codegen; todo a monad for codegen
 --Goal: keep the DT minimal while supporting linking
 --When linking, give each blob new anon labels.
-data Asm = Push Int Integer
-         | PushLabel Int Label
-         | Dup Int
-         | Swap Int
+--EVMC's Codegen module doesn't use Push, Dup or Swap; those can be
+--implemented with Opcode, Bytes and UseLabel.
+data Asm = --Push Int Integer
+           PushLabel Int Label
+         -- | Dup Int
+         -- | Swap Int
          | Opcode String
          | PlaceLabel Label
          --Why allow BasePlus? To allow pointers into following arrays or
@@ -31,7 +33,10 @@ data Asm = Push Int Integer
          | DefLabel Label LabelValue
          --No need for .data; data is included directly in the asm
          | Bytes [Int]
-         | UseLabel Int Label
+         --UseLabel now takes an additional offset arg before len, indicating
+         --the offset into the label value to slice. Ex: lab = 0xaabb =>
+         --UseLabel 1 1 becomes 0xbb.
+         | UseLabel Int Int Label
          --PushRelative Label Int would let you make code relocatable.
          --push base + k would become PC + k', where k' = k - the byte offset
          --of the PushRelative in the object file
@@ -52,8 +57,9 @@ labelValueLen = \case
   BasePlus _ -> 2
 --Getting rid of anon labels in the ObjectFile...
 data TemplateValue = ExactlyBytes [Int]
-                   | CodeBasePlus Int
-                   | ReadLabel Label
+                   --CodeBasePlus off len k: (codebase+k).slice(off,len)
+                   | CodeBasePlus Int Int Int
+                   | ReadLabel Int Int Label
   deriving (Eq,Ord,Read,Show,Data)
 type Template = [TemplateValue]
 --Problem: this format doesn't allow including a slize of a label's value in
@@ -104,13 +110,13 @@ data Asm = Push Int Integer
 -}
 asmSize :: Asm -> Int
 asmSize = \case
-  Push n _ -> n + 1
+  --Push n _ -> n + 1
   PushLabel n _ -> n
-  Dup _ -> 1
-  Swap _ -> 1
+  --Dup _ -> 1
+  --Swap _ -> 1
   Opcode _ -> 1
   Bytes bs -> length bs
-  UseLabel n _ -> n
+  UseLabel _off n _ -> n
   decl -> 0
 
 --Errors:
@@ -150,15 +156,19 @@ emit n x = do
   put $ s{asCodeOffset = asCodeOffset s + n}
 emitBytes bs = emit (length bs) (ExactlyBytes bs)
 --Also reports the label was used
-emitLabel :: Int -> Label -> Assembler ()
-emitLabel len l = do
+--Change: now takes an offset for slicing the label.
+--The length of the label slice may now differ from the length of the value
+--bound to the label; that should not raise ConflictingLabelUses.
+--ReadLabel must also be modified to take the slice params off and len.
+emitLabel :: Int -> Int -> Label -> Assembler ()
+emitLabel off len l = do
   as <- get
   case M.lookup l $ asUsedLabels as of
     Just len'
-      | len' /= len -> puke $ ConflictingLabelUses len' len
+      -- | len' /= len -> puke $ ConflictingLabelUses len' len
       | let -> return ()
     Nothing -> put $ as{asUsedLabels = M.insert l len $ asUsedLabels as}
-  emit len (ReadLabel l)
+  emit len $ ReadLabel off len l
 --TODO use lenses...
 setLabel l lv =
   case l of
@@ -176,18 +186,19 @@ setLabel l lv =
             Nothing -> put $ putter as $ M.insert x lv exps
 
 handleAsm :: Asm -> Assembler ()
-handleAsm = \case
+handleAsm = \case {-
   Push len n ->
     checkRange "push" 0 32 len $
-    emitBytes $ push2Bytes len n
+    emitBytes $ push2Bytes len n -}
   PushLabel len l ->
     checkRange "push" 0 32 len $ do
         emitBytes [0x5f + len]
-        emitLabel len l
+        emitLabel 0 len l {-
   Dup n ->
     checkRange "dup" 1 16 n $ emitBytes [0x7f + n]
   Swap n ->
     checkRange "swap" 1 16 n $ emitBytes [0x8f + n]
+   -}
   Opcode str ->
     case M.lookup str mnemonics of
       Just op -> emitBytes [op]
@@ -197,7 +208,7 @@ handleAsm = \case
     setLabel l (BasePlus off)
   DefLabel l lv -> setLabel l lv
   Bytes bs -> emitBytes bs
-  UseLabel len l -> emitLabel len l
+  UseLabel off len l -> emitLabel off len l
   Comment _ -> return ()
 checkRange instr lo hi n act
   | n < lo || n > hi = puke $ InstructionOutOfRange instr n
@@ -288,13 +299,16 @@ assemble asms =
 --Note: it doesn't check the bytes you substitute labels for are of the
 --correct length; checks in assemble/merge should do that.
 --If I passed a Map Label TemplateValue I could set a label to another label...
+--Problem: now that labels can be sliced, it must be possible to slice
+--BasePlus as well.
 setLabelsTemplate :: Map Label LabelValue -> Template -> Template
 setLabelsTemplate m = concatBytes .
-  map (\case ReadLabel l ->
+  map (\case ReadLabel off len l ->
                case M.lookup l m of
-                 Just (Exactly _ bs) -> ExactlyBytes bs
-                 Just (BasePlus k) -> CodeBasePlus k
-                 Nothing -> ReadLabel l
+                 Just (Exactly _ bs) -> ExactlyBytes $ take len $ drop off $
+                                        bs ++ repeat 0
+                 Just (BasePlus k) -> CodeBasePlus off len k
+                 Nothing -> ReadLabel off len l
              tv -> tv)
 concatBytes :: Template -> Template
 concatBytes = let
@@ -313,6 +327,8 @@ concatBytes = let
 --Update the template
 --Question: should this throw an AsmError?
 --This should take a Map String LabelValue so you can merge objs!
+--Change: setLabels now supports ReadLabel's that slice the given label.
+--If len is greater than the length of the label value, zero bytes are appended.
 setLabels :: Map String [Int] -> ObjectFile -> Either String ObjectFile
 setLabels m obj = do
   let coll = S.intersection (M.keysSet m) (M.keysSet $ exportedLabels obj)
@@ -330,9 +346,10 @@ setLabels m obj = do
     $ M.toList m
   let imps' = M.withoutKeys (importedLabels obj) (M.keysSet m)
       temp' = concatBytes $ map (\case
-                                    ReadLabel (LNamed nm)
+                                    ReadLabel off len (LNamed nm)
                                       | Just bs <- M.lookup nm m ->
-                                        ExactlyBytes bs
+                                        ExactlyBytes $ take len $ drop off $
+                                        bs ++ repeat 0
                                     tv -> tv) $ template obj
   return $ obj{importedLabels = imps',
                template = temp'
@@ -375,10 +392,11 @@ setCodeBase off obj = obj{
                              x -> x
                          ) $
                    exportedLabels obj,
-  template = concatBytes $ map (\case CodeBasePlus k ->
+  template = concatBytes $ map (\case CodeBasePlus o len k ->
                                         ExactlyBytes $
-                                        integer2Bytes 2 $
-                                        fromIntegral $ off+k
+                                        take len $ drop o $
+                                        (integer2Bytes 2 $
+                                         fromIntegral $ off+k) ++ repeat 0
                                       x -> x
                                )
              $ template obj
