@@ -10,6 +10,7 @@ import Opt.AbVar
 import Opt.Opt (Fundef(),stateT2mnem)
 import Asm
 import Util ((?), unsafePrint')
+import Opt.Peephole (peephole)
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -145,7 +146,7 @@ codegen' core =
       let jtasm = codegenJTs $ coreJTs core
           gasm = codegenStatic $ coreStatic core
           asm = fasm ++ jtasm ++ gasm
-      in return asm
+      in return $ peephole asm
 --Place JTs in arbitrary order.
 codegenJTs :: Map FunVar (a,[FunVar]) -> [Asm]
 codegenJTs = placeArbitrary (codegenJT . snd)
