@@ -1,0 +1,24 @@
+//Currently (*ptr).foo.bar is converted  to *(&((*ptr).foo.bar)) in a pattern
+//context, but not in an expression context.
+//That renders ergonomically indexing large array globals impossible, since
+//global!ix desugars to (*k)!ix and then is compiled to a dereference that
+//loads the array onto the stack followed by an array index.
+//However, indexing on-stack arrays larger than a word is not supported by
+//the compiler - since the EVM has no dynamic stack access opcodes, it would
+//require a dispatch into a jump table.
+//That means that this program should currently fail (as of 2026-06-21).
+//The fix will be to apply the (*ptr).foo.bar => *(&(...)) transformation to
+//exprs as well; that changes the semantics but it's worth it.
+//Possible TODO: new sugar arrPtr *! ix equivalent to (*arrPtr)!ix for
+//indexing dynamically created in-memory arrays.
+
+import Prelude;
+
+large_array : Array 64 Byte;
+memory large_array;
+
+main () := {
+ copy(&large_array, coerce 0 :: Ptr Calldata a, 1);
+ large_array!0 = large_array!63;
+ returnPtr (&large_array)
+ }
