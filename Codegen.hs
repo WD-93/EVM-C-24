@@ -1312,6 +1312,8 @@ assembleChains ix2ix =
                           --ix' must loop back to the chain head
                           Nothing -> return []
                         else follow ix'
+                --TODO figure out if this is the right thing to do.
+                Nothing -> return []
           isVisited :: Int -> State (Set Int, Map Int [Int]) Bool
           isVisited ix = gets $ S.member ix . fst
 

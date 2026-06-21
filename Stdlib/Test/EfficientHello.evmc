@@ -1,0 +1,12 @@
+//This triggered an error in Codegen.assembleChains, called by gatherLastUse.
+//Differs from Test.HelloWorld in that it doesn't unnecessarily alloc the
+//string, instead main just writes it to offset 0.
+
+import Prelude;
+
+code str = "Hello";
+main() := {
+ var p = coerce 0;
+ copy(p,&str,1);
+ returnPtr p
+ }
