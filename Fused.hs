@@ -1769,6 +1769,32 @@ convertE e = pushScope $ go e
             xs <- localToVars t x
             ys <- copyVars xs
             return (ys,t)
+          --Magic: e @ (*ptr)(.ubfield|!ix)+ compiles to *(&(e)).
+          --That enables indexing of boxed arrays, e.g. arrayGlobal!ix or
+          --(*dynArrPtr)!ix, despite on-stack indexing only supporting
+          --arrays of at most 32B.
+          --TODO apply symbolic simplification opt in Opt to speed up
+          --addressOf.
+          --Performance issue: this is quadratic (with a small constant
+          --factor); TODO optimize.
+          expr@(Dot e (Just ts) field)
+            | Just (ptr,indexPath) <- rollAddressOfE expr -> do
+                (ptrw,ptrt) <- computeAddressOf ptr indexPath
+                let Ptr r a = ptrt
+                --Need to deref ptrw, which is a value, not an E...
+                --Copied from evalEP:
+                deref <- pushTyApp "deref" [r,a]
+                vs <- callFun deref [ptrw] a
+                return (vs,a)
+          --e!ix
+          expr@(TyApp "indexArray" [len,a] :$ e)
+            | Just (ptr,indexPath) <- rollAddressOfE expr -> do
+                (ptrw,ptrt) <- computeAddressOf ptr indexPath
+                let Ptr r a = ptrt
+                --Copied from evalEP:
+                deref <- pushTyApp "deref" [r,a]
+                vs <- callFun deref [ptrw] a
+                return (vs,a)
           -- &e; valid e := *ptr(.ubfield | !ix)*
           --Boxed fields have already been desugared away
           TyApp "addressOf" [a,r] :$ e ->
