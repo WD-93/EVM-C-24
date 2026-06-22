@@ -31,7 +31,7 @@ import Control.Monad.Except
 import Control.Monad.Writer
 import Data.List (elemIndex,nub)
 
-debugFlag = False
+debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
 
 --At long last, the Core optimizer is good enough that it's worth generating
@@ -124,7 +124,9 @@ data CompiledContract = CompiledContract {
 
 codegen :: OptCore -> Either CodegenError CompiledContract
 codegen core = do
+  unsafePrint "Starting codegen!"
   asm <- codegen' core
+  unsafePrint "Asm generated!"
   case assemble asm of
     Left asmError -> error $ "Compiler error (asmError):" ++
                      show asmError
@@ -875,6 +877,7 @@ treeGraphSolver2 v2op src tar (TG op2tree) =
                          unsafePrint $ "trees: " ++ show trees
                          mapM_ runTree trees
                          finalShuffle tar
+                         unsafePrint "finalShuffle done!"
                      ) (v2uses trees) src of
        Left err ->
          Left $ case extractCGFE err of
@@ -1188,11 +1191,13 @@ gatherArgs vs = do
   let lastUse = nub $ map fst $ filter ((==1).snd) vns
   --Swap last-use vars to ToS in order of first use:
   --Stack: lastUse ++ rest
-  unsafePrint $ "gatherArgs: (stk,lastUse) = " ++ show (map fst vns, lastUse)
+  --unsafePrint $ "gatherArgs: (stk,lastUse) = " ++ show (map fst vns, lastUse)
+  unsafePrint "gatherArgs: gatherLastUse"
   gatherLastUse lastUse
-  unsafePrint $ "gatherArgs: gatherLastUse done"
+  unsafePrint "gatherArgs: gatherLastUse done"
   --Dup and swap to get vs ++ rest
   gatherDupSwap lastUse vs
+  unsafePrint "gatherArgs: gatherDupSwap done"
 --Precondition: each var (and consequently each last-use var) has exactly one
 --instance on the stack.
 --That is preserved.
@@ -1234,12 +1239,12 @@ gatherLastUse vs = do
       --I can't use luPermutations because vars may be moved right as well
       --as left, so there's no telling which var is the head of a chain.
       chains = assembleChains ix2ix
-      cycles = map chainToCycle chains
+      cycles = map chainToCycle chains {-
   unsafePrint $ unlines ["gatherLastUse:",
                          "ix2ix = " ++ show ix2ix,
                          "chains = " ++ show chains,
                          "cycles = " ++ show cycles
-                        ]
+                        ] -}
   mapM_ applyCycle cycles
 {-
 Given ix2ix, returns chains s.t. each ix in keys ix2ix is in one position of
@@ -1389,7 +1394,9 @@ gatherDupSwap lus vs = do
       perms = luPermutations lus_ix2vs_ix
       pperms = processPermutations vs perms
       len_lus = length lus
-  --unsafePrint $ "pperms = " ++ show pperms
+  unsafePrint $ "lus_ix2vs_ix = " ++ show lus_ix2vs_ix
+  unsafePrint $ "perms = " ++ show perms
+  unsafePrint $ "pperms = " ++ show pperms
   dupSwap len_lus pperms (drop len_lus $ reverse vs)
     where
       --curr_ix: the index off BP to which we're going to dup
@@ -1397,12 +1404,12 @@ gatherDupSwap lus vs = do
         --Time to apply a permutation:
         --dup v to top, then permute
         | curr_ix == ix = do
-            --unsafePrint "swapping!"
+            unsafePrint "swapping!"
             dupVar v
             mapM_ swap swap_ixs
             dupSwap (curr_ix+1) pperms' ws
         | let = do
-                --unsafePrint $ "duping " ++ w
+                unsafePrint $ "duping " ++ w
                 dupVar w
                 dupSwap (curr_ix+1) pperms ws
       --No more permutations to apply, just dup
@@ -1533,7 +1540,9 @@ finalShuffle target = do
   withError (In $ FinalShuffle stk target) $ do
     unsafePrint "finalShuffle: starting gc!"
     gc
-    unsafePrint "finalShuffle: starting gatherArgs!"
+    stk <- getStack
+    unsafePrint $ "stack: " ++ show stk
+    unsafePrint $ "finalShuffle: starting gatherArgs " ++ show target
     --vs <- getStack
     --unsafePrint $ "(vs,target) = " ++ show (vs,target)
     --gatherDupSwap vs target

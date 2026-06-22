@@ -33,16 +33,25 @@ data OptError = OptAIError AIError
   deriving (Eq,Ord,Read,Show)
 --I'll need to repeatedly run ai.
 opt :: OptCore -> Either OptError OptCore
-opt = iteratively optimize
+opt core = do
+  core' <- iteratively optimize core
+  unsafePrint $ "opt done; length show core' = " ++ show (length $ show core')
+  return core'
 
 --Apply transformation until error or convergence
 iteratively :: Eq a => (a -> Either err a) -> a -> Either err a
 iteratively f = go
   where go a = do
+          unsafePrint "iteration!"
           a' <- f a
+          unsafePrint "iteration done!"
           if a == a'
-            then return a
-            else go a'
+            then do
+            unsafePrint "a == a'"
+            return a
+            else do
+            unsafePrint "a /= a'"
+            go a'
 
 --Problem: AI is expensive, so we want to perform it as rarely as possible.
 --However, opt rules may invalidate the results.
@@ -50,24 +59,39 @@ iteratively f = go
 optimize :: OptCore -> Either OptError OptCore
 optimize core = do
   ms <- ai core ? OptAIError
-  applyRules ms core [pruneUnreachableFuns
-                      ,revertDivergent
-                      ,etaReduction
-                      ,pruneDeadOps
-                      ,controlFlowDCE
-                      ,pruneParams
-                      ,inlining
-                      ,constantExpansion
+  unsafePrint "Starting opt!"
+  applyRules ms core [("pruneUnreachableFuns",
+                       pruneUnreachableFuns)
+                      ,("revertDivergent",
+                        revertDivergent)
+                      ,("etaReduction",
+                        etaReduction)
+                      ,("pruneDeadOps",
+                        pruneDeadOps)
+                      ,("controlFlowDCE",
+                        controlFlowDCE)
+                      --,("pruneParams",
+                      --  pruneParams)
+                      --,("inlining",
+                      --  inlining)
+                      --,("constantExpansion",
+                      --  constantExpansion)
                      ]
 --Invariant: ms pertains to core
-applyRules ms core =
-  \case [] -> return core
-        rule:rules -> do
-          core' <- rule ms core
-          if core == core'
-            then applyRules ms core rules
-            --Return to iteratively, which recomputes ms via optimize
-            else return core'
+applyRules ms core [] = do
+  unsafePrint "No more rules"
+  return core
+applyRules ms core ((description,rule):rules) = do
+  unsafePrint description
+  core' <- rule ms core
+  unsafePrint $ "done with " ++ description
+  unsafePrint $ "length $ show core': " ++ show (length $ show core')
+  if core == core'
+    then do
+    unsafePrint "It didn't change!"
+    applyRules ms core rules
+    --Return to iteratively, which recomputes ms via optimize
+    else return core'
 
 type OptRule = FrozenModState -> OptCore -> Either OptError OptCore
 --For debugging: apply a list of rules so I can step through the opt process
