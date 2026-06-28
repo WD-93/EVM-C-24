@@ -25,7 +25,7 @@ import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
 
-debugFlag = False
+debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
@@ -70,12 +70,12 @@ optimize core = do
                         pruneDeadOps)
                       ,("controlFlowDCE",
                         controlFlowDCE)
-                      --,("pruneParams",
-                      --  pruneParams)
+                      ,("pruneParams",
+                        pruneParams)
                       --,("inlining",
                       --  inlining)
-                      --,("constantExpansion",
-                      --  constantExpansion)
+                      ,("constantExpansion",
+                        constantExpansion)
                      ]
 --Invariant: ms pertains to core
 applyRules ms core [] = do
@@ -323,8 +323,8 @@ pruneParams ms core = do
       g2live =
         M.unions $ map (\(live,_,gs) -> M.fromSet (const live) gs) $
         M.elems r2live_fs_gs
-  unsafePrint $ "ccs: " ++ show ccs
-  unsafePrint $ "f2live: " ++ show f2live
+  --unsafePrint $ "ccs: " ++ show ccs
+  --unsafePrint $ "f2live: " ++ show f2live
   return core{
     coreDefuns =
         M.mapWithKey (\f (lhs,(ops,branch)) ->

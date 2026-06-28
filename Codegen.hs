@@ -30,6 +30,8 @@ import Control.Arrow ((***))
 import Control.Monad.Except
 import Control.Monad.Writer
 import Data.List (elemIndex,nub)
+--Specing and testing gatherArgs and children:
+import Test.QuickCheck hiding (Fun(..))
 
 debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
@@ -1177,6 +1179,150 @@ runOp opspec = do
   --If the var returned is garbage (which can occur without the op being dead
   --for e.g. CALL), pop it and any garbage under it.
   popGarbage
+
+-- ***************************TESTING******************************************
+--gatherArgs and its child functions are complex enough that their exact
+--desired behavior is not obvious: haphazard adjustment of functions deep in
+--the call stack is likely to do more harm than good without having pushed down
+--a rigorous understanding of what they should do.
+--To ensure correctness (and in particular to squash the bug that's causing
+--nontermination when compiling Test.ArrayInterpreter), I must give them a
+--formal specification and test against it. QuickCheck is a suitable
+--compromise between rigor and usability.
+--Problem: since I have a nontermination bug I need to catch timeouts.
+--Fortunately, QuickCheck provides within microSeconds prop :: Property.
+
+--Between runOps, vars have no duplicates. Stacks of vars are also equivalent
+--under isomorphism. WLOG the stack given to gatherArgs is v1..vN, and so
+--its spec need only receive N.
+--gatherArgs starts with stack stk and must push vs, where vs are from
+--stk. Some subset of S.fromList vs, lus, is last-use (use count = 1).
+--Rather than gen a var -> Bool function, I'll choose a number of last-use
+--vars to select from 0..|S.fromList vs|.
+--The resulting stack is vs ++ rest, where S.fromList rest = S.fromList stk
+--less lus.
+
+--To generate stk, vs and lus together, I need a datatype with its own
+--Arbitrary instance.
+data GatherArgsArg = GAA {
+  gaaN :: Int, --0 <= gaaN <= 17
+  gaaVs :: [Int], --all (1 <= _ <= gaaN)
+  gaaLus :: Set Int --subset of S.fromList gaaVs
+  }
+  deriving (Eq,Ord,Read,Show)
+instance Arbitrary GatherArgsArg where
+  arbitrary = do
+    --Largest stack considered is 17w because that's the deepest SWAP* can
+    --reach; BBs may have longer stacks but if they try to access deeper
+    --vars then compilation will fail and the user needs to restructure their
+    --program.
+    n <- chooseInt (0,17)
+    --Ops have between 0 (PUSH, GAS etc) and 7 (CALL) arguments.
+    len_vs <- chooseInt (0,if n == 0 then 0 else 7)
+    vs <- replicateM len_vs $ chooseInt (1,n)
+    let vset = S.fromList vs
+        num_distinct_vs = S.size vset
+    num_lus <- chooseInt (0,num_distinct_vs)
+    lus <- genSubset num_lus vset
+    return GAA {gaaN = n, gaaVs = vs, gaaLus = lus}
+  --Shrinks: empty GAA, drop bottom half of stack, ...?
+  shrink gaa =
+    GAA 0 [] S.empty : []
+--0 <= n <= |s|, s -> a subset of s with n elements.
+--Opt: if n > |s| div 2, you can instead pick the elements that *aren't* in
+--the subset and complement that.
+genSubset :: Ord a => Int -> Set a -> Gen (Set a)
+genSubset n s =
+  if n > (S.size s `div` 2)
+  then (S.difference s . S.fromList) <$> genSubList (S.size s - n) s
+  else S.fromList <$> genSubList n s
+--Selection without repetition. Algo: for 1..n choose and delete an
+--element from s.
+--Precondition: S.size s >= n.
+--Nice, Data.Set supports elemAt and deleteAt, required to make this
+--efficient.
+genSubList :: Ord a => Int -> Set a -> Gen [a]
+genSubList = go
+  where
+    go 0 _ = return []
+    go n s = do
+      let sz = S.size s
+      ix <- chooseInt (0,sz-1)
+      let a = S.elemAt ix s
+          s' = S.deleteAt ix s
+      (a:) <$> go (n-1) s'
+
+--Decompress the GAA to vs argument and initial stack;
+--set the use count of vars in lus to 1 and the rest to 2 (gatherArgs
+--shouldn't care about use count except whether its 1).
+prop_gatherArgs :: GatherArgsArg -> Bool
+prop_gatherArgs gaa =
+  let stk = map show [1..gaaN gaa]
+      stkset = S.fromList stk
+      vs = map show $ gaaVs gaa
+      lus = S.map show $ gaaLus gaa
+      useCount = M.fromSet (\v ->
+                             if S.member v lus
+                             then 1
+                             else 2
+                           ) stkset
+  in case runTGStack (gatherArgs vs) useCount stk of
+       Left err -> error $ "StackError: " ++ show err
+       --Not caught: bad asm
+       Right ((),stk',_) ->
+         let len_vs = length vs
+             vs' = take len_vs stk'
+             rest = drop len_vs stk'
+             remaining = S.difference stkset lus
+             actual = S.fromList rest
+         in case () of
+              _ | vs' /= vs ->
+                  error $ "vs, vs' mismatch: " ++ show (vs,vs')
+                 --Not caught: correct vars remaining but duplicated
+                | actual /= remaining ->
+                  error $ "rest vars dropped or new added: " ++
+                  show (remaining,actual)
+                | let -> True
+data GatherLastUseArg = GLUA {
+  gluaN :: Int, --0 <= gluaN <= 17
+  gluaVs :: [Int] --all (1 <= _ <= gluaN), no duplicates
+  }
+  deriving (Eq,Ord,Read,Show)
+instance Arbitrary GatherLastUseArg where
+  arbitrary = do
+    --17 is the deepest reachable stack slot (via SWAP16)
+    n <- chooseInt (0,17)
+    --gatherLastUse just swaps vars, so there can be no more last-use vars
+    --than the number of vars on the stack.
+    --Ops have between 0 and 7 stack args 
+    len_vs <- chooseInt (0,min n 7)
+    --vs is an arbitrary permutation of len_vs vars from 1..n
+    vs <- genSubList len_vs $ S.fromList [1..n]
+    return GLUA {gluaN = n, gluaVs = vs}
+--Given stack stk = v1..vN, gatherLastUse vs swaps vs to the ToS.
+--Resulting stack: stk', where stk' has prefix vs, has equal length to stk
+--and the same set of elements.
+prop_gatherLastUse :: GatherLastUseArg -> Bool
+prop_gatherLastUse glua =
+  let n = gluaN glua
+      stk = map show [1..n]
+      vs = map show $ gluaVs glua
+  in case runTGStack (gatherLastUse vs)
+          --I can ignore use count, just need to ensure there's a mapping for
+          --each var.
+          (M.fromList $ zip stk $ repeat 1)
+          stk of
+       Left err -> error $ "StackError: " ++ show err
+       Right ((),stk',_)
+         | let actualPrefix = take (length vs) stk',
+           actualPrefix /= vs ->
+            error $ "Prefix mismatch: " ++ show (vs,actualPrefix,stk')
+         | length stk' /= length stk ->
+            error $ "Stack length mismatch: " ++ show (stk,stk')
+         | S.fromList stk' /= S.fromList stk ->
+            error $ "Var set mismatch: " ++ show (stk,stk')
+         | let -> True
+  
 --First identify which vars are last-use and ensure they're ToS.
 --Naive approach: in order of use. What is the optimal order?
 --Then dup and swap to add rest.
@@ -1397,6 +1543,10 @@ gatherDupSwap lus vs = do
   unsafePrint $ "lus_ix2vs_ix = " ++ show lus_ix2vs_ix
   unsafePrint $ "perms = " ++ show perms
   unsafePrint $ "pperms = " ++ show pperms
+  stk <- getStack
+  unsafePrint $ "stack: " ++ show stk
+  unsafePrint $ "lus: " ++ show lus
+  unsafePrint $ "vs: " ++ show vs
   dupSwap len_lus pperms (drop len_lus $ reverse vs)
     where
       --curr_ix: the index off BP to which we're going to dup
@@ -1414,6 +1564,7 @@ gatherDupSwap lus vs = do
                 dupSwap (curr_ix+1) pperms ws
       --No more permutations to apply, just dup
       dupSwap _ [] ws = mapM_ dupVar ws
+      dupSwap a b c = error $ "unexpected in dupSwap: " ++ show (a,b,c)
 
 --Precondition: each lu is in vs; lu contains no duplicates.
 --For each lu (identified by index), map it to its rightmost index in vs.
@@ -1445,8 +1596,20 @@ getLuIndicesInVs lus vs =
 --This function returns those permutations in ascending order of first index.
 luPermutations :: Map Int Int -> [[Int]]
 luPermutations arr =
-  evalState (concat <$> mapM go1 (M.keys arr)) S.empty
+  evalState
+  (filter ((>1).length) <$> go (M.keys arr))
+  --(concat <$> mapM go1 (M.keys arr))
+  S.empty
   where
+    go :: [Int] -> State (Set Int) [[Int]]
+    go = \case
+      [] -> return []
+      ix:ixs -> do
+        visited <- get
+        if S.member ix visited
+          then go ixs
+          else (:) <$> go2 ix <*> go ixs
+    {-
     go1 :: Int -> State (Set Int) [[Int]]
     go1 ix = do
       visited <- get
@@ -1461,14 +1624,19 @@ luPermutations arr =
             else do
               ixs <- go2 ix'
               return [ix:ixs]
-          _ -> error "!?"
+          _ -> error "!?"-}
     --ix is guaranteed to be part of a nontrivial permutation
+    --Patched to ensure termination on cycle; TODO spec and test.
     go2 :: Int -> State (Set Int) [Int]
     go2 ix = do
-      modify $ S.insert ix
-      (ix:) <$> case M.lookup ix arr of
-                  Nothing -> return []
-                  Just ix' -> go2 ix'
+      visited <- get
+      if S.member ix visited
+        then return []
+        else do
+        modify $ S.insert ix
+        (ix:) <$> case M.lookup ix arr of
+                    Nothing -> return []
+                    Just ix' -> go2 ix'
 --Complete the permutations by identifying the v not from lu which takes the
 --place of the first element. The last element of poss is moved to the first
 --element of the result, indicating when that v is to be dup'd.
