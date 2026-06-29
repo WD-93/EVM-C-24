@@ -25,7 +25,7 @@ import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
