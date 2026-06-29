@@ -1231,7 +1231,7 @@ instance Arbitrary GatherArgsArg where
 --0 <= n <= |s|, s -> a subset of s with n elements.
 --Opt: if n > |s| div 2, you can instead pick the elements that *aren't* in
 --the subset and complement that.
-genSubset :: Ord a => Int -> Set a -> Gen (Set a)
+genSubset :: (Show a, Ord a) => Int -> Set a -> Gen (Set a)
 genSubset n s =
   if n > (S.size s `div` 2)
   then (S.difference s . S.fromList) <$> genSubList (S.size s - n) s
@@ -1241,8 +1241,10 @@ genSubset n s =
 --Precondition: S.size s >= n.
 --Nice, Data.Set supports elemAt and deleteAt, required to make this
 --efficient.
-genSubList :: Ord a => Int -> Set a -> Gen [a]
-genSubList = go
+genSubList :: (Show a, Ord a) => Int -> Set a -> Gen [a]
+genSubList n s
+  | n > S.size s = error $ "badarg genSubList " ++ show (n,s)
+  | let = go n s
   where
     go 0 _ = return []
     go n s = do
@@ -1322,6 +1324,97 @@ prop_gatherLastUse glua =
          | S.fromList stk' /= S.fromList stk ->
             error $ "Var set mismatch: " ++ show (stk,stk')
          | let -> True
+--gatherDupSwap lus vs:
+--stk = lus ++ rest; stk contains no duplicates and is WLOG v1..vN.
+--P: reverse $ nub (filter (in lus) $ reverse vs) == lus, i.e. the order of
+--first uses of each lu <- lus in vs is the same as in lus.
+--Generating vs: starting from the right, emit either next lu, a non-lu or
+--one of the previously seen lus. How to ensure that gives good coverage...?
+data GatherDupSwapArgs = GDSA {
+  gdsaN :: Int, --stack len, >= 0
+  gdsaLusN :: Int, --lusN <= n
+  gdsaVs :: [Int] --length >= lusN, satisfies P
+  }
+  deriving (Eq,Ord,Read,Show)
+instance Arbitrary GatherDupSwapArgs where
+  arbitrary = do
+    n <- chooseInt (0,17)
+    lusN <- chooseInt (0,min n 7)
+    vs <- genGDSAVs n lusN
+    return $ GDSA n lusN vs
+--Making the result more "diverse": pick len_vs >= lusN. From 0..len_vs-1,
+--choose indices for the rightmost instance of each lu.
+--Sort them and map to lu; place random valid vars (from non-lu and lus to
+--the right) at the intermediate indices.
+--By diverse, I don't mean representative (most cases in a uniformly random
+--distr may be uninteresting) but rather distinct wrt interesting properties,
+--and thus likely to reach more code paths.
+genGDSAVs :: Int -> Int -> Gen [Int]
+genGDSAVs n lusN = do
+  --Pick valid len_vs >= lusN
+  len_vs <- if n == 0
+            then return 0 --no lus, no non-lus means |vs| == 0
+            else chooseInt (lusN, 7)
+  --Bug: if nonLus is empty and the rightmost lu isn't placed last,
+  --select can't generate anything. Enforcing that rightmost lu is placed
+  --last if nonLus is empty:
+  ixLus <- genIxLus len_vs
+  reverse <$> go S.empty (reverse ixLus) len_vs
+  where
+    genIxLus len_vs = do
+      --Choose indices for rightmost instance of each lu
+      ixs <- if S.null nonLus
+             then do
+        prefix <- genSubList (lusN-1) $ S.fromList [1..len_vs-1]
+        return $ len_vs : prefix
+             else genSubList lusN $ S.fromList [1..len_vs]
+      --Sort and associate with lus
+      return $ zip (sort ixs) [1..lusN]
+    --for ix = len_vs .. 1:
+    -- if ix == the top (ix,lu):
+    --  emit lu and pop ixLus
+    --  lusSeen += lu
+    -- else: select uniformly from lusSeen and nonLus, emit
+    go lusSeen ixLus ix
+      | ix == 0 = return []
+      | (ix',lu):rest <- ixLus,
+        ix == ix' = (lu:) <$> go (S.insert lu lusSeen) rest (ix-1)
+      | let = do
+              v <- select lusSeen nonLus
+              (v:) <$> go lusSeen ixLus (ix-1)
+    nonLus = S.fromList [lusN+1..n]
+    --selects uniformly from the union of two non-intersecting sets
+    --Precondition: the union is not empty
+    select a b = do
+      let sza = S.size a
+          szb = S.size b
+          total = sza + szb
+      ix <- chooseInt (0,total-1)
+      let Just x = if ix < sza
+                   then maybeElemAt ix a
+                   else maybeElemAt (ix-sza) b
+      return x
+--P (the genDSAVs correctness property) is complex enough it's worth testing.
+prop_GDSA :: GatherDupSwapArgs -> Bool
+prop_GDSA GDSA {gdsaN = n, gdsaLusN = lusN, gdsaVs = vs} =
+  and [n >= 0,
+       lusN <= n,
+       --length vs >= lusN is implicit in this cond
+       reverse (nub $ filter (\v -> v >= 1 && v <= lusN) $ reverse vs)
+       == [1..lusN]
+      ]
+--Getting Set.elemAt: index out of range in prop_GDSA
+maybeElemAt :: Int -> Set a -> Maybe a
+maybeElemAt ix s =
+  if ix < 0 || ix >= S.size s
+  then Nothing
+  else Just $ S.elemAt ix s
+  
+--gatherDupSwap vs spec:
+--Pre: stk = lus ++ rest, GDSA is valid.
+--Post: stk = vs ++ rest
+prop_gatherDupSwap :: GatherDupSwapArgs -> Bool
+prop_gatherDupSwap gdsa = error "todo"
   
 --First identify which vars are last-use and ensure they're ToS.
 --Naive approach: in order of use. What is the optimal order?
