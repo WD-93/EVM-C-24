@@ -25,7 +25,7 @@ import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
 
-debugFlag = False
+debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
@@ -58,6 +58,7 @@ iteratively f = go
 --For now I'll redo AI whenever a rule fires rather than try to be clever.
 optimize :: OptCore -> Either OptError OptCore
 optimize core = do
+  unsafePrint "Performing AI!"
   ms <- ai core ? OptAIError
   unsafePrint "Starting opt!"
   applyRules ms core [("pruneUnreachableFuns",
@@ -72,8 +73,8 @@ optimize core = do
                         controlFlowDCE)
                       ,("pruneParams",
                         pruneParams)
-                      --,("inlining",
-                      --  inlining)
+                      ,("inlining",
+                        inlining)
                       ,("constantExpansion",
                         constantExpansion)
                      ]
