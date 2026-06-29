@@ -33,7 +33,7 @@ import Data.List (elemIndex,nub)
 --Specing and testing gatherArgs and children:
 import Test.QuickCheck hiding (Fun(..))
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 --At long last, the Core optimizer is good enough that it's worth generating
@@ -1414,7 +1414,21 @@ maybeElemAt ix s =
 --Pre: stk = lus ++ rest, GDSA is valid.
 --Post: stk = vs ++ rest
 prop_gatherDupSwap :: GatherDupSwapArgs -> Bool
-prop_gatherDupSwap gdsa = error "todo"
+prop_gatherDupSwap GDSA {gdsaN = n, gdsaLusN = lusN, gdsaVs = nvs} =
+  let stk = map show [1..n]
+      lus = take lusN stk
+      rest = drop lusN stk
+      vs = map show nvs
+  in case runTGStack (gatherDupSwap lus vs) (M.fromList $ zip stk [1,1..])stk of
+       --If the stack is too large, that's the programmer's fault.
+       --Problem: this could obscure misuse of dup and swap.
+       Left (CGFE (DupOutOfRange {})) -> True
+       Left (CGFE (SwapOutOfRange {})) -> True
+       Left err -> error $ "StackError: " ++ show err
+       Right ((),stk',_) ->
+         if stk' == vs ++ rest
+         then True
+         else error $ "(stk',vs,rest) = " ++ show (stk',vs,rest)
   
 --First identify which vars are last-use and ensure they're ToS.
 --Naive approach: in order of use. What is the optimal order?
