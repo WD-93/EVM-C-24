@@ -1254,10 +1254,18 @@ genSubList n s
           s' = S.deleteAt ix s
       (a:) <$> go (n-1) s'
 
+--gatherArgs may throw CGFE Dup/SwapOutOfRange {} due to programmer error;
+--I want to discard such test cases rather than treat them as passing ones.
+--Note: dup/swap may also fail due to misuse in the compiler.
+outOfRange :: StackError -> Bool
+outOfRange = \case
+  CGFE (DupOutOfRange {}) -> True
+  CGFE (SwapOutOfRange {}) -> True
+  _ -> False
 --Decompress the GAA to vs argument and initial stack;
 --set the use count of vars in lus to 1 and the rest to 2 (gatherArgs
 --shouldn't care about use count except whether its 1).
-prop_gatherArgs :: GatherArgsArg -> Bool
+prop_gatherArgs :: GatherArgsArg -> Property
 prop_gatherArgs gaa =
   let stk = map show [1..gaaN gaa]
       stkset = S.fromList stk
@@ -1268,8 +1276,9 @@ prop_gatherArgs gaa =
                              then 1
                              else 2
                            ) stkset
-  in case runTGStack (gatherArgs vs) useCount stk of
-       Left err -> error $ "StackError: " ++ show err
+  in case runTGStack (gatherArgs vs) useCount stk of      
+       Left err -> not (outOfRange err) ==>
+                   (error ("StackError: " ++ show err) :: Bool)
        --Not caught: bad asm
        Right ((),stk',_) ->
          let len_vs = length vs
@@ -1284,7 +1293,7 @@ prop_gatherArgs gaa =
                 | actual /= remaining ->
                   error $ "rest vars dropped or new added: " ++
                   show (remaining,actual)
-                | let -> True
+                | let -> True ==> True
 data GatherLastUseArg = GLUA {
   gluaN :: Int, --0 <= gluaN <= 17
   gluaVs :: [Int] --all (1 <= _ <= gluaN), no duplicates
@@ -1683,8 +1692,27 @@ gatherDupSwap lus vs = do
 --Perhaps not, but it's guaranteed to only contain mappings for lus, which is
 --useful for getting the permutations.
 --TODO opt: since the map is dense, use an ST array and freeze it.
+--Precondition: the rightmost instance of each lu occurs in the same order as
+--lus.
+--That means I can simplify and optimize this to use a list rather than map.
 getLuIndicesInVs :: [String] -> [String] -> Map Int Int
 getLuIndicesInVs lus vs =
+  M.fromList $ go 0 0 (reverse vs) $ reverse lus
+  where
+    go vsix lusix vs lus =
+      case lus of
+        --No more lus to emit mappings for
+        [] -> []
+        lu:lus' ->
+          case vs of
+            [] -> error "!?"
+            v:vs' ->
+              if v == lu
+              --Emit mapping
+              then (lusix,vsix) : go (vsix+1) (lusix+1) vs' lus'
+              --Not a rightmost lu, skip
+              else go (vsix+1) lusix vs' lus
+  {-
   let lu2ix = M.fromList $ zip (reverse lus) [0..]
   in go lu2ix $ zip (reverse vs) [0..]
   where
@@ -1696,6 +1724,7 @@ getLuIndicesInVs lus vs =
           Nothing -> go lu2ix rest
           Just ixLus -> M.insert ixLus ixVs $
             go (M.delete v lu2ix) rest
+-}
 
 --Each last-use var is moved >= 0 steps left; those that are moved > 0 steps
 --can be partitioned into permutations, each of which consists of a
