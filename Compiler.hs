@@ -1,5 +1,4 @@
-{-# LANGUAGE LambdaCase,
- ImplicitParams #-} --for debugging
+{-# LANGUAGE LambdaCase #-}
 module Compiler where
 
 --Imports the modules for each step, handles running the pipeline
@@ -245,7 +244,7 @@ printOffendingAI :: Either CompilerError FrozenModState
 printOffendingAI =
   case pipeline2opt "import Test.Shrinking" of
     Left (OptError (ThrowOffendingProgram core)) ->
-      let ?dbg = True in ai_ core ? AIError
+      ai_ True core ? AIError
     other -> error $ show other
 {-
 pipeline2mono str = do

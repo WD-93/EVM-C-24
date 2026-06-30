@@ -1,6 +1,5 @@
 {-# LANGUAGE RankNTypes, LambdaCase, FlexibleContexts,
- StandaloneDeriving, FlexibleInstances, PatternSynonyms,
- ImplicitParams #-} --for testing
+ StandaloneDeriving, FlexibleInstances, PatternSynonyms #-} --for testing
 --MonadError AIError requires flexible contexts
 module Opt.AI where
 
@@ -205,33 +204,35 @@ data ArgOrRet = Arg | Ret
 
 --Putting it all together:
 ai :: OptCore -> Either AIError FrozenModState
-ai = let ?dbg = False in ai_
---Adding a Boolean implicit param in order to print in AI only when interpreting
+ai = ai_ False
+--Adding a Boolean param in order to print in AI only when interpreting
 --the offending program Test.Shrinking for which AI diverges.
-ai_ :: (?dbg :: Bool) => OptCore -> Either AIError FrozenModState
-ai_ core = runAI $ runExceptT $ aiModule core
+ai_ :: Bool -> OptCore -> Either AIError FrozenModState
+ai_ dbg core = do
+  unsafePrint' dbg "Entering AI monad:"
+  runAI $ runExceptT $ aiModule_ dbg core
 
 --The mfix problem is solved; next step: define the initial state.
 aiModule :: (AIC m, Concurrent m, MonadError AIError m) =>
   OptCore -> m FrozenModState
-aiModule = let ?dbg = False in aiModule_
-aiModule_ :: (?dbg :: Bool, AIC m, Concurrent m, MonadError AIError m) =>
-  OptCore -> m FrozenModState
-aiModule_ core = do
-  unsafePrint' ?dbg "Creating initialModState"
+aiModule = aiModule_ False
+aiModule_ :: (AIC m, Concurrent m, MonadError AIError m) =>
+  Bool -> OptCore -> m FrozenModState
+aiModule_ dbg core = do
+  unsafePrint' dbg "Creating initialModState"
   initial <- initialModState core
   --The meat of the logic: the equation defining module state
-  unsafePrint' ?dbg "Creating AI equation"
-  final <- aiEquation core initial
+  unsafePrint' dbg "Creating AI equation"
+  final <- aiEquation_ dbg core initial
   --Loop it back to itself to make it recursive
   --Bug: the initial values of final are ofc bottom, e.g. reachable is False.
   --If they're written to the values of initial before propagation of
   --values >= bottom from initial, that incorrectly sets the entire circuit
   --to bottom. Rather than naively writing in unsafeWire, the initial
   --must be LUB'd with final.
-  unsafePrint' ?dbg "Looping it back"
+  unsafePrint' dbg "Looping it back"
   unsafeWireModState core final initial
-  unsafePrint "Starting the scheduler!"
+  unsafePrint' dbg "Starting the scheduler!"
   scheduler
   freezeModState initial
 
@@ -535,25 +536,35 @@ unsafeWireAV av1 av2 = do
 --Throws an AIError if a malformed Core op is encountered.
 aiEquation :: (AIC m, MonadError AIError m) =>
   OptCore -> ModState (S m) -> m (ModState (S m))
-aiEquation core ms = do
+aiEquation = aiEquation_ False
+aiEquation_ :: (AIC m, MonadError AIError m) =>
+  Bool -> OptCore -> ModState (S m) -> m (ModState (S m))
+aiEquation_ dbg core ms = do
   let fim = funInfo ms
   --First: define preds in terms of succs
   let succsMap = M.map succs fim
       badSuccsMap = M.map badFunSuccs fim
+  unsafePrint' dbg "predsMap"
   predsMap <- runCB $ invertLabeledGraph succsMap
+  unsafePrint' dbg "badPredsMap"
   badPredsMap <- runCB $ invertLabeledGraph badSuccsMap
   --Create the codeG->mentioned labels map; error immediately if it's
   --malformed.
+  unsafePrint' dbg "c2ls"
   c2ls <- case codeG2Labels core of
             Left err -> error $ "Compiler error in codeG2Labels: " ++ show err
             Right c2ls -> return c2ls
   --Need to map funInfo with keys to get the key for predsMap
   let f_fis = M.toList fim
+  unsafePrint' dbg $ "Forcing map structure of fim' args: " ++
+    show (M.size c2ls, M.size predsMap, M.size badPredsMap)
+  unsafePrint' dbg "fim'"
   fim' <- flip runReaderT (core,ms) $
           M.fromList <$>
-          mapM (\(f,fi) -> (,) f <$> fiEquation c2ls predsMap badPredsMap
+          mapM (\(f,fi) -> (,) f <$> fiEquation_ dbg c2ls predsMap badPredsMap
                            (f,fi))
           f_fis
+  unsafePrint' dbg "fim' done!"
   return MS {funInfo = fim'}
 
 --FunInfo equation:
@@ -573,27 +584,42 @@ fiEquation :: (AIC m, MonadError AIError m,
               Map FunVar (Chan (S m) (Map FunVar (Int,Int))) ->
               (FunVar, FunInfo (S m)) ->
               m (FunInfo (S m))
-fiEquation c2ls predsMap badPredsMap (f,fi) = do
+fiEquation = fiEquation_ False
+fiEquation_ :: (AIC m, MonadError AIError m,
+               MonadReader (OptCore, ModState (S m)) m) =>
+               Bool ->
+              Map FunVar AbVar -> --codeG => labels
+              Map FunVar (Chan (S m) (Map FunVar BranchType))  ->
+              Map FunVar (Chan (S m) (Map FunVar (Int,Int))) ->
+              (FunVar, FunInfo (S m)) ->
+              m (FunInfo (S m))
+fiEquation_ dbg c2ls predsMap badPredsMap (f,fi) = do
   (core,ms) <- ask
+  unsafePrint' dbg $ "fiEq: " ++ f
+  unsafePrint' dbg "fiEq.reachable"
   reachable <- eqReachable ms fi
   let Just ps = M.lookup f predsMap
       Just bps = M.lookup f badPredsMap
+  unsafePrint' dbg "fiEq.fiEqAbVars"
   (lhsavs,bi,mpassed,ss,bss) <-
     case () of
       _ | Just ((wvs,_,svs),(ops,branch)) <- M.lookup f $ coreDefuns core -> do
+            unsafePrint' dbg "fieq.fiEqAbVarsFun"
             (lhs,v2abv,ss,bss) <-
-              fiEqAbVarsFun c2ls wvs svs ops branch ms fi ps bps
+              fiEqAbVarsFun_ dbg c2ls wvs svs ops branch ms fi ps bps
             --Bug: fiEqLiveFun treated wvs, svs as the vars of passed, but
             --they're actually from the lhs.
             --Adding passed Vars mvps:
             let mvps = branchPassed branch
             --Maybe live of passed
+            unsafePrint' dbg "fieq.mlps"
             mlps <- case branchPassed branch of
                       Just (wps,sps) ->
                         Just <$> livePassed (length wps, length sps) ss bss
                       _ -> return Nothing
             let demand = getDemandFromBranch mlps branch
-            
+
+            unsafePrint' dbg "fieq.fiEqLiveFun"
             (lhsavs,bi,mpassed) <- fiEqLiveFun wvs svs mvps ops demand
               {-branch-} fi mlps v2abv
             return (lhsavs,bi,mpassed,ss,bss)
@@ -604,6 +630,7 @@ fiEquation c2ls predsMap badPredsMap (f,fi) = do
             (wavs,savs,passed) <- fiEqLiveJT wlen slen fs lps lhs
             return ((wavs,savs),IsJT, Just passed,ss,bss)
         | otherwise -> error "!?"
+  unsafePrint' dbg "fiEq.done"
   return FI {
     fiReachable = reachable,
     fiLHS = lhsavs,
@@ -642,12 +669,15 @@ fiEqAbVars ei_fun_jt ms fi ps bps =
         (lhs,ss,bss) <- fiEqAbVarsJT wlen slen fs ms ps bps
         return (lhs,Nothing,ss,bss)
 -}
-fiEqAbVarsFun c2ls ws ss ops branch ms fi ps bps = do
+fiEqAbVarsFun_ dbg c2ls ws ss ops branch ms fi ps bps = do
   --Allocate lhs abvar chans
+  unsafePrint' dbg "feavf.lhsAbVars"
   lhs@(wchs,schs) <- lhsAbVars ms (length ws, length ss) ps bps
   --Assign them to their corresponding Vars
   let initVars = M.fromList $ zip (ws ++ ss) (wchs ++ schs)
-  finalVars <- aiOps c2ls ops initVars
+  unsafePrint' dbg "feavf.aiOps"
+  finalVars <- aiOps_ dbg c2ls ops initVars
+  unsafePrint' dbg "feavf.aiSuccs"
   (ss,bss) <- aiSuccs fi finalVars branch 
   return (lhs,finalVars,ss,bss)
 fiEqAbVarsJT wlen slen fs ms ps bps = do
@@ -1017,15 +1047,17 @@ apply(lhs,op,cr) =
  error if arities don't match
  opAI (arity lhs) f cr
 -}
-aiOps :: (AIC m, MonadError AIError m,
+aiOps_ :: (AIC m, MonadError AIError m,
           MonadReader (OptCore, ModState (S m)) m) =>
+         Bool -> --dynamic debug flag
   Map FunVar AbVar -> --codeG => labels
   Map Var (Value,OpE) -> Map Var (Chan (S m) AbVar) ->
   m (Map Var (Chan (S m) AbVar))
-aiOps c2ls ops initMap =
+aiOps_ dbg c2ls ops initMap =
   execStateT (mapM_ explore $ M.keys ops) initMap
   where
     explore v = do
+      unsafePrint' dbg $ "aiOps.explore " ++ show v
       mch <- gets (M.lookup v)
       case mch of
         Just v -> return v
