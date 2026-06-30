@@ -1,5 +1,6 @@
 {-# LANGUAGE RankNTypes, LambdaCase, FlexibleContexts,
- StandaloneDeriving, FlexibleInstances, PatternSynonyms #-} --for testing
+ StandaloneDeriving, FlexibleInstances, PatternSynonyms,
+ ImplicitParams #-} --for testing
 --MonadError AIError requires flexible contexts
 module Opt.AI where
 
@@ -204,14 +205,23 @@ data ArgOrRet = Arg | Ret
 
 --Putting it all together:
 ai :: OptCore -> Either AIError FrozenModState
-ai core = runAI $ runExceptT $ aiModule core
+ai = let ?dbg = False in ai_
+--Adding a Boolean implicit param in order to print in AI only when interpreting
+--the offending program Test.Shrinking for which AI diverges.
+ai_ :: (?dbg :: Bool) => OptCore -> Either AIError FrozenModState
+ai_ core = runAI $ runExceptT $ aiModule core
 
 --The mfix problem is solved; next step: define the initial state.
 aiModule :: (AIC m, Concurrent m, MonadError AIError m) =>
   OptCore -> m FrozenModState
-aiModule core = do
+aiModule = let ?dbg = False in aiModule_
+aiModule_ :: (?dbg :: Bool, AIC m, Concurrent m, MonadError AIError m) =>
+  OptCore -> m FrozenModState
+aiModule_ core = do
+  unsafePrint' ?dbg "Creating initialModState"
   initial <- initialModState core
   --The meat of the logic: the equation defining module state
+  unsafePrint' ?dbg "Creating AI equation"
   final <- aiEquation core initial
   --Loop it back to itself to make it recursive
   --Bug: the initial values of final are ofc bottom, e.g. reachable is False.
@@ -219,7 +229,9 @@ aiModule core = do
   --values >= bottom from initial, that incorrectly sets the entire circuit
   --to bottom. Rather than naively writing in unsafeWire, the initial
   --must be LUB'd with final.
-  unsafeWireModState core final initial 
+  unsafePrint' ?dbg "Looping it back"
+  unsafeWireModState core final initial
+  unsafePrint "Starting the scheduler!"
   scheduler
   freezeModState initial
 

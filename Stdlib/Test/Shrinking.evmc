@@ -1,0 +1,28 @@
+//Manually shrinking ArrayInterpreter to find the cause of the inlining issue.
+//Removing the while around the case causes it to terminate!
+//Emptying the body causes it to compile to a revert very quickly.
+
+//A port of the monomorphic ArrayInterpreter.evmc, found in the Source dir.
+
+import Prelude;
+
+//Difference: each instruction is now 2 bytes long.
+data Instr = {
+ Load Byte;
+ Add Byte;
+ Return
+ };
+dispatch : (Byte,Ptr Calldata Instr) -> Byte;
+dispatch (accum, pc) := {
+ //Annoyance: since pattern matching is mutating all case vars must be declared
+ var b; 
+ while (True) {
+  case *pc of {
+   Load accum => {};
+   Add b => {};//accum+=b;
+   Return => return accum
+   };
+   pc++
+ }
+};
+main () := returnValue (dispatch(0,null()))

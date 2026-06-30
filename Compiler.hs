@@ -1,4 +1,5 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase,
+ ImplicitParams #-} --for debugging
 module Compiler where
 
 --Imports the modules for each step, handles running the pipeline
@@ -44,7 +45,8 @@ import Core.Convert (structured2core, CoreError(..))
 import Core.SSA (ssa, SSAError(..),OptCore(..))
 --Abstract interpretation (the analysis used when optimizing)
 import Opt.AI (ai, AIError(..),FrozenModState,ModState_(..),FunInfo_(..),
-              BodyInfo_(..),AVar_(..))
+              BodyInfo_(..),AVar_(..),
+              ai_) --for debugging
 --Optimization Core => Core
 import Opt.Opt (opt,OptError(..)
                 --For debugging:
@@ -236,6 +238,15 @@ printasm str =
   case pipeline2asm str of
     Left err -> error $ show err
     Right asms -> mapM_ (putStrLn . prettyAsm) asms
+
+--Optimizes Test.Shrinking until the state at which AI diverges, then runs AI
+--with dynamic print flag enabled.
+printOffendingAI :: Either CompilerError FrozenModState
+printOffendingAI =
+  case pipeline2opt "import Test.Shrinking" of
+    Left (OptError (ThrowOffendingProgram core)) ->
+      let ?dbg = True in ai_ core ? AIError
+    other -> error $ show other
 {-
 pipeline2mono str = do
   m <- pipeline2typechecked str

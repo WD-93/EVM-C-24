@@ -31,6 +31,7 @@ unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
 data OptError = OptAIError AIError
+              | ThrowOffendingProgram OptCore
   deriving (Eq,Ord,Read,Show)
 --I'll need to repeatedly run ai.
 opt :: OptCore -> Either OptError OptCore
@@ -80,6 +81,8 @@ optimize core = do
                         constantExpansion)
                      ]
 --Invariant: ms pertains to core
+applyRules :: FrozenModState -> OptCore -> [(String,OptRule)] ->
+  Either OptError OptCore
 applyRules ms core [] = do
   unsafePrint "No more rules"
   return core
@@ -92,7 +95,7 @@ applyRules ms core ((description,rule):rules) = do
   let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
   if len == 20947
-    then mapM_ unsafePrint $ showByPrefix False "" core'
+    then Left $ ThrowOffendingProgram core'
     else return ()
   if core == core'
     then do
