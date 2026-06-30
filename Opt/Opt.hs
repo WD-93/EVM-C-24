@@ -94,6 +94,10 @@ applyRules ms core ((description,rule):rules) = do
   --I'll print it then to have a look at what's going on!
   let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
+  --Throwing the last program before constantExpansion introduces a cycle:
+  if len == 18831
+    then Left $ ThrowOffendingProgram core'
+    else return ()
   if len == 20947
     then Left $ ThrowOffendingProgram core'
     else return ()
