@@ -15,6 +15,7 @@ import AST.DTs (pattern Memory, pattern UInt)
 import Opt.AbVar --for control flow DCE, CE
 import Opt.CC --for param DCE
 import Util (unsafePrint')
+import Pretty (showByPrefix) --for debugging
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -86,7 +87,13 @@ applyRules ms core ((description,rule):rules) = do
   unsafePrint description
   core' <- rule ms core
   unsafePrint $ "done with " ++ description
-  unsafePrint $ "length $ show core': " ++ show (length $ show core')
+  --Nasty trick: I know it fails for Test.Shrinking when len = 20947.
+  --I'll print it then to have a look at what's going on!
+  let len = (length $ show core')
+  unsafePrint $ "length $ show core': " ++ show len
+  if len == 20947
+    then mapM_ unsafePrint $ showByPrefix False "" core'
+    else return ()
   if core == core'
     then do
     unsafePrint "It didn't change!"
