@@ -26,7 +26,7 @@ import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 --Opt errors are compiler errors
@@ -92,7 +92,7 @@ applyRules ms core ((description,rule):rules) = do
   unsafePrint $ "done with " ++ description
   --Nasty trick: I know it fails for Test.Shrinking when len = 20947.
   --I'll print it then to have a look at what's going on!
-  let len = (length $ show core')
+  {-let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
   --Throwing the last program before constantExpansion introduces a cycle:
   if len == 18831
@@ -100,7 +100,7 @@ applyRules ms core ((description,rule):rules) = do
     else return ()
   if len == 20947
     then Left $ ThrowOffendingProgram core'
-    else return ()
+    else return ()-}
   if core == core'
     then do
     unsafePrint "It didn't change!"
@@ -935,9 +935,12 @@ constantExpansion ms core =
                    _ -> True) $
              M.mapMaybe abv2ser v2abv
            --For each v = k, map v to a new v' and its k
+           --Bug: the set of names passed to evalState was too small
+           --due to only including small constant rather than all op-bound
+           --vars. That led to name collisions.
            v2v'k = evalState (sequence $ M.mapWithKey
                                (\v k -> (,) <$> allocVar v <*> return k) v2k) $
-                   S.fromList $ map nameOfVar $ ws ++ ss ++ M.keys v2k
+                   S.fromList $ map nameOfVar $ ws ++ ss ++ M.keys v2abv
            --for each v -> lhs=op (ws,ss) in ops:
            -- for each w in ws:
            --  if (v',k) = v2v'k[w]:
