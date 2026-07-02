@@ -23,8 +23,9 @@ import Control.Monad.State
 import Stdlib.ImplicitImports (stdlib)
 --CST -> AST
 import AST.DTs (Module(..))
-import Import (sourceToBucket,createBucket,deconflictBucket,
-               PreModule(..),
+import DeclBucket (ModName(),Located(),Loc(),D())
+import Import (sourceToBucket,declsToBucket,createBucket,deconflictBucket,
+               PreModule(..),Namespace(),PMDynamicThing(..),
                ConflictingDecls(..),CreateBucketError(..))
 import Desugar.DTs (DError(..))
 import Desugar.Desugar (desugar)
@@ -62,12 +63,18 @@ import Opt.Opt (opt,OptError(..)
 --Core => asm => bytecode
 import Codegen (codegen,
                 codegen', --returns asm, exported for debugging
+                CompiledContract(..),
                 CodegenError(..),CodegenFunError(..))
 import Asm
 --Poor man's pretty-printing for debugging
 import Pretty
 --Testing AI
 import Opt.AI.Test
+
+--For recursive compilation; Compiler now needs to do more than glue together
+--other modules.
+import Control.Monad (forM)
+import Data.Char (chr)
 
 data CompilerError = ParserError String
                    | CreateBucketError CreateBucketError
@@ -80,6 +87,7 @@ data CompilerError = ParserError String
                    | AIError AIError --Only thrown in test pipeline2ai
                    | OptError OptError
                    | CodegenError CodegenError
+                   | InRecursiveCompile Loc CompilerError
                    {-
                    | MonoError MonoError
                    | SizeofError SizeofError --CycleInSizeof [(Name,[T])]
@@ -176,6 +184,62 @@ pureParams str = do
   return CompilerParams{cpModule = m, cpFlags = M.empty}
 -}
 
+--Contract objects must be recursively compiled by a single compile function.
+--compile takes a Namespace; loading modules into it is handled earlier.
+--FW: add a compiler flags argument and pragmas.
+--Contracts become a dynthing in PreModule, the deconflicted declbucket.
+--They should be converted to code globals, which are already representable
+--dynthings; that means recursive compilation can be ::
+--PreModule -> Either CompilerError PreModule!
+--Precondition: mnm is in the namespace, otherwise compile is being misused.
+compile :: Namespace -> ModName -> Either CompilerError [Int]
+compile namespace mnm = do
+  dbWithDeps <- createBucket namespace mnm ? CreateBucketError
+  --PreModule with contract decls:
+  pm <- deconflictBucket dbWithDeps ? ConflictingDecls
+  --Contract decls converted to string globals:
+  pm' <- recursiveCompile namespace pm
+  --That can be handled by the existing pipeline
+  m <- desugar pm' ? DesugarError
+  let um = unshadow m
+  tm <- typecheck um ? TypeCheckError
+  s <- compileStructured tm ? FusedError
+  core <- structured2core s ? CoreError
+  ssacore <- ssa core ? SSAError
+  optcore <- opt ssacore ? OptError
+  bytecode <- ccText <$> (codegen optcore ? CodegenError)
+  return bytecode
+
+--Contract object compilation helper function.
+--Converts decls to a bucket, gives it module name Main, adds it to the given
+--namespace, then compiles it with compile.
+--Footgun: that shadows Main.
+--Also adds the contract's location info so you can see which one fails.
+compileContractObject :: Namespace -> Located [DeclBucket.D] ->
+  Either CompilerError [Int]
+compileContractObject namespace (ds,loc) = do
+  let db = declsToBucket ["Main"] ds
+      ns' = M.insert ["Main"] db namespace
+  compile ns' ["Main"] ? InRecursiveCompile loc
+
+--Converts a PreModule with contract declarations to one without by turning
+--them into code globals.
+--Since PMGlobal contains an undesugared initializer (P.E), that means I must
+--convert a bytestring to an undesugared string only to desugar it back in
+--Desugar.SEP... TODO fix.
+recursiveCompile :: Namespace -> PreModule -> Either CompilerError PreModule
+recursiveCompile namespace pm = do
+  let dts = pmDynThings pm
+  dts' <- forM dts (\case
+                       PMContract (ds,loc) -> do
+                         bs <- compileContractObject namespace (ds,loc)
+                         return $ PMGlobal
+                           ((Co, Just $ P.String loc $ map chr bs),
+                            loc)
+                       dt -> return dt
+                   )
+  return pm{pmDynThings = dts'}
+  
 --New workflow for the test pipeline:
 --The given string is parsed, converted to a bucket and given the module name
 --Main using Import.sourceToBucket. Main is added to the stdlib namespace.

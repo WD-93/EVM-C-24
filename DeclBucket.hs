@@ -120,6 +120,18 @@ deriving instance Lift HexInteger
 deriving instance Lift UIdent
 deriving instance Lift a => Lift (CASE' a)
 deriving instance Lift a => Lift (VarBind' a)
+--D' instance to support contract objects
+deriving instance Lift a => Lift (D' a)
+deriving instance Lift a => Lift (ModuleName' a)
+deriving instance Lift a => Lift (GlobalRegion' a)
+deriving instance Lift a => Lift (DataRHS' a)
+deriving instance Lift a => Lift (UnboxedRHS' a)
+deriving instance Lift a => Lift (DataCon' a)
+deriving instance Lift a => Lift (DCA' a)
+deriving instance Lift a => Lift (RecordField' a)
+deriving instance Lift a => Lift (ConArgs' a)
+deriving instance Lift a => Lift (ConTag' a)
+
 --What possible conflicts are there?
 --Tysigs and kind sigs form their own maps; for datatypes a kind sig is
 --optional.
@@ -127,6 +139,7 @@ deriving instance Lift a => Lift (VarBind' a)
 data DynamicThing = DTDefun (E,S)
                   | DTInstance (T,E,S)
                   | DTGlobal (Region, Maybe E)
+                  | DTContract [D]
   deriving (Eq,Ord,Read,Show,Lift)
 --Datatypes and tysyns
 --Might as well Locate everything
@@ -192,6 +205,7 @@ declToADecls = \case
   --DT tags
   Tag loc ca t ct -> tagToADecls loc ca t ct
   Import loc m -> [AImport (parseModuleName m,loc)]
+  Contract loc (Ident nm) ds -> binding ADynThing loc nm $ DTContract ds
 binding :: (B a -> ADecl) -> Loc -> Name -> a -> [ADecl]
 binding con loc nm v = [con (nm,(v,loc))]
 --data TyCon args = { --Static thing data binding, tag field

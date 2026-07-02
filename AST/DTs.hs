@@ -21,6 +21,12 @@ type Name = String
 --distinction between primops and proper functions is handled in FIR
 --(functional IR)
 data E = EInteger Integer
+       --A direct representation of bytestrings; contract objects are
+       --converted to byte arrays which may be as large as 24kB, so the old
+       --approach of EArray (fromWord ...) would be too inefficient.
+       --Strings should desugar to StrLit, enabling them to be typechecked in
+       --O(1).
+       | StrLit Int [Int]
        --includes primops, &&, ||, coerce, unsafeCoerce and constructors
        --(including tuples), *_, _[_] and .field
 

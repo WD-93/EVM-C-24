@@ -30,12 +30,14 @@ sourceToBucket :: ModName -> String -> Either String --parse error
                   DeclBucket
 sourceToBucket mnm str = do
   Module _loc ds <- parseModule str
-  let
-    lds = map (addModName mnm) ds
-    ads = lds >>= declToADecls
-    dbs = map adeclToBucket ads
-    db = foldr unionBucket emptyBucket dbs
-  return db
+  let lds = map (addModName mnm) ds
+  return $ declsToBucket mnm lds
+declsToBucket :: ModName -> [DeclBucket.D] -> DeclBucket
+declsToBucket mnm lds =
+  let ads = lds >>= declToADecls
+      dbs = map adeclToBucket ads
+      db = unionBuckets dbs
+  in db
 --Every module has a unique name Foo.Bar.Baz; a mapping from module names to
 --DeclBuckets forms a Namespace.
 type Namespace = Map ModName DeclBucket
@@ -115,6 +117,7 @@ data PreModule = PreModule {
 data PMDynamicThing = PMDefun (Located (E,S))
                     | PMInstances (Set (Located (T,E,S)))
                     | PMGlobal (Located (Region, Maybe E))
+                    | PMContract (Located [DeclBucket.D])
   deriving (Eq,Ord,Read,Show)
 type SL a = Set (Located a)
 data ConflictingDecls = CDDefaults Name (SL T)
@@ -172,6 +175,7 @@ deconflictBucket (DB dflts tsigs ksigs dts sts tts cts cons fs is) =
         DTDefun es -> PMDefun (es,loc)
         DTGlobal rme -> PMGlobal (rme,loc)
         DTInstance tes -> PMInstances $ S.singleton (tes,loc)
+        DTContract ds -> PMContract (ds,loc)
     toLocInstance (dt,loc) =
       case dt of
         DTInstance tes -> return (tes,loc)
