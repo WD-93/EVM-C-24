@@ -65,6 +65,10 @@ RF. RecordField ::= Ident ":" T;
 Tag. D ::= "tag" ConArgs "=" T "where" "{" [ConTag] "}";
 separator ConTag ","; --because its record-like
 ConTag. ConTag ::= UIdent ":" E;
+--contract foo {decl1;decl2;...} declares a code global foo : Array len Byte
+--whose initializer is the bytecode of the given program; used in CREATE
+--scripts.
+Contract. D ::= "contract" Ident "{" [D] "}";
 
 SE. S ::= E;
 If. S ::= "if" E "then" S "else" S "end";
