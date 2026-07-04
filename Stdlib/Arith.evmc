@@ -208,10 +208,18 @@ negate n := return 0 - n;
 //Note their argument order is the reverse of the EVM ops shr and shl.
 //The shift value is interpreted as unsigned; any value greater than n's
 //bitlen will lead to a constant 0 being returned.
-shL : (Int a b, Int c d) -> Int a b;
+//Fix: I'll enforce that the shift value is unsigned to avoid confusion.
+shL : (Int a b, UInt d) -> Int a b;
 shL (n,sh) := return coerce (shl(coerce sh, coerce n));
-shR : (Int a b, Int c d) -> Int a b;
-shR (n,sh) := return coerce (shr(coerce sh, coerce n));
+//Fix: Sol uses SAR when right-shifting signed integers and EVMC should as
+//well. The shifted signed integer must then be signextended.
+shR : (Int a b, UInt d) -> Int a b;
+instance shR : (SInt b, UInt d) -> SInt b where
+ (n,sh) := return coerce (sar(coerce sh, extendToWord n));
+//Since >> on a uint doesn't set any padding bits, I can use unsafeCoerce
+//instead of coerce to avoid a mask.
+instance shR : (UInt b, UInt d) -> UInt b where
+ (n,sh) := return unsafeCoerce (shr(coerce sh, coerce n));
 
 //Pointer ops
 
