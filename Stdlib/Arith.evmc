@@ -1,7 +1,10 @@
 //The arithmetic functions; C operators desugar to these.
 //Functions which don't fit in Alloc or Terminate also go here for now.
 
-//arr!ix desugars to this; only arrays with sizeof <= 32 are supported.
+//arr!ix where arr is on stack desugars to this;
+//only arrays with sizeof <= 32 are supported.
+//(*ptr)(.field | !ix)* instead compiles to a dereference of a transformed
+//pointer, bypassing the sizeof <= 32 restruction.
 //No bounds check is done; indexing out of bounds is UB.
 //PRIMITIVE
 indexArray : (Array len a, Short) -> a;
@@ -103,18 +106,18 @@ bwNot _ := {};
 // == and != can compare any type.
 lt_ : (Int s l, Int s l) -> Bool;
 instance lt_ : (UInt l, UInt l) -> Bool where
- (a,b) := return coerce (lt(coerce a, coerce b));
+ (a,b) := return unsafeCoerce (lt(coerce a, coerce b));
 instance lt_ : (SInt l, SInt l) -> Bool where
- (a,b) := return coerce (slt(coerce a, coerce b));
+ (a,b) := return unsafeCoerce (slt(coerce a, coerce b));
 // <= >= don't need instances because their underlying ops have already
 //been overloaded.
 lte_ : (Int s l, Int s l) -> Bool;
 lte_ (a,b) := return (a < b) | (a == b);
 gt_ : (Int s l, Int s l) -> Bool;
 instance gt_ : (UInt l, UInt l) -> Bool where
- (a,b) := return coerce (gt(coerce a, coerce b));
+ (a,b) := return unsafeCoerce (gt(coerce a, coerce b));
 instance gt_ : (SInt l, SInt l) -> Bool where
- (a,b) := return coerce (sgt(coerce a, coerce b));
+ (a,b) := return unsafeCoerce (sgt(coerce a, coerce b));
 gte_ : (Int s l, Int s l) -> Bool;
 gte_ (a,b) := return (a > b) | (a == b);
 eq_ : (a,a) -> Bool;
