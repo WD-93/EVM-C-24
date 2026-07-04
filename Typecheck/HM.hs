@@ -463,6 +463,8 @@ typeOf :: E -> HM (E,T)
 typeOf = go
   where go e = withError (InTypeOf e) $ (\case
           EInteger n -> return (EInteger n, UInt 32)
+          StrLit len ns -> return (StrLit len ns,
+                                   Array (fromIntegral len) (UInt 1))
           -- &e desugaring
           Var "addressOf" :$ e -> typeOfAmpersand e
           f :$ x -> do

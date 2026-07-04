@@ -78,12 +78,15 @@ desugarE di{-@DInfo{diGlobalSet = gs,
         let ns = map ord str
         complainIf (any (>255) ns)
           $ NonByteChar str
+        --Opt: now returns a StrLit which can be type-checked in O(1)
+        return $ StrLit (length str) ns
+        {-
         return $ EArray Nothing
           [Var "fromWord" :$ EInteger (fromIntegral n)
           | n <- ns]
           --Restricting string literals to be Byte arrays;
           --depends on UInt and Array being defined.
-          ::: Array (TyNat $ fromIntegral $ length str) (UInt 1)
+          ::: Array (TyNat $ fromIntegral $ length str) (UInt 1)-}
         {-
         --str => *g
         case M.lookup str str2id of

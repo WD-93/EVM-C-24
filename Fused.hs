@@ -2319,6 +2319,12 @@ serialize' mts mtset = withError (InSerialize' mts) . go
             return Serialized{serLength=2,serSizeof=2,
                               serContent=[Right (0,2,nm)]
                              }
+          StrLit len ns ->
+            let lenn = fromIntegral len
+            in return Serialized{serLength=lenn,
+                                 serSizeof=lenn,
+                                 serContent=[Left ns]
+                                }
           --An integer literal; signedness doesn't affect representation.
           --serInt truncates n.
           e | Just (len,n) <- parseConstInteger e ->
