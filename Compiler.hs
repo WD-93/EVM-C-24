@@ -252,7 +252,8 @@ pipeline2parse str = do
   db <- sourceToBucket ["Main"] str ? ParserError
   let namespace = M.insert ["Main"] db stdlib
   dbWithDeps <- createBucket namespace ["Main"] ? CreateBucketError
-  deconflictBucket dbWithDeps ? ConflictingDecls
+  pm <- deconflictBucket dbWithDeps ? ConflictingDecls
+  recursiveCompile namespace pm
 pipeline2desugar :: String -> Either CompilerError Module
 pipeline2desugar str = do
   m <- pipeline2parse str

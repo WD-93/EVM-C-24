@@ -1,0 +1,17 @@
+//A contract creation script using contract objects; creates a hello world
+//contract and sets storage[0] to 1.
+import Prelude;
+
+contract hello {import Test.HelloWorld};
+
+main() := {
+ //Initialize storage; in a real script the child contract's storage globals
+ //would be declared in a separate module and imported both
+ //by the child contract and creation script.
+ sstore(0,1);
+ //Return the text of the contract; hello is a string code global under the
+ //hood.
+ var p = null();
+ copy(p,&hello,1);
+ returnPtr p
+}
