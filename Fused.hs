@@ -1760,6 +1760,15 @@ convertE e = pushScope $ go e
           EInteger n -> do
             w <- pushK n
             return ([w], UInt 32)
+          --Strings are left-padded with zero bytes.
+          StrLit len bs -> do
+            let lenn = fromIntegral len
+                strT = Array (TyNat lenn) (UInt 1)
+            ws <-
+              pushMultiWordSer Serialized{serLength=lenn,
+                                          serSizeof=lenn,
+                                          serContent=[Left bs]} strT
+            return (ws,strT)
           --A local variable; find its wordlen n, then result = copy
           --x.1 .. x.n
           --Not copying would lead to a subtle bug:
