@@ -56,5 +56,22 @@ library
                     , BNFC:bnfc >= 2.9
 
   default-language:    Haskell2010
-  extra-source-files: Stdlib/Prim.evmc
-                    , Stdlib/Prelude.evmc
+  extra-source-files: Stdlib/Prelude.evmc
+--TODO add the other stdlib files
+executable evmc
+  main-is: CLI.hs
+  hs-source-dirs: .
+  build-depends:       base ^>= 4.18
+                     , syb
+                     , BNFC >= 2.9
+                     , containers
+                     , mtl
+                     , transformers ^>= 0.6.1.0
+                     , template-haskell >= 2.20.0.0
+                     , array >= 0.5.8.0
+                     , process
+                     , directory
+                     -- , filepath
+                     , QuickCheck
+                     , wide-word
+  default-language: Haskell2010

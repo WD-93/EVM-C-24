@@ -5,10 +5,13 @@ import Import
 import Stdlib.ImplicitImports (stdlib)
 import Compiler (compile, CompilerError(..))
 import DeclBucket (ModName())
+import E.Par (pModuleName,myLexer)
+import E.Abs (ModuleName'(..),UIdent(..))
 
 import Data.IORef
 import Data.List (intercalate)
 import Data.Char (intToDigit)
+import System.Environment (getArgs)
 
 --Defines the evmc CLI, which uses Import's Loader monad for setting up the
 --module namespace and Compiler's compile function to convert modules to
@@ -24,11 +27,15 @@ evmc accepts only .evmc files and produces .evm files.
 Commands:
 help --display usage
 add-path <filepath> --add filepath to module search path
-no-stdlib --don't include stdlib in namespace; default is inclusion
-load <modname> --add modname and its dependencies to namespace; found via path
-load-dir <filepath> --load all .evmc files in dir and UIdent subdirs
+flush --flush namespace and path
 A module name (e.g. Foo.Bar.Baz): compiles it to an EVM bytecode file
 Foo.Bar.Baz.evm in the current working directory.
+
+Removed:
+load <modname> --add modname and its dependencies to namespace; found via path
+load-dir <filepath> --load all .evmc files in dir and UIdent subdirs
+Those are redundant since compiling module M implicitly loads it and its
+dependencies, and the effect of loading depends only on the path.
 
 TODO flags:
 dump-* --one for each stage, halt and dump result to file
@@ -38,6 +45,35 @@ main-exec-intensity --tells the optimizer how much to weight exec cost vs
 unsafe-case --disables validation in case clauses
 
 -}
+
+main :: IO ()
+main = do
+  ws <- getArgs
+  case parseArgs ws of
+    Left err -> error $ "Command parse error: " ++ err
+    Right cmds -> evmc cmds
+parseArgs :: [String] -> Either String [Command]
+parseArgs = go
+  where
+    go = \case
+      [] -> return []
+      "add-path":fp:rest -> (AddPath fp:) <$> go rest
+      w:ws -> do
+        cmd <- case w of
+                 "help" -> return Help
+                 "flush" -> return Flush
+                 _ -> Compile <$> parseModName w
+        cmds <- go ws
+        return $ cmd:cmds
+--Taken from the BNFC-generated parser
+parseModName :: String -> Either String ModName
+parseModName mnm =
+  fmap go $ pModuleName $ myLexer mnm
+  where
+    go = \case
+      MNil _ (UIdent nm) -> [nm]
+      MCons _ (UIdent nm) rest -> nm : go rest
+
 data Command = Help
              | AddPath FilePath
              | Flush
@@ -47,7 +83,10 @@ data Command = Help
   deriving (Eq,Ord,Read,Show)
 evmc :: [Command] -> IO ()
 evmc cmds = do
-  ior <- newIORef emptyCS{csNamespace = stdlib}
+  --Quirk: cwd will be tried first, earlier paths shadow later ones.
+  ior <- newIORef emptyCS{csNamespace = stdlib,
+                          csPath = ["."]
+                         }
   mapM_ (obey ior) cmds
   where
     obey ior = \case
@@ -60,8 +99,6 @@ evmc cmds = do
         ,"help --display usage"
         ,"add-path <filepath> --add filepath to module search path"
         ,"flush --empty the namespace and path; flushes stdlib"
-        ,"load <modname> --add modname and its dependencies to namespace"
-        ,"load-dir <filepath> --load all .evmc files in dir and UIdent subdirs"
         ,"A module name (e.g. Foo.Bar.Baz): compiles it to an EVM bytecode file"
         ,"Foo.Bar.Baz.evm in the current working directory."
         ]
