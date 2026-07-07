@@ -6,7 +6,7 @@ build-type:          Custom
 custom-setup
    setup-depends:       base
                       , Cabal
-                      , BNFC >= 2.9                                                                   
+                      , BNFC >= 2.9                        
                       , process
                       , directory
 library
@@ -62,8 +62,8 @@ executable evmc
   main-is: CLI.hs
   hs-source-dirs: .
   build-depends:       base ^>= 4.18
+                     , evmc
                      , syb
-                     , BNFC >= 2.9
                      , containers
                      , mtl
                      , transformers ^>= 0.6.1.0
@@ -71,7 +71,6 @@ executable evmc
                      , array >= 0.5.8.0
                      , process
                      , directory
-                     -- , filepath
                      , QuickCheck
                      , wide-word
   default-language: Haskell2010
