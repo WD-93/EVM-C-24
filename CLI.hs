@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module CLI where
+module Main where
 
 import Import
 import Stdlib.ImplicitImports (stdlib)
