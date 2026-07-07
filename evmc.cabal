@@ -32,11 +32,43 @@ library
                , Typecheck.HM.AddConsAndFieldsToTySigs
                , Typecheck.TC
                , Typecheck.TySyn
-               , Util       
-  autogen-modules: E.Abs
-                 , E.ErrM
-                 , E.Lex
-                 , E.Par
+               , Util
+               --Adding because install complains they're missing:
+               , Import
+               , DeclBucket
+               , Unshadow.Unshadow
+               , Structured.DTs
+               , Fused.Monad
+               , Fused
+               , Core.RestrictedCore
+               , Core.Convert
+               , Core.SSA
+               , Opt.AI
+               , Opt.Opt
+               , Codegen
+               , Asm
+               , Pretty
+               , Opt.AI.Test
+               , Opcodes
+               , Const.Const
+               , Core.PrimTypes
+               , Opt.Concurrent
+               , Opt.AbVar
+               , Opt.Semilattice
+               , Opt.HTraversable
+               , Opt.AI.EVM
+               , Opt.CodeG2Labels
+               , Construct
+               , OpcodeInfo
+               , Opt.Analysis.Exitness
+               , Opt.CC
+               , Opt.Peephole
+  --Removed because they break cabal install exe:evmc
+  --autogen-modules:
+  --             , E.Abs
+  --             , E.ErrM
+  --             , E.Lex
+  --             , E.Par
   hs-source-dirs:      .
   build-depends:       base ^>= 4.18
                      , syb
@@ -56,7 +88,7 @@ library
                     , BNFC:bnfc >= 2.9
 
   default-language:    Haskell2010
-  extra-source-files: Stdlib/Prelude.evmc
+  --extra-source-files: Stdlib/Prelude.evmc
 --TODO add the other stdlib files
 executable evmc
   main-is: CLI.hs
