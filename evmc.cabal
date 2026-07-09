@@ -2,6 +2,31 @@ cabal-version:       2.4
 name:                evmc
 version:             0.1.0.0
 build-type:          Custom
+extra-source-files:
+        Stdlib/Alloc.evmc
+        Stdlib/Arith.evmc
+        Stdlib/Defaults.evmc
+        Stdlib/EVM.evmc
+        Stdlib/Kinds.evmc
+        Stdlib/Prelude.evmc
+        Stdlib/Terminate.evmc
+        Stdlib/Types.evmc
+        Stdlib/TySyns.evmc
+        Stdlib/Test/ArrayInterpreter.evmc
+        Stdlib/Test/ArrowOp.evmc
+        Stdlib/Test/ArrowOpNoNestedCall.evmc
+        Stdlib/Test/CallInPtrAssignmentWorks.evmc
+        Stdlib/Test/ContractCreation.evmc
+        Stdlib/Test/EfficientHello.evmc
+        Stdlib/Test/EvaluatedPat.evmc
+        Stdlib/Test/GlobalArrayIndex.evmc
+        Stdlib/Test/HelloWorld.evmc
+        Stdlib/Test/Offset.evmc
+        Stdlib/Test/Shadowing.evmc
+        Stdlib/Test/ShiftedLabel.evmc
+        Stdlib/Test/ShiftedLabel2.evmc
+        Stdlib/Test/Shrinking.evmc
+        Stdlib/Test/WordPadOffset.evmc
 --formerly Simple
 custom-setup
    setup-depends:       base
