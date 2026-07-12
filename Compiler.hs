@@ -1,5 +1,21 @@
 {-# LANGUAGE LambdaCase #-}
-module Compiler where
+module Compiler
+ (compile
+ ,CompilerError(..)
+ --For debug:
+ ,module Pretty
+ ,pipeline2parse
+ ,pipeline2desugar
+ ,pipeline2unshadow
+ ,pipeline2typechecked
+ ,pipeline2structured
+ ,pipeline2core
+ ,pipeline2ssa
+ ,pipeline2opt
+ ,pipeline2asm
+ ,printopt
+ ,printasm
+ ) where
 
 --Imports the modules for each step, handles running the pipeline
 import AST.DTs
