@@ -155,7 +155,7 @@ blobbasefee _ := {};
 //pop is the odd one out: it can be defined in C.
 pop : Word -> ();
 pop _ := return ();
-mload : (Word,Word) -> Word;
+mload : Word -> Word;
 mload _ := {};
 mstore : (Word,Word) -> ();
 mstore _ := {};
