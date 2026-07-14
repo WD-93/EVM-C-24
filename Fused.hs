@@ -1156,6 +1156,31 @@ data Index = IDot Name [T] --field@ts
 data EIndex = EDot Name [T] --field@ts
             | EBang T T E --len, a, index
   deriving (Eq,Ord,Read,Show)
+--In p += e (OPAssign), p is evaluated before e. Since e may contain function
+--calls, the vars produced by ep <- evaluatePat p must be saved on the stack.
+--Doing so requires listing which vars ep contains; varsOfEP does so.
+--Each will be unique in Structured; TODO elim all but one instance of equal
+--vars from BB params when possible in Opt.
+--Ex where that can happen: arrLocal!x!x
+--TODO use generic
+--The order in which I return them can be freely chosen; should I place them
+--in order of evaluation (earliest eval first) or consumption (the reverse)?
+--Leave that to Opt; TODO let it reorder params based on feedback from
+--Codegen.
+varsOfEP :: EvaluatedPat -> [Var]
+varsOfEP = go
+  where
+    go = \case
+      EPLocal _t _nm ixs -> ixs >>= varsOfIndex
+      EPDeref _r _a ptr -> [ptr]
+      EPArray _len _a ixps -> map snd ixps >>= go
+      EPCon _con _ts _chkTag fieldPs ->
+        map snd fieldPs >>= go
+      EPUnDeref _r _a ep -> go ep
+varsOfIndex :: Index -> [Var]
+varsOfIndex = \case
+  IDot _field _ts -> []
+  IBang _len _a ix -> [ix]
 
 --Generates the code to return null. Huh, I actually don't need to make null
 --a primitive: its code will be auto-generated given an empty body.
@@ -1884,7 +1909,16 @@ convertE e = pushScope $ go e
             case mep of
               Nothing -> throwError $ GenericFE "wildcard-like op= e"
               Just ep -> do
-                old <- evalEP ep
+                --Bugfix: since e may contain a function call, old must be
+                --in the scope to ensure it's accessible after evaluating e.
+                --In fact, any of the vars created by evalEP (which may
+                --include array indices) must.
+                scope <- getScope
+                --Need to ensure varsOfEP ep doesn't intersect with evalEP ep.
+                --nub would create an unpredictable stack layout... I'll copy
+                --evalEP to fresh vars instead.
+                old <- evalEP ep >>= copyVars
+                putScope $ old ++ varsOfEP ep ++ scope
                 (operand,_t) <- convertE e
                 f <- pushTyApp fnm ts
                 new <- callFun f (old ++ operand) pt
