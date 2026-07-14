@@ -227,16 +227,16 @@ compile namespace mnm = do
   return bytecode
 
 --Contract object compilation helper function.
---Converts decls to a bucket, gives it module name Main, adds it to the given
+--Converts decls to a bucket, gives it module name $Main, adds it to the given
 --namespace, then compiles it with compile.
---Footgun: that shadows Main.
 --Also adds the contract's location info so you can see which one fails.
+-- $Main contains a $ to avoid shadowing user modules.
 compileContractObject :: Namespace -> Located [DeclBucket.D] ->
   Either CompilerError [Int]
 compileContractObject namespace (ds,loc) = do
-  let db = declsToBucket ["Main"] ds
-      ns' = M.insert ["Main"] db namespace
-  compile ns' ["Main"] ? InRecursiveCompile loc
+  let db = declsToBucket ["$Main"] ds
+      ns' = M.insert ["$Main"] db namespace
+  compile ns' ["$Main"] ? InRecursiveCompile loc
 
 --Converts a PreModule with contract declarations to one without by turning
 --them into code globals.
@@ -258,16 +258,16 @@ recursiveCompile namespace pm = do
   
 --New workflow for the test pipeline:
 --The given string is parsed, converted to a bucket and given the module name
---Main using Import.sourceToBucket. Main is added to the stdlib namespace.
---Main and its dependencies are merged into a single bucket using
+-- $Main using Import.sourceToBucket. Main is added to the stdlib namespace.
+-- $Main and its dependencies are merged into a single bucket using
 --createBucket. Note stdlib modules must be explicitly imported!
 --import Prelude loads default modules.
 --That bucket is then converted to a PreModule using deconflictBucket.
 pipeline2parse :: String -> Either CompilerError PreModule
 pipeline2parse str = do
-  db <- sourceToBucket ["Main"] str ? ParserError
-  let namespace = M.insert ["Main"] db stdlib
-  dbWithDeps <- createBucket namespace ["Main"] ? CreateBucketError
+  db <- sourceToBucket ["$Main"] str ? ParserError
+  let namespace = M.insert ["$Main"] db stdlib
+  dbWithDeps <- createBucket namespace ["$Main"] ? CreateBucketError
   pm <- deconflictBucket dbWithDeps ? ConflictingDecls
   recursiveCompile namespace pm
 pipeline2desugar :: String -> Either CompilerError Module
