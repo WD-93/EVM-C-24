@@ -92,6 +92,7 @@ data ADecl = ADefault (B T)
            --error reporting.
            | AConTag (B (Name,E))
            | AImport (Located ModName)
+           | ANestedDeps (Set (Located ModName))
   deriving (Eq,Ord,Read,Show)
 data DeclBucket = DB {
   dbDefaults :: MSL T, --loc->"default ..."
@@ -104,9 +105,41 @@ data DeclBucket = DB {
   dbConTags :: MSL (Name,E),
   dbConstructors :: MSL ConInfo,
   dbFields :: MSL FieldInfo,
-  dbImports :: Set (Located ModName)
+  --Accessing the below fields directly considered harmful:
+  dbImports_ :: Set (Located ModName),
+  --The deps of all contract objects... and dbImports_ as well, to avoid
+  --unnecessary S.unions.
+  --Note this includes only the syntactically obvious deps, not transitive
+  --deps.
+  dbNestedDeps_ :: Set (Located ModName)
   }
   deriving (Eq,Ord,Read,Show,Lift)
+--I've added contract objects which allow child contracts to be defined in
+--a parent contract. When loading a module into the namespace, the imports of
+--every descendant contract must also be included, otherwise
+{-
+import Prelude;
+main() := {};
+contract c {
+ import UserDefinedModule; //Not in stdlib
+ main() := {}
+}
+-}
+--will fail because UserDefinedModule is not loaded into the namespace.
+--However, when collecting the decls of all the modules a module imports,
+--one should *not* include the deps of child contracts because parent and
+--child should be able to import different, conflicting definitions.
+
+--This datatype is a more informative variant of Bool.
+data WhetherToIncludeChildDeps = IncludeChildDeps
+                             | DoNotIncludeChildDeps
+   deriving (Eq,Ord,Read,Show)
+dbImports :: WhetherToIncludeChildDeps -> DeclBucket -> Set (Located ModName)
+dbImports whether db =
+  case whether of
+    IncludeChildDeps -> dbNestedDeps_ db
+    DoNotIncludeChildDeps -> dbImports_ db
+
 --Boilerplate, but at least Haskell writes most of it
 --An AutoDeriveChildren extension would make this one line.
 deriving instance Lift a => Lift (S' a)
@@ -139,7 +172,7 @@ deriving instance Lift a => Lift (ConTag' a)
 data DynamicThing = DTDefun (E,S)
                   | DTInstance (T,E,S)
                   | DTGlobal (Region, Maybe E)
-                  | DTContract [D]
+                  | DTContract DeclBucket
   deriving (Eq,Ord,Read,Show,Lift)
 --Datatypes and tysyns
 --Might as well Locate everything
@@ -159,16 +192,28 @@ data FieldInfo = IsTag {fiBoxed :: Bool, fiParentTyCon :: Located Name}
                            fiParentTyCon :: Located Name,
                            fiParentCon :: Located Name}
   deriving (Eq,Ord,Read,Show,Lift)
-emptyBucket = DB e e e e e e e e e S.empty
+emptyBucket = DB e e e e e e e e e S.empty S.empty
   where e :: Map k v
         e = M.empty
-unionBucket (DB a1 a2 a3 a4 a5 a6 a7 a8 a9 a10)
-  (DB b1 b2 b3 b4 b5 b6 b7 b8 b9 b10) =
+unionBucket (DB a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11)
+  (DB b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11) =
   DB (u a1 b1) (u a2 b2) (u a3 b3) (u a4 b4) (u a5 b5) (u a6 b6) (u a7 b7)
-  (u a8 b8) (u a9 b9) (S.union a10 b10)
+  (u a8 b8) (u a9 b9) (S.union a10 b10) (S.union a11 b11)
   where u m1 m2 = M.unionWith S.union m1 m2
 unionBuckets :: Foldable t => t DeclBucket -> DeclBucket
 unionBuckets dbs = foldr unionBucket emptyBucket dbs
+
+--To support contract objects, collection of deps needs to consider child
+--contracts. That requires recursive conversion [D] -> DeclBucket, so
+--declsToBucket was moved from Import to here.
+--TODO figure out why it takes a mnm argument it doesn't use and what it
+--should be doing with it...
+declsToBucket :: ModName -> [DeclBucket.D] -> DeclBucket
+declsToBucket mnm lds =
+  let ads = lds >>= declToADecls
+      dbs = map adeclToBucket ads
+      db = unionBuckets dbs
+  in db
 
 adeclToBucket :: ADecl -> DeclBucket
 adeclToBucket = \case
@@ -181,7 +226,8 @@ adeclToBucket = \case
   AField (k,v) ->e{dbFields=s k v}
   ATagType (k,v) -> e{dbTagTypes=s k v}
   AConTag (k,v) -> e{dbConTags=s k v}
-  AImport mnm -> e{dbImports=S.singleton mnm}
+  AImport mnm -> e{dbImports_=S.singleton mnm}
+  ANestedDeps mnms -> e{dbNestedDeps_=mnms}
   where e = emptyBucket
         s k v = M.singleton k $ S.singleton v
 
@@ -204,8 +250,16 @@ declToADecls = \case
     in binding AStatThing loc (fst con) $ STTySyn params t
   --DT tags
   Tag loc ca t ct -> tagToADecls loc ca t ct
-  Import loc m -> [AImport (parseModuleName m,loc)]
-  Contract loc (Ident nm) ds -> binding ADynThing loc nm $ DTContract ds
+  Import loc m ->
+    let mnm = (parseModuleName m,loc) 
+    in [AImport mnm,
+        --dbNestedDeps_ includes top-level imports
+        ANestedDeps (S.singleton mnm)
+       ]
+  Contract loc (Ident nm) ds ->
+    let db = declsToBucket (error "mnm param unused") ds
+    in [ANestedDeps $ dbImports IncludeChildDeps db] ++
+       binding ADynThing loc nm (DTContract db)
 binding :: (B a -> ADecl) -> Loc -> Name -> a -> [ADecl]
 binding con loc nm v = [con (nm,(v,loc))]
 --data TyCon args = { --Static thing data binding, tag field

@@ -39,8 +39,8 @@ import Control.Monad.State
 import Stdlib.ImplicitImports (stdlib)
 --CST -> AST
 import AST.DTs (Module(..))
-import DeclBucket (ModName(),Located(),Loc(),D())
-import Import (sourceToBucket,declsToBucket,createBucket,deconflictBucket,
+import DeclBucket (DeclBucket(),ModName(),Located(),Loc(),D(),declsToBucket)
+import Import (sourceToBucket,createBucket,deconflictBucket,
                PreModule(..),Namespace(),PMDynamicThing(..),
                ConflictingDecls(..),CreateBucketError(..))
 import Desugar.DTs (DError(..))
@@ -231,11 +231,10 @@ compile namespace mnm = do
 --namespace, then compiles it with compile.
 --Also adds the contract's location info so you can see which one fails.
 -- $Main contains a $ to avoid shadowing user modules.
-compileContractObject :: Namespace -> Located [DeclBucket.D] ->
+compileContractObject :: Namespace -> Located DeclBucket ->
   Either CompilerError [Int]
-compileContractObject namespace (ds,loc) = do
-  let db = declsToBucket ["$Main"] ds
-      ns' = M.insert ["$Main"] db namespace
+compileContractObject namespace (db,loc) = do
+  let ns' = M.insert ["$Main"] db namespace
   compile ns' ["$Main"] ? InRecursiveCompile loc
 
 --Converts a PreModule with contract declarations to one without by turning
@@ -247,8 +246,8 @@ recursiveCompile :: Namespace -> PreModule -> Either CompilerError PreModule
 recursiveCompile namespace pm = do
   let dts = pmDynThings pm
   dts' <- forM dts (\case
-                       PMContract (ds,loc) -> do
-                         bs <- compileContractObject namespace (ds,loc)
+                       PMContract (db,loc) -> do
+                         bs <- compileContractObject namespace (db,loc)
                          return $ PMGlobal
                            ((Co, Just $ P.String loc $ map chr bs),
                             loc)

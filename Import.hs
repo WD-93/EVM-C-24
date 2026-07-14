@@ -32,12 +32,6 @@ sourceToBucket mnm str = do
   Module _loc ds <- parseModule str
   let lds = map (addModName mnm) ds
   return $ declsToBucket mnm lds
-declsToBucket :: ModName -> [DeclBucket.D] -> DeclBucket
-declsToBucket mnm lds =
-  let ads = lds >>= declToADecls
-      dbs = map adeclToBucket ads
-      db = unionBuckets dbs
-  in db
 --Every module has a unique name Foo.Bar.Baz; a mapping from module names to
 --DeclBuckets forms a Namespace.
 type Namespace = Map ModName DeclBucket
@@ -47,6 +41,7 @@ type Namespace = Map ModName DeclBucket
 --itself) are determined by the transitive closure of imports.
 --If an imported module M' is not in the namespace, compilation fails;
 --duplicate imports are a noop.
+--dependencies does not need to include nested deps from child contracts.
 dependencies :: Namespace -> ModName ->
                 Maybe --Nothing: the main module is missing
                 (Set ModName,
@@ -62,7 +57,7 @@ dependenciesM :: Namespace -> DeclBucket -> DepsM ()
 dependenciesM ns db = go db
   where
     go :: DeclBucket -> DepsM ()
-    go db = forM_ (dbImports db) go'
+    go db = forM_ (dbImports DoNotIncludeChildDeps db) go'
     go' lmnm@(mnm,_) = do
       b <- gets (S.member mnm)
       if b
@@ -117,7 +112,7 @@ data PreModule = PreModule {
 data PMDynamicThing = PMDefun (Located (E,S))
                     | PMInstances (Set (Located (T,E,S)))
                     | PMGlobal (Located (Region, Maybe E))
-                    | PMContract (Located [DeclBucket.D])
+                    | PMContract (Located DeclBucket) --(Located [DeclBucket.D])
   deriving (Eq,Ord,Read,Show)
 type SL a = Set (Located a)
 data ConflictingDecls = CDDefaults Name (SL T)
@@ -132,7 +127,7 @@ data ConflictingDecls = CDDefaults Name (SL T)
                       | CDFields Name (SL FieldInfo)
   deriving (Eq,Ord,Read,Show)
 deconflictBucket :: DeclBucket -> Either [ConflictingDecls] PreModule
-deconflictBucket (DB dflts tsigs ksigs dts sts tts cts cons fs is) =
+deconflictBucket (DB dflts tsigs ksigs dts sts tts cts cons fs is ndeps) =
   runErrors $ PreModule <$>
   dc CDDefaults dflts <*>
   dc CDTySigs tsigs <*>
@@ -277,7 +272,7 @@ loadModule mnm = Loader $ do
     go :: ModName -> DeclBucket -> LoaderImpl LoadModuleError ()
     go mnm db = do
       modify (\cs->cs{csNamespace = M.insert mnm db $ csNamespace cs})
-      mapM_ go' $ dbImports db
+      mapM_ go' $ dbImports IncludeChildDeps db
     go' :: Located ModName -> LoaderImpl LoadModuleError ()
     go' (mnm,loc) = do
       b <- gets (M.member mnm . csNamespace)
