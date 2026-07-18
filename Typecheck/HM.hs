@@ -233,20 +233,23 @@ type HM = ReaderT HMR (ExceptT HMError (State HMS))
 runHM :: HM a -> HMR -> HMS -> (Either HMError a, HMS)
 runHM hm hmr hms =
   runState (runExceptT (runReaderT hm hmr)) hms
+--Removing HMS from the errors, it makes them too large... it was useful when
+--debugging the type checker on small programs, not now.
+--If I want to see the HMS later, I can add a combinator for that.
 data TCModuleError = InCheckTySig Name SigError
                    | InCheckKindSig Name KindSigError
                    | InCheckDatatype Name DatatypeError
                    | TysigsMandatoryForUnitializedGs [Name]
                    | KindMayHaveNoKind
-                   | InInferSCC [Name] (HMError,HMS)
-                   | InCheckSignature Name (HMError,HMS)
+                   | InInferSCC [Name] HMError
+                   | InCheckSignature Name HMError
                    | NonexistentKindDefaulted Name T
                    | KindDefaultsToPolymorphicType Name T
                    | KindDefaultMismatch Name HMError
                    | InCheckConTag Name HMError
   deriving (Eq,Ord,Read,Show)
 data SigError = MissingDefinition
-              | BadKindInSig Scheme (HMError,HMS)
+              | BadKindInSig Scheme HMError
               | PolymorphicTySigInMonoThing T
               deriving (Eq,Ord,Read,Show)
 data KindSigError = KindOutOfScope Name
@@ -259,7 +262,7 @@ data DatatypeError = InConstructor Name ConstructorError
 data ConstructorError = InNthArgument Int T ConstructorArgumentError
   deriving (Eq,Ord,Read,Show)
 data ConstructorArgumentError = TyVarsNotInScope (Set Name)
-                              | HMErrorInCon (HMError,HMS)
+                              | HMErrorInCon HMError
   deriving (Eq,Ord,Read,Show)
 tcModule :: Module -> Either TCModuleError Module
 tcModule m = do
@@ -355,7 +358,7 @@ tcDatatypes m = do
                                                unifyK k "Type"
                                                allKindsBound
                                            ) hmr hms of
-                                  (Left hme, s) -> Left $ HMErrorInCon (hme,s)
+                                  (Left hme, s) -> Left $ HMErrorInCon hme
                                   (Right _, _) -> return ()
                              )
                          ? InNthArgument nth t) $ zip [1..] ts)
@@ -421,7 +424,7 @@ checkIsType m scheme = (case runHM go newHMR{hmKindSigs = kindsigs m,
                                             }
                          newHMS
                         of
-                          (Left err, s) -> Left (err,s)
+                          (Left err, s) -> Left err
                           (Right res, _) -> Right res
                        ) ? BadKindInSig scheme
   where go = do
@@ -1003,7 +1006,7 @@ inferTypes m = do
                                        (hmr m') newHMS
                                     of
                                     (Left err, s) -> Left $
-                                      InCheckSignature nm (err,s)
+                                      InCheckSignature nm err
                                     (Right def', _) ->
                                       return (nm,def')) nms
         hmr m' = HMR{hmTySigs = tysigs m',
@@ -1164,7 +1167,7 @@ checkSig :: (Show def, Data def) =>
               Either TCModuleError def
 checkSig m handler name def sig =
   case runHM (handler sig def) hmr newHMS of
-    (Left err, s) -> Left $ InCheckSignature name (err,s)
+    (Left err, s) -> Left $ InCheckSignature name err
     (Right def', _) -> return def'
   where
     hmr = HMR{hmTySigs = tysigs m,
@@ -1239,7 +1242,7 @@ data RigidUnificationError = RigidVarBoundToNonVar Name T
                            | RigidUnificationFailure T T
   deriving (Eq,Ord,Read,Show)
                                         
-type InferSCC = Either (HMError,HMS)
+type InferSCC = Either HMError
 --Invariant: every mentioned name but locals and the scc names have already
 --been given type signatures.
 --For each name, allocate a tyvar tau and unify its kind with Type.
@@ -1254,7 +1257,7 @@ type InferSCC = Either (HMError,HMS)
 inferSCC :: [Name] -> Module -> InferSCC Module
 inferSCC nms m =
   case runHM go hmr newHMS of
-    (Left hme, s) -> Left (hme,s)
+    (Left hme, s) -> Left hme
     --Updated definitions and new tysigs
     (Right (schemes,funs,globs), _) ->
       --Change: I simply use mkSig to add a default ordering of tyvars in
