@@ -481,9 +481,10 @@ desugarTup di handler pe =
 
 {-
 Valid patterns:
-_, x, *e, p.field, p!e, Con a b c, Con {field: p}
+_, x, *e, p.field, p!e, Con a b c, Con {field: p}, e[e]
 
 Desugaring:
+ptr[ix] => *(indexPtr(ptr,ix))
 Array tup => EArray
 Struct tup => Append a $ Append b ... Unit
 () => Unit
@@ -546,6 +547,10 @@ desugarP di@DInfo{
               efields
         checkRecordValidity di con es
         return $ PCon con Nothing es
+      P.Index _loc pptr pix -> do
+        ptr <- desugarE di pptr
+        ix <- desugarE di pix
+        return $ Deref Nothing (Var "indexPtr" :$ tupleE [ptr,ix])
       pe -> do
         let (f,args) = rollPApps pe
         case f of
