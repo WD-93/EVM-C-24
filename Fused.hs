@@ -19,6 +19,7 @@ import Util (unsafePrint', --for debugging
              complainIf
             )
 import OpcodeInfo hiding (op2, State(..)) --for autogen of EVM primfuns
+import Fused.AsyncError
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -40,7 +41,7 @@ unsafePrint str = unsafePrint' debugFlag str
 
 compileStructured :: Module -> Either FusedError Structured
 compileStructured mod = do
-  ((entrypoint,g2off),fs) <- runExcept $
+  ((entrypoint,g2off),fs) <- flip unAE [] $
         flip runStateT initFusedS $
         flip runReaderT mod $
         runFusedM $ do
@@ -161,6 +162,7 @@ compileStructuredM = do
 --TODO reuse code from Mono.Mono
 exploreF :: Name -> [T] -> FusedM ()
 exploreF f ts =
+  stackError (InExploreF f ts) $
   idempotent fsVisitedFuns (\fs x->fs{fsVisitedFuns=x}) (f,ts) $ do
   unsafePrint $ "Exploring " ++ f ++ show ts
   mod <- ask
@@ -1205,7 +1207,8 @@ cNull t = do
 --Iff g is a code global then its initializer must be serialized; otherwise
 --just add the global to fsGlobals.
 exploreG :: Name -> FusedM ()
-exploreG g = idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
+exploreG g = stackError (InExploreG g) $
+  idempotent fsVisitedGlobals (\fs x->fs{fsVisitedGlobals=x}) g $ do
   unsafePrint $ "Exploring global " ++ g ++ ":"
   mod <- ask
   let Just (r,me) = M.lookup g $ globals mod
@@ -1239,7 +1242,8 @@ exploreD monoTs monoTset mt@(tycon,ts)
   --the error gets ludicrously large.
   | S.size monoTset == 100 =
     throwError $ ArbitraryDatatypeStackDepthExceeded $ last monoTs
-  | let = idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x}) mt $
+  | let = stackError (InExploreD tycon ts) $
+          idempotent fsVisitedDatatypes (\fs x->fs{fsVisitedDatatypes=x}) mt $
           --Special-casing Int and WordPad, which have nonstandard repr:
           --Note custom tag schemes are ignored!
           --While neither type is problematic from a cycle perspective, we
@@ -2256,19 +2260,20 @@ scheduler = do
   fs <- get
   let rq = fsRunQueue fs
   case rq of
-    task:tasks -> do
+    (ctx,task):tasks -> do
       put fs{fsRunQueue = tasks}
       --Run the task:
-      case task of
-        ExploreGlobal g -> exploreG g
-        ExploreFunction (f,ts) -> exploreF f ts
-        SerializeAllocValue (nm,t,e) -> do
-          sizeof t --To ensure t is explored
-          ser <- serialize e
-          unsafePrint $ "SerializeAllocValue " ++ nm
-          modify (\fs->fs{fsGlobals= M.insert nm (Co,t,Just ser) $
-                           fsGlobals fs
-                         })
+      setErrorStack ctx $
+        case task of
+          ExploreGlobal g -> exploreG g
+          ExploreFunction (f,ts) -> exploreF f ts
+          SerializeAllocValue (nm,t,e) -> do
+            sizeof t --To ensure t is explored
+            ser <- serialize e
+            unsafePrint $ "SerializeAllocValue " ++ nm
+            modify (\fs->fs{fsGlobals= M.insert nm (Co,t,Just ser) $
+                             fsGlobals fs
+                           })
       scheduler
     _ -> return ()
 

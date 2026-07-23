@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase,
-TypeFamilies #-} --for Construct
+TypeFamilies, MultiParamTypeClasses #-} --for Construct
 module Fused.Monad where
 
 --The monads used for implementing the fused phase
@@ -24,6 +24,7 @@ import OpcodeInfo (State(..),
                    OpcodeBehavior(..),
                    Effect(..),
                    opcodes)
+import Fused.AsyncError
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -42,13 +43,15 @@ import Data.Char (toLower) --OpcodeInfo.State -> state var naming convention
 --Simple solution: a RWSE monad
 --No need for a capability class, just lift when in FusedFunM?
 newtype FusedM a = FM {runFusedM :: ReaderT Module
-                     (StateT FusedS (Except FusedError)) a
+                     (StateT FusedS (AsyncExcept FusedError)) a
                    }
   deriving (Functor, Applicative, Monad,
             MonadReader Module,
             MonadState FusedS,
-            MonadError FusedError
+            MonadError FusedError,
+            AsyncError FusedError
            )
+
 type MonoT = (Name,[T])
 data FusedS = FS {
   --To prevent infinite loops in recursive funs
@@ -88,9 +91,10 @@ data FusedS = FS {
   --A naive recursive exploration therefore won't do; we must spawn function
   --and code global exploration tasks instead of running them directly.
   --fsRunQueue is the queue of such tasks.
-  fsRunQueue :: [AsyncTask]
+  fsRunQueue :: [([FusedError->FusedError],AsyncTask)]
   }
-  deriving (Eq,Ord,Read,Show)
+  --deriving (Eq,Ord,Read,Show)
+
 --All globals must be spawned; though non-code globals don't have an
 --initializer to explore, the sizeof their referenced type must be determined
 --to be finite.
@@ -110,7 +114,8 @@ spawnSerializeAllocValue = spawn . SerializeAllocValue
 spawn :: AsyncTask -> FusedM ()
 spawn task = do
   s <- get
-  put s{fsRunQueue = task : fsRunQueue s}
+  ctx <- askErrorStack
+  put s{fsRunQueue = (ctx,task) : fsRunQueue s}
 
 initFusedS = FS {
   fsVisitedFuns = S.empty,
@@ -154,6 +159,10 @@ data FusedError = GenericFE String
                 --Searching for getFieldInfo before exploreD
                 | InConstructCon Name [T] FusedError
                 | InSerialize' [MonoT] FusedError
+                --Adding more context to catch "no instance" error.
+                | InExploreF Name [T] FusedError
+                | InExploreD Name [T] FusedError
+                | InExploreG Name FusedError
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P
@@ -173,7 +182,9 @@ newtype FusedFunM a = FFM {runFFM :: ReaderT FusedFunR
             MonadReader FusedFunR,
             MonadWriter [Stmt],
             MonadState FusedFunS,
-            MonadError FusedError)
+            MonadError FusedError,
+            AsyncError FusedError
+           )
 liftFused :: FusedM a -> FusedFunM a
 liftFused m = FFM $ lift $ lift $ lift m
 unliftFFM :: FFM a -> FusedFunR -> FusedFunS ->

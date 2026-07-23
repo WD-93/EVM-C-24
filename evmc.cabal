@@ -64,6 +64,7 @@ library
                , Unshadow.Unshadow
                , Structured.DTs
                , Fused.Monad
+               , Fused.AsyncError
                , Fused
                , Core.RestrictedCore
                , Core.Convert
