@@ -1988,6 +1988,13 @@ ppmm (Just t) p incdec pre = do
       --I do that in evalEP.
       old <- evalEP ep
       f <- pushTyApp incdec [t]
+      --If not pre then old is returned on the other side of the call
+      --boundary below; then it must be in scope to avoid an SSA error.
+      if not pre
+        then do
+        scope <- getScope
+        putScope $ old ++ scope
+        else return ()
       new <- callFun f old t
       assignEP ep new
       return $ if pre
