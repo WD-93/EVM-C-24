@@ -15,6 +15,14 @@ module Compiler
  ,pipeline2asm
  ,printopt
  ,printasm
+ ,recursiveCompile
+ ,pipeline2desugar'
+ ,pipeline2unshadow'
+ ,pipeline2typechecked'
+ ,pipeline2structured'
+ ,pipeline2core'
+ ,pipeline2ssa'
+ ,pipeline2opt'
  ) where
 
 --Imports the modules for each step, handles running the pipeline
@@ -160,6 +168,30 @@ recursiveCompile namespace pm = do
                        dt -> return dt
                    )
   return pm{pmDynThings = dts'}
+--To debug the compiler using .evmc modules in another repo, need to expose
+--the pipeline but pass a PreModule instead of a String.
+--pipeline2parse is skipped since CLI.loadFrom handles deconfliction and
+--recursive compilation.
+--Naming convention: pipeline2<stage>'
+pipeline2desugar' :: PreModule -> Either CompilerError Module
+pipeline2desugar' pm =
+  desugar pm ? DesugarError
+pipeline2unshadow' pm = unshadow <$> pipeline2desugar' pm
+pipeline2typechecked' pm = do
+  um <- pipeline2unshadow' pm
+  typecheck um ? TypeCheckError
+pipeline2structured' pm = do
+  tm <- pipeline2typechecked' pm
+  compileStructured tm ? FusedError
+pipeline2core' pm = do
+  s <- pipeline2structured' pm
+  structured2core s ? CoreError
+pipeline2ssa' pm = do
+  core <- pipeline2core' pm
+  ssa core ? SSAError
+pipeline2opt' pm = do
+  ssacore <- pipeline2ssa' pm
+  opt ssacore ? OptError
   
 --New workflow for the test pipeline:
 --The given string is parsed, converted to a bucket and given the module name

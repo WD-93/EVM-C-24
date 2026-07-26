@@ -1,5 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
-module Main where
+module Main (main,evmc,
+             --for debug:
+             loadFrom,
+             module Compiler
+            ) where
 
 import Import
 import Stdlib.ImplicitImports (stdlib)
@@ -7,11 +11,19 @@ import Compiler (compile, CompilerError(..))
 import DeclBucket (ModName())
 import E.Par (pModuleName,myLexer)
 import E.Abs (ModuleName'(..),UIdent(..))
+--For debug:
+import DeclBucket (DeclBucket(..))
+import Util ((?))
+import Compiler
+
 
 import Data.IORef
 import Data.List (intercalate)
 import Data.Char (intToDigit)
 import System.Environment (getArgs)
+
+--For debug
+import qualified Data.Map as M
 
 --Defines the evmc CLI, which uses Import's Loader monad for setting up the
 --module namespace and Compiler's compile function to convert modules to
@@ -152,3 +164,39 @@ serializeBytecode bs =
   "0x" ++ do
   b <- bs
   map intToDigit [b `div` 16, b `mod` 16]
+
+--ABI.evmc currently (2026-07-25) triggers a SSA error, which is always a
+--compiler error. To interactively debug the compiler using .evmc modules in
+--another repo, I need a function for loading that code and pipeline functions
+--that take a PreModule rather than a string.
+--I compile to PreModule rather than DeclBucket in order to drop the module
+--name and namespace.
+--To keep Compiler.hs pure, I'll define the loading function here.
+loadFrom :: [FilePath] -> --the path
+            Bool -> --include stdlib in namespace?
+            ModName -> --the module to compile
+            IO (Either CompilerError PreModule)
+loadFrom path include_stdlib mnm = do
+  ior <- newIORef emptyCS{csNamespace =
+                          if include_stdlib
+                          then stdlib
+                          else M.empty,
+                          csPath = path
+                         }
+  --Load the module
+  handleErr (runLoader ior $ loadModule mnm)
+    (\err -> "Error in load " ++ showModName mnm ++ ": " ++ show err)
+  --Now it's in namespace
+  namespace <- csNamespace <$> readIORef ior
+  return $ do
+    db <- createBucket namespace mnm ? CreateBucketError
+    pm <- deconflictBucket db ? ConflictingDecls
+    --Contract decls converted to string globals:
+    recursiveCompile namespace pm
+    where
+      handleErr :: IO (Either err ()) -> (err -> String) -> IO ()
+      handleErr io_ei f = do
+        ei <- io_ei
+        case ei of
+          Left err -> error $ f err
+          Right () -> return ()
