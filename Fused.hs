@@ -1530,7 +1530,7 @@ getFPI dt = \case
     --Adding an exploreD before every getTagScheme call site...
     exploreD [] S.empty (relTyCon,ts)
     (cons,tagScheme) <- getTagScheme relTyCon ts
-    let relCons = map impl cons
+    let relCons = cons --map impl was redundant.
         mr = if boxed
              then let Just rv = dtRegion dti
                       Just ix = elemIndex rv (dtParams dti)
@@ -1746,9 +1746,10 @@ compileCustomBranch scope tagT con2tag fals minf tag vs = go fals
 --all cons covered).
 --Order is preserved because it matters to Custom.
 collectCases :: [Name] -> [(Pat,S)] -> ([(Name,(Pat,S))], Maybe (Pat,S))
-collectCases cons =
+collectCases cons cases = do
+  unsafePrint $ "collectCases, cons = " ++ show cons
   let conset = S.fromList cons
-  in go conset conset
+  go conset conset cases
   where go remaining full = \case
           --All cases already covered
           _ | S.null remaining -> ([],Nothing)
@@ -2104,6 +2105,8 @@ getTagOfValue dt mr tagScheme vs =
   case mr of
     Just r -> do
       let tagT = typeOfTag tagScheme
+      unsafePrint $ "typeOfTag " ++ show dt ++ " = " ++ show tagT
+      unsafePrint $ "tagScheme " ++ show dt ++ " = " ++ show tagScheme
       --Copied from EPUnDeref; TODO clean up code
       deref <- pushTyApp "deref" [r,tagT]
       dvs <- callFun deref vs tagT
