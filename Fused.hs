@@ -638,7 +638,10 @@ evaluatePat = go
                     M.lookup ubtycon $ datatypes $ dtsInfo mod
                   ubCheckTag = length ubcons > 1
               return $ EPUnDeref r referent <$>
-                epcon ubcon ts ubCheckTag fieldeps
+                epcon ubcon ts ubCheckTag
+                --Bugfix: adjust field names to those of ubcon.
+                --Example: Cons{hd: p} => ImplCons{implList_hd: p}
+                ubfieldeps
               else return $ epcon con ts checkTag fieldeps
           --The remaining patterns are of the form
           --(local | *e)(.field | !e)*.
@@ -771,6 +774,7 @@ evalEP = \case
 --p = e or case e of {p => s}
 assignEP :: EvaluatedPat -> [Var] -> FFM ()
 assignEP ep vs =
+  withError (InGeneric "assignEP") $
   case ep of
     -- x(.field@ts | !@[len,a] ix)* = vs
     EPLocal t x ixs -> updateLocal t x ixs vs
@@ -843,7 +847,11 @@ assignEP ep vs =
     --I should use the deref@[r,a] function here so I can choose whether to
     --inline it. However, unlike in require, I must call it directly
     --rather than use convertE (because that can't capture vs)
+
+    --Boxed cons are converted to EPUnDeref UBCon; rather than load the whole
+    --record (which may be large), I want to load one field at a time.
     EPUnDeref r a ep -> do
+      unsafePrint $ "EPUnDeref ep: " ++ show ep
       deref <- pushTyApp "deref" [r,a]
       dvs <- callFun deref vs a
       assignEP ep dvs
@@ -1586,7 +1594,7 @@ compileCase scope dt vs cases = do
             --case. The tag computation must be in the ifte cond to avoid
             --a scope error. That unfortunately means code duplication...
             | Bool <- tagScheme -> do
-                let (fals,minf) = collectCases cons cases
+                let (fals,minf) = collectCases (mr /= Nothing) cons cases
                 let [falseCon,_trueCon] = cons
                 --Possibilities:
                 --Two disjoint infallible cases
@@ -1631,7 +1639,7 @@ compileCase scope dt vs cases = do
                 let tag = tag'
                 --Branching on the tag...
                 putScope $ tag ++ vs ++ scope
-                let (fals,minf) = collectCases cons cases
+                let (fals,minf) = collectCases (mr/=Nothing) cons cases
                 case tagScheme of
                   Custom _ con2tag ->
                     compileCustomBranch scope tagT con2tag fals minf tag vs
@@ -1671,7 +1679,9 @@ compileCase scope dt vs cases = do
 --Precondition: scope is vs++sc before the match
 caseBody :: [Var] -> [Var] -> Pat -> S -> FFM ()
 caseBody sc vs p s = do
+  unsafePrint $ "caseBody " ++ show (p,s)
   mep <- evaluatePat p
+  unsafePrint $ "caseBody: mep = " ++ show mep
   case mep of
     Nothing -> return ()
     Just ep -> assignEP (disableTagCheck ep) vs
@@ -1680,6 +1690,7 @@ caseBody sc vs p s = do
 disableTagCheck :: EvaluatedPat -> EvaluatedPat
 disableTagCheck = \case
   EPCon con ts _chkTag fs -> EPCon con ts False fs
+  EPUnDeref r referent ep -> EPUnDeref r referent $ disableTagCheck ep
   ep -> ep
 --calls revertValue()
 revertNil :: FFM ()
@@ -1745,9 +1756,13 @@ compileCustomBranch scope tagT con2tag fals minf tag vs = go fals
 --Prune redundant cases (duplicate cons, any after infallible, any after
 --all cons covered).
 --Order is preserved because it matters to Custom.
-collectCases :: [Name] -> [(Pat,S)] -> ([(Name,(Pat,S))], Maybe (Pat,S))
-collectCases cons cases = do
-  unsafePrint $ "collectCases, cons = " ++ show cons
+--If the scrutinee is a boxed datatype, the constructors in the fallible
+--pattern list (Name in (Name,(Pat,S))) should be ImplCon, not Con.
+collectCases :: Bool -> --whether scrutinee is boxed
+ [Name] -> --cons of DT if unboxed, ImplDT if boxed
+ [(Pat,S)] -> --cases
+ ([(Name,(Pat,S))], Maybe (Pat,S)) --fallible cases and maybe infallibe default
+collectCases boxed cons cases = do
   let conset = S.fromList cons
   go conset conset cases
   where go remaining full = \case
@@ -1755,15 +1770,19 @@ collectCases cons cases = do
           _ | S.null remaining -> ([],Nothing)
           --No cases left
           [] -> ([],Nothing)
-          (p@(PCon con _ _), s) : cases
-            | S.member con remaining ->
-              (((con,(p,s)):)***id) $ go (S.delete con remaining) full cases
-            | not $ S.member con full ->
-              ([], Just (p,s)) --it must be ImplTyCon
-            --It's a repeated constructor, ignore
-            | otherwise -> go remaining full cases
-          --It's an infallible pattern
+          (p@(PCon con _ _), s) : cases ->
+            let implcon = impl con
+            in case () of
+              _ | S.member implcon remaining ->
+                  (((implcon,(p,s)):)***id) $
+                  go (S.delete implcon remaining) full cases
+                | not $ S.member implcon full ->
+                  ([], Just (p,s)) --it must be ImplTyCon
+                --It's a repeated constructor, ignore
+                | otherwise -> go remaining full cases
+            --It's an infallible pattern
           (p,s) : cases -> ([], Just (p,s))
+        impl con = (if boxed then "Impl" else "") ++ con
 --Evaluates an e in the given scope and applies truthy to it, returning the
 --result and body.
 collectCond :: Scope -> E -> FFM (Var,[Stmt])

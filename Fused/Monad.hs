@@ -163,6 +163,8 @@ data FusedError = GenericFE String
                 | InExploreF Name [T] FusedError
                 | InExploreD Name [T] FusedError
                 | InExploreG Name FusedError
+                --Generic context
+                | InGeneric String FusedError
   deriving (Eq,Ord,Read,Show)
 
 --Compiling f: S -> E <-> P

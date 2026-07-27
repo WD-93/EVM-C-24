@@ -15,6 +15,7 @@ import E.Abs (ModuleName'(..),UIdent(..))
 import DeclBucket (DeclBucket(..))
 import Util ((?))
 import Compiler
+import AST.DTs
 
 
 import Data.IORef
