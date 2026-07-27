@@ -8,6 +8,7 @@ import Core.RestrictedCore
 import Core.PrimTypes (pattern W, pattern MemoryState)
 import Const.Const (Serialized(..)) --I need to push function labels...
 --TODO encapsulate Serialized, exposing its structure is asking for trouble.
+import Util (unsafePrint')
 
 import Data.Map (Map(..))
 import qualified Data.Map as M
@@ -16,6 +17,9 @@ import qualified Data.Set as S
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
+
+debugFlag = True
+unsafePrint str = unsafePrint' debugFlag str
 
 --Takes a Structured module and produces a pre-SSA Core module
 --Invariant: every Structured stmt other than Declare is preceded by a
@@ -346,6 +350,7 @@ allocJT :: ((Int,Int),[FunVar]) -> CoreM (Var,(Value,OpE))
 allocJT (arity,fs) = do
   n <- alloc
   let jtnm = "$jt"++show n
+  unsafePrint $ "allocJT " ++ jtnm
   modify (\s->s{csJTs = M.insert jtnm (arity,fs) $ csJTs s})
   let ser = Serialized {serLength = 2,
                         serSizeof = 2,

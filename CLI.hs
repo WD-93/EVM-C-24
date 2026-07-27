@@ -16,7 +16,7 @@ import DeclBucket (DeclBucket(..))
 import Util ((?))
 import Compiler
 import AST.DTs
-
+import Opt.AI
 
 import Data.IORef
 import Data.List (intercalate)

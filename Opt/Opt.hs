@@ -132,15 +132,18 @@ pruneUnreachableFuns ms core =
   let unreachableFuns = unreachable coreDefuns
       unreachableJTs = unreachable coreJTs
       --Short-circuiting: if there's nothing to prune don't traverse
-  in if S.null unreachableFuns && S.null unreachableJTs
-     then return core
-     else return $ substUnreachable unreachableFuns core{
-    coreDefuns = filterKeys (not . flip S.member unreachableFuns) $
-      coreDefuns core,
-    coreJTs = filterKeys (not . flip S.member unreachableJTs) $
-      coreJTs core
-    } --filterKeys on S.member adds a log n factor... TODO exploit shared
-      --structure.
+  in do
+    unsafePrint $ "unreachableFuns = " ++ show unreachableFuns
+    unsafePrint $ "unreachableJTs = " ++ show unreachableJTs
+    if S.null unreachableFuns && S.null unreachableJTs
+      then return core
+      else return $ substUnreachable unreachableFuns core{
+      coreDefuns = filterKeys (not . flip S.member unreachableFuns) $
+                   coreDefuns core,
+      coreJTs = filterKeys (not . flip S.member unreachableJTs) $
+                coreJTs core
+      } --filterKeys on S.member adds a log n factor... TODO exploit shared
+           --structure.
   where unreachable field =
           S.filter (\f ->
                       case M.lookup f $ funInfo ms of

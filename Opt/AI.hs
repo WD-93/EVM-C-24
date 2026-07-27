@@ -1244,6 +1244,9 @@ possFuns :: Map FunVar ((Int,Int),[FunVar]) ->
             )
 possFuns jtMap av =
   (funs av `S.union`
+  --Need to include the JTs themselves, otherwise they'll be considered
+  --unreachable and dropped!
+  jts av `S.union`
    S.unions (S.map (\jt ->
                       case M.lookup jt jtMap of
                         Nothing -> error "!?"
