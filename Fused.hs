@@ -36,7 +36,7 @@ import Control.Arrow ((***))
 --For global -> offset substitution:
 import Data.Generics (everywhere,mkT)
 
-debugFlag = False
+debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
 
 compileStructured :: Module -> Either FusedError Structured
@@ -1527,6 +1527,8 @@ getFPI dt = \case
     let boxed = dtBoxed dti
         impl nm = (if boxed then "Impl" else "") ++ nm
         relTyCon = impl tycon
+    --Adding an exploreD before every getTagScheme call site...
+    exploreD [] S.empty (relTyCon,ts)
     (cons,tagScheme) <- getTagScheme relTyCon ts
     let relCons = map impl cons
         mr = if boxed
@@ -1561,7 +1563,8 @@ getFPI dt = \case
 --the "only case on top-level constructor" rule...
 --TODO add support for integer literal patterns.
 compileCase :: Scope -> T -> [Var] -> [(Pat,S)] -> FFM ()
-compileCase scope dt vs cases =
+compileCase scope dt vs cases = do
+  unsafePrint $ "Reached case: (type = " ++ show dt ++ ")"
   case cases of
     --no cases; simply revert
     [] -> revertNil
@@ -1569,6 +1572,12 @@ compileCase scope dt vs cases =
     --TODO special-case {FallibleCon => ...; inf => ...}, where I really
     --only need to check the tag.
     cases@((p,s):_) -> do
+        --Adding an exploreD here... TODO place them only at minimal
+        --"guard points". TODO ensure this can't trigger an infinite loop...
+        --it shouldn't, since exploreF's within DTs with custom tags are async.
+        do let (TyCon tycon,ts) = rollTyApps dt
+           liftFused $ exploreD [] S.empty (tycon,ts)
+           unsafePrint $ "Explored " ++ show dt
         fpi <- liftFused $ getFPI dt p
         case fpi of
           Infallible -> simpleCase (p,s)
@@ -1610,7 +1619,9 @@ compileCase scope dt vs cases =
             --case statements to assignments.
             | [ps] <- cases -> simpleCase ps
             | let -> do
+                unsafePrint "Tag scheme /= Bool, #cases > 1"
                 (tag,tagT) <- getTagOfValue dt mr tagScheme vs
+                unsafePrint "getTagOfValue succeeded"
                 --If tag scheme = N1, need to mul tag by 5
                 tag' <- case tagScheme of
                           N1 _ -> do
@@ -1629,19 +1640,23 @@ compileCase scope dt vs cases =
                   --N5 is already handled; after the mul by 5 if scheme = N1, it
                   --has the same repr as N1.
                   _ -> do
+                    unsafePrint "Jumping into JT"
                     let [tagw] = tag
                     --Each (p,s) needs to be converted to [Stmt].
                     --First, the default case.
                     --TODO opt: revert(0,0) ignores the scope above it, so I
                     --only need one jumpdest for it.
+                    unsafePrint $ "minf: " ++ show minf
                     dflt <- snd <$> collect (vs++scope)
                       (case minf of
                          Nothing -> revertNil
                          Just (p,s) -> caseBody scope vs p s
                       )
+                    unsafePrint "dflt <- ... succeeded"
                     con2stmts <- forM (M.fromList fals)
                                  (\(p,s) -> snd <$> collect (vs ++ scope)
                                    (caseBody scope vs p s))
+                    unsafePrint "con2stmts <- ... succeeded"
                     let jt = map (\con ->
                                     case M.lookup con con2stmts of
                                       Nothing -> dflt
@@ -2101,7 +2116,9 @@ getTagOfValue dt mr tagScheme vs =
     --TODO share this function
     typeOfTag = \case
       Nil -> TyCon "Unit"
+      Bool -> UInt 1
       N1 len -> UInt (fromIntegral len)
+      N5 -> UInt 1
       N16 -> UInt 1
       Custom t _ -> t
 --Used in assignEP EPCon as well; TODO move to logical location
