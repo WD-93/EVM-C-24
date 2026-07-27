@@ -36,7 +36,7 @@ import Control.Arrow ((***))
 --For global -> offset substitution:
 import Data.Generics (everywhere,mkT)
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 compileStructured :: Module -> Either FusedError Structured

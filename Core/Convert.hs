@@ -18,7 +18,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
 
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 
 --Takes a Structured module and produces a pre-SSA Core module

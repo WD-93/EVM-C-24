@@ -991,13 +991,16 @@ instance MonadStack Stack where
   swap ix = Stack $ do
     vs <- get
     let len = length vs
-    if ix < 0 || ix > 16 || ix >= len
-      then throwError $ BadArgSwap len ix
-      else do let a:vs' = vs
-                  pre = take (ix-1) vs'
-                  b:post = drop (ix-1) vs'
-              tell [Opcode $ "swap" ++ show ix]
-              put $ b:(pre++a:post)
+    case () of
+      _ | ix < 0 || ix > 16 || ix >= len ->
+          throwError $ BadArgSwap len ix
+        | ix == 0 -> return ()
+        | let -> do
+            let a:vs' = vs
+                pre = take (ix-1) vs'
+                b:post = drop (ix-1) vs'
+            tell [Opcode $ "swap" ++ show ix]
+            put $ b:(pre++a:post)
   pop = Stack $ do
     vs <- get
     case vs of
