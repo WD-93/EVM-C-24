@@ -374,7 +374,10 @@ pushJT fs = do
     else return ()
   let ser = Serialized {serLength = 2*lenn,
                         serSizeof = 2*lenn,
-                        serContent = [Right (0,2,f) | f <- fs]
+                        --Bugfix: the first con has the lowest tag so its
+                        --case should be rightmost. fs must therefore be
+                        --reversed.
+                        serContent = [Right (0,2,f) | f <- reverse fs]
                        }
   --Giving it a placeholder type for now
   v <- newVar $ W (TyVar "?") 1
