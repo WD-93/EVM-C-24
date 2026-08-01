@@ -58,7 +58,11 @@ data Structured = Structured {
 data Stmt = Value := OpE --a straight-line primop
           | Call Scope [Var] Var [Var] --scope, retval, f, x (but no ret cont)
           --The BB will need to be split across calls later!
-          | Ifte Scope [Stmt] Var [Stmt] [Stmt]
+          --The first Scope argument in Ifte is the scope the cond and
+          --branches expect; the second is the scope after the ifte completes.
+          --That must be recorded because primitives such as derefSto and
+          -- &&, || may return a value from an ifte.
+          | Ifte Scope [Stmt] Var [Stmt] [Stmt] Scope
           --Initial scope, expr, var to branch on, th, el
           | While Scope [Stmt] Var [Stmt]
           --Why are the cases a list rather than a map? Because we can't elide

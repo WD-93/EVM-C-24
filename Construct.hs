@@ -1576,7 +1576,7 @@ mderefWordPtr load sz ptr
                         ws' <- mdynRightShiftN ws rsh
                         maskTopWord ws'
                     )
-          putScope scope
+          putScope $ retws ++ scope
           return retws
             where maskTopWord :: (Construct m, Op m ~ String) =>
                                  [Var m] -> m [Var m]

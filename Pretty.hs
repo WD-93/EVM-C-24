@@ -79,7 +79,7 @@ prettyStmt = \case
   -- } else {
   -- el...
   --}
-  Ifte scope cond condvar th el ->
+  Ifte scope cond condvar th el scopeAfter ->
     [showScope scope,
      "if " ++ showVar condvar ++ " in {"] ++
     indentBlock cond ++
@@ -87,7 +87,8 @@ prettyStmt = \case
     indentBlock th ++
     ["} else {"] ++
     indentBlock el ++
-    ["}"]
+    ["}"] ++
+    [showScope scopeAfter]
   While scope cond condvar body ->
     [showScope scope,
      "while " ++ showVar condvar ++ " in {"] ++

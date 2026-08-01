@@ -433,8 +433,9 @@ instance Construct FusedFunM where
                                     copyTo xs ys)
     ths <- coll True th
     els <- coll False el
-    emitStmt $ IR.Ifte scope condcode w ths els
-    putScope $ xs ++ scope
+    let scope' = xs ++ scope
+    emitStmt $ IR.Ifte scope condcode w ths els scope'
+    putScope scope'
     return xs
   constant = pushK
   comment = comment

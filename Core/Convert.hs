@@ -230,8 +230,10 @@ coreBlock'' cont stmts =
         --  normal [] elcont
         --If ifte always continues to the same scope, I need to account for
         --that in &&, ||.
-        Ifte scope cond condvar th el -> expects scope $ do
-          next <- coreBlock scope cont stmts
+        --Fix: Ifte now records scope after its execution, because some uses
+        --of it return values.
+        Ifte scope cond condvar th el scopeAfter -> expects scope $ do
+          next <- coreBlock scopeAfter cont stmts
           thcont <- coreBlock scope next th
           --Should usually be inlined into the fallthrough FunRHS in the jumpi.
           elcont <- coreBlock scope next el

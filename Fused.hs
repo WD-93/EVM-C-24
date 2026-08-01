@@ -829,7 +829,7 @@ assignEP ep vs =
               els <- snd <$> collect scope revertNil
               let th = []
                   [true,false] = (if byte == 0 then reverse else id) [th,els]
-              emitStmt $ IR.Ifte scope cond w true false
+              emitStmt $ IR.Ifte scope cond w true false scope
             --If the tag scheme is custom but zero-sized, the equality
             --check should be optimized to True.
             --Potential future opt: knowing the tag has only one of
@@ -883,7 +883,7 @@ require cond = do
   els <- block scope $ SE $
     TyApp "revertValue" [Unit] :$
     ConRecord "Unit" (Just []) []
-  emitStmt $ IR.Ifte scope code w [] els
+  emitStmt $ IR.Ifte scope code w [] els scope
 
 {-
 Copied from comment at line 275:
@@ -1469,7 +1469,7 @@ convertS s = cleanup $
       --The then and else branch have starting scope = scope
       ths <- block scope th
       els <- block scope el
-      emitStmt $ IR.Ifte scope cond w ths els
+      emitStmt $ IR.Ifte scope cond w ths els scope
     A.While e body -> do
       scope <- getScope
       (vs,cond) <- collectCond scope e
@@ -1622,7 +1622,7 @@ compileCase scope dt vs cases = do
                   (tag,tagT) <- getTagOfValue dt mr Bool vs
                   return $ head tag
                 putScope scopeCase
-                emitStmt $ IR.Ifte scopeCase cond bool th el
+                emitStmt $ IR.Ifte scopeCase cond bool th el scope
                 --convertS will handle resetting the scope to scope
             --If the tag scheme is not Bool, it's fine to convert single-case
             --case statements to assignments.
