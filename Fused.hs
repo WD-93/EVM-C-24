@@ -14,7 +14,8 @@ import Fused.Monad
 import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
                   mderefBytePtr,mwritePtrSto,ifte,
-                  mderefWordPtr)
+                  mderefWordPtr,
+                  Construct(getScope,putScope))
 import Util (unsafePrint', --for debugging
              complainIf
             )
@@ -1721,9 +1722,10 @@ compileCustomBranch scope tagT con2tag fals minf tag vs = go fals
             case M.lookup con con2tag of
               Nothing -> error "Compiler error: !?"
               Just (_e,ser) -> do
-                desired <- pushMultiWordSer ser tagT
-                w <- equals desired tag
-                ifte 0 w
+                --For this to work, tag must be in scope;
+                --fortunately, it is.
+                ifte 0 (do desired <- pushMultiWordSer ser tagT
+                           equals desired tag)
                   (do putScope $ vs ++ scope
                       caseBody scope vs p s
                       return []
@@ -1882,10 +1884,11 @@ convertE e = pushScope $ go e
             | Just [ea,eb] <- unTupleTE ab -> do
                 scope <- getScope
                 (vsa,_ta) <- convertE ea
-                --Note: truthy is a redundant redef of this
+                --Note: truthy is a redundant redef of disjunction.
                 w <- disjunction vsa
+                --Eagerly removing vsa from scope before the ifte
                 putScope $ w:scope
-                b <- ifte 1 w
+                b <- ifte 1 (return w)
                   (do (vsb,_tb) <- convertE eb
                       w <- opE1 "iszero" $ opE1 "iszero" $ disjunction vsb
                       return [w])
@@ -1897,7 +1900,7 @@ convertE e = pushScope $ go e
                 (vsa,_ta) <- convertE ea
                 w <- disjunction vsa
                 putScope $ w:scope
-                b <- ifte 1 w
+                b <- ifte 1 (return w)
                   ((:[]) <$> constant 1)
                   (do (vsb,_tb) <- convertE eb
                       w <- opE1 "iszero" $ opE1 "iszero" $ disjunction vsb

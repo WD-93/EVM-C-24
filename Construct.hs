@@ -142,7 +142,18 @@ class Monad m => Construct m where
   --Branch on a var, performing either the th or el action based on whether
   --the var is zero. Both branches must return the same number of vars
   --(given by the Int parameter), otherwise an error should be thrown.
-  ifte :: Int -> Var m -> m [Var m] -> m [Var m] -> m [Var m]
+  --Bugfix: Construct has no facilities for managing the scope, so the cond
+  --var in derefSto[uint2] was not in scope, triggering a SSA error.
+  --The cond must be an m (Var m) instead of a Var m to ensure the Var is
+  --created on the right side of the branch boundary.
+  --Consequence: any vars used in the cond not already in scope when the
+  --construct starts running must be in the cond action!
+  ifte :: Int -> m (Var m) -> m [Var m] -> m [Var m] -> m [Var m]
+  --derefSto also declares de facto locals before the ifte; they must be
+  --available in the branches, so getScope and putScope must be moved into
+  --Construct.
+  getScope :: m [Var m]
+  putScope :: [Var m] -> m ()
 
 --Separating interpretations lets you simplify the respective monads.
 --Interpretation 1: emit instructions, allocate new vars.
@@ -194,6 +205,9 @@ instance Construct (Emit v) where
     return v
   comment str = Emit $ tell [Comment str]
   ifte = error "Not supported (TODO modify Write type)"
+  --Emit doesn't care about scope:
+  getScope = return []
+  putScope _ = return ()
 
 emitM1 :: Emit String (V String)
 emitM1 = do
@@ -368,10 +382,13 @@ instance Construct SymM where
     --For now we only allow branching on concrete values; doing so on
     --symbolic values would require adding [(CondTrace,_)] to the transformer
     --stack.
-    k <- parseConst "ifte" cond
+    k <- cond >>= parseConst "ifte"
     if k > 0
       then th
       else el
+  --SymM doesn't care about scope:
+  getScope = return []
+  putScope _ = return ()
 --Used to test both branches of ifte in SymM
 --Errors if the speculative action errors, or if it returns the wrong number
 --of words.
@@ -1102,6 +1119,14 @@ prop_mwritePtrMemPartial_correct (NonNegative n) (NonNegative ptr) =
 --FW: propagate constraints from C type info to words.
 --A value : T has zero bytes in its padding (<= 2^(8*sizeof T)-1).
 
+--Evaluate a var expr and push it to scope
+local :: Construct m => m (Var m) -> m (Var m)
+local e = do
+  scope <- getScope
+  v <- e
+  putScope $ v:scope
+  return v
+
 --Note I pass the actual load operation rather than just a name. That means
 --that this can be reused for any API implementing a mutable word=>word map,
 --e.g. storage arrays, hashmaps...
@@ -1115,9 +1140,10 @@ mwritePtrSto :: (Construct m, Op m ~ String) =>
 mwritePtrSto sz load store ptr vs
   | sz == 0 = return ()
   | let = do
-          m <- opE2 "and" (constant 31) (return ptr)
+          scope <- getScope
+          m <- local $ opE2 "and" (constant 31) (return ptr)
           --TODO enhance SymM so it can handle non-byte shifting of constants.
-          d <- opE2 "shr" (constant 5) (return ptr)
+          d <- local $ opE2 "shr" (constant 5) (return ptr)
           case () of
             --The value is small enough it fits in one word.
             --That means the mask may be of form 00..ff..00
@@ -1125,161 +1151,185 @@ mwritePtrSto sz load store ptr vs
             --small sz.
             --For sz == 1, the check whether the value should be split over
             --2 words should always return false; it should be DCE'd away.
-            _ | sz <= 31 -> do
-                  --unsafePrint "sz <= 31"
-                  let [w] = vs
-                  --For sz = 1:
-                  --m = 31 => left-shift = 0, it increases with lower m
-                  --left-shift in bytes: 31-m
-                  --Instead of *8, I can use shl 3, saving 2 gas
-                  --General leftshift:
-                  --8*(32-sz-m)%32
-                  lsh <- opE2 "shl" (constant 3) $
-                         opE2 "and" (constant 31) $
-                         opE2 "sub" (constant $ 32-sz) $
-                         return m
-                  --If m > 32-sz, the value must be split into two words
-                  --Note if sz == 1, that's impossible since m = _ % 32.
-                  cond <- opE2 "gt" (return m) $ constant $ 32 - sz
-                  ifte 0 cond
-                  --w must be split across two words:
-                    (do rsh <- opE2 "sub" (constant 256) (return lsh)
-                        --Low and high here refers to LSB and MSB respectively;
-                        --MSB is at the lowest address.
-                        lo <- op "shl" [lsh,w]
-                        hi <- op "shr" [rsh,w]
-                        --The pre-shift mask should ofc have the same
-                        --sz as the value...
-                        ff <- (constant $ 8*sz) >>= bitmask
-                        maskLo <- opE1 "not" $ op "shl" [lsh,ff]
-                        maskHi <- opE1 "not" $ op "shr" [rsh,ff]
-                        --maskHi <- op "shr" [lsh,ff]
-                        --maskLo <- op "shl" [rsh,ff]
-                        {-
-                        error $ unlines ["True branch",
-                                         "hi " ++ show hi,
-                                         "maskHi: " ++ show maskHi
-                                        ]
--}
-                        storeWithMask load store maskHi d hi
-                        d_plus_1 <- addK 1 d
-                        storeWithMask load store maskLo d_plus_1 lo
-                        return []
-                    )
-                    --w is still one word:
-                    (do w' <- op "shl" [lsh,w]
-                        wbits <- (constant $ 8*sz) >>= bitmask
-                        mask <- opE1 "not" $ op "shl" [lsh,wbits]
-                        {-
-                        error $ unlines ["False branch",
-                                         "w': " ++ show w',
-                                         "mask: " ++ show mask,
-                                         "lsh: " ++ show lsh
-                                        ]-}
-                        storeWithMask load store mask d w'
-                        return []
-                    )
-                  return ()
+            --Splitting cases into helper functions for readability:
+            _ | sz <= 31 ->
+                mwritePtrStoSzLT32 sz load store ptr vs scope m d
               --The value is a whole number of words
               | sz `mod` 32 == 0 ->
-                const () <$> ifte 0 m
-                --The value must be left-shifted; the first and last words
-                --must be partially written.
-                --Since the minimum number of words resulting is two, there's
-                --guaranteed to be a distinct first and last word.
-                (do lsh <- opE2 "shl" (constant 3) $
-                           opE2 "sub" (constant 32) $
-                           return m
-                    vs' <- mdynLeftShiftNPlus1 vs lsh
-                    let fi = head vs'
-                        mid = init $ tail vs'
-                        la = last vs'
-                    --Store first word:
-                    --A mask with 256-lsh 1-bits to the left:
-                    --Is sharing the mask computation worth it?
-                    mask <- opE2 "shl" (return lsh) $
-                            opE1 "not" $ constant 0
-                    storeWithMask load store mask d fi
-                    --Store the middle words:
-                    --If there are none, the add will be optimized away
-                    do d_plus_1 <- addK 1 d
-                       writeSlots store d_plus_1 mid
-                    --Store the last word:
-                    slot <- addK (fromIntegral $ length $ fi:mid) d
-                    flippedMask <- op "not" [mask]
-                    storeWithMask load store flippedMask slot la
-                    return []
-                )
-                --the value can be written as-is:
-                (writeSlots store d vs >> return [])
-              | let -> do
-                  --unsafePrint "sz > 32, sz % 32 != 0"
-                  --Mostly copied from sz<=31 case; TODO merge...
-                  --For sz = 1:
-                  --m = 31 => left-shift = 0, it increases with lower m
-                  --left-shift in bytes: 31-m
-                  --Instead of *8, I can use shl 3, saving 2 gas
-                  --General leftshift:
-                  --8*(32-sz-m)%32
-                  lsh <- opE2 "shl" (constant 3) $
-                         opE2 "and" (constant 31) $
-                         opE2 "sub" (constant $ 32-(sz`mod`32)) $
-                         return m
-                  --If m > 32-sz, the value must be split into n+1 words
-                  --Note if sz == 1, that's impossible since m = _ % 32.
-                  cond <- opE2 "gt" (return m) $ constant $ 32 - (sz`mod`32)
-                  ifte 0 cond
-                    --the value must be split into n+1 words
-                    (do vs' <- mdynLeftShiftNPlus1 vs lsh
-                        --unsafePrint $ "T: " ++ show vs'
-                        let fi = head vs'
-                            mid = init $ tail vs'
-                            la = last vs'
-                        --Writing the first word:
-                        --the number of value bits in the first word:
-                        --Because it's overflowed, we must also %32B
-                        fibits <-
-                          opE2 "and" (constant 255) $
-                          opE2 "add" (constant $ 8*(sz`mod`32))
-                          (return lsh)
-                        --unsafePrint $ "fibits: " ++ show fibits
-                        fimask <- opE2 "shl" (return fibits) $
-                                  opE1 "not" (constant 0)
-                        --unsafePrint $ "fimask: " ++ show fimask
-                        storeWithMask load store fimask d fi
-                        --Store the middle words:
-                        do d_plus_1 <- addK 1 d
-                           writeSlots store d_plus_1 mid
-                        --Store the last word:
-                        --The lower shl bits should not be overwritten
-                        mask <- bitmask lsh
-                        slot <- addK (fromIntegral $ length $ fi:mid) d
-                        storeWithMask load store mask slot la
-                        return []
-                    )
-                    --The value remains n>=2 words
-                    (do vs' <- mdynLeftShiftN vs lsh
-                        --unsafePrint $ "F: " ++ show vs'
-                        let fi = head vs'
-                            mid = init $ tail vs'
-                            la = last vs'
-                        --Writing first word:
-                        --No need to %32 since there was no overflow
-                        fibits <- opE2 "add" (constant $ 8*(sz`mod`32))
-                                  (return lsh)
-                        fimask <- opE2 "shl" (return fibits) $
-                                  opE1 "not" (constant 0)
-                        storeWithMask load store fimask d fi
-                        --Store the middle words:
-                        do d_plus_1 <- addK 1 d
-                           writeSlots store d_plus_1 mid
-                        --Store the last word:
-                        mask <- bitmask lsh
-                        slot <- addK (fromIntegral $ length $ fi:mid) d
-                        storeWithMask load store mask slot la
-                        return []
-                    )
-                  return ()
+                mwritePtrStoSzMod32Eq0 sz load store ptr vs scope m d
+              | let ->
+                mwritePtrStoSzGt32Mod32Neq0 sz load store ptr vs scope m d
+          --Reset the scope
+          putScope scope
+
+mwritePtrStoSzLT32 :: (Construct m, Op m ~ String) =>
+  Integer -> --sizeof value to write
+  (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
+  (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
+  Var m ->     --the ptr
+  [Var m] ->   --the value to write
+  [Var m] -> --scope
+  Var m -> --sz % 32
+  Var m -> --sz / 32
+  m [Var m] --empty return list; TODO replace with ()
+mwritePtrStoSzLT32 sz load store ptr vs scope m d = do
+  --unsafePrint "sz <= 31"
+  let [w] = vs
+  --For sz = 1:
+  --m = 31 => left-shift = 0, it increases with lower m
+  --left-shift in bytes: 31-m
+  --Instead of *8, I can use shl 3, saving 2 gas
+  --General leftshift:
+  --8*(32-sz-m)%32
+  lsh <- local $ opE2 "shl" (constant 3) $
+         opE2 "and" (constant 31) $
+         opE2 "sub" (constant $ 32-sz) $
+         return m
+  --If m > 32-sz, the value must be split into two words
+  --Note if sz == 1, that's impossible since m = _ % 32.
+  ifte 0 (opE2 "gt" (return m) $ constant $ 32 - sz)
+    --w must be split across two words:
+    (do rsh <- opE2 "sub" (constant 256) (return lsh)
+        --Low and high here refers to LSB and MSB respectively;
+        --MSB is at the lowest address.
+        lo <- op "shl" [lsh,w]
+        hi <- op "shr" [rsh,w]
+        --The pre-shift mask should ofc have the same
+        --sz as the value...
+        ff <- (constant $ 8*sz) >>= bitmask
+        maskLo <- opE1 "not" $ op "shl" [lsh,ff]
+        maskHi <- opE1 "not" $ op "shr" [rsh,ff]
+        storeWithMask load store maskHi d hi
+        d_plus_1 <- addK 1 d
+        storeWithMask load store maskLo d_plus_1 lo
+        return []
+    )
+    --w is still one word:
+    (do w' <- op "shl" [lsh,w]
+        wbits <- (constant $ 8*sz) >>= bitmask
+        mask <- opE1 "not" $ op "shl" [lsh,wbits]
+        storeWithMask load store mask d w'
+        return []
+    )
+mwritePtrStoSzMod32Eq0 :: (Construct m, Op m ~ String) =>
+  Integer -> --sizeof value to write
+  (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
+  (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
+  Var m ->     --the ptr
+  [Var m] ->   --the value to write
+  [Var m] -> --scope
+  Var m -> --sz % 32
+  Var m -> --sz / 32
+  m [Var m] --empty return list; TODO replace with ()
+mwritePtrStoSzMod32Eq0 sz load store ptr vs scope m d =
+  ifte 0 (return m)
+  --The value must be left-shifted; the first and last words
+  --must be partially written.
+  --Since the minimum number of words resulting is two, there's
+  --guaranteed to be a distinct first and last word.
+  (do lsh <- opE2 "shl" (constant 3) $
+             opE2 "sub" (constant 32) $
+             return m
+      vs' <- mdynLeftShiftNPlus1 vs lsh
+      let fi = head vs'
+          mid = init $ tail vs'
+          la = last vs'
+      --Store first word:
+      --A mask with 256-lsh 1-bits to the left:
+      --Is sharing the mask computation worth it?
+      mask <- opE2 "shl" (return lsh) $
+              opE1 "not" $ constant 0
+      storeWithMask load store mask d fi
+      --Store the middle words:
+      --If there are none, the add will be optimized away
+      do d_plus_1 <- addK 1 d
+         writeSlots store d_plus_1 mid
+         --Store the last word:
+      slot <- addK (fromIntegral $ length $ fi:mid) d
+      flippedMask <- op "not" [mask]
+      storeWithMask load store flippedMask slot la
+      return []
+  )
+  --the value can be written as-is:
+  (writeSlots store d vs >> return [])
+mwritePtrStoSzGt32Mod32Neq0 :: (Construct m, Op m ~ String) =>
+  Integer -> --sizeof value to write
+  (Var m -> m (Var m)) -> --load operation (used to load partially written ws)
+  (Var m -> Var m -> m ()) -> --store operation (sstore or tstore)
+  Var m ->     --the ptr
+  [Var m] ->   --the value to write
+  [Var m] -> --scope
+  Var m -> --sz % 32
+  Var m -> --sz / 32
+  m [Var m] --empty return list; TODO replace with ()
+mwritePtrStoSzGt32Mod32Neq0 sz load store ptr vs scope m d =
+  do
+    --unsafePrint "sz > 32, sz % 32 != 0"
+    --Mostly copied from sz<=31 case; TODO merge...
+    --For sz = 1:
+    --m = 31 => left-shift = 0, it increases with lower m
+    --left-shift in bytes: 31-m
+    --Instead of *8, I can use shl 3, saving 2 gas
+    --General leftshift:
+    --8*(32-sz-m)%32
+    lsh <- local $ opE2 "shl" (constant 3) $
+           opE2 "and" (constant 31) $
+           opE2 "sub" (constant $ 32-(sz`mod`32)) $
+           return m
+    --If m > 32-sz, the value must be split into n+1 words
+    --Note if sz == 1, that's impossible since m = _ % 32.
+    ifte 0 (opE2 "gt" (return m) $ constant $ 32 - (sz`mod`32))
+      --the value must be split into n+1 words
+      (do vs' <- mdynLeftShiftNPlus1 vs lsh
+          --unsafePrint $ "T: " ++ show vs'
+          let fi = head vs'
+              mid = init $ tail vs'
+              la = last vs'
+          --Writing the first word:
+          --the number of value bits in the first word:
+          --Because it's overflowed, we must also %32B
+          fibits <-
+            opE2 "and" (constant 255) $
+            opE2 "add" (constant $ 8*(sz`mod`32))
+            (return lsh)
+          --unsafePrint $ "fibits: " ++ show fibits
+          fimask <- opE2 "shl" (return fibits) $
+                    opE1 "not" (constant 0)
+          --unsafePrint $ "fimask: " ++ show fimask
+          storeWithMask load store fimask d fi
+          --Store the middle words:
+          do d_plus_1 <- addK 1 d
+             writeSlots store d_plus_1 mid
+          --Store the last word:
+          --The lower shl bits should not be overwritten
+          mask <- bitmask lsh
+          slot <- addK (fromIntegral $ length $ fi:mid) d
+          storeWithMask load store mask slot la
+          return []
+      )
+      --The value remains n>=2 words
+      (do vs' <- mdynLeftShiftN vs lsh
+          --unsafePrint $ "F: " ++ show vs'
+          let fi = head vs'
+              mid = init $ tail vs'
+              la = last vs'
+          --Writing first word:
+          --No need to %32 since there was no overflow
+          fibits <- opE2 "add" (constant $ 8*(sz`mod`32))
+                    (return lsh)
+          fimask <- opE2 "shl" (return fibits) $
+                    opE1 "not" (constant 0)
+          storeWithMask load store fimask d fi
+          --Store the middle words:
+          do d_plus_1 <- addK 1 d
+             writeSlots store d_plus_1 mid
+          --Store the last word:
+          mask <- bitmask lsh
+          slot <- addK (fromIntegral $ length $ fi:mid) d
+          storeWithMask load store mask slot la
+          return []
+      )
+  
 --Write words to slot, slot+1..
 writeSlots :: (Construct m, Op m ~ String) =>
   (Var m -> Var m -> m ()) ->
@@ -1476,16 +1526,17 @@ mderefWordPtr :: (Construct m, Op m ~ String) =>
 mderefWordPtr load sz ptr
   | sz == 0 = return []
   | let = do
-          slot <- opE2 "shr" (constant 5) (return ptr)
-          m <- opE2 "and" (constant 31) (return ptr)
+          scope <- getScope
+          slot <- local $ opE2 "shr" (constant 5) (return ptr)
+          m <- local $ opE2 "and" (constant 31) (return ptr)
           --The word count of the deref'd type:
           let wcnt = (if sz `mod` 32 > 0
                       then succ
                        else id) (sz `div` 32)
-          case () of
+          retws <- case () of
             _ | sz == 1 -> (:[]) <$> opE2 "byte" (return m) (op load [slot])
               | sz `mod` 32 == 0 ->
-                ifte (fromInteger wcnt) m
+                ifte (fromInteger wcnt) (return m)
                 --Special case: no need to mask the top word
                 (do ws <- forM [0..wcnt] (\i -> opE1 load (addK i slot))
                     rsh <- opE2 "shl" (constant 3) $
@@ -1499,20 +1550,20 @@ mderefWordPtr load sz ptr
                 (forM [0..wcnt-1]
                 (\i -> opE1 load (addK i slot)))
               | let -> do
-                  cond <- opE2 "gt" (return m)
-                          (constant $ (32 - sz`mod`32) `mod` 32)
                   --The amount to right-shift by:
                   --TODO opt: % k distributes over summands; & (2^n-1) = % 2^n
                   --That lets you replace 32 with 0 here.
                   --Also: if the constant is 31, 0 <= 31-m <= 31
                   --so % 32 is a noop
-                  rsh <- opE2 "shl" (constant 3) $
+                  rsh <- local $ opE2 "shl" (constant 3) $
                          opE2 "and" (constant 31) $
                          opE2 "sub" (constant (32 - sz `mod` 32)) (return m)
                   --Masking is handled here rather than in ...RightShift...
                   --the gas cost is the same but the code size will be larger.
                   --TODO opt (w >> k) & mask to ((w << k1) >> k2)
-                  ifte (fromInteger wcnt) cond
+                  ifte (fromInteger wcnt)
+                    (opE2 "gt" (return m)
+                      (constant $ (32 - sz`mod`32) `mod` 32))
                   --Overflow into wcnt+1 words:
                     (do ws <- forM [0..wcnt]
                           (\i -> opE1 load (addK i slot))
@@ -1525,6 +1576,8 @@ mderefWordPtr load sz ptr
                         ws' <- mdynRightShiftN ws rsh
                         maskTopWord ws'
                     )
+          putScope scope
+          return retws
             where maskTopWord :: (Construct m, Op m ~ String) =>
                                  [Var m] -> m [Var m]
                   maskTopWord (w:ws) = do

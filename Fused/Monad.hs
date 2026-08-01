@@ -15,7 +15,7 @@ import Core.RestrictedCore
 import Core.PrimTypes
 import Mono.Mono (instT,bindT,BindError(..))
 --The Construct monad, allowing overloaded straight-line code defs:
-import Construct (Construct(op,constant,Op))
+import Construct (Construct(op,constant,Op,getScope,putScope))
 import qualified Construct as CM
 --EVM opcode info lets one automate the Construct instance's behavior for
 --all valid straight-line ops.
@@ -208,11 +208,6 @@ alloc = do
 --TODO use capability classes
 --The MonadError instance for FusedFunM should have its error wrapped in
 --InFun (reader input f) when run in FusedM.
-
-getScope :: FusedFunM [Var]
-getScope = gets ffsScope
-putScope :: [Var] -> FusedFunM ()
-putScope scope = modify (\ffs->ffs{ffsScope=scope})
 
 --Given a dest list and a source list of Word Vars, copies source to dest.
 --If the lengths are unequal, that's a compiler error.
@@ -418,13 +413,16 @@ instance Construct FusedFunM where
     case mv of
       Just v -> throwError $ Op0MayNotReturnAWord primop vs
       Nothing -> return ()
-  --TODO move collect to Fused.Monad...
+  --cond has been changed to :: m (Var m) from Var m.
+  --Construct now has a concept of scope and construct functions now control
+  --scope. However, it should be fine for ifte to set scope to xs ++ scope.
   ifte nret cond th el = do
     --The name of the value returned; both branches will assign their value
     --to vs, a parallel of SSA phi var assignment.
     --A default value need not be passed.
     xs <- sequence $ replicate nret $ newVar $ UInt 32
     scope <- getScope
+    (w,condcode) <- collect scope cond
     let coll b m =
           snd <$> collect scope (do ys <- m
                                     if length ys /= length xs
@@ -435,11 +433,15 @@ instance Construct FusedFunM where
                                     copyTo xs ys)
     ths <- coll True th
     els <- coll False el
-    emitStmt $ IR.Ifte scope [] cond ths els
+    emitStmt $ IR.Ifte scope condcode w ths els
     putScope $ xs ++ scope
     return xs
   constant = pushK
   comment = comment
+  --getScope :: FusedFunM [Var]
+  getScope = gets ffsScope
+  --putScope :: [Var] -> FusedFunM ()
+  putScope scope = modify (\ffs->ffs{ffsScope=scope})
 
 --Isolate stmt emission and scope effect; used for compiling iftes.
 collect :: Scope -> FFM a -> FFM (a,[Stmt])
