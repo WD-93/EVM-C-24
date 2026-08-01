@@ -422,7 +422,15 @@ instance Construct FusedFunM where
     --A default value need not be passed.
     xs <- sequence $ replicate nret $ newVar $ UInt 32
     scope <- getScope
-    (w,condcode) <- collect scope cond
+    --Bugfix: to avoid MalformedFunLHS error, the var returned by cond must
+    --always be copied. That's because the decision of whether to jump becomes
+    --its own basic block during Core generation, and it expects w:scope.
+    --If w is already in scope (as in cond = return v), that leads to
+    --duplicate vars in the decision's lhs, leaving to a MalformedFunLHS.
+    (w,condcode) <- collect scope $ do
+      v <- cond
+      --TODO implement simple copy :: Var -> FFM Var
+      copy (typeOfVar v) v
     let coll b m =
           snd <$> collect scope (do ys <- m
                                     if length ys /= length xs
