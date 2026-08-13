@@ -1571,6 +1571,26 @@ getFPI dt = \case
 --constant literal patterns. Array(1,2,3) failing and falling through breaks
 --the "only case on top-level constructor" rule...
 --TODO add support for integer literal patterns.
+
+--Implementing safe case: case should either jump to one of the cases or
+--revert, even if the inspected value has an invalid tag.
+--Changes per tag scheme:
+--Nil: no change (there's no tag to be invalid)
+--Bool: no change (invalid byte tags are truthy)
+--Custom: no change (invalid tags already triggered a revert)
+--N16: tag <<= 4, tags changed to 0,1,2... from 0,16,32....
+--That ensures dispatch jumps either to a case or to 0.
+--Code offset 0 is the start of $trueMain, which has no jumpdest, ensuring
+--a revert.
+--Keeping the tags unchanged and adding tag &= ~0xf would be an alternative,
+--but that would either cost more or inflate code size (~0xf is 32B).
+--N1,N5:
+--If the tag space is full (256^n tags for N1, 52 for N5), no change; an
+--invalid tag will jump into the table to a non-jumpdest instruction and
+--revert.
+--Otherwise: tag *= (tag < max_tag_plus_1)
+--An invalid tag will then either jump to a non-jumpdest or to the first case
+--in the jump table.
 compileCase :: Scope -> T -> [Var] -> [(Pat,S)] -> FFM ()
 compileCase scope dt vs cases = do
   unsafePrint $ "Reached case: (type = " ++ show dt ++ ")"
@@ -1631,12 +1651,37 @@ compileCase scope dt vs cases = do
                 unsafePrint "Tag scheme /= Bool, #cases > 1"
                 (tag,tagT) <- getTagOfValue dt mr tagScheme vs
                 unsafePrint "getTagOfValue succeeded"
-                --If tag scheme = N1, need to mul tag by 5
+                --Safe case changes:
+                --N16: tag <<= 4
+                --N1,N5: After mul by 5 if N1, tag *= (tag < 5*|cons|) if
+                --num tags < the maximum representable number.
                 tag' <- case tagScheme of
-                          N1 _ -> do
+                          N16 -> do
                             let [tagw] = tag
-                            (:[]) <$> opE2 "mul" (constant 5) (return tagw)
-                          _ -> return tag
+                            (:[]) <$> opE2 "shl" (constant 4) (return tagw)
+                          _ | case tagScheme of
+                                N1 _ -> True
+                                N5 -> True
+                                _ -> False -> do
+                                let [tagw] = tag
+                                tagw' <- (if tagScheme == N5
+                                          then id
+                                          else opE2 "mul" (constant 5)) $
+                                         return tagw
+                                let lenCons = length cons
+                                    tagSpaceRemaining =
+                                      (tagScheme == N5 && lenCons < 52) ||
+                                      not (isPowerOf256 lenCons)
+                                tagw'' <-
+                                  if tagSpaceRemaining
+                                  then opE2 "mul"
+                                       (opE2 "lt" (return tagw') $
+                                        constant $ fromIntegral $
+                                        5 * length cons) $
+                                       return tagw'
+                                  else return tagw'
+                                return [tagw'']
+                            | let -> return tag
                 let tag = tag'
                 --Branching on the tag...
                 putScope $ tag ++ vs ++ scope
@@ -1675,6 +1720,16 @@ compileCase scope dt vs cases = do
   where simpleCase (p,s) = do
           assignValue p vs
           convertS s
+--A helper function used in compileCase; returns True iff n is 256 or 256^2,
+--errors if n > 65536.
+--Note it would be absurd to have > 65536 constructors; TODO throw a proper
+--error if the user attempts that.
+isPowerOf256 :: Int -> Bool
+isPowerOf256 n
+  | n `elem` [256,256^2] = True
+  | n > 256^2 =
+    error $ "A datatype has an absurd number of constructors: " ++ show n
+
 --The code executed in a (p,s) pattern body after a branch; it's the same as
 --simpleCase except the tag check is elided.
 --Precondition: scope is vs++sc before the match
@@ -2106,7 +2161,10 @@ getTag con ts = do
   return $ case tagScheme of
              Nil -> (emptySer, TyCon "Unit")
              Bool -> (lit 1 conIx, UInt 1)
-             N16 -> (lit 1 $ conIx*16, UInt 1)
+             --Safe case: N16 tags are now shifted left by 4 bits to ensure
+             --the on-stack JT is indexed by a multiple of 16.
+             --That means N16 tags must be 0,1,2... rather than 0,16,32,...
+             N16 -> (lit 1 conIx, UInt 1)
              N5 -> (lit 1 $ conIx*5, UInt 1)
              N1 len ->
                --TODO make a combinator for Serialized from serInt...
