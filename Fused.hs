@@ -1653,8 +1653,10 @@ compileCase scope dt vs cases = do
                 unsafePrint "getTagOfValue succeeded"
                 --Safe case changes:
                 --N16: tag <<= 4
-                --N1,N5: After mul by 5 if N1, tag *= (tag < 5*|cons|) if
+                --N1,N5: After mul by 5 if N1, tag mod= (5*|cons|) if
                 --num tags < the maximum representable number.
+                --That's the most natural way to restrict the tag to a range
+                --0..n, and is hopefully cheaper than tag*=(tag<5*|cons|).
                 tag' <- case tagScheme of
                           N16 -> do
                             let [tagw] = tag
@@ -1674,11 +1676,10 @@ compileCase scope dt vs cases = do
                                       not (isPowerOf256 lenCons)
                                 tagw'' <-
                                   if tagSpaceRemaining
-                                  then opE2 "mul"
-                                       (opE2 "lt" (return tagw') $
-                                        constant $ fromIntegral $
-                                        5 * length cons) $
-                                       return tagw'
+                                  then opE2 "mod"
+                                       (return tagw') $
+                                       constant $ fromIntegral $
+                                       5 * length cons
                                   else return tagw'
                                 return [tagw'']
                             | let -> return tag
@@ -1724,6 +1725,8 @@ compileCase scope dt vs cases = do
 --errors if n > 65536.
 --Note it would be absurd to have > 65536 constructors; TODO throw a proper
 --error if the user attempts that.
+--Without shrinking JTs when casing on a contiguous subset of constructors,
+--the real limit is ~4.8k.
 isPowerOf256 :: Int -> Bool
 isPowerOf256 n
   | n `elem` [256,256^2] = True
