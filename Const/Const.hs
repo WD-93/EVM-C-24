@@ -47,7 +47,9 @@ type Content = [SerElem]
 type SerElem = Either [Int] (Int,   --off
                           Int,   --len
                           String --label name
-                         )
+                            )
+normalizeSer :: Serialized -> Serialized
+normalizeSer ser = ser{serContent = normalizeContent $ serContent ser}
 --Quick-and-dirty solution: apply separate normalization function rather than
 --merging it with concatenation and other ops.
 normalizeContent :: Content -> Content
@@ -197,7 +199,7 @@ stripZeroes ser =
         }
     _ -> ser
 
---Precondition: serLength ser > len, len >= 0
+--Precondition: serLength ser >= len, len >= 0
 --Splits ser into the first len bytes and the rest.
 --Algo: while len > lengthContent of the next content, consume it and len-=lc.
 --If len == 0, stop.
@@ -249,3 +251,34 @@ splitContent len c
 --The EVM ops PUSH0..PUSH32 have 0..32 bytes of immediate argument; they
 --push their immediate argument as a 32B word left-padded with zero bytes.
 --As such, it's inefficient to use 
+
+--Coerce a Serialized value at compile time.
+--First, right-pad the ser with zeroes so length = sizeof.
+--If the target size szb > serSizeof old, left-pad and set serLength new to
+--szb; otherwise truncate.
+--Subtlety: serialized values may have serLength < serSizeof; for example,
+--Nothing :: Maybe Word will have length 1 but sizeof 33.
+--If stored as a code global, it should only occupy one byte; *codeG will
+--load 32B of garbage, but that's fine since accessing it is UB.
+--Tracking both serLength and serSizeof allows tags to be pushed correctly
+--while storing code globals compactly.
+--However, when we coerce to b we lose the constructor-specific right-padding
+--info, so length must be set to the upper bound.
+--TODO opt: use the right-padding info of b based on what the constructor tag
+--of the coerced result happens to be.
+coerceSer :: Integer -> Serialized -> Serialized
+coerceSer szb ser = normalizeSer $
+  let rser = rightPadSer ser
+      sza = serSizeof ser
+  in case compare szb sza of
+       LT -> snd $ takeDropSer (sza-szb) rser
+       EQ -> rser
+       --Prepend diff zero bytes
+       GT -> let diff = szb-sza
+             in concatSer
+                Serialized{serLength=diff,
+                           serSizeof=diff,
+                           serContent=
+                              [Left $ replicate (fromIntegral diff) 0]
+                          }
+                rser

@@ -2460,6 +2460,23 @@ serialize' mts mtset = withError (InSerialize' mts) . go
           TyApp nm ts -> do
             exploreTyApp nm ts
             return $ serLabel2 nm ts
+          -- &g desugars to addressOf (deref g)
+          --For now I only support &g and not &(g.field) etc, in order to
+          --provide the minimum necessary to support Asm.evmc.
+          TyApp "addressOf" [a,r] :$
+           (TyApp "deref" [r',a'] :$ TyApp g [])
+            | [r,a] == [r',a'] ->
+            go $ TyApp g []
+          --For Asm loops to not have an infinite type, serialize (coerce e)
+          --must be supported.
+          --Behavior: pad with zero bytes if b is longer, else truncate.
+          --Since label slices are supported, truncation is possible.
+          --TODO support general interpretation of constexprs, which
+          --would make serialization both more elegant and less brittle.
+          TyApp "coerce" [a,b] :$ e -> do
+            ser <- go e
+            szb <- sizeof' mts mtset b
+            return $ coerceSer szb ser
           --allocValue@[Code,a] constExpr
           --Allocate the new static data name; serialization of the
           --constExpr needs to be deferred (allowing a datatype to have a
