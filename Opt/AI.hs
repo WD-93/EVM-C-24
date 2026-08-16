@@ -492,6 +492,9 @@ unsafeWireFunInfo fi1 fi2 = do
   unsafeWireBodyInfo (fiBodyInfo fi1) (fiBodyInfo fi2) fi1 fi2
   unsafeWire (succs fi1) (succs fi2)
   unsafeWire (preds fi1) (preds fi2)
+  --Bugfix: wiring badFun succs and preds as well.
+  unsafeWire (badFunSuccs fi1) (badFunSuccs fi2)
+  unsafeWire (badFunPreds fi1) (badFunPreds fi2)
     
 --If the node is a function then wiring lhs and passed is redundant, since the
 --AVars occur in fiVars. If the node is a JT then lhs and passed are wired
@@ -1165,10 +1168,15 @@ aiSuccs fi finalVars branch = do
             --The ret abvar chan
             Just retch = M.lookup ret finalVars
         (rsch,_) <- possFunsCircuit jtMap retch
+        --Edit: retLive should not be relevant to whether you insert a
+        --badfun succ, because if a BB has a badfun successor all of its args
+        -- + the return continuation should be live.
         --Look up ret slot live
-        let Just (bchws,_) = fiPassed fi
-            retLive = map fst bchws !! args
+        --let Just (bchws,_) = fiPassed fi
+        --    retLive = map fst bchws !! args
         runCB $ do
+          --Debug:
+          --doWhen mayBeBad $ unsafePrint' True "May be bad!"
           succsIn    <- newInChan M.empty
           badSuccsIn <- newInChan M.empty
           --for each g <- dest, this makes a normal jump to g
@@ -1178,7 +1186,9 @@ aiSuccs fi finalVars branch = do
           subSetDelta (\r -> do
                           modInChan (M.insert r $ Continues (args,rets))
                             succsIn
-                          doWhen retLive $
+                          doWhen mayBeBad $ do
+                            --unsafePrint' True $
+                            -- "Inserting " ++ show (r,(args,rets))
                             modInChan (M.insert r (args,rets)) badSuccsIn
                       ) rsch
           return $ freeze (succsIn,badSuccsIn)
@@ -1226,7 +1236,10 @@ aiSuccs fi finalVars branch = do
     bssin <- newInChan M.empty
     doWhen (fiReachable fi) $ do
       subWhenChan (writeInChan ssin) ssch
-      subWhenChan (writeInChan bssin) bssch
+      subWhenChan (\x -> do
+                      --unsafePrint' True $ "Got here, size: " ++
+                      --  show (M.size x)
+                      writeInChan bssin x) bssch
     return $ freeze (ssin,bssin)
 
 --The Core functions a jump to abvar av may reach; includes badfun.
