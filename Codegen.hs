@@ -261,7 +261,8 @@ f2g = reverse g2f
 f2preds = non-continues predecessors
 f will be jumped to if:
  #f2preds[f] > 1, or
- not (f in g2f) && #f2preds[f] > 0
+ not (f in g2f) && #f2preds[f] > 0, or
+ #(badFunPreds f) > 1
 f will fallthrough if: f in f2g
 -}
 decorateBBs :: Map FunVar Int -> FrozenModState -> OptCore ->
@@ -315,7 +316,11 @@ decorateBBs f2dist ms core =
          --Number of non-continues (direct) predecessors
          let npreds = M.size $ M.filter (==Normal) $ unId $ preds fi
              --Whether f is jumped to:
-         in (npreds > 1 || (not (M.member f g2f) && npreds > 0),
+             --Bugfix: the continuation of a badfun call must have a jumpdest.
+             --IOW, if #(badFunPreds f)>0 then f is jumped to. 
+         in (npreds > 1
+             || (not (M.member f g2f) && npreds > 0)
+             || (not $ M.null $ unId $ badFunPreds fi),
              --Whether f falls through:
              M.member f f2g,
              def
