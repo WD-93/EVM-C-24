@@ -181,6 +181,9 @@ trueMain = "$trueMain"
 --Given a Core program and its AI results, compute the distance from $trueMain
 --per BB.
 --Precondition: $trueMain is present, unreachable BBs have been pruned.
+--Bugfix: the continuation of a badfun call is reachable.
+--Since the badfun is not Core code, I can't inspect it and tell how long it is;
+--I'll instead treat it as a direct jump.
 {-
 Algo:
 depth = {}
@@ -210,7 +213,10 @@ computeDistance ms core =
       case M.lookup f $ funInfo ms of
         Nothing -> error "!?"
         Just fi ->
-          S.toList $ M.keysSet $ M.filter (== Normal) $ unId $ succs fi
+          S.toList $ S.union
+          --nonContinues is now a misnomer...
+          (M.keysSet $ unId $ badFunSuccs fi)
+          (M.keysSet $ M.filter (== Normal) $ unId $ succs fi)
 
 --Note: the Core iset contains non-EVM ops emptyMem etc.
 codegenFuns :: OptCore ->
