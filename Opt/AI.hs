@@ -955,7 +955,8 @@ livePassed (wlen,slen) ss bss = do
                    then return ()
                    else do
                      let (_r,(args,_rets)) = head $ M.toList r2ar
-                     let args_ret = take args wins
+                     --Bugfix: off-by-one error. ret should also be livened.
+                     let args_ret = take (args+1) wins
                      mapM (`writeInChan` True) args_ret
                      unSub sub
                 )

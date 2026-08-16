@@ -407,7 +407,7 @@ pruneParams ms core = do
 --Keep a set of vars already used as dead trivial in branch so you can alloc
 --new ones.
 pruneDeadOps :: OptRule
-pruneDeadOps ms core =
+pruneDeadOps ms core = --throwOffendingResult $
   return core{
   coreDefuns =
       M.mapWithKey
@@ -458,6 +458,10 @@ pruneDeadOps ms core =
         Jump mode (dest:ws,mstk,ss)
       Jumpi else_f (dest:cond:_,mstk,_) ->
         Jumpi else_f (dest:cond:ws,mstk,ss)
+    --For debug:
+    throwOffendingResult m = do
+      c <- m
+      Left $ ThrowOffendingProgram c
 
 --A branch either exits or continues. If it continues, it has a passed Value.
 --Some of those vars may be at dead param positions. Those need to
@@ -593,7 +597,7 @@ allocVar v = do
 --Infinite loops have been eliminated, so removing f is now safe.
 --Restrict to intraprocedural jumps to avoid confusing AI.
 etaReduction :: OptRule
-etaReduction ms core =
+etaReduction ms core = do
   let fdefs = M.toList $ coreDefuns core
       --For each eta-reducible f, the g it directly reduces to 
       f2g_ = M.fromList [(f,g) | (f,def) <- fdefs, Just g <- [etaCallee f def]]
@@ -608,16 +612,19 @@ etaReduction ms core =
       --JTs (FunVar)
       --delete all fs
       --If there are no eta-reducible fs, do nothing.
-  in --error $ "Eta-reducible: " ++ show f2g
-    return $ if M.null f2g
-             then core
-             else Core {
+  unsafePrint $ "Eta-reducible: " ++ show f2g
+  c' <- return $ if M.null f2g
+           then core
+           else Core {
     coreDefuns = M.map (substEtaDefun f2g) $
                  flip M.withoutKeys (M.keysSet f2g) $
                  coreDefuns core,
     coreStatic = M.map (substEtaSer f2g) $ coreStatic core,
     coreJTs = M.map (substEtaJT f2g) $ coreJTs core
     }
+  --Let's see what's going wrong...
+  --Left $ ThrowOffendingProgram c'
+  return c'
   where
     --Eta-reducible form:
     --ops = {gv = push g}
