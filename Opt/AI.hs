@@ -958,6 +958,8 @@ livePassed (wlen,slen) ss bss = do
                      --Bugfix: off-by-one error. ret should also be livened.
                      let args_ret = take (args+1) wins
                      mapM (`writeInChan` True) args_ret
+                     --Badfun calls may also depend on all state variables!
+                     mapM (`writeInChan` True) sins
                      unSub sub
                 )
     return $ freeze (wins,sins)
