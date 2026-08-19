@@ -194,7 +194,7 @@ stripZeroes ser =
           dropped = fromIntegral $ length $ takeWhile (==0) bs
       in Serialized {
         serLength = len - dropped,
-        serSizeof = serSizeof ser, --irrelevant
+        serSizeof = serSizeof ser - dropped, --Not as irrelevant as I thought!
         serContent = if null bs' then rest else Left bs' : rest
         }
     _ -> ser
