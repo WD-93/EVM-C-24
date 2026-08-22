@@ -155,11 +155,13 @@ desugarE di{-@DInfo{diGlobalSet = gs,
       P.Dot _loc struct (Ident f) -> do
         s <- go struct
         --Handling boxed fields and tags...
+        --Bugfix: unWordPad was used instead of unImplTyCon
         case M.lookup f $ diFields di of
           Just fi | fiBoxed fi -> do
                       let tycon = fiParentTyCon fi
                       return $ Dot (Var "deref" :$
-                                    (Dot s Nothing "unWordPad")) Nothing $
+                                    (Dot s Nothing $ "unImpl" ++ tycon))
+                        Nothing $
                         case fi of
                           IsTag {} -> "tagImpl" ++ tycon
                           IsNormal {} -> "impl"++tycon++"_"++f
