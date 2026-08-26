@@ -2074,7 +2074,9 @@ convertE e = pushScope $ go e
 --ppmm is a helper for implementing ++_, _++, --_, _--
 ppmm :: Maybe T -> Pat -> Name -> Bool -> FFM ([Var],T)
 ppmm (Just t) p incdec pre = do
+  comment "Starting ppmm"
   mep <- evaluatePat p
+  comment "Evaluated pat"
   case mep of
     Nothing -> throwError $ GenericFE $ "Wild pattern in ppmm " ++
       show (t,p,incdec,pre)
@@ -2083,19 +2085,28 @@ ppmm (Just t) p incdec pre = do
       --avoid the post-increment value being returned in x++.
       --I do that in evalEP.
       old <- evalEP ep
+      comment "evalEP done"
       f <- pushTyApp incdec [t]
       --If not pre then old is returned on the other side of the call
       --boundary below; then it must be in scope to avoid an SSA error.
+      --For a *ptr pattern such as a global, it should already be on the
+      --stack. Not so for var x; x++!
+      --Solution to get both to work: copy old before pushing it to scope.
+      old' <- copyVars old
       if not pre
         then do
         scope <- getScope
-        putScope $ old ++ scope
+        putScope $ old' ++ scope
         else return ()
-      new <- callFun f old t
+      --scope <- getScope
+      --comment $ "scope: " ++ unwords (map nameOfVar scope)
+      new <- callFun f old' t
+      --scope <- getScope
+      --comment $ "scope: " ++ unwords (map nameOfVar scope)
       assignEP ep new
       return $ if pre
                then (new,t)
-               else (old,t)
+               else (old',t)
 
 --Attempts to parse an e of form *ptr(.field | !ix)*
 rollAddressOfE :: E -> Maybe (E,[EIndex])
