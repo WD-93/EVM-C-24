@@ -400,6 +400,7 @@ headLoopStack str = do
   ls <- gets csLoopStack
   case ls of
     [] -> throwError $ TriedToExitLoopOutsideLoop str
+    cc:_ -> return cc
 
 --Binds a new function name f: f lhs = rhs and returns the cont.
 --Logic copied from coreBlock; TODO deduplicate.
