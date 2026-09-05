@@ -1,0 +1,87 @@
+A central list of simple TODO summaries.
+
+*********************************Bugfix*************************************
+The compiler bug triggered by TestActor. Why would a second log call cause 
+it to fall apart?
+Likely a bug surfaced after many opt rules.
+
+*********************************Stdlib*************************************
+Polish demo libs:
+ABI, EVMCPP, coroutine, exception
+Standard method tags.
+
+A better allocator: free ptr.
+GC?
+
+Support <, <=, >, >= : a -> a -> Bool
+
+*********************************UX*****************************************
+Emacs mode with code coloring using AI.
+Function/global, local, ty/con, field, string, comment, keyword.
+Copy Haskell color scheme.
+Differentiating function and global requires scanning all modules.
+
+Better type error messages: pretty-printed code, explanation, likely cause.
+
+
+*************************Language features**********************************
+Multi-level case as the default; need decent heuristics.
+
+Unbound variable assignment => new variable by default?
+That would avoid var decls before case. 'x in lhs to shadow.
+
+tagscheme DT args = N1 | N5 | N16 --forces a tagscheme that supports more
+constructors, enabling you to make smaller datatypes with the same repr as
+larger ones without a custom tag scheme.
+
+Infix operator syntax support? Requires changing parser to handle fixity
+and binding strength in Desugar.
+
+***************************Type system**************************************
+
+Closed class functions
+Type families, Nat-level (+)?
+Use available instances to narrow down types and reject during HM.
+
+****************************Optimizer***************************************
+First-class support for exceptions and coroutines.
+
+Automatic derivation of efficient dispatch for custom tag schemes.
+
+Tail-call optimization
+Aggressive inlining using an execution intensity estimate.
+Annotations:
+@callable f : T, @exec_intensity f : N,
+@branch_probability float
+@iteration_count float
+@executable codeG: require the serialized value not be turned into an imm
+arg by a PUSH* in earlier static data.
+Q: is a partial PUSH* at the end of static data fine?
+
+Symbolic optimization: x*1 => x etc.
+Exploit commutativity during codegen.
+Better GC at the end of BB: no more swap1,pop,swap1,pop.
+
+IR change inspired by Yul: treat EVM ops and returning calls uniformly as 
+having a continuation?
+That should allow reordering and pruning of non-inlined function calls and
+loops.
+
+Static data sharing: greedily merge.
+
+Automatic tag scheme selection later in the pipeline; the same type could
+have multiple schemes.
+Direct JTs with BBs and static data placed between targets.
+
+A memory model with abstract alloc:
+Eliminate writes to non-escaping allocated ptrs if result is constant, e.g.,
+sha3Value "methodname(T) returns (T)".
+
+Opts at multiple levels: one at enhanced Structured, with abstract alloc
+and uniform treatment of calls and EVM ops.
+
+A richer abstract value type.
+
+*****************************Debugging**************************************
+Proper ppr of IR stages.
+Use HEVM, mark EVMC source with breakpoints, explain stack and memory.

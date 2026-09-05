@@ -2,7 +2,7 @@ Need a central repository of footguns (unintuitive or unexpected behavior)
 for inclusion in writeup and docs for new users. This file is a temporary
 measure; TODO move to proper writeup.
 
-0: IF YOU ONLY READ ONE FOOTGUN READ THIS ONE
+0: The most severe footgun, now fixed.
 Case assumes the value (v :: T) it's casing on is well-formed, i.e. that its 
 runtime representation corresponds to a valid value of the type.
 In particular, it assumes v's tag corresponds to one of T's constructors;
