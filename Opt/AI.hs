@@ -386,14 +386,16 @@ initialVarsOps (ws,_,ss) (wchs,schs) ops =
 --Must now be monadic because it may allocate new Bool chans.
 initialPassed :: AIC m =>
   Map Var (AVar (S m)) -> Branch -> m (Maybe (Passed (S m)))
-initialPassed vars = \case
+initialPassed vars branch = case branch of
   Jump _mode bv -> Just <$> addBools (dropJump $ bv2aval bv)
   Jumpi fv bv -> Just <$> addBools (dropJumpi $ bv2aval bv)
   _ -> return Nothing
  where bv2aval (ws,_,ss) = (map lookup ws, map lookup ss)
-       lookup v = case M.lookup v vars of
-                    Nothing -> error "!!? Precondition violated!"
-                    Just av -> av
+       lookup v =
+         case M.lookup v vars of
+           Nothing -> error $ "Precondition violated in initialPassed: " ++
+                      show (v, M.keysSet vars, branch)
+           Just av -> av
 initialAVar :: AIC m => m (AVar (S m))
 initialAVar = AVar <$> newChan False <*> newChan bottom
 

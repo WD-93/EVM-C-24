@@ -26,12 +26,23 @@ import Control.Monad
 import Control.Monad.State
 import Control.Arrow ((***))
 
-debugFlag = False
+--Whether to print debug messages
+debugFlag = True
 unsafePrint str = unsafePrint' debugFlag str
+--Whether to check for malformed Core after every non-identity opt rule
+--application.
+coreLintFlag = True
+coreLint :: Lint
+coreLint ms core =
+  if coreLintFlag
+  then lint ms core
+  else return ()
 
 --Opt errors are compiler errors
 data OptError = OptAIError AIError
               | ThrowOffendingProgram OptCore
+              --Lint errors:
+              | MismatchedIPArity (Map FunVar (Int, FunVar, Int)) OptCore
   deriving (Eq,Ord,Read,Show)
 --I'll need to repeatedly run ai.
 opt :: OptCore -> Either OptError OptCore
@@ -41,6 +52,8 @@ opt core = do
   return core'
 
 --Apply transformation until error or convergence
+--Change: lints before each change; that means it also lints the unoptimized
+--Core.
 iteratively :: Eq a => (a -> Either err a) -> a -> Either err a
 iteratively f = go
   where go a = do
@@ -62,6 +75,7 @@ optimize :: OptCore -> Either OptError OptCore
 optimize core = do
   unsafePrint "Performing AI!"
   ms <- ai core ? OptAIError
+  coreLint ms core
   unsafePrint "Starting opt!"
   applyRules ms core [("pruneUnreachableFuns",
                        pruneUnreachableFuns)
@@ -92,15 +106,12 @@ applyRules ms core ((description,rule):rules) = do
   unsafePrint $ "done with " ++ description
   --Nasty trick: I know it fails for Test.Shrinking when len = 20947.
   --I'll print it then to have a look at what's going on!
-  {-let len = (length $ show core')
+  let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
-  --Throwing the last program before constantExpansion introduces a cycle:
-  if len == 18831
+  --Throwing the last program before pruneParams deletes a load-bearing $ret:
+  if len == 1224220
     then Left $ ThrowOffendingProgram core'
     else return ()
-  if len == 20947
-    then Left $ ThrowOffendingProgram core'
-    else return ()-}
   if core == core'
     then do
     unsafePrint "It didn't change!"
@@ -133,8 +144,8 @@ pruneUnreachableFuns ms core =
       unreachableJTs = unreachable coreJTs
       --Short-circuiting: if there's nothing to prune don't traverse
   in do
-    unsafePrint $ "unreachableFuns = " ++ show unreachableFuns
-    unsafePrint $ "unreachableJTs = " ++ show unreachableJTs
+    --unsafePrint $ "unreachableFuns = " ++ show unreachableFuns
+    --unsafePrint $ "unreachableJTs = " ++ show unreachableJTs
     if S.null unreachableFuns && S.null unreachableJTs
       then return core
       else return $ substUnreachable unreachableFuns core{
@@ -612,7 +623,7 @@ etaReduction ms core = do
       --JTs (FunVar)
       --delete all fs
       --If there are no eta-reducible fs, do nothing.
-  unsafePrint $ "Eta-reducible: " ++ show f2g
+  --unsafePrint $ "Eta-reducible: " ++ show f2g
   c' <- return $ if M.null f2g
            then core
            else Core {
@@ -1013,6 +1024,47 @@ constantExpansion ms core =
         Revert v -> Revert <$> substV v
         Return v -> Return <$> substV v
         Stop v -> Stop <$> substV v
+
+--TODO move OptError to a new module Opt.DTs, allowing lint to be defined in
+--a new module Opt.Lint.
+--Report malformed Core; this is the seed of a Core spec.
+--First, just check that IP jumps never have mismatched arity.
+type Lint = FrozenModState -> OptCore -> Either OptError ()
+lint :: Lint
+lint ms core = do
+  lintMismatchedIPArity ms core
+
+--Note: doesn't check state var arity
+lintMismatchedIPArity :: Lint
+lintMismatchedIPArity ms core =
+  let defs = coreDefuns core
+      --IP jump arities
+      ipJumpArs = flip M.mapMaybe defs $
+                  \(_lhs,rhs) ->
+                    let (_ops,branch) = rhs
+                    in case branch of
+                         Jump Intraprocedural (_dest:ws,_,ss) ->
+                           Just $ length ws
+                         _ -> Nothing
+      --For each IP jump, get its successor's lhs arity.
+      --IP jumps only have one succ.
+      --Except unreachable ones may have empty succs?
+      ipDestArs = M.intersectionWith
+                  (\jar fiSrc ->
+                     let sbts = M.toList $ unId $ succs fiSrc
+                     in case sbts of
+                          [(succ,_branchType)] ->
+                            let Just fiDst = M.lookup succ (funInfo ms)
+                                dar = length $ fst $ fiLHS fiDst
+                            in (jar,succ,dar)
+                          --This is nasty, but will get filtered out.
+                          _ -> (-1,"invalid!",-1)
+                  )
+                  ipJumpArs $ funInfo ms
+      offenders = M.filter (\(jar,_succ,dar)->jar/=dar) ipDestArs
+  in if not $ null offenders
+     then Left $ MismatchedIPArity offenders core
+     else return ()
 
 --TODO make a convenient API for adding new ops; I've duplicated use of
 --allocName in several places.

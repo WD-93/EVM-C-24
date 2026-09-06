@@ -17,6 +17,8 @@ import Util ((?))
 import Compiler
 import AST.DTs
 import Opt.AI
+import Opt.Opt --OptError, opt rules
+import Core.RestrictedCore (Var(..)) --for varInfo nm fnm fms
 
 import Data.IORef
 import Data.List (intercalate)
@@ -201,3 +203,12 @@ loadFrom path include_stdlib mnm = do
         case ei of
           Left err -> error $ f err
           Right () -> return ()
+
+--Debug helper: get liveness and abstract value of a var with a given string
+--name. Note each Var has a unique name.
+varInfo :: String -> String -> FrozenModState -> FrozenAVar
+varInfo nm fnm fms =
+  let Just fi = M.lookup fnm $ funInfo fms
+      av = snd $ head $ filter ((==nm).nameOfVar.fst) $ M.toList $ fiVars $
+           fiBodyInfo fi
+  in av

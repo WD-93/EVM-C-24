@@ -44,6 +44,9 @@ Type families, Nat-level (+)?
 Use available instances to narrow down types and reject during HM.
 
 ****************************Optimizer***************************************
+Prune params which are determined by other params via sufficiently cheap
+ops: equality at the very least, but perhaps also x+k.
+
 First-class support for exceptions and coroutines.
 
 Automatic derivation of efficient dispatch for custom tag schemes.
