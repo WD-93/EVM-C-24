@@ -27,11 +27,11 @@ import Control.Monad.State
 import Control.Arrow ((***))
 
 --Whether to print debug messages
-debugFlag = True
+debugFlag = False
 unsafePrint str = unsafePrint' debugFlag str
 --Whether to check for malformed Core after every non-identity opt rule
 --application.
-coreLintFlag = True
+coreLintFlag = False
 coreLint :: Lint
 coreLint ms core =
   if coreLintFlag
@@ -106,13 +106,13 @@ applyRules ms core ((description,rule):rules) = do
   unsafePrint $ "done with " ++ description
   --Nasty trick: I know it fails for Test.Shrinking when len = 20947.
   --I'll print it then to have a look at what's going on!
-  let len = (length $ show core')
+  {-let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
   --Throwing the last program before inlining introduces an arity mismatch
   --in receiveChan[uint2]69:
   if len == 1345845
     then Left $ ThrowOffendingProgram core'
-    else return ()
+    else return ()-}
   if core == core'
     then do
     unsafePrint "It didn't change!"

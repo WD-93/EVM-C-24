@@ -15,6 +15,7 @@ import Construct (mconstruct,mdot,msetDot,mgetBang,msetBang,marray,
                   op, op0, constant, opE1, opE2,
                   mderefBytePtr,mwritePtrSto,ifte,
                   mderefWordPtr,
+                  mcoerce,munsafeCoerce,
                   Construct(getScope,putScope))
 import Util (unsafePrint', --for debugging
              complainIf
@@ -318,6 +319,14 @@ structuredPrims = M.fromList [
   ("coerce", (PT $ \(a :-> b) -> Just [a,b],
               \[a,b] -> mkPrim $ \args -> do
                 sza <- liftFused $ sizeof a
+                szb <- liftFused $ sizeof b
+                --Is this really necessary?
+                if max sza szb > 32000
+                  then throwError $ GenericFE "No monkey business!"
+                  else return ()
+                mcoerce sza szb args)),
+                {-do
+                sza <- liftFused $ sizeof a
                 let wlena = (sza `roundedUpMod` 32) `div` 32
                 szb <- liftFused $ sizeof b
                 let wlenb = (sza `roundedUpMod` 32) `div` 32
@@ -353,16 +362,24 @@ structuredPrims = M.fromList [
                           return $ w':ws
                       --Might have to left-pad:
                     | szb >= sza ->
-                      leftPad wlenb args)),
+                      leftPad wlenb args)),-}
   --unsafeCoerce
   --Behavior: if the result has fewer words, drop; otherwise left-pad
-  ("unsafeCoerce", (PT $ \(_ :-> b) -> Just [b],
-                    \[b] -> mkPrim $ \args -> do
+  ("unsafeCoerce", (PT $ \(a :-> b) -> Just [a,b],
+                    \[a,b] -> mkPrim $ \args -> do
+                      sza <- liftFused $ sizeof a
+                      szb <- liftFused $ sizeof b
+                      --Is this really necessary?
+                      if max sza szb > 32000
+                        then throwError $ GenericFE "No monkey business!"
+                        else return ()
+                      munsafeCoerce sza szb args)),
+                      {-do
                       --Potential vuln: if wlen is so large it overflows Int,
                       --replicate could give a bad result. I'll prevent that
                       --with an error.
                       wlen <- liftFused $ numWords b
-                      leftPad wlen args)),
+                      leftPad wlen args)),-}
   --Note: if the user redefines proxy (P), the prim def will become
   --nonsensical.
   ("sizeof", (PT $ \case (TyCon "P" :$$ a) :-> UInt 2 -> Just [a]
