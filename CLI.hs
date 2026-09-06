@@ -206,6 +206,7 @@ loadFrom path include_stdlib mnm = do
 
 --Debug helper: get liveness and abstract value of a var with a given string
 --name. Note each Var has a unique name.
+--TODO get info for vars in lhs as well.
 varInfo :: String -> String -> FrozenModState -> FrozenAVar
 varInfo nm fnm fms =
   let Just fi = M.lookup fnm $ funInfo fms

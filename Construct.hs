@@ -1627,3 +1627,69 @@ prop_stoPtr_round_trip (NonNegative ptr) (NonNegative sz) =
             then True
             else error $ "Mismatch: " ++ show (actualBs,vBs)
        Left err -> error $ "SymM error: " ++ show err
+
+--Apparently even something as simple as coerce is worth implementing in
+--Construct - the version defined in Fused was buggy!
+--unsafeCoerce: if arg has more words, truncate; otherwise leftpad with
+--zeroes.
+--Should error if the number of words given is wrong.
+munsafeCoerce :: (Construct m, Op m ~ String) =>
+ Integer -> Integer -> [Var m] -> m [Var m]
+munsafeCoerce sza szb ws = do
+  let [wa,wb] = map wordLen [sza,szb]
+  if wa /= fromIntegral (length ws)
+    then error "Incorrect number of words given to munsafeCoerce!"
+    else return ()
+  case () of
+    _ | wa == wb -> return ws
+      | wa > wb -> return $ drop (fromInteger $ wa - wb) ws
+      | wa < wb -> do
+          z <- constant 0
+          return $ replicate (fromInteger $ wb - wa) z ++ ws
+
+--Byte length => word length
+wordLen :: Integer -> Integer
+wordLen bs = (bs `roundedUpMod` 32) `div` 32
+  
+--coerce arg = unsafeCoerce arg; if the top result word is partial and
+--sza > szb, mask it.
+mcoerce :: (Construct m, Op m ~ String) =>
+           Integer -> Integer -> [Var m] -> m [Var m]
+mcoerce sza szb ws = do
+  ws' <- munsafeCoerce sza szb ws
+  let m = szb `mod` 32
+  if m > 0 && sza > szb
+    then do
+    let r:rs = ws'
+    --A word can always be masked code-inefficiently for 6 gas using and k.
+    --Alt: shl, shr. For now I'll use the code-inefficient maskBytes
+    r' <- maskBytes m r
+    return $ r':rs
+    else return ws'
+
+prop_munsafeCoerce :: NonNegative Integer -> NonNegative Integer -> Bool
+prop_munsafeCoerce sza (NonNegative szb) =
+  prop_coercion munsafeCoerce sza (NonNegative $ szb `roundedUpMod` 32)
+prop_mcoerce :: NonNegative Integer -> NonNegative Integer -> Bool
+prop_mcoerce = prop_coercion mcoerce
+
+--At runtime coerce is more complex than unsafeCoerce, but it's simpler to
+--test! munsafeCoerce sza szb = mcoerce sza (szb `roundedUpMod` 32)
+prop_coercion ::
+  (Integer -> Integer -> [SymWord] -> SymM [SymWord]) ->
+  NonNegative Integer -> NonNegative Integer -> Bool
+prop_coercion coercion (NonNegative sza) (NonNegative szb) =
+  let argBs = [X ("a", fromInteger n) | n <- [1..sza]]
+      argWs = wordSplit argBs
+  in case runSymM (coercion sza szb argWs) nullRs of
+       Right (retWs,_) ->
+         let retBs = unWordSplit retWs
+         in if sza <= szb
+            then match retBs argBs
+            else match retBs $ reverse
+                 (take (fromInteger szb) $ reverse argBs)
+       Left err -> error $ "Error in prop_coercion: " ++ show err
+  where match a b =
+          if a == b
+          then True
+          else error $ "Mismatch " ++ show (a,b)

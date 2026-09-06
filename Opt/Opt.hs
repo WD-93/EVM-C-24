@@ -108,8 +108,9 @@ applyRules ms core ((description,rule):rules) = do
   --I'll print it then to have a look at what's going on!
   let len = (length $ show core')
   unsafePrint $ "length $ show core': " ++ show len
-  --Throwing the last program before pruneParams deletes a load-bearing $ret:
-  if len == 1224220
+  --Throwing the last program before inlining introduces an arity mismatch
+  --in receiveChan[uint2]69:
+  if len == 1345845
     then Left $ ThrowOffendingProgram core'
     else return ()
   if core == core'
