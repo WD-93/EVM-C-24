@@ -1458,7 +1458,15 @@ lhsAbVars ms (lenw,lens) predecessors badPredecessors =
                --Unlike in continues, badfun always may return
                --TODO deduplicate the link using a f => set (g,linkType)
                --rather than f => g => bt, f => g => (int,int)
-               zipWithM_ lubLink (drop (args+1) ws) (drop rets wins))
+               zipWithM_ lubLink (drop (args+1) ws) (drop rets wins)
+               --Bugfix: if a cont only has a badpred, it still needs state!
+               --Solution for now: link with badpred as in pred, union with
+               --possKs=All. Why link? Because *FOR NOW* state can only grow,
+               --not get erased. TODO update if erasure is supported in
+               --future.
+               zipWithM_ lubLink ss sins
+               mapM_ (modInChan (\/ bottom{possKs=All})) sins
+    )
   return $ freeze (wins,sins)
  {- runCB $ forAllMap
      ((,) <$> replicateM lenw (newInChan bottom)
