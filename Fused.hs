@@ -2035,7 +2035,8 @@ convertE e = pushScope $ go e
                 --nub would create an unpredictable stack layout... I'll copy
                 --evalEP to fresh vars instead.
                 old <- evalEP ep >>= copyVars
-                putScope $ old ++ varsOfEP ep ++ scope
+                --ppmm doesn't push varsOfEP ep...
+                putScope $ old ++ {-varsOfEP ep ++-} scope
                 (operand,_t) <- convertE e
                 f <- pushTyApp fnm ts
                 new <- callFun f (old ++ operand) pt
