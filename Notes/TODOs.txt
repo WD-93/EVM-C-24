@@ -23,6 +23,9 @@ Differentiating function and global requires scanning all modules.
 
 Better type error messages: pretty-printed code, explanation, likely cause.
 
+Enable pipeline inspection of nested contract objects; don't do recursive
+compilation in loadFrom. Cool, I can disambiguate the global namespace
+module path from the submodule path since the latter is lowercase!
 
 *************************Language features**********************************
 Multi-level case as the default; need decent heuristics.
@@ -36,6 +39,9 @@ larger ones without a custom tag scheme.
 
 Infix operator syntax support? Requires changing parser to handle fixity
 and binding strength in Desugar.
+
+Allow the same field in multiple constructors if it's at the same offset
+(check per monotype that the offset is the same).
 
 ***************************Type system**************************************
 
@@ -61,9 +67,25 @@ Annotations:
 arg by a PUSH* in earlier static data.
 Q: is a partial PUSH* at the end of static data fine?
 
+@callable f : T
+Desugar: f must be a function. Record callable :: Map Name T in Module.
+TC: T must be a well-kinded monotype of kind Type
+Fused: f must have an instance of type T; translate to params
+exploreF f params in Fused.
+Record exported functions in Core_
+Opt.AI: exported functions are reachable with args >= * and may not be
+pruned.
+
+Enhancing compiler output: create interface files for each contract.
+Interface should include datatypes, global pointers and exported function
+pointers. Need to support alloc/boxed DTs, backlinks.
+Compile EVMC to generate txn calldata?
+
 Symbolic optimization: x*1 => x etc.
 Exploit commutativity during codegen.
 Better GC at the end of BB: no more swap1,pop,swap1,pop.
+
+Common subexpression elimination
 
 IR change inspired by Yul: treat EVM ops and returning calls uniformly as 
 having a continuation?
