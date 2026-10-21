@@ -278,9 +278,12 @@ initialModState core = do
 --over their abstract value. Their abstract value is actually ignored by ops
 --that use them, but they still need to be assigned one to fit in the AI
 --model.
+--Change of abstraction: I now assume storage is initially arbitrary,
+--accounting for the fact that a constructor external to the EVMC program may
+--set storage. TODO introduce a concept of constructors merged with text.
 initialStateValues :: AIC m => m [Chan (S m) AbVar]
 initialStateValues =
-  mapM newChan [z,z,z,
+  mapM newChan [z,arb,z,
                 arb,
                 z, --returndata is initially 0; *CALL sets it 
                 arb,arb]
