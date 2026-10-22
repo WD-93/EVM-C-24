@@ -718,6 +718,8 @@ computeAddressOf ptrE indexPath = do
   (ptrWs,ptrT) <- convertE ptrE
   let [ptr] = ptrWs
       Ptr r referent = ptrT
+  --unsafePrint' True $ "ptrT: " ++ show ptrT
+  --unsafePrint' True $ "path: " ++ show indexPath
   --The region r remains constant, so it's not updated in the loop
   --Note boxed fields have already been desugared away
   --Annoyance: _ref is always thrown away unless it's the last index.
@@ -760,7 +762,9 @@ computeAddressOf ptrE indexPath = do
                   product <- op2 "mul" sz ixW
                   p' <- op2 "add" product p
                   return (p',ref)
-           ) (ptr,referent) indexPath --Bug: I was passing Ptr r referent...
+           ) (ptr,referent) $ reverse indexPath
+    --Bug: I was passing Ptr r referent...
+  --unsafePrint' True $ "ref': " ++ show ref'
   putScope $ ptr':scope
   return (ptr', Ptr r ref')
                     
