@@ -691,7 +691,7 @@ evaluatePat = go
                     go rp = \case
                      PDot (Just ts) p field -> go (EDot field ts : rp) p
                      PBang (Just [len,a]) p e -> go (EBang len a e : rp) p
-                     p -> (p, reverse rp)
+                     p -> (p, rp)
                     --Should I really throw away len and a here..?
                     evalIndex :: EIndex -> FFM Index
                     evalIndex = \case
@@ -762,7 +762,7 @@ computeAddressOf ptrE indexPath = do
                   product <- op2 "mul" sz ixW
                   p' <- op2 "add" product p
                   return (p',ref)
-           ) (ptr,referent) $ reverse indexPath
+           ) (ptr,referent) indexPath
     --Bug: I was passing Ptr r referent...
   --unsafePrint' True $ "ref': " ++ show ref'
   putScope $ ptr':scope
