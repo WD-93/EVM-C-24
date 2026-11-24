@@ -29,51 +29,76 @@ to be defined. In contrast to Haskell, EVMC uses C++-like template polymorphism 
 
 ## Status
 
-I implemented a prototype with a simple type system and IR. While it worked, I missed Haskell's brevity and expressive power, and feared adding additional optimizations to the ad hoc IR would be difficult.
-
-Consequently, I've transitioned to using a Hindley-Milner type system and a Haskell Core-inspired IR. The transition necessitated rewriting most of the pipeline from scratch; I've currently completed:
-
-- Parsing  
-- Desugaring  
-- Hindley-Milner type inference  
-- Monomorphization
-
-The next step is conversion of the monomorphized module to **EVMC Core**.
-
-Like GHC Core, EVMC Core is intended to be a simple, theoretically tractable lambda calculus amenable to optimization. Core is intended to eliminate:
-
-- The nonlinear control flow of C (`break`, `continue`, `return`)  
-- The EVM's side effects (`REVERT`, `RETURN`, pointer writes, etc.)
-
-Instead, the program is modeled as a pure lambda calculus expression that can be reasoned about symbolically.
-
-Certain optimizations such as constant expansion, inlining, and tail calls should be relatively straightforward. However, I expect symbolic reasoning about memory access (e.g. to use scratch memory instead of bumping the allocation pointer, or detecting pointer aliasing/the absence thereof) to be more challenging.
-
-I am currently in the process of designing Core and its semantics to meet those challenges.
+The EVMC compiler functions and has been used to compile complex programs such
+as HLM, a functional interpreter with a Merklized heap.
+Programs which demonstrate its capabilities can be found at <https://github.com/WD-93/evmc-demo-display/>.
+EVMC is not yet production-ready: neither the standard library nor the finer details of its syntax or semantics should be assumed to be stable.
+UX requires improvement; type errors in particular are inscrutable and will result in walls of error text for large programs.
+The compiler requires further testing and verification before it can be used safely in production.
 
 ---
 
-## Vision
-
-The immediate intended use case of EVMC is implementing a high-level interpreter running on the EVM in order to enable _virtual smart contracts_ to be developed in a functional language. Contracts written in that language would then run together within a single Ethereum smart contract call, able to safely interact with each other and share resources.
-
-### Key advantages:
-
-- **Volatile memory** could be used for internal interactions (e.g. decrementing a token balance and updating the recipient's), rather than **persistent storage** (which is much more expensive).  
-- **Batching:** Many user transactions could be executed together.  
-- **Compact state:** Persistent state (contract data, balances, etc.) could be stored as a single Merkle root on-chain, enabling major gas savings.  
-- **Alternative authentication:** I am interested in supporting a hash preimage revelation-based protocol, which could provide **80-90% compute cost savings** over traditional signature verification.
+## Installation
+Install cabal, Haskell's package manager.
+Clone this branch, then navigate to it and run "cabal install exe:evmc --overwrite-policy=always". That should generate an evmc.exe executable in your cabal/bin/ folder. Add that folder to your system path.
 
 ---
 
-### Roadmap for the Language
+## Usage
+To compile SomeModuleName.evmc, run "evmc SomeModuleName". If the program compiles successfully, that will create a SomeModuleName.evm file containing EVM bytecode in hex. To deploy a compiled EVMC program to a simulated Ethereum blockchain in Hardhat 3, copy u.js from evmc-demo-display to the root of your Hardhat project. Then run:
 
-Once the compiler pipeline is complete, the highest-priority improvements are:
+npx hardhat console
+u = await import("./u.js")
+u.newConnection() //Creates a new simulated chain, do this only once per session
+addr = await u.deploy("SomeModuleName.evm")
 
-1. **Library support for the Solidity ABI**  
-2. **Typed interface between smart contracts** (CALL/RETURN), similar to Solidity  
-   _(This would likely require GADT support in EVMC.)_
+Now the created contract's address is bound to addr and you can interact with it!
 
----
+#I implemented a prototype with a simple type system and IR. While it worked, I missed Haskell's brevity and expressive power, and feared adding additional optimizations to the ad hoc IR would be difficult.
 
-I've also considered additional features from a programming languages research perspective. They're a bit esoteric, but I'd be happy to discuss them.
+#Consequently, I've transitioned to using a Hindley-Milner type system and a Haskell Core-inspired IR. The transition necessitated rewriting most of the pipeline from scratch; I've currently completed:
+
+#- Parsing  
+#- Desugaring  
+#- Hindley-Milner type inference  
+#- Monomorphization
+
+#The next step is conversion of the monomorphized module to **EVMC Core**.
+
+#Like GHC Core, EVMC Core is intended to be a simple, theoretically tractable lambda calculus amenable to optimization. Core is intended to eliminate:
+
+#- The nonlinear control flow of C (`break`, `continue`, `return`)  
+#- The EVM's side effects (`REVERT`, `RETURN`, pointer writes, etc.)
+
+#Instead, the program is modeled as a pure lambda calculus expression that can be reasoned about symbolically.
+
+#Certain optimizations such as constant expansion, inlining, and tail calls should be relatively straightforward. However, I expect symbolic reasoning about memory access (e.g. to use scratch memory instead of bumping the allocation pointer, or detecting pointer aliasing/the absence thereof) to be more challenging.
+
+#I am currently in the process of designing Core and its semantics to meet those challenges.
+
+#---
+
+# ## Vision
+
+#The immediate intended use case of EVMC is implementing a high-level interpreter running on the EVM in order to enable _virtual smart contracts_ to be developed in a functional language. Contracts written in that language would then run together within a single Ethereum smart contract call, able to safely interact with each other and share resources.
+
+# ### Key advantages:
+
+# - **Volatile memory** could be used for internal interactions (e.g. decrementing a token balance and updating the recipient's), rather than **persistent storage** (which is much more expensive).  
+# - **Batching:** Many user transactions could be executed together.  
+# - **Compact state:** Persistent state (contract data, balances, etc.) could be stored as a single Merkle root on-chain, enabling major gas savings.  
+# - **Alternative authentication:** I am interested in supporting a hash preimage revelation-based protocol, which could provide **80-90% compute cost savings** over traditional signature verification.
+
+# ---
+
+# ### Roadmap for the Language
+
+# Once the compiler pipeline is complete, the highest-priority improvements are:
+
+# 1. **Library support for the Solidity ABI**  
+# 2. **Typed interface between smart contracts** (CALL/RETURN), similar to Solidity  
+#   _(This would likely require GADT support in EVMC.)_
+
+# ---
+
+# I've also considered additional features from a programming languages research perspective. They're a bit esoteric, but I'd be happy to discuss them.
