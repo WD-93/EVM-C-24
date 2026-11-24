@@ -48,8 +48,11 @@ Clone this branch, then navigate to it and run "cabal install exe:evmc --overwri
 To compile SomeModuleName.evmc, run "evmc SomeModuleName". If the program compiles successfully, that will create a SomeModuleName.evm file containing EVM bytecode in hex. To deploy a compiled EVMC program to a simulated Ethereum blockchain in Hardhat 3, copy u.js from evmc-demo-display to the root of your Hardhat project. Then run:
 
 npx hardhat console
+
 u = await import("./u.js")
+
 u.newConnection() //Creates a new simulated chain, do this only once per session
+
 addr = await u.deploy("SomeModuleName.evm")
 
 Now the created contract's address is bound to addr and you can interact with it!
